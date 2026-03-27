@@ -1,0 +1,252 @@
+import CoreGraphics
+import Foundation
+
+enum SafariBridge {
+    // MARK: - Navigation
+
+    static func openURL(_ url: String) async throws {
+        try await runAppleScript("""
+            tell application "Safari"
+                activate
+                if (count of windows) = 0 then
+                    make new document with properties {URL:"\(url)"}
+                else
+                    set URL of current tab of front window to "\(url)"
+                end if
+            end tell
+            """)
+    }
+
+    static func openURLInNewTab(_ url: String) async throws {
+        try await runAppleScript("""
+            tell application "Safari"
+                activate
+                if (count of windows) = 0 then
+                    make new document with properties {URL:"\(url)"}
+                else
+                    tell front window
+                        set newTab to make new tab with properties {URL:"\(url)"}
+                        set current tab to newTab
+                    end tell
+                end if
+            end tell
+            """)
+    }
+
+    static func openURLInNewWindow(_ url: String) async throws {
+        try await runAppleScript("""
+            tell application "Safari"
+                activate
+                make new document with properties {URL:"\(url)"}
+            end tell
+            """)
+    }
+
+    static func closeCurrentTab() async throws {
+        try await runAppleScript("""
+            tell application "Safari"
+                close current tab of front window
+            end tell
+            """)
+    }
+
+    // MARK: - JavaScript
+
+    static func doJavaScript(_ code: String) async throws -> String {
+        try await runAppleScript("""
+            tell application "Safari"
+                do JavaScript "\(code.escapedForAppleScript)" in current tab of front window
+            end tell
+            """)
+    }
+
+    // MARK: - Page Info
+
+    static func getCurrentURL() async throws -> String {
+        try await runAppleScript("""
+            tell application "Safari"
+                get URL of current tab of front window
+            end tell
+            """)
+    }
+
+    static func getCurrentTitle() async throws -> String {
+        try await runAppleScript("""
+            tell application "Safari"
+                get name of current tab of front window
+            end tell
+            """)
+    }
+
+    static func getCurrentText() async throws -> String {
+        try await runAppleScript("""
+            tell application "Safari"
+                get text of current tab of front window
+            end tell
+            """)
+    }
+
+    static func getCurrentSource() async throws -> String {
+        try await runAppleScript("""
+            tell application "Safari"
+                get source of current tab of front window
+            end tell
+            """)
+    }
+
+    // MARK: - Tab Management
+
+    struct TabInfo: Sendable {
+        let index: Int
+        let title: String
+        let url: String
+    }
+
+    static func listTabs() async throws -> [TabInfo] {
+        let countStr = try await runAppleScript("""
+            tell application "Safari"
+                if (count of windows) = 0 then
+                    return "0"
+                end if
+                count of tabs of front window
+            end tell
+            """)
+
+        guard let count = Int(countStr.trimmingCharacters(in: .whitespacesAndNewlines)), count > 0 else {
+            return []
+        }
+
+        var tabs: [TabInfo] = []
+        for i in 1...count {
+            let title = try await runAppleScript("""
+                tell application "Safari"
+                    get name of tab \(i) of front window
+                end tell
+                """)
+            let url = try await runAppleScript("""
+                tell application "Safari"
+                    get URL of tab \(i) of front window
+                end tell
+                """)
+            tabs.append(TabInfo(
+                index: i,
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                url: url.trimmingCharacters(in: .whitespacesAndNewlines)
+            ))
+        }
+        return tabs
+    }
+
+    static func switchToTab(_ index: Int) async throws {
+        try await runAppleScript("""
+            tell application "Safari"
+                set current tab of front window to tab \(index) of front window
+            end tell
+            """)
+    }
+
+    static func openNewTab() async throws {
+        try await runAppleScript("""
+            tell application "Safari"
+                activate
+                if (count of windows) = 0 then
+                    make new document
+                else
+                    tell front window
+                        set newTab to make new tab
+                        set current tab to newTab
+                    end tell
+                end if
+            end tell
+            """)
+    }
+
+    // MARK: - Screenshot
+
+    static func getWindowID() throws -> String {
+        guard let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+            throw SafariBrowserError.noSafariWindow
+        }
+        for w in windows {
+            guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
+                  let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
+                  let bounds = w[kCGWindowBounds as String] as? [String: Any],
+                  let height = bounds["Height"] as? Int, height > 100,
+                  let num = w[kCGWindowNumber as String] as? Int else { continue }
+            return String(num)
+        }
+        throw SafariBrowserError.noSafariWindow
+    }
+
+    // MARK: - Shell Runner
+
+    @discardableResult
+    static func runShell(_ executable: String, _ arguments: [String]) async throws -> String {
+        let process = Process()
+        process.executableURL = URL(filePath: executable)
+        process.arguments = arguments
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        process.waitUntilExit()
+
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+
+        if process.terminationStatus != 0 {
+            let errorMessage = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
+            throw SafariBrowserError.appleScriptFailed(errorMessage)
+        }
+
+        return String(data: outputData, encoding: .utf8)?
+            .trimmingCharacters(in: .newlines) ?? ""
+    }
+
+    // MARK: - AppleScript Runner
+
+    @discardableResult
+    private static func runAppleScript(_ script: String) async throws -> String {
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        try process.run()
+        process.waitUntilExit()
+
+        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
+        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+
+        if process.terminationStatus != 0 {
+            let errorMessage = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
+            throw SafariBrowserError.appleScriptFailed(errorMessage)
+        }
+
+        return String(data: outputData, encoding: .utf8)?
+            .trimmingCharacters(in: .newlines) ?? ""
+    }
+}
+
+// MARK: - String Escaping
+
+extension String {
+    var escapedForAppleScript: String {
+        self.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    var escapedForJS: String {
+        self.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+    }
+}

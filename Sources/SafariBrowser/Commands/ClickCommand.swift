@@ -1,0 +1,20 @@
+import ArgumentParser
+
+struct ClickCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "click",
+        abstract: "Click an element by CSS selector"
+    )
+
+    @Argument(help: "CSS selector of the element to click")
+    var selector: String
+
+    func run() async throws {
+        let result = try await SafariBridge.doJavaScript(
+            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()"
+        )
+        if result == "NOT_FOUND" {
+            throw SafariBrowserError.elementNotFound(selector)
+        }
+    }
+}
