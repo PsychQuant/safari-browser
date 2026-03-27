@@ -40,6 +40,9 @@ safari-browser close                   # 關閉當前 tab
 ```bash
 safari-browser snapshot                # 掃描互動元素，分配 @e1, @e2...
 safari-browser snapshot -s "form"      # 限定範圍
+safari-browser snapshot -c             # compact（排除隱藏元素）
+safari-browser snapshot -d 3           # 限制 DOM 深度
+safari-browser snapshot --json         # JSON 輸出
 safari-browser click @e3               # 用 @ref 點擊
 safari-browser fill @e1 "text"         # 用 @ref 填入
 ```
@@ -82,6 +85,7 @@ safari-browser uncheck <selector>      # 取消勾選
 safari-browser scroll <dir> [px]       # 捲動 (up/down/left/right)
 safari-browser scrollintoview <sel>    # 捲動到可見
 safari-browser highlight <selector>    # 高亮顯示（紅框）
+safari-browser drag <src> <dst>        # 拖放（JS drag events）
 ```
 
 ### 鍵盤
@@ -112,17 +116,20 @@ safari-browser is enabled <selector>   # 是否 enabled
 safari-browser is checked <selector>   # 是否已勾選
 ```
 
-### 截圖與上傳
+### 截圖、PDF 與上傳
 
 ```bash
 safari-browser screenshot [path]       # 視窗截圖
 safari-browser screenshot --full path  # 全頁截圖
+safari-browser pdf [path]              # Export as PDF
 safari-browser upload <sel> <file>     # 檔案上傳
 ```
 
 ### Tab 管理
 
 ```bash
+safari-browser tabs                    # 列出所有 tab
+safari-browser tabs --json             # JSON 輸出
 safari-browser tabs                    # 列出所有 tab
 safari-browser tab <n>                 # 切換到第 n 個 tab
 safari-browser tab new                 # 開新 tab
@@ -141,6 +148,7 @@ safari-browser wait --timeout 5000     # 自訂 timeout
 
 ```bash
 safari-browser cookies get [name]      # 取得 cookies
+safari-browser cookies get --json      # JSON 格式
 safari-browser cookies set <n> <v>     # 設定 cookie
 safari-browser cookies clear           # 清除 cookies
 safari-browser storage local get <key> # localStorage
@@ -153,14 +161,21 @@ safari-browser storage session get/set/remove/clear  # sessionStorage
 ### Debug
 
 ```bash
-safari-browser console --start         # 開始攔截 console.log
-safari-browser console                 # 讀取攔截到的訊息
+safari-browser console --start         # 開始攔截 console (log/warn/error/info/debug)
+safari-browser console                 # 讀取攔截到的訊息（含 [warn]/[error] 等前綴）
 safari-browser console --clear         # 清空
 safari-browser errors --start          # 攔截 JS 錯誤
 safari-browser errors                  # 讀取錯誤
 safari-browser mouse move <x> <y>      # 滑鼠移動
 safari-browser mouse down / up         # 滑鼠按下/放開
 safari-browser mouse wheel <dy>        # 滾輪
+```
+
+### 設定
+
+```bash
+safari-browser set media dark          # 強制 dark mode
+safari-browser set media light         # 強制 light mode
 ```
 
 ## 與 agent-browser 的比較
