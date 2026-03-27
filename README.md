@@ -178,15 +178,53 @@ safari-browser set media dark          # 強制 dark mode
 safari-browser set media light         # 強制 light mode
 ```
 
-## 與 agent-browser 的比較
+## 為什麼選 safari-browser
+
+### 核心優勢
+
+**零設定登入** — 使用者的 Safari session 直接可用。localStorage、cookies、SSO session 永久保留。不需要 cookie injection、不需要每次重新登入、不需要管理 auth token。對企業 SaaS、銀行、社群平台等需要登入的網站，這是唯一可靠的自動化方式。
+
+**使用者同時操作** — agent-browser 開的是獨立 Chromium 實例，使用者看不到也碰不了。safari-browser 操作的是使用者自己的 Safari，AI 操作時使用者可以即時觀看、隨時介入、直接接手。這讓 human-in-the-loop 工作流成為可能。
+
+**macOS 生態整合** — Safari 的 localStorage、Keychain 整合、iCloud cookies 同步、Safari Extension 狀態全部直接可用。這不是功能差距可以彌補的，而是根本的架構差異。
+
+**反 bot 偵測免疫** — 許多網站（Facebook、Instagram、銀行）積極封鎖 headless Chromium。safari-browser 使用的是真正的 Safari 瀏覽器，與使用者手動瀏覽完全相同，不會觸發任何 bot 偵測。
+
+### 適用場景
+
+| 場景 | 為什麼只有 safari-browser 能做 |
+|------|------|
+| 企業 SaaS 自動化（Notion、Slack web、JIRA） | 永久登入 + SSO session 保持 |
+| 金融操作（銀行轉帳、報稅系統） | 不可能在 headless Chromium 做，銀行會封鎖 |
+| 社群管理（Facebook、Instagram、X 後台） | 這些平台積極偵測並封鎖 headless 瀏覽器 |
+| AI + 人類協作 | 使用者隨時看到 AI 在做什麼、隨時接手 |
+| 讀取已登入網站的 API token | `js "localStorage.getItem('token')"` 直接取 |
+| 需要 2FA / MFA 的網站 | 使用者已經在 Safari 完成驗證，session 直接可用 |
+
+### 與 agent-browser 的完整比較
 
 | 功能 | agent-browser | safari-browser |
 |------|--------------|----------------|
-| 登入狀態 | 每次重新登入 | 永遠登入 ✅ |
-| 底層 | Playwright/Chromium | Safari + AppleScript |
-| Headless | ✅ | ❌ |
-| 跨平台 | ✅ | macOS only |
-| 適合場景 | CI、公開網站、headless | 需登入的網站、macOS 本地自動化 |
+| **登入狀態** | 每次重新登入 | **永遠登入** ✅ |
+| **使用者可見** | 獨立 Chromium，使用者看不到 | **使用者的 Safari** ✅ |
+| **反 bot 偵測** | 容易被偵測為 headless | **真正的瀏覽器** ✅ |
+| **2FA / SSO** | 需要每次處理 | **session 直接可用** ✅ |
+| **macOS 整合** | 無 | **Keychain、iCloud、Extension** ✅ |
+| 底層 | Playwright / Chromium | Safari + AppleScript |
+| Headless | ✅ | ❌（不需要） |
+| 跨平台 | ✅ Linux / Windows | macOS only |
+| Network 攔截 | ✅ route / unroute | ❌ |
+| Accessibility tree | ✅ CDP 原生 | JS DOM 掃描（90% 夠用） |
+| 並行 session | ✅ 多個隔離實例 | 共用 Safari（多 tab） |
+| 適合場景 | CI、公開網站、headless 測試 | **需登入的網站、macOS 本地自動化、AI 協作** |
+
+### 選擇指南
+
+```
+需要登入？ ──── 是 → safari-browser
+              └── 否 → 需要 headless/CI？ ──── 是 → agent-browser
+                                           └── 否 → 都可以（safari-browser 更輕量）
+```
 
 ## 開發
 
