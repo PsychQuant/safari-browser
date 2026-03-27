@@ -21,10 +21,18 @@ struct CookiesGet: AsyncParsableCommand {
     @Argument(help: "Cookie name (optional — omit for all)")
     var name: String?
 
+    @Flag(name: .long, help: "Output as JSON object")
+    var json = false
+
     func run() async throws {
         if let name {
             let result = try await SafariBridge.doJavaScript(
                 "(function(){ var m = document.cookie.match('(?:^|; )\(name.escapedForJS)=([^;]*)'); return m ? decodeURIComponent(m[1]) : ''; })()"
+            )
+            print(result)
+        } else if json {
+            let result = try await SafariBridge.doJavaScript(
+                "(function(){ var o = {}; document.cookie.split(';').forEach(function(c){ var p = c.trim().split('='); if (p[0]) o[p[0]] = decodeURIComponent(p.slice(1).join('=')); }); return JSON.stringify(o); })()"
             )
             print(result)
         } else {

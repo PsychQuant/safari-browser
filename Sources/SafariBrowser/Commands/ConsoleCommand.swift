@@ -3,7 +3,7 @@ import ArgumentParser
 struct ConsoleCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "console",
-        abstract: "Capture and view console.log output"
+        abstract: "Capture and view console output (log/warn/error/info/debug)"
     )
 
     @Flag(name: .long, help: "Start capturing console output")
@@ -18,12 +18,18 @@ struct ConsoleCommand: AsyncParsableCommand {
                 (function(){
                     if (!window.__sbConsole) {
                         window.__sbConsole = [];
-                        var orig = console.log;
-                        console.log = function() {
-                            var args = Array.prototype.slice.call(arguments);
-                            window.__sbConsole.push(args.map(function(a){ return typeof a === 'object' ? JSON.stringify(a) : String(a); }).join(' '));
-                            orig.apply(console, arguments);
-                        };
+                        var levels = ['log', 'warn', 'error', 'info', 'debug'];
+                        for (var i = 0; i < levels.length; i++) {
+                            (function(level) {
+                                var orig = console[level];
+                                console[level] = function() {
+                                    var args = Array.prototype.slice.call(arguments);
+                                    var msg = args.map(function(a){ return typeof a === 'object' ? JSON.stringify(a) : String(a); }).join(' ');
+                                    window.__sbConsole.push(level === 'log' ? msg : '[' + level + '] ' + msg);
+                                    orig.apply(console, arguments);
+                                };
+                            })(levels[i]);
+                        }
                     }
                 })()
                 """)
