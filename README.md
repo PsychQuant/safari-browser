@@ -35,6 +35,17 @@ safari-browser reload                  # 重新載入
 safari-browser close                   # 關閉當前 tab
 ```
 
+### 元素發現（Snapshot + @ref）
+
+```bash
+safari-browser snapshot                # 掃描互動元素，分配 @e1, @e2...
+safari-browser snapshot -s "form"      # 限定範圍
+safari-browser click @e3               # 用 @ref 點擊
+safari-browser fill @e1 "text"         # 用 @ref 填入
+```
+
+所有接受 selector 的指令都支援 `@eN` ref 格式。
+
 ### JavaScript
 
 ```bash
