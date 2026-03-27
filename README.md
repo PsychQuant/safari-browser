@@ -150,6 +150,8 @@ safari-browser is checked <sel>
 ```bash
 safari-browser js "<code>"             # execute JS, print result
 safari-browser js --file script.js     # from file
+safari-browser js --large "<code>"     # chunked read for large output (>1MB)
+safari-browser js --output file "<code>"  # write result to file
 ```
 
 ### Screenshot, PDF & Upload
