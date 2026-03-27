@@ -57,9 +57,25 @@ struct GetText: AsyncParsableCommand {
             if result == "\0NOT_FOUND" {
                 throw SafariBrowserError.elementNotFound(selector)
             }
-            print(result)
+            if result.isEmpty {
+                // Silent truncation — retry with chunked read
+                let largeResult = try await SafariBridge.doJavaScriptLarge(
+                    "(function(){ var el = \(selector.resolveRefJS); return el ? el.textContent : ''; })()"
+                )
+                print(largeResult)
+            } else {
+                print(result)
+            }
         } else {
-            print(try await SafariBridge.getCurrentText())
+            // Try native property first
+            let nativeResult = try await SafariBridge.getCurrentText()
+            if nativeResult.isEmpty {
+                // Fallback to JS + chunked read for large pages
+                let jsResult = try await SafariBridge.doJavaScriptLarge("document.body.innerText")
+                print(jsResult)
+            } else {
+                print(nativeResult)
+            }
         }
     }
 }

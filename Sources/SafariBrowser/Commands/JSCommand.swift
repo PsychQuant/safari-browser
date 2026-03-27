@@ -10,6 +10,12 @@ struct JSCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Execute JavaScript from a file")
     var file: String?
 
+    @Option(name: .long, help: "Write result to file (for large outputs)")
+    var output: String?
+
+    @Flag(name: .long, help: "Use chunked read for large results")
+    var large = false
+
     @Argument(help: "JavaScript code to execute")
     var code: String?
 
@@ -31,8 +37,29 @@ struct JSCommand: AsyncParsableCommand {
             jsCode = code!
         }
 
-        let result = try await SafariBridge.doJavaScript(jsCode)
-        if !result.isEmpty {
+        let result: String
+        if large || output != nil {
+            // Forced large mode or writing to file — use chunked read
+            result = try await SafariBridge.doJavaScriptLarge(jsCode)
+        } else {
+            // Try normal first
+            let normalResult = try await SafariBridge.doJavaScript(jsCode)
+            if normalResult.isEmpty {
+                // Might be silent truncation — retry with chunked read
+                result = try await SafariBridge.doJavaScriptLarge(jsCode)
+                if !result.isEmpty {
+                    FileHandle.standardError.write(Data("warning: output was large, used chunked read. Use --large to skip retry.\n".utf8))
+                }
+            } else {
+                result = normalResult
+            }
+        }
+
+        if let output {
+            let path = (output as NSString).expandingTildeInPath
+            try result.write(toFile: path, atomically: true, encoding: .utf8)
+            FileHandle.standardError.write(Data("Written \(result.count) bytes to \(output)\n".utf8))
+        } else if !result.isEmpty {
             print(result)
         }
     }

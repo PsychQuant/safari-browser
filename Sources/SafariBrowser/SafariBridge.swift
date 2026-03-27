@@ -60,6 +60,37 @@ enum SafariBridge {
             """)
     }
 
+    /// Execute JS and read large results via chunked transfer.
+    /// Stores result in window.__sbResult, then reads back in 256KB chunks.
+    static func doJavaScriptLarge(_ code: String) async throws -> String {
+        // Store result in window variable
+        _ = try await doJavaScript(
+            "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()"
+        )
+
+        // Get total length
+        let lenStr = try await doJavaScript("window.__sbResultLen")
+        guard let totalLen = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)), totalLen > 0 else {
+            return ""
+        }
+
+        // Read in chunks
+        let chunkSize = 262144 // 256KB
+        var result = ""
+        var offset = 0
+        while offset < totalLen {
+            let end = min(offset + chunkSize, totalLen)
+            let chunk = try await doJavaScript("window.__sbResult.substring(\(offset), \(end))")
+            result += chunk
+            offset = end
+        }
+
+        // Cleanup
+        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen")
+
+        return result
+    }
+
     // MARK: - Page Info
 
     static func getCurrentURL() async throws -> String {
