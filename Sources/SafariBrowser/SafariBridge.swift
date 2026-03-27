@@ -249,4 +249,29 @@ extension String {
         self.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
     }
+
+    /// Returns JS expression that resolves to a DOM element.
+    /// If self starts with @eN, resolves from window.__sbRefs.
+    /// Otherwise, uses document.querySelector.
+    var resolveRefJS: String {
+        if let match = self.wholeMatch(of: /^@e(\d+)$/) {
+            let index = Int(match.1)! - 1
+            return "(function(){ if (!window.__sbRefs) return null; return window.__sbRefs[\(index)] || null; })()"
+        } else {
+            return "document.querySelector('\(self.escapedForJS)')"
+        }
+    }
+
+    /// Whether this string is a @ref pattern
+    var isRef: Bool {
+        self.wholeMatch(of: /^@e(\d+)$/) != nil
+    }
+
+    /// Error message for when a ref is invalid
+    var refErrorMessage: String {
+        if isRef {
+            return "Invalid ref: \(self) (run safari-browser snapshot first)"
+        }
+        return "Element not found: \(self)"
+    }
 }

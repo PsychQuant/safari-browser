@@ -52,7 +52,7 @@ struct GetText: AsyncParsableCommand {
     func run() async throws {
         if let selector {
             let result = try await SafariBridge.doJavaScript(
-                "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return '\\0NOT_FOUND'; return el.textContent; })()"
+                "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.textContent; })()"
             )
             if result == "\0NOT_FOUND" {
                 throw SafariBrowserError.elementNotFound(selector)
@@ -86,7 +86,7 @@ struct GetHTML: AsyncParsableCommand {
 
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return '\\0NOT_FOUND'; return el.innerHTML; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.innerHTML; })()"
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
@@ -106,7 +106,7 @@ struct GetValue: AsyncParsableCommand {
 
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return '\\0NOT_FOUND'; return el.value || ''; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.value || ''; })()"
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
@@ -129,7 +129,7 @@ struct GetAttr: AsyncParsableCommand {
 
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return '\\0NOT_FOUND'; return el.getAttribute('\(name.escapedForJS)') || ''; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.getAttribute('\(name.escapedForJS)') || ''; })()"
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
@@ -166,7 +166,7 @@ struct GetBox: AsyncParsableCommand {
 
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return '\\0NOT_FOUND'; var r = el.getBoundingClientRect(); return JSON.stringify({x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}); })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; var r = el.getBoundingClientRect(); return JSON.stringify({x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}); })()"
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)

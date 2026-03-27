@@ -24,7 +24,7 @@ struct IsVisible: AsyncParsableCommand {
 
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return 'false'; var r = el.getBoundingClientRect(); var s = getComputedStyle(el); return (r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden') ? 'true' : 'false'; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; var r = el.getBoundingClientRect(); var s = getComputedStyle(el); return (r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden') ? 'true' : 'false'; })()"
         )
         print(result)
     }
@@ -41,7 +41,7 @@ struct IsExists: AsyncParsableCommand {
 
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "document.querySelector('\(selector.escapedForJS)') !== null ? 'true' : 'false'"
+            "\(selector.resolveRefJS) !== null ? 'true' : 'false'"
         )
         print(result)
     }
@@ -58,7 +58,7 @@ struct IsEnabled: AsyncParsableCommand {
 
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return 'false'; return !el.disabled ? 'true' : 'false'; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return !el.disabled ? 'true' : 'false'; })()"
         )
         print(result)
     }
@@ -75,7 +75,7 @@ struct IsChecked: AsyncParsableCommand {
 
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return 'false'; return el.checked ? 'true' : 'false'; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return el.checked ? 'true' : 'false'; })()"
         )
         print(result)
     }

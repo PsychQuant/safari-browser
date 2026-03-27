@@ -11,7 +11,7 @@ struct FocusCommand: AsyncParsableCommand {
 
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return 'NOT_FOUND'; el.focus(); return 'OK'; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.focus(); return 'OK'; })()"
         )
         if result == "NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)

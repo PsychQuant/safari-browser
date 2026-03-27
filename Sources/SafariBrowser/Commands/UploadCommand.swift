@@ -21,7 +21,7 @@ struct UploadCommand: AsyncParsableCommand {
 
         // Click the file input to open the dialog
         let clickResult = try await SafariBridge.doJavaScript(
-            "(function(){ var el = document.querySelector('\(selector.escapedForJS)'); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()"
         )
         if clickResult == "NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)

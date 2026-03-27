@@ -7,6 +7,7 @@ struct SafariBrowser: AsyncParsableCommand {
         abstract: "macOS native browser automation via Safari + AppleScript",
         subcommands: [
             OpenCommand.self,
+            SnapshotCommand.self,
             JSCommand.self,
             GetCommand.self,
             ClickCommand.self,
