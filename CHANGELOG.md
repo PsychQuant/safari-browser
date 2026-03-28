@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-03-28 (round 4)
+
+### Codex Round 3 Fixes
+- **P2: runAppleScript trailing newline** — Only strip the single trailing newline added by osascript, preserving content newlines in output
+- **P2: console/errors --clear flag** — Use separate `installed` flag so `--start` works correctly after `--clear`
+- **P2: get html chunked fallback** — `get html` now falls back to chunked read for large innerHTML content
+- **P2: press key defaults** — `press Enter` simulates form submit, `press Tab` focuses next element, `press Escape` blurs — sensible defaults without requiring explicit JS
+
 ## 2026-03-28 (round 3)
 
 ### Codex Round 2 Fixes
