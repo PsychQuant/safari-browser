@@ -9,6 +9,7 @@ build:
 install: build
 	@mkdir -p $(INSTALL_DIR)
 	cp .build/release/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
+	@codesign --force --sign - $(INSTALL_DIR)/$(BINARY_NAME) 2>/dev/null || true
 	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME)"
 
 test:
