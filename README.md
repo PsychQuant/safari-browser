@@ -229,9 +229,11 @@ safari-browser mouse down / up / wheel <dy>
 ## Development
 
 ```bash
-make build    # debug build
-make install  # release build + install to ~/bin
-make clean    # remove build artifacts
+make build      # debug build
+make install    # release build + install to ~/bin
+make test       # run unit tests (24 tests, no Safari needed)
+make test-e2e   # run E2E tests (9 tests, requires Safari)
+make clean      # remove build artifacts
 ```
 
 ## License
