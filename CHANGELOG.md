@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-03-28 (late)
+
+### Codex Review Fixes
+- **HIGH: Path injection in keystroke** — PDF and upload HID fallback now escape file paths with `escapedForAppleScript` before embedding in `keystroke`
+- **MEDIUM: js --file multi-line scripts** — `js` command now uses eval wrapping + `jsStringLiteral` to support multi-statement scripts, not just single expressions
+- **MEDIUM: snapshot silent truncation** — Detects truncated JSON and retries with chunked read; emits warning if parsing still fails
+- **MEDIUM: wait negative crash** — Rejects negative milliseconds with validation error instead of UInt64 overflow crash
+- **MEDIUM: screenshot --full restore** — Always restores window bounds and scroll position, even if screencapture fails
+
 ## 2026-03-28
 
 ### Security Fixes
