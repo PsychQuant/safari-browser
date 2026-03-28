@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-03-28 (round 6)
+
+### Codex Round 5 Fixes
+- **P2: cookie regex escape** — Escape special regex characters in cookie name before matching
+- **P2: checkbox click activation** — Use `.click()` instead of toggling `.checked` property so change events fire correctly
+- **P2: press help accuracy** — Fix help text for press command to reflect actual supported keys
+
+### Codex Round 4 Fix
+- **P2: press Enter/Tab regression** — Restrict Enter form-submit to input controls only; filter tabbable elements to visible focusable elements
+
 ## 2026-03-28 (round 4)
 
 ### Codex Round 3 Fixes
