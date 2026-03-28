@@ -63,7 +63,7 @@ struct SnapshotCommand: AsyncParsableCommand {
                 var jsonResults = [];
                 for (var i = 0; i < els.length; i++) {
                     var el = els[i];
-                    if (el.offsetParent === null && el.tagName !== 'INPUT' && el.type !== 'hidden') continue;
+                    if (el.offsetParent === null && el.tagName !== 'INPUT' && el.type !== 'hidden' && getComputedStyle(el).position !== 'fixed' && getComputedStyle(el).position !== 'sticky') continue;
                     \(compactFilter)
                     \(depthFilter)
                     window.__sbRefs.push(el);

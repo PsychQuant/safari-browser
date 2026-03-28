@@ -22,19 +22,31 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.fileNotFound(filePath)
         }
 
-        // Read file as base64 in Swift, inject via JS DataTransfer (no HID, no fetch)
+        // Read file, transfer base64 in chunks to avoid E2BIG on osascript args
         let fileData = try Data(contentsOf: URL(fileURLWithPath: expandedPath))
         let base64 = fileData.base64EncodedString()
         let fileName = URL(fileURLWithPath: expandedPath).lastPathComponent
         let mimeType = guessMimeType(for: fileName)
 
-        let jsResult = try await SafariBridge.doJavaScriptLarge("""
+        // Transfer base64 in 200KB chunks via window variable
+        _ = try await SafariBridge.doJavaScript("window.__sbUpload = ''")
+        let chunkSize = 200_000
+        var offset = base64.startIndex
+        while offset < base64.endIndex {
+            let end = base64.index(offset, offsetBy: chunkSize, limitedBy: base64.endIndex) ?? base64.endIndex
+            let chunk = String(base64[offset..<end])
+            _ = try await SafariBridge.doJavaScript("window.__sbUpload += '\(chunk.escapedForJS)'")
+            offset = end
+        }
+
+        // Inject file via DataTransfer
+        let jsResult = try await SafariBridge.doJavaScript("""
             (function(){
                 var el = \(selector.resolveRefJS);
                 if (!el) return 'NOT_FOUND';
                 try {
-                    var b64 = '\(base64)';
-                    var bin = atob(b64);
+                    var bin = atob(window.__sbUpload);
+                    delete window.__sbUpload;
                     var bytes = new Uint8Array(bin.length);
                     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
                     var blob = new Blob([bytes], {type: '\(mimeType)'});

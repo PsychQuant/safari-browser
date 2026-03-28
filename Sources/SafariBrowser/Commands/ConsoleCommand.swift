@@ -24,7 +24,7 @@ struct ConsoleCommand: AsyncParsableCommand {
                                 var orig = console[level];
                                 console[level] = function() {
                                     var args = Array.prototype.slice.call(arguments);
-                                    var msg = args.map(function(a){ return typeof a === 'object' ? JSON.stringify(a) : String(a); }).join(' ');
+                                    var msg = args.map(function(a){ try { return typeof a === 'object' ? JSON.stringify(a) : String(a); } catch(e) { return String(a); } }).join(' ');
                                     window.__sbConsole.push(level === 'log' ? msg : '[' + level + '] ' + msg);
                                     orig.apply(console, arguments);
                                 };

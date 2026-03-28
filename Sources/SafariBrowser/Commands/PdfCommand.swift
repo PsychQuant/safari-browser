@@ -35,6 +35,8 @@ struct PdfCommand: AsyncParsableCommand {
             delay 0.5
             tell application "System Events"
                 tell process "Safari"
+                    -- NOTE: Menu labels are English. On non-English macOS, use keyboard shortcut instead.
+                    -- Cmd+P → "PDF" dropdown → "Save as PDF" is locale-independent but more complex.
                     click menu item "Export as PDF…" of menu "File" of menu bar 1
                     delay 1
                     set maxWait to 10

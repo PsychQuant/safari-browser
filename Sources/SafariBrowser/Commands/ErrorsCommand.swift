@@ -18,8 +18,10 @@ struct ErrorsCommand: AsyncParsableCommand {
                 (function(){
                     if (!window.__sbErrors) {
                         window.__sbErrors = [];
+                        var origOnerror = window.onerror;
                         window.onerror = function(msg, src, line, col, err) {
                             window.__sbErrors.push(msg + ' at ' + src + ':' + line + ':' + col);
+                            if (origOnerror) return origOnerror(msg, src, line, col, err);
                         };
                     }
                 })()
