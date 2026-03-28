@@ -22,18 +22,24 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.fileNotFound(filePath)
         }
 
-        // Try JS programmatic file injection first (no HID)
-        let jsResult = try await SafariBridge.doJavaScript("""
+        // Read file as base64 in Swift, inject via JS DataTransfer (no HID, no fetch)
+        let fileData = try Data(contentsOf: URL(fileURLWithPath: expandedPath))
+        let base64 = fileData.base64EncodedString()
+        let fileName = URL(fileURLWithPath: expandedPath).lastPathComponent
+        let mimeType = guessMimeType(for: fileName)
+
+        let jsResult = try await SafariBridge.doJavaScriptLarge("""
             (function(){
                 var el = \(selector.resolveRefJS);
                 if (!el) return 'NOT_FOUND';
                 try {
+                    var b64 = '\(base64)';
+                    var bin = atob(b64);
+                    var bytes = new Uint8Array(bin.length);
+                    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                    var blob = new Blob([bytes], {type: '\(mimeType)'});
+                    var file = new File([blob], '\(fileName.escapedForJS)', {type: '\(mimeType)'});
                     var dt = new DataTransfer();
-                    var resp = await fetch('file://\(expandedPath.escapedForJS)');
-                    if (!resp.ok) return 'FETCH_FAILED';
-                    var blob = await resp.blob();
-                    var name = '\(URL(fileURLWithPath: expandedPath).lastPathComponent.escapedForJS)';
-                    var file = new File([blob], name, {type: blob.type || 'application/octet-stream'});
                     dt.items.add(file);
                     el.files = dt.files;
                     el.dispatchEvent(new Event('change', {bubbles: true}));
@@ -94,5 +100,22 @@ struct UploadCommand: AsyncParsableCommand {
                 end tell
             end tell
             """])
+    }
+
+    private func guessMimeType(for filename: String) -> String {
+        let ext = (filename as NSString).pathExtension.lowercased()
+        switch ext {
+        case "mp3": return "audio/mpeg"
+        case "mp4": return "video/mp4"
+        case "wav": return "audio/wav"
+        case "pdf": return "application/pdf"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "doc", "docx": return "application/msword"
+        case "txt": return "text/plain"
+        case "csv": return "text/csv"
+        default: return "application/octet-stream"
+        }
     }
 }
