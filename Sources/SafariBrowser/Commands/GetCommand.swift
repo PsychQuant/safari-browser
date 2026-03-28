@@ -57,12 +57,20 @@ struct GetText: AsyncParsableCommand {
             if result == "\0NOT_FOUND" {
                 throw SafariBrowserError.elementNotFound(selector)
             }
+            // Check if empty is genuine or truncation
             if result.isEmpty {
-                // Silent truncation — retry with chunked read
-                let largeResult = try await SafariBridge.doJavaScriptLarge(
-                    "(function(){ var el = \(selector.resolveRefJS); return el ? el.textContent : ''; })()"
+                let lenStr = try await SafariBridge.doJavaScript(
+                    "(function(){ var el = \(selector.resolveRefJS); return el ? String(el.textContent.length) : '0'; })()"
                 )
-                print(largeResult)
+                let len = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+                if len > 0 {
+                    // Truncated — use chunked read (no re-execution)
+                    _ = try await SafariBridge.doJavaScript(
+                        "(function(){ var el = \(selector.resolveRefJS); window.__sbResult = el ? el.textContent : ''; window.__sbResultLen = window.__sbResult.length; })()"
+                    )
+                    print(try await SafariBridge.doJavaScriptLarge("window.__sbResult"))
+                }
+                // else genuinely empty — print nothing
             } else {
                 print(result)
             }

@@ -9,9 +9,9 @@ enum SafariBridge {
             tell application "Safari"
                 activate
                 if (count of windows) = 0 then
-                    make new document with properties {URL:"\(url)"}
+                    make new document with properties {URL:"\(url.escapedForAppleScript)"}
                 else
-                    set URL of current tab of front window to "\(url)"
+                    set URL of current tab of front window to "\(url.escapedForAppleScript)"
                 end if
             end tell
             """)
@@ -22,10 +22,10 @@ enum SafariBridge {
             tell application "Safari"
                 activate
                 if (count of windows) = 0 then
-                    make new document with properties {URL:"\(url)"}
+                    make new document with properties {URL:"\(url.escapedForAppleScript)"}
                 else
                     tell front window
-                        set newTab to make new tab with properties {URL:"\(url)"}
+                        set newTab to make new tab with properties {URL:"\(url.escapedForAppleScript)"}
                         set current tab to newTab
                     end tell
                 end if
@@ -37,7 +37,7 @@ enum SafariBridge {
         try await runAppleScript("""
             tell application "Safari"
                 activate
-                make new document with properties {URL:"\(url)"}
+                make new document with properties {URL:"\(url.escapedForAppleScript)"}
             end tell
             """)
     }
@@ -223,10 +223,11 @@ enum SafariBridge {
         process.standardError = stderr
 
         try process.run()
-        process.waitUntilExit()
 
+        // Read pipes BEFORE waitUntilExit to prevent deadlock when output > 64KB
         let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
         let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
 
         if process.terminationStatus != 0 {
             let errorMessage = String(data: errorData, encoding: .utf8)?
@@ -252,10 +253,11 @@ enum SafariBridge {
         process.standardError = stderr
 
         try process.run()
-        process.waitUntilExit()
 
+        // Read pipes BEFORE waitUntilExit to prevent deadlock when output > 64KB
         let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
         let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
 
         if process.terminationStatus != 0 {
             let errorMessage = String(data: errorData, encoding: .utf8)?
@@ -274,11 +276,19 @@ extension String {
     var escapedForAppleScript: String {
         self.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\t", with: "\\t")
     }
 
     var escapedForJS: String {
         self.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\0", with: "\\0")
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     }
 
     /// Returns JS expression that resolves to a DOM element.

@@ -39,20 +39,30 @@ struct JSCommand: AsyncParsableCommand {
 
         let result: String
         if large || output != nil {
-            // Forced large mode or writing to file — use chunked read
             result = try await SafariBridge.doJavaScriptLarge(jsCode)
         } else {
-            // Try normal first
-            let normalResult = try await SafariBridge.doJavaScript(jsCode)
-            if normalResult.isEmpty {
-                // Might be silent truncation — retry with chunked read
-                result = try await SafariBridge.doJavaScriptLarge(jsCode)
-                if !result.isEmpty {
-                    FileHandle.standardError.write(Data("warning: output was large, used chunked read. Use --large to skip retry.\n".utf8))
-                }
+            // Store result + length to detect truncation without double execution
+            _ = try await SafariBridge.doJavaScript(
+                "(function(){ var r = '' + (\(jsCode)); window.__sbLen = r.length; window.__sbResult = r; })()"
+            )
+            let lenStr = try await SafariBridge.doJavaScript("window.__sbLen")
+            let len = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+
+            if len == 0 {
+                // Genuinely empty — no retry needed
+                result = ""
             } else {
-                result = normalResult
+                // Try reading the stored result
+                let stored = try await SafariBridge.doJavaScript("window.__sbResult")
+                if stored.isEmpty && len > 0 {
+                    // Truncated — read via chunks (no re-execution of user JS)
+                    result = try await SafariBridge.doJavaScriptLarge("window.__sbResult")
+                    FileHandle.standardError.write(Data("warning: output was large, used chunked read. Use --large to skip this.\n".utf8))
+                } else {
+                    result = stored
+                }
             }
+            _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult")
         }
 
         if let output {
