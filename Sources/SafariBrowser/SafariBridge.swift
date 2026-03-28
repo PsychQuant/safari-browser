@@ -285,7 +285,7 @@ extension String {
     /// If self starts with @eN, resolves from window.__sbRefs.
     /// Otherwise, uses document.querySelector.
     var resolveRefJS: String {
-        if let match = self.wholeMatch(of: /^@e(\d+)$/) {
+        if let match = self.wholeMatch(of: /^@e([1-9]\d*)$/) {
             let index = Int(match.1)! - 1
             return "(function(){ if (!window.__sbRefs) return null; return window.__sbRefs[\(index)] || null; })()"
         } else {
@@ -295,7 +295,7 @@ extension String {
 
     /// Whether this string is a @ref pattern
     var isRef: Bool {
-        self.wholeMatch(of: /^@e(\d+)$/) != nil
+        self.wholeMatch(of: /^@e([1-9]\d*)$/) != nil
     }
 
     /// Error message for when a ref is invalid
