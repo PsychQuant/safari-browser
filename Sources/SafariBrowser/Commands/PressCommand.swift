@@ -42,13 +42,20 @@ struct PressCommand: AsyncParsableCommand {
                 if (down) {
                     var key = '\(keyName.escapedForJS)';
                     if (key === 'Enter') {
-                        if (el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
-                        else if (el.click) el.click();
+                        var tag = el.tagName;
+                        if (tag === 'BUTTON' || (tag === 'INPUT' && (el.type === 'submit' || el.type === 'button'))) {
+                            el.click();
+                        } else if (tag === 'INPUT' && el.form && el.type !== 'textarea') {
+                            el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+                        }
+                        // textarea, contenteditable, etc: do nothing (Enter = newline, handled by page)
                     } else if (key === 'Tab') {
-                        var focusable = Array.from(document.querySelectorAll('input,button,select,textarea,a[href],[tabindex]'));
-                        var idx = focusable.indexOf(el);
+                        var all = Array.from(document.querySelectorAll('input:not([type=hidden]):not(:disabled),button:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex]'));
+                        all = all.filter(function(n){ var ti = n.getAttribute('tabindex'); return ti !== '-1' && n.offsetParent !== null; });
+                        all.sort(function(a,b){ var ta = parseInt(a.getAttribute('tabindex')||'0',10); var tb = parseInt(b.getAttribute('tabindex')||'0',10); return (ta||9999)-(tb||9999); });
+                        var idx = all.indexOf(el);
                         if (idx >= 0) {
-                            var next = \(shiftKey) ? focusable[idx - 1] : focusable[idx + 1];
+                            var next = \(shiftKey) ? all[idx - 1] : all[idx + 1];
                             if (next) next.focus();
                         }
                     } else if (key === 'Escape') {
