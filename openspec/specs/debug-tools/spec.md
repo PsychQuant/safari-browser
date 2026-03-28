@@ -84,3 +84,49 @@ The system SHALL dispatch a wheel event with the given deltaY value.
 
 - **WHEN** user runs `safari-browser mouse wheel 300`
 - **THEN** a wheel event with deltaY=300 is dispatched on the document
+
+---
+### Requirement: Multi-level console capture
+
+The system SHALL capture all console methods (log, warn, error, info, debug) when `--start` is invoked. Each captured message SHALL include a level prefix.
+
+#### Scenario: Capture warn and error
+
+- **WHEN** user runs `safari-browser console --start`, then JS calls `console.warn('low disk')` and `console.error('failed')`
+- **THEN** `safari-browser console` output includes `[warn] low disk` and `[error] failed`
+
+#### Scenario: Capture debug and info
+
+- **WHEN** user runs `safari-browser console --start`, then JS calls `console.info('loaded')` and `console.debug('v=2')`
+- **THEN** `safari-browser console` output includes `[info] loaded` and `[debug] v=2`
+
+#### Scenario: Log level has no prefix for backwards compatibility
+
+- **WHEN** user runs `safari-browser console --start`, then JS calls `console.log('hello')`
+- **THEN** `safari-browser console` output includes `hello` (no `[log]` prefix, preserving existing behavior)
+
+<!-- @trace
+source: parity-with-agent-browser
+updated: 2026-03-28
+code:
+  - Sources/SafariBrowser/Commands/TabsCommand.swift
+  - Tests/SafariBrowserTests/CommandParsingTests.swift
+  - Sources/SafariBrowser/SafariBridge.swift
+  - Sources/SafariBrowser/Commands/ConsoleCommand.swift
+  - Sources/SafariBrowser/Commands/CookiesCommand.swift
+  - Sources/SafariBrowser/SafariBrowser.swift
+  - README.md
+  - Tests/Fixtures/test-page.html
+  - Makefile
+  - Sources/SafariBrowser/Commands/DragCommand.swift
+  - Sources/SafariBrowser/Commands/SetCommand.swift
+  - Sources/SafariBrowser/Commands/PdfCommand.swift
+  - Tests/SafariBrowserTests/E2E/E2ETests.swift
+  - Sources/SafariBrowser/Commands/GetCommand.swift
+  - Tests/SafariBrowserTests/ErrorsTests.swift
+  - Sources/SafariBrowser/Commands/SnapshotCommand.swift
+  - Tests/e2e-test.sh
+  - LICENSE
+  - Sources/SafariBrowser/Commands/JSCommand.swift
+  - Tests/SafariBrowserTests/StringExtensionsTests.swift
+-->

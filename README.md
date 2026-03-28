@@ -159,9 +159,12 @@ safari-browser js --output file "<code>"  # write result to file
 ```bash
 safari-browser screenshot [path]       # window screenshot (default: screenshot.png)
 safari-browser screenshot --full path  # full page
-safari-browser pdf [path]              # export as PDF
-safari-browser upload <sel> <file>     # file upload via System Events dialog
+safari-browser pdf --allow-hid [path]  # export as PDF (requires --allow-hid)
+safari-browser upload <sel> <file>     # file upload (JS injection, no HID)
+safari-browser upload --allow-hid <sel> <file>  # fallback: keyboard simulation
 ```
+
+`upload` tries JS `DataTransfer` injection first (no keyboard control). If it fails, use `--allow-hid` for System Events fallback. `pdf` always requires `--allow-hid` (no JS alternative).
 
 ### Tab Management
 
