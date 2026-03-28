@@ -31,6 +31,9 @@ struct WaitCommand: AsyncParsableCommand {
         } else if let js {
             try await waitForJS(expression: js)
         } else if let milliseconds {
+            guard milliseconds >= 0 else {
+                throw ValidationError("Milliseconds must be non-negative, got \(milliseconds)")
+            }
             try await Task.sleep(nanoseconds: UInt64(milliseconds) * 1_000_000)
         }
     }

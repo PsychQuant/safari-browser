@@ -46,11 +46,16 @@ struct ScreenshotCommand: AsyncParsableCommand {
                 try await Task.sleep(nanoseconds: 500_000_000)
             }
 
-            // Take screenshot
-            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-l", windowID, path])
+            // Take screenshot, always restore window bounds afterward
+            var captureError: Error?
+            do {
+                try await SafariBridge.runShell("/usr/sbin/screencapture", ["-l", windowID, path])
+            } catch {
+                captureError = error
+            }
 
-            // Restore window bounds
-            try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
+            // Restore window bounds (always, even if capture failed)
+            _ = try? await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
                 tell application "Safari"
                     set bounds of front window to {\(bounds)}
                 end tell
@@ -61,8 +66,10 @@ struct ScreenshotCommand: AsyncParsableCommand {
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let sx = json["sx"] as? Int,
                let sy = json["sy"] as? Int {
-                _ = try await SafariBridge.doJavaScript("window.scrollTo(\(sx),\(sy))")
+                _ = try? await SafariBridge.doJavaScript("window.scrollTo(\(sx),\(sy))")
             }
+
+            if let captureError { throw captureError }
         } else {
             try await SafariBridge.runShell("/usr/sbin/screencapture", ["-l", windowID, path])
         }

@@ -48,7 +48,7 @@ struct PdfCommand: AsyncParsableCommand {
                     end repeat
                     keystroke "g" using {command down, shift down}
                     delay 1
-                    keystroke "\(fullPath)"
+                    keystroke "\(fullPath.escapedForAppleScript)"
                     keystroke return
                     delay 1
                     click button "Save" of sheet 1 of front window

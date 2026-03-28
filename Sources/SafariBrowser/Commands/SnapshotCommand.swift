@@ -98,10 +98,16 @@ struct SnapshotCommand: AsyncParsableCommand {
             })()
             """
 
-        let result = try await SafariBridge.doJavaScript(js)
+        var result = try await SafariBridge.doJavaScript(js)
+
+        // If result is empty or not valid JSON, it may be truncated — retry with chunked read
+        if result.isEmpty || result.data(using: .utf8).flatMap({ try? JSONSerialization.jsonObject(with: $0) }) == nil {
+            result = try await SafariBridge.doJavaScriptLarge(js)
+        }
 
         guard let data = result.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            FileHandle.standardError.write(Data("warning: snapshot output could not be parsed. Page may have too many elements.\n".utf8))
             return
         }
 

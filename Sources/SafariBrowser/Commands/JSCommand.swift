@@ -39,16 +39,24 @@ struct JSCommand: AsyncParsableCommand {
 
         let result: String
         if large || output != nil {
-            result = try await SafariBridge.doJavaScriptLarge(jsCode)
+            // eval() wrapping supports multi-line scripts (intentional — CLI executes user JS)
+            result = try await SafariBridge.doJavaScriptLarge("eval(\(jsCode.jsStringLiteral))")
         } else {
-            // Store result + length to detect truncation without double execution
+            // Wrap user code so both single expressions and multi-line scripts work.
+            // eval() is intentional here — this is a browser automation CLI that executes
+            // arbitrary user-provided JavaScript by design (same as browser console).
             _ = try await SafariBridge.doJavaScript(
-                "(function(){ var r = '' + (\(jsCode)); window.__sbLen = r.length; window.__sbResult = r; })()"
+                "(function(){ try { var r = '' + eval(\(jsCode.jsStringLiteral)); window.__sbLen = r.length; window.__sbResult = r; } catch(e) { window.__sbLen = -1; window.__sbResult = e.message; } })()"
             )
             let lenStr = try await SafariBridge.doJavaScript("window.__sbLen")
             let len = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
 
-            if len == 0 {
+            if len == -1 {
+                // JS execution error
+                let errMsg = try await SafariBridge.doJavaScript("window.__sbResult")
+                _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult")
+                throw SafariBrowserError.appleScriptFailed("JavaScript error: \(errMsg)")
+            } else if len == 0 {
                 // Genuinely empty — no retry needed
                 result = ""
             } else {

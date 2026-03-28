@@ -93,7 +93,7 @@ struct UploadCommand: AsyncParsableCommand {
                     end repeat
                     keystroke "g" using {command down, shift down}
                     delay 1
-                    keystroke "\(expandedPath)"
+                    keystroke "\(expandedPath.escapedForAppleScript)"
                     keystroke return
                     delay 1
                     keystroke return

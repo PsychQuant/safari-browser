@@ -291,6 +291,19 @@ extension String {
             .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     }
 
+    /// Returns a JS double-quoted string literal (with proper escaping for multi-line content)
+    var jsStringLiteral: String {
+        let escaped = self
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\0", with: "\\0")
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+        return "\"\(escaped)\""
+    }
+
     /// Returns JS expression that resolves to a DOM element.
     /// If self starts with @eN, resolves from window.__sbRefs.
     /// Otherwise, uses document.querySelector.
