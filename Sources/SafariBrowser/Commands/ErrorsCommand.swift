@@ -16,8 +16,9 @@ struct ErrorsCommand: AsyncParsableCommand {
         if start {
             _ = try await SafariBridge.doJavaScript("""
                 (function(){
-                    if (!window.__sbErrors) {
-                        window.__sbErrors = [];
+                    if (!window.__sbErrorsInstalled) {
+                        window.__sbErrors = window.__sbErrors || [];
+                        window.__sbErrorsInstalled = true;
                         var origOnerror = window.onerror;
                         window.onerror = function(msg, src, line, col, err) {
                             window.__sbErrors.push(msg + ' at ' + src + ':' + line + ':' + col);

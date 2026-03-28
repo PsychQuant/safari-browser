@@ -16,8 +16,9 @@ struct ConsoleCommand: AsyncParsableCommand {
         if start {
             _ = try await SafariBridge.doJavaScript("""
                 (function(){
-                    if (!window.__sbConsole) {
-                        window.__sbConsole = [];
+                    if (!window.__sbConsoleInstalled) {
+                        window.__sbConsole = window.__sbConsole || [];
+                        window.__sbConsoleInstalled = true;
                         var levels = ['log', 'warn', 'error', 'info', 'debug'];
                         for (var i = 0; i < levels.length; i++) {
                             (function(level) {

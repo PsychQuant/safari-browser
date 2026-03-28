@@ -35,9 +35,26 @@ struct PressCommand: AsyncParsableCommand {
         let js = """
             (function(){
                 var el = document.activeElement || document.body;
-                var opts = {key: '\(keyName.escapedForJS)', bubbles: true, ctrlKey: \(ctrlKey), shiftKey: \(shiftKey), altKey: \(altKey), metaKey: \(metaKey)};
-                el.dispatchEvent(new KeyboardEvent('keydown', opts));
+                var opts = {key: '\(keyName.escapedForJS)', bubbles: true, cancelable: true, ctrlKey: \(ctrlKey), shiftKey: \(shiftKey), altKey: \(altKey), metaKey: \(metaKey)};
+                var down = el.dispatchEvent(new KeyboardEvent('keydown', opts));
                 el.dispatchEvent(new KeyboardEvent('keyup', opts));
+                // Simulate browser default behavior for common keys
+                if (down) {
+                    var key = '\(keyName.escapedForJS)';
+                    if (key === 'Enter') {
+                        if (el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+                        else if (el.click) el.click();
+                    } else if (key === 'Tab') {
+                        var focusable = Array.from(document.querySelectorAll('input,button,select,textarea,a[href],[tabindex]'));
+                        var idx = focusable.indexOf(el);
+                        if (idx >= 0) {
+                            var next = \(shiftKey) ? focusable[idx - 1] : focusable[idx + 1];
+                            if (next) next.focus();
+                        }
+                    } else if (key === 'Escape') {
+                        if (el.blur) el.blur();
+                    }
+                }
                 return 'OK';
             })()
             """

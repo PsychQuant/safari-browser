@@ -115,6 +115,20 @@ struct GetHTML: AsyncParsableCommand {
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
         }
+        if result.isEmpty {
+            // May be truncated — check length and use chunked read
+            let lenStr = try await SafariBridge.doJavaScript(
+                "(function(){ var el = \(selector.resolveRefJS); return el ? String(el.innerHTML.length) : '0'; })()"
+            )
+            let len = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            if len > 0 {
+                _ = try await SafariBridge.doJavaScript(
+                    "(function(){ var el = \(selector.resolveRefJS); window.__sbResult = el ? el.innerHTML : ''; window.__sbResultLen = window.__sbResult.length; })()"
+                )
+                print(try await SafariBridge.doJavaScriptLarge("window.__sbResult"))
+                return
+            }
+        }
         print(result)
     }
 }

@@ -236,7 +236,7 @@ enum SafariBridge {
         }
 
         return String(data: outputData, encoding: .utf8)?
-            .trimmingCharacters(in: .newlines) ?? ""
+            .replacingOccurrences(of: "\\n$", with: "", options: .regularExpression) ?? ""
     }
 
     // MARK: - AppleScript Runner
@@ -266,7 +266,7 @@ enum SafariBridge {
         }
 
         return String(data: outputData, encoding: .utf8)?
-            .trimmingCharacters(in: .newlines) ?? ""
+            .replacingOccurrences(of: "\\n$", with: "", options: .regularExpression) ?? ""
     }
 }
 
