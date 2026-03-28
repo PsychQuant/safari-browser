@@ -27,7 +27,7 @@ struct CookiesGet: AsyncParsableCommand {
     func run() async throws {
         if let name {
             let result = try await SafariBridge.doJavaScript(
-                "(function(){ var m = document.cookie.match('(?:^|; )\(name.escapedForJS)=([^;]*)'); return m ? decodeURIComponent(m[1]) : ''; })()"
+                "(function(){ var n = '\(name.escapedForJS)'.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); var m = document.cookie.match('(?:^|; )' + n + '=([^;]*)'); return m ? decodeURIComponent(m[1]) : ''; })()"
             )
             print(result)
         } else if json {

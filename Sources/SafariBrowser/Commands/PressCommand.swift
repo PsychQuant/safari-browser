@@ -3,10 +3,10 @@ import ArgumentParser
 struct PressCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "press",
-        abstract: "Press a keyboard key (e.g., Enter, Tab, Escape, Control+a)"
+        abstract: "Press a keyboard key (Enter submits forms, Tab moves focus, Escape blurs)"
     )
 
-    @Argument(help: "Key to press (e.g., Enter, Tab, Escape, ArrowDown, Control+a, Shift+Tab)")
+    @Argument(help: "Key to press (Enter, Tab, Shift+Tab, Escape, ArrowDown). Note: modifier combos like Control+a dispatch events but don't trigger native browser shortcuts.")
     var key: String
 
     func run() async throws {
