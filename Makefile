@@ -18,7 +18,7 @@ test-unit:
 	SKIP_E2E=1 swift test
 
 test-e2e:
-	swift test --filter E2ETests
+	./Tests/e2e-test.sh
 
 clean:
 	rm -rf .build
