@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-03-28 (round 3)
+
+### Codex Round 2 Fixes
+- **P1: snapshot fixed-position** — Include `position: fixed/sticky` elements that have `offsetParent === null` but are visible
+- **P1: upload E2BIG** — Transfer base64 file data in 200KB chunks instead of inlining entire file in osascript argument
+- **P2: console circular object** — Catch `JSON.stringify` errors on cyclic objects, fall back to `String(a)`
+- **P2: errors handler preservation** — Chain existing `window.onerror` instead of replacing it
+- **P2: select invalid option** — Report error when option value doesn't match any `<option>` in the `<select>`
+- **P2: pdf locale** — Added comment documenting English-only menu label limitation
+
 ## 2026-03-28 (late)
 
 ### Codex Review Fixes
