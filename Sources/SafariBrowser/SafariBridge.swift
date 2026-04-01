@@ -195,15 +195,20 @@ enum SafariBridge {
     // MARK: - Screenshot
 
     static func getWindowID() throws -> String {
-        // Get the front window's name (page title) via AppleScript to identify the correct window
-        let frontWindowName: String? = {
+        // Use AppleScript to get front document window's name and verify it has a tab (= browser window)
+        // Settings/Preferences windows have no tabs, so this filters them out
+        let frontBrowserWindowName: String? = {
             let proc = Process()
             proc.executableURL = URL(filePath: "/usr/bin/osascript")
             proc.arguments = ["-e", """
                 tell application "Safari"
-                    if (count of windows) > 0 then
-                        return name of front window
-                    end if
+                    repeat with w in windows
+                        try
+                            -- Only browser windows have a "current tab"; Settings/Preferences do not
+                            set t to current tab of w
+                            return name of w
+                        end try
+                    end repeat
                 end tell
                 """]
             let pipe = Pipe()
@@ -219,12 +224,13 @@ enum SafariBridge {
             throw SafariBrowserError.noSafariWindow
         }
 
-        // First pass: match by front window name (most reliable)
-        if let name = frontWindowName, !name.isEmpty {
+        // First pass: match by browser window name
+        if let name = frontBrowserWindowName, !name.isEmpty {
             for w in windows {
                 guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
                       let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
-                      let wName = w[kCGWindowName as String] as? String, wName == name,
+                      let wName = w[kCGWindowName as String] as? String,
+                      wName == name || name.hasPrefix(wName) || wName.hasPrefix(name),
                       let num = w[kCGWindowNumber as String] as? Int else { continue }
                 return String(num)
             }
