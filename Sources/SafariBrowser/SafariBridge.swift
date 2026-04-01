@@ -202,13 +202,11 @@ enum SafariBridge {
             proc.executableURL = URL(filePath: "/usr/bin/osascript")
             proc.arguments = ["-e", """
                 tell application "Safari"
-                    repeat with w in windows
-                        try
-                            -- Only browser windows have a "current tab"; Settings/Preferences do not
-                            set t to current tab of w
-                            return name of w
-                        end try
-                    end repeat
+                    try
+                        -- front window is always the topmost; check if it's a browser window (has tabs)
+                        set t to current tab of front window
+                        return name of front window
+                    end try
                 end tell
                 """]
             let pipe = Pipe()
@@ -230,7 +228,7 @@ enum SafariBridge {
                 guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
                       let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
                       let wName = w[kCGWindowName as String] as? String,
-                      wName == name || name.hasPrefix(wName) || wName.hasPrefix(name),
+                      wName == name || name.hasPrefix(wName),
                       let num = w[kCGWindowNumber as String] as? Int else { continue }
                 return String(num)
             }
