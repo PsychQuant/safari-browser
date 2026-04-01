@@ -74,6 +74,31 @@ struct FindCommand: AsyncParsableCommand {
 
         switch action.lowercased() {
         case "click":
+            // Check if element is visible and not obstructed by an overlay (#8)
+            let occlusionResult = try await SafariBridge.doJavaScript("""
+                (function(){
+                    var el = window.__sbFound;
+                    if (!el.offsetParent && el.tagName !== 'BODY' && el.tagName !== 'HTML') return 'HIDDEN';
+                    var style = window.getComputedStyle(el);
+                    if (style.visibility === 'hidden' || style.display === 'none') return 'HIDDEN';
+                    el.scrollIntoView({block:'center',behavior:'instant'});
+                    var rect = el.getBoundingClientRect();
+                    if (rect.width === 0 || rect.height === 0) return 'HIDDEN';
+                    var cx = rect.left + rect.width / 2;
+                    var cy = rect.top + rect.height / 2;
+                    var topEl = document.elementFromPoint(cx, cy);
+                    if (!topEl) return 'OK';
+                    if (el.contains(topEl) || topEl.contains(el) || el === topEl) return 'OK';
+                    return 'OBSTRUCTED:' + topEl.tagName + '.' + (topEl.className || '').substring(0,40);
+                })()
+                """)
+            if occlusionResult == "HIDDEN" {
+                throw SafariBrowserError.elementNotFound("\(locator)=\(value) (element found but hidden)")
+            }
+            if occlusionResult.hasPrefix("OBSTRUCTED") {
+                let blocker = occlusionResult.replacingOccurrences(of: "OBSTRUCTED:", with: "")
+                throw SafariBrowserError.elementNotFound("\(locator)=\(value) (element obstructed by \(blocker))")
+            }
             _ = try await SafariBridge.doJavaScript("window.__sbFound.click()")
         case "fill":
             guard let text = actionText else {
