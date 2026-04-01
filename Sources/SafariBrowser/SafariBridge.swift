@@ -195,9 +195,42 @@ enum SafariBridge {
     // MARK: - Screenshot
 
     static func getWindowID() throws -> String {
+        // Get the front window's name (page title) via AppleScript to identify the correct window
+        let frontWindowName: String? = {
+            let proc = Process()
+            proc.executableURL = URL(filePath: "/usr/bin/osascript")
+            proc.arguments = ["-e", """
+                tell application "Safari"
+                    if (count of windows) > 0 then
+                        return name of front window
+                    end if
+                end tell
+                """]
+            let pipe = Pipe()
+            proc.standardOutput = pipe
+            proc.standardError = Pipe()
+            try? proc.run()
+            proc.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }()
+
         guard let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
             throw SafariBrowserError.noSafariWindow
         }
+
+        // First pass: match by front window name (most reliable)
+        if let name = frontWindowName, !name.isEmpty {
+            for w in windows {
+                guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
+                      let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
+                      let wName = w[kCGWindowName as String] as? String, wName == name,
+                      let num = w[kCGWindowNumber as String] as? Int else { continue }
+                return String(num)
+            }
+        }
+
+        // Fallback: first Safari window with height > 100 (original behavior)
         for w in windows {
             guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
                   let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
