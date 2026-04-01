@@ -78,21 +78,26 @@ struct FindCommand: AsyncParsableCommand {
             let occlusionResult = try await SafariBridge.doJavaScript("""
                 (function(){
                     var el = window.__sbFound;
-                    if (!el.offsetParent && el.tagName !== 'BODY' && el.tagName !== 'HTML') return 'HIDDEN';
                     var style = window.getComputedStyle(el);
-                    if (style.visibility === 'hidden' || style.display === 'none') return 'HIDDEN';
-                    el.scrollIntoView({block:'center',behavior:'instant'});
+                    if (style.display === 'none') return 'HIDDEN';
+                    if (style.visibility === 'hidden') return 'HIDDEN';
+                    if (!el.offsetParent && el.tagName !== 'BODY' && el.tagName !== 'HTML'
+                        && style.position !== 'fixed' && style.position !== 'sticky') return 'HIDDEN';
                     var rect = el.getBoundingClientRect();
                     if (rect.width === 0 || rect.height === 0) return 'HIDDEN';
+                    el.scrollIntoView({block:'center',behavior:'instant'});
+                    rect = el.getBoundingClientRect();
                     var cx = rect.left + rect.width / 2;
                     var cy = rect.top + rect.height / 2;
                     var topEl = document.elementFromPoint(cx, cy);
                     if (!topEl) return 'OK';
-                    if (el.contains(topEl) || topEl.contains(el) || el === topEl) return 'OK';
-                    return 'OBSTRUCTED:' + topEl.tagName + '.' + (topEl.className || '').substring(0,40);
+                    if (el === topEl || el.contains(topEl) || topEl.contains(el)) return 'OK';
+                    var common = el.parentElement;
+                    while (common) { if (common.contains(topEl)) return 'OK'; common = common.parentElement; }
+                    return 'OBSTRUCTED:' + topEl.tagName;
                 })()
                 """)
-            if occlusionResult == "HIDDEN" {
+            if occlusionResult.isEmpty || occlusionResult == "HIDDEN" {
                 throw SafariBrowserError.elementNotFound("\(locator)=\(value) (element found but hidden)")
             }
             if occlusionResult.hasPrefix("OBSTRUCTED") {
