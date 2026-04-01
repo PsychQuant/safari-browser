@@ -92,8 +92,6 @@ struct FindCommand: AsyncParsableCommand {
                     var topEl = document.elementFromPoint(cx, cy);
                     if (!topEl) return 'OK';
                     if (el === topEl || el.contains(topEl) || topEl.contains(el)) return 'OK';
-                    var common = el.parentElement;
-                    while (common) { if (common.contains(topEl)) return 'OK'; common = common.parentElement; }
                     return 'OBSTRUCTED:' + topEl.tagName;
                 })()
                 """)
