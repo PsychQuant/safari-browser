@@ -49,7 +49,8 @@ struct JSCommand: AsyncParsableCommand {
                 "(function(){ try { var r = '' + eval(\(jsCode.jsStringLiteral)); window.__sbLen = r.length; window.__sbResult = r; } catch(e) { window.__sbLen = -1; window.__sbResult = e.message; } })()"
             )
             let lenStr = try await SafariBridge.doJavaScript("window.__sbLen")
-            let len = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            // AppleScript returns numbers as "9.0" — parse via Double then truncate
+            let len = Int(Double(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
 
             if len == -1 {
                 // JS execution error
