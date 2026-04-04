@@ -1,0 +1,32 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {},
+	"launch": {
+		"configurations": [
+			{
+				"type": "swift",
+				"request": "launch",
+				"args": [],
+				"cwd": "${workspaceFolder:safari-browser}",
+				"name": "Debug safari-browser (safari-browser)",
+				"target": "safari-browser",
+				"configuration": "debug",
+				"preLaunchTask": "swift: Build Debug safari-browser (safari-browser)"
+			},
+			{
+				"type": "swift",
+				"request": "launch",
+				"args": [],
+				"cwd": "${workspaceFolder:safari-browser}",
+				"name": "Release safari-browser (safari-browser)",
+				"target": "safari-browser",
+				"configuration": "release",
+				"preLaunchTask": "swift: Build Release safari-browser (safari-browser)"
+			}
+		]
+	}
+}

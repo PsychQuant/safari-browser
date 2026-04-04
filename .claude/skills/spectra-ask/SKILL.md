@@ -1,6 +1,6 @@
 ---
 name: spectra-ask
-description: "Query openspec/ documents and answer questions"
+description: "Query openspec/documents and answer questions"
 effort: low
 disallowedTools: [Edit, Write]
 license: MIT
