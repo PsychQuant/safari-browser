@@ -20,6 +20,9 @@ import { execFileSync } from "child_process";
 import { unlinkSync, existsSync } from "fs";
 
 // --- Configuration ---
+// Monitor loop is OFF by default (#10). Set SB_CHANNEL_MONITOR=1 to enable.
+// Reply tool (safari_action) works regardless of monitor state.
+const MONITOR_ENABLED = process.env.SB_CHANNEL_MONITOR === "1";
 const INTERVAL_MS = parseInt(
   process.env.SB_CHANNEL_INTERVAL ?? "1500",
   10
@@ -143,70 +146,98 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 // --- Connect to Claude Code ---
 await mcp.connect(new StdioServerTransport());
 
-// --- Monitor Loop ---
+// --- Monitor Loop (opt-in via SB_CHANNEL_MONITOR=1) ---
 let lastDescription = "";
 let monitorActive = true;
+let monitor: ReturnType<typeof setInterval> | null = null;
 
-const monitor = setInterval(async () => {
-  if (!monitorActive) return;
-  monitorActive = false; // prevent overlapping
+if (MONITOR_ENABLED) {
+  monitor = setInterval(async () => {
+    if (!monitorActive) return;
+    monitorActive = false; // prevent overlapping
 
-  try {
-    // Take screenshot
     try {
-      execFileSync(SAFARI_BROWSER, ["screenshot", SCREENSHOT_PATH], {
-        timeout: 10000,
-        encoding: "utf-8",
-      });
-    } catch {
-      monitorActive = true;
-      return; // Safari not available, skip this cycle
-    }
+      // Take screenshot
+      try {
+        execFileSync(SAFARI_BROWSER, ["screenshot", SCREENSHOT_PATH], {
+          timeout: 10000,
+          encoding: "utf-8",
+        });
+      } catch {
+        monitorActive = true;
+        return; // Safari not available, skip this cycle
+      }
 
-    // Analyze with VLM
-    let desc: string;
-    try {
-      desc = execFileSync(SAFARI_VISION, ["analyze", SCREENSHOT_PATH, VLM_PROMPT], {
-        timeout: 30000,
-        encoding: "utf-8",
-      }).trim();
-    } catch {
-      monitorActive = true;
-      return; // VLM failed, skip
-    }
+      // Analyze with VLM
+      let desc: string;
+      try {
+        desc = execFileSync(
+          SAFARI_VISION,
+          ["analyze", SCREENSHOT_PATH, VLM_PROMPT],
+          {
+            timeout: 30000,
+            encoding: "utf-8",
+          }
+        ).trim();
+      } catch {
+        monitorActive = true;
+        return; // VLM failed, skip
+      }
 
-    // Cleanup screenshot
-    try {
-      if (existsSync(SCREENSHOT_PATH)) unlinkSync(SCREENSHOT_PATH);
-    } catch {}
+      // Cleanup screenshot
+      try {
+        if (existsSync(SCREENSHOT_PATH)) unlinkSync(SCREENSHOT_PATH);
+      } catch {}
 
-    // Change detection: only push if different
-    if (desc && desc !== lastDescription) {
-      lastDescription = desc;
-      await mcp.notification({
-        method: "notifications/claude/channel",
-        params: {
-          content: desc,
-          meta: {
-            event: "page_change",
-            timestamp: Date.now().toString(),
+      // Change detection: only push if different
+      if (desc && desc !== lastDescription) {
+        lastDescription = desc;
+        await mcp.notification({
+          method: "notifications/claude/channel",
+          params: {
+            content: desc,
+            meta: {
+              event: "page_change",
+              timestamp: Date.now().toString(),
+            },
           },
-        },
-      });
+        });
+      }
+    } catch {
+      // Swallow any unexpected errors to keep the loop alive
+    } finally {
+      monitorActive = true;
     }
-  } catch {
-    // Swallow any unexpected errors to keep the loop alive
-  } finally {
-    monitorActive = true;
-  }
-}, INTERVAL_MS);
+  }, INTERVAL_MS);
+}
 
-// Cleanup on exit
+// --- Cleanup handlers (#10) ---
+// Clean up monitor interval and temp screenshot on any exit path.
+function cleanup() {
+  if (monitor) {
+    clearInterval(monitor);
+    monitor = null;
+  }
+  try {
+    if (existsSync(SCREENSHOT_PATH)) unlinkSync(SCREENSHOT_PATH);
+  } catch {}
+}
+
 process.on("SIGINT", () => {
-  clearInterval(monitor);
+  cleanup();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
-  clearInterval(monitor);
+  cleanup();
+  process.exit(0);
+});
+process.on("SIGHUP", () => {
+  cleanup();
+  process.exit(0);
+});
+process.on("exit", cleanup);
+// Parent (Claude Code) disconnects stdio → server should exit cleanly
+process.stdin.on("end", () => {
+  cleanup();
   process.exit(0);
 });

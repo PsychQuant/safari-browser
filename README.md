@@ -257,9 +257,14 @@ cd safari-vision && make install
 # 2. Download VLM model (~2GB, one-time)
 safari-vision setup
 
-# 3. Start Claude Code with channel
+# 3. Start Claude Code with channel (reply tool only)
 claude --dangerously-load-development-channels plugin:safari-browser@psychquant-claude-plugins
+
+# 4. (Optional) Enable vision monitor loop
+SB_CHANNEL_MONITOR=1 claude --dangerously-load-development-channels plugin:safari-browser@psychquant-claude-plugins
 ```
+
+> **⚠️ Monitor is opt-in** (as of v2.0.1, see [#10](https://github.com/PsychQuant/safari-browser/issues/10)). Without `SB_CHANNEL_MONITOR=1`, the channel provides the `safari_action` reply tool but no automatic page change events. This prevents continuous screenshot activity when you don't need it.
 
 ### Requirements
 

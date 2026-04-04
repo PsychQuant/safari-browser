@@ -46,10 +46,11 @@ struct ScreenshotCommand: AsyncParsableCommand {
                 try await Task.sleep(nanoseconds: 500_000_000)
             }
 
-            // Take screenshot, always restore window bounds afterward
+            // Take screenshot, always restore window bounds afterward.
+            // -x: silent mode (no shutter sound) — required for agent automation (#10)
             var captureError: Error?
             do {
-                try await SafariBridge.runShell("/usr/sbin/screencapture", ["-l", windowID, path])
+                try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
             } catch {
                 captureError = error
             }
@@ -71,7 +72,8 @@ struct ScreenshotCommand: AsyncParsableCommand {
 
             if let captureError { throw captureError }
         } else {
-            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-l", windowID, path])
+            // -x: silent mode (no shutter sound) — required for agent automation (#10)
+            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
         }
     }
 }

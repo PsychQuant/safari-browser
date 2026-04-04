@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-04-04 — v2.0.1
+
+### Bug Fixes
+- **#10: Channel monitor now opt-in** — `SB_CHANNEL_MONITOR=1` required to enable the vision monitor loop. Previously the loop started unconditionally every 1.5s, causing continuous shutter sounds and orphan processes. Reply tool (`safari_action`) still works without the monitor.
+- **#10: Silent screenshots** — `screencapture -x` flag added to suppress macOS shutter sound during agent automation.
+- **#10: Full cleanup handlers** — Channel server now cleans up interval + temp screenshots on SIGINT/SIGTERM/SIGHUP/exit/stdin-end to prevent orphans.
+
 ## 2026-03-28 (round 6)
 
 ### Codex Round 5 Fixes
