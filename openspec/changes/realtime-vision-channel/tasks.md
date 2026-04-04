@@ -34,7 +34,7 @@
 
 ## 6. 測試與驗證
 
-- [ ] 6.1 測試 safari-vision analyze：截圖 example.com → 驗證輸出包含 "Example Domain"
-- [ ] 6.2 測試 channel server 單獨啟動：驗證 MCP handshake 成功
-- [ ] 6.3 整合測試：`claude --dangerously-load-development-channels plugin:safari-browser@psychquant-claude-plugins` → 開啟網頁 → 驗證 Claude Code 收到 channel 事件
-- [ ] 6.4 測試 reply tool：Claude Code 透過 safari_action 執行 click → 驗證頁面變化
+- [x] 6.1 測試 safari-vision analyze：截圖 example.com → 驗證輸出包含 "Example Domain"
+- [x] 6.2 測試 channel server 單獨啟動：驗證 MCP handshake 成功
+- [x] 6.3 整合測試：`claude --dangerously-load-development-channels plugin:safari-browser@psychquant-claude-plugins` → 開啟網頁 → 驗證 Claude Code 收到 channel 事件
+- [x] 6.4 測試 reply tool：Claude Code 透過 safari_action 執行 click → 驗證頁面變化
