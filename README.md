@@ -229,14 +229,59 @@ safari-browser mouse down / up / wheel <dy>
 | Element discovery | CDP accessibility tree | JS DOM scan (snapshot) |
 | Parallel sessions | Isolated instances | Shared Safari (multi-tab) |
 
+## Real-time Vision Channel
+
+safari-browser includes a **Channel plugin** that pushes real-time page change events into Claude Code sessions — no polling needed.
+
+### Architecture
+
+```
+Safari page → screenshot (1.5s) → local VLM (~1.3s) → text summary → Claude Code
+                                       ↑
+                              safari-vision (MLXVLM)
+                              Qwen2.5-VL-3B, 4-bit
+                              runs entirely on-device
+```
+
+- **Zero cloud dependency** — VLM runs locally on Apple Silicon via MLX
+- **Token efficient** — Claude receives ~50 tokens of text, not ~1000 tokens of image
+- **Change detection** — only pushes when page visually changes
+- **Bidirectional** — Claude can execute safari-browser commands via `safari_action` reply tool
+
+### Setup
+
+```bash
+# 1. Install safari-vision (VLM CLI)
+cd safari-vision && make install
+
+# 2. Download VLM model (~2GB, one-time)
+safari-vision setup
+
+# 3. Start Claude Code with channel
+claude --dangerously-load-development-channels plugin:safari-browser@psychquant-claude-plugins
+```
+
+### Requirements
+
+- safari-browser CLI (`make install`)
+- safari-vision CLI (`cd safari-vision && make install`)
+- [Bun](https://bun.sh) runtime
+- Claude Code v2.1.80+ (Channels support)
+- ~4GB RAM for VLM model
+
 ## Development
 
 ```bash
+# safari-browser CLI
 make build      # debug build
 make install    # release build + install to ~/bin
 make test       # run unit tests (24 tests, no Safari needed)
 make test-e2e   # run E2E tests (9 tests, requires Safari)
 make clean      # remove build artifacts
+
+# safari-vision VLM CLI
+cd safari-vision
+make install    # release build + Metal shaders + install to ~/bin
 ```
 
 ## License
