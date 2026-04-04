@@ -1,10 +1,10 @@
 ## 1. Vision Worker：Swift CLI + MLXVLM（Analyze screenshot with FastVLM、Setup and download model、Fast inference）
 
 - [x] 1.1 建立 `safari-vision` Swift Package：Package.swift 加入 `mlx-swift-lm`（MLXVLM）+ `mlx-swift-lm-huggingface`（TokenizersLoader）+ `mlx-swift-lm-tokenizers` 依賴，設定 macOS 15+
-- [ ] 1.2 實作 `safari-vision setup` 指令：Setup and download model，用 MLXVLM 的 loadModel 預下載 `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` 到 Hugging Face cache
-- [ ] 1.3 實作 `safari-vision analyze <image> <prompt>` 指令：Analyze screenshot with FastVLM，用 MLXVLM ChatSession.respond(to:image:) 生成文字到 stdout
-- [ ] 1.4 驗證 Fast inference：在 Apple Silicon 上測試推論速度
-- [ ] 1.5 `make install` 編譯 safari-vision 到 `~/bin/safari-vision`，含 codesign
+- [x] 1.2 實作 `safari-vision setup` 指令：Setup and download model，用 MLXVLM 的 loadModel 預下載 `mlx-community/Qwen2.5-VL-3B-Instruct-4bit` 到 Hugging Face cache
+- [x] 1.3 實作 `safari-vision analyze <image> <prompt>` 指令：Analyze screenshot with FastVLM，用 MLXVLM ChatSession.respond(to:image:) 生成文字到 stdout
+- [x] 1.4 驗證 Fast inference：在 Apple Silicon 上測試推論速度
+- [x] 1.5 `make install` 編譯 safari-vision 到 `~/bin/safari-vision`，含 codesign
 
 ## 2. 三層架構：Channel Server + Vision Worker + Monitor Loop — Bun MCP（MCP server with channel capability、Push page change notifications、Channel instructions）
 
