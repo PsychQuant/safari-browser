@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-04-06 — v2.1.0
+
+### Features
+- **#12: Monitor pause/resume MCP tools** — Channel now exposes `safari_monitor_pause`, `safari_monitor_resume`, `safari_monitor_status`. Claude can silence the vision monitor during multi-step `safari_action` sequences to avoid stale/transitional `page_change` events, then resume for post-action observation.
+- **#12: lastEventAt tracking** — `safari_monitor_status` reports `{ enabled, paused, running, interval_ms, last_event_at }` for runtime introspection.
+
 ## 2026-04-04 — v2.0.1
 
 ### Bug Fixes

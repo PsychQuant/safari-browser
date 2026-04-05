@@ -266,6 +266,16 @@ SB_CHANNEL_MONITOR=1 claude --dangerously-load-development-channels plugin:safar
 
 > **⚠️ Monitor is opt-in** (as of v2.0.1, see [#10](https://github.com/PsychQuant/safari-browser/issues/10)). Without `SB_CHANNEL_MONITOR=1`, the channel provides the `safari_action` reply tool but no automatic page change events. This prevents continuous screenshot activity when you don't need it.
 
+### Monitor control (v2.1.0, [#12](https://github.com/PsychQuant/safari-browser/issues/12))
+
+When the monitor is enabled, Claude can pause/resume it to coordinate with `safari_action` calls:
+
+- `safari_monitor_pause` — silence `page_change` events during multi-step sequences
+- `safari_monitor_resume` — start emitting again
+- `safari_monitor_status` — `{ enabled, paused, running, interval_ms, last_event_at }`
+
+This avoids receiving stale observations taken mid-action.
+
 ### Requirements
 
 - safari-browser CLI (`make install`)

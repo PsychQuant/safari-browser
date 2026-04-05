@@ -73,7 +73,19 @@ const mcp = new Server(
   }
 );
 
-// --- Reply Tool: safari_action ---
+// --- Monitor runtime state ---
+// monitor: interval handle (null when loop not started)
+// monitorActive: anti-overlap guard (false while a cycle is mid-flight)
+// monitorPaused (#12): user-requested silence via safari_monitor_pause tool
+//   — distinct from monitorActive; survives across cycles
+// lastEventAt (#12): timestamp (ms) of last pushed page_change, null if none
+let monitor: ReturnType<typeof setInterval> | null = null;
+let monitorActive = true;
+let monitorPaused = false;
+let lastDescription = "";
+let lastEventAt: number | null = null;
+
+// --- Reply Tools ---
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
@@ -97,10 +109,90 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ["command"],
       },
     },
+    {
+      name: "safari_monitor_pause",
+      description:
+        "Pause the vision monitor loop — stop emitting page_change events until resumed. Use during multi-step safari_action sequences to avoid stale/transitional observations.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
+    {
+      name: "safari_monitor_resume",
+      description:
+        "Resume the vision monitor loop — start emitting page_change events again. No-op if monitor was not paused.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
+    {
+      name: "safari_monitor_status",
+      description:
+        "Report current monitor state: { enabled, paused, running, interval_ms, last_event_at }.",
+      inputSchema: { type: "object" as const, properties: {} },
+    },
   ],
 }));
 
 mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
+  // --- Monitor control tools (#12) ---
+  if (req.params.name === "safari_monitor_pause") {
+    if (!MONITOR_ENABLED) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              enabled: false,
+              message:
+                "Monitor not enabled; set SB_CHANNEL_MONITOR=1 to use pause/resume",
+            }),
+          },
+        ],
+      };
+    }
+    monitorPaused = true;
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify({ paused: true }) },
+      ],
+    };
+  }
+  if (req.params.name === "safari_monitor_resume") {
+    if (!MONITOR_ENABLED) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              enabled: false,
+              message:
+                "Monitor not enabled; set SB_CHANNEL_MONITOR=1 to use pause/resume",
+            }),
+          },
+        ],
+      };
+    }
+    monitorPaused = false;
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify({ paused: false }) },
+      ],
+    };
+  }
+  if (req.params.name === "safari_monitor_status") {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            enabled: MONITOR_ENABLED,
+            paused: monitorPaused,
+            running: MONITOR_ENABLED && !monitorPaused && monitor !== null,
+            interval_ms: INTERVAL_MS,
+            last_event_at: lastEventAt,
+          }),
+        },
+      ],
+    };
+  }
+
   if (req.params.name === "safari_action") {
     const { command, args = [] } = req.params.arguments as {
       command: string;
@@ -147,13 +239,11 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 await mcp.connect(new StdioServerTransport());
 
 // --- Monitor Loop (opt-in via SB_CHANNEL_MONITOR=1) ---
-let lastDescription = "";
-let monitorActive = true;
-let monitor: ReturnType<typeof setInterval> | null = null;
-
 if (MONITOR_ENABLED) {
   monitor = setInterval(async () => {
     if (!monitorActive) return;
+    // #12: skip expensive work when user has paused the monitor
+    if (monitorPaused) return;
     monitorActive = false; // prevent overlapping
 
     try {
@@ -190,15 +280,18 @@ if (MONITOR_ENABLED) {
       } catch {}
 
       // Change detection: only push if different
-      if (desc && desc !== lastDescription) {
+      // #12: double-check paused state — user may have paused while VLM ran
+      if (desc && desc !== lastDescription && !monitorPaused) {
         lastDescription = desc;
+        const ts = Date.now();
+        lastEventAt = ts;
         await mcp.notification({
           method: "notifications/claude/channel",
           params: {
             content: desc,
             meta: {
               event: "page_change",
-              timestamp: Date.now().toString(),
+              timestamp: ts.toString(),
             },
           },
         });
