@@ -48,7 +48,7 @@ const VALID_COMMANDS = new Set([
 
 // --- MCP Server ---
 const mcp = new Server(
-  { name: "safari-browser-channel", version: "1.0.0" },
+  { name: "safari-browser-channel", version: "2.1.0" },
   {
     capabilities: {
       experimental: { "claude/channel": {} },
@@ -170,6 +170,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       };
     }
     monitorPaused = false;
+    // #12: trigger immediate cycle so Claude gets fresh observation right away
+    // (deferred to avoid blocking tool response with execFileSync)
+    setTimeout(monitorCycle, 0);
     return {
       content: [
         { type: "text" as const, text: JSON.stringify({ paused: false }) },
@@ -238,70 +241,71 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 // --- Connect to Claude Code ---
 await mcp.connect(new StdioServerTransport());
 
+// --- Monitor cycle (extracted for reuse by resume) ---
+async function monitorCycle() {
+  if (!monitorActive) return;
+  if (monitorPaused) return;
+  monitorActive = false; // prevent overlapping
+
+  try {
+    // Take screenshot
+    try {
+      execFileSync(SAFARI_BROWSER, ["screenshot", SCREENSHOT_PATH], {
+        timeout: 10000,
+        encoding: "utf-8",
+      });
+    } catch {
+      monitorActive = true;
+      return; // Safari not available, skip this cycle
+    }
+
+    // Analyze with VLM
+    let desc: string;
+    try {
+      desc = execFileSync(
+        SAFARI_VISION,
+        ["analyze", SCREENSHOT_PATH, VLM_PROMPT],
+        {
+          timeout: 30000,
+          encoding: "utf-8",
+        }
+      ).trim();
+    } catch {
+      monitorActive = true;
+      return; // VLM failed, skip
+    }
+
+    // Cleanup screenshot
+    try {
+      if (existsSync(SCREENSHOT_PATH)) unlinkSync(SCREENSHOT_PATH);
+    } catch {}
+
+    // Change detection: only push if different
+    if (desc && desc !== lastDescription && !monitorPaused) {
+      lastDescription = desc;
+      const ts = Date.now();
+      lastEventAt = ts;
+      await mcp.notification({
+        method: "notifications/claude/channel",
+        params: {
+          content: desc,
+          meta: {
+            event: "page_change",
+            timestamp: ts.toString(),
+          },
+        },
+      });
+    }
+  } catch {
+    // Swallow any unexpected errors to keep the loop alive
+  } finally {
+    monitorActive = true;
+  }
+}
+
 // --- Monitor Loop (opt-in via SB_CHANNEL_MONITOR=1) ---
 if (MONITOR_ENABLED) {
-  monitor = setInterval(async () => {
-    if (!monitorActive) return;
-    // #12: skip expensive work when user has paused the monitor
-    if (monitorPaused) return;
-    monitorActive = false; // prevent overlapping
-
-    try {
-      // Take screenshot
-      try {
-        execFileSync(SAFARI_BROWSER, ["screenshot", SCREENSHOT_PATH], {
-          timeout: 10000,
-          encoding: "utf-8",
-        });
-      } catch {
-        monitorActive = true;
-        return; // Safari not available, skip this cycle
-      }
-
-      // Analyze with VLM
-      let desc: string;
-      try {
-        desc = execFileSync(
-          SAFARI_VISION,
-          ["analyze", SCREENSHOT_PATH, VLM_PROMPT],
-          {
-            timeout: 30000,
-            encoding: "utf-8",
-          }
-        ).trim();
-      } catch {
-        monitorActive = true;
-        return; // VLM failed, skip
-      }
-
-      // Cleanup screenshot
-      try {
-        if (existsSync(SCREENSHOT_PATH)) unlinkSync(SCREENSHOT_PATH);
-      } catch {}
-
-      // Change detection: only push if different
-      // #12: double-check paused state — user may have paused while VLM ran
-      if (desc && desc !== lastDescription && !monitorPaused) {
-        lastDescription = desc;
-        const ts = Date.now();
-        lastEventAt = ts;
-        await mcp.notification({
-          method: "notifications/claude/channel",
-          params: {
-            content: desc,
-            meta: {
-              event: "page_change",
-              timestamp: ts.toString(),
-            },
-          },
-        });
-      }
-    } catch {
-      // Swallow any unexpected errors to keep the loop alive
-    } finally {
-      monitorActive = true;
-    }
-  }, INTERVAL_MS);
+  monitor = setInterval(monitorCycle, INTERVAL_MS);
 }
 
 // --- Cleanup handlers (#10) ---
