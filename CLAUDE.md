@@ -26,17 +26,13 @@ Changes can be parked（暫存）— temporarily moved out of `openspec/changes/
 
 <!-- SPECTRA:END -->
 
-## Plugin & MCP
+## Plugin
 
 Claude Code plugin 位於另一個 repo：
 
 - **Plugin**: `/Users/che/Developer/psychquant-claude-plugins/plugins/safari-browser/`
-- **MCP server**: `channel/channel.ts`（本 repo）→ 同步到 plugin repo 的 `channel/channel.ts`
 - **SKILL.md**: plugin repo `skills/safari-browser/SKILL.md`
 - **Marketplace**: `psychquant-claude-plugins/.claude-plugin/marketplace.json`
-
-修改 `channel/channel.ts` 後須同步到 plugin repo 並 push。
-MCP server 提供 4 個 tools：`safari_action`、`safari_monitor_pause`、`safari_monitor_resume`、`safari_monitor_status`。
 
 ## Design Principle: Non-Interference
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-04-06 — v2.2.0
+
+### Removed
+- **Channel / MCP server** — Removed vision monitor channel (`channel.ts`, `.mcp.json`, `safari_action` / `safari_monitor_*` tools) from the plugin. Source code retained in repo but no longer loaded as a plugin component. Replaced by upcoming `snapshot --page` (#13) for AI page awareness.
+
 ## 2026-04-06 — v2.1.0
 
 ### Features
