@@ -27,7 +27,8 @@ struct UploadCommand: AsyncParsableCommand {
 
         // #11: --native skips JS DataTransfer entirely, goes straight to System Events
         if native {
-            try await uploadViaNativeDialog(selector: selector, path: expandedPath)
+            FileHandle.standardError.write(Data("⚠️  Controlling keyboard for native file dialog. Do not type until complete.\n".utf8))
+            try await clickFileInputAndNavigateDialog(selector: selector, path: expandedPath)
             return
         }
 
@@ -93,40 +94,12 @@ struct UploadCommand: AsyncParsableCommand {
 
         // HID fallback with explicit opt-in
         FileHandle.standardError.write(Data("⚠️  Controlling keyboard for file dialog. Do not type until complete.\n".utf8))
-
-        // Click the file input to open dialog
-        _ = try await SafariBridge.doJavaScript(
-            "(function(){ var el = \(selector.resolveRefJS); if (el) el.click(); })()"
-        )
-
-        // Use System Events to navigate the file dialog
-        try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
-            tell application "System Events"
-                tell process "Safari"
-                    set maxWait to 10
-                    set waited to 0
-                    repeat until exists sheet 1 of front window
-                        delay 0.5
-                        set waited to waited + 0.5
-                        if waited >= maxWait then
-                            error "File dialog did not appear"
-                        end if
-                    end repeat
-                    keystroke "g" using {command down, shift down}
-                    delay 1
-                    keystroke "\(expandedPath.escapedForAppleScript)"
-                    keystroke return
-                    delay 1
-                    keystroke return
-                end tell
-            end tell
-            """])
+        try await clickFileInputAndNavigateDialog(selector: selector, path: expandedPath)
     }
 
-    // #11: Native file dialog upload via System Events (--native flag)
-    private func uploadViaNativeDialog(selector: String, path: String) async throws {
-        FileHandle.standardError.write(Data("⚠️  Controlling keyboard for native file dialog. Do not type until complete.\n".utf8))
-
+    /// Shared HID logic: click file input to open dialog, then navigate via System Events.
+    /// Used by both --native and --allow-hid fallback paths.
+    private func clickFileInputAndNavigateDialog(selector: String, path: String) async throws {
         // Click the file input to open dialog
         let clickResult = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()"
@@ -135,7 +108,7 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.elementNotFound(selector)
         }
 
-        // Use System Events to navigate the native file dialog
+        // Use System Events to navigate the file dialog
         try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
             tell application "System Events"
                 tell process "Safari"
