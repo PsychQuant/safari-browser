@@ -25,3 +25,15 @@ discuss? → propose → apply ⇄ ingest → archive
 Changes can be parked（暫存）— temporarily moved out of `openspec/changes/`. Parked changes won't appear in `spectra list` but can be found with `spectra list --parked`. To restore: `spectra unpark <name>`. The `/spectra:apply` and `/spectra:ingest` skills handle parked changes automatically.
 
 <!-- SPECTRA:END -->
+
+## Design Principle: Non-Interference
+
+所有指令預設不干擾使用者操作 — 使用者可以同時做其他事情不受影響。
+
+- **不控制**滑鼠/鍵盤（除非 `--allow-hid` / `--native`）
+- **不彈出**系統對話框
+- **不發出**聲音（`screencapture -x`）
+- **不搶**視窗焦點
+
+新增指令前須分類 interference level（Non-interfering / Passively interfering / Actively interfering）。
+完整規範：`openspec/specs/non-interference/spec.md`
