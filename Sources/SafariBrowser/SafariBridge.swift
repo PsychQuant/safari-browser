@@ -5,13 +5,20 @@ enum SafariBridge {
     // MARK: - Navigation
 
     static func openURL(_ url: String) async throws {
+        // #9: Use do JavaScript for navigation to avoid race with page's own JS redirects.
+        // Fallback to set URL when do JavaScript fails (e.g., about:blank, no open tabs).
+        let jsCode = "window.location.href=\(url.jsStringLiteral)"
         try await runAppleScript("""
             tell application "Safari"
                 activate
                 if (count of windows) = 0 then
                     make new document with properties {URL:"\(url.escapedForAppleScript)"}
                 else
-                    set URL of current tab of front window to "\(url.escapedForAppleScript)"
+                    try
+                        do JavaScript "\(jsCode.escapedForAppleScript)" in current tab of front window
+                    on error
+                        set URL of current tab of front window to "\(url.escapedForAppleScript)"
+                    end try
                 end if
             end tell
             """)
