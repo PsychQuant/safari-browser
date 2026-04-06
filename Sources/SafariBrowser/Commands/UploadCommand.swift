@@ -16,10 +16,19 @@ struct UploadCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Allow keyboard/mouse simulation for file dialog (System Events)")
     var allowHid = false
 
+    @Flag(name: .long, help: "Use native file dialog via System Events (implies --allow-hid, isTrusted events)")
+    var native = false
+
     func run() async throws {
         let expandedPath = (filePath as NSString).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: expandedPath) else {
             throw SafariBrowserError.fileNotFound(filePath)
+        }
+
+        // #11: --native skips JS DataTransfer entirely, goes straight to System Events
+        if native {
+            try await uploadViaNativeDialog(selector: selector, path: expandedPath)
+            return
         }
 
         // Read file, transfer base64 in chunks to avoid E2BIG on osascript args
@@ -106,6 +115,42 @@ struct UploadCommand: AsyncParsableCommand {
                     keystroke "g" using {command down, shift down}
                     delay 1
                     keystroke "\(expandedPath.escapedForAppleScript)"
+                    keystroke return
+                    delay 1
+                    keystroke return
+                end tell
+            end tell
+            """])
+    }
+
+    // #11: Native file dialog upload via System Events (--native flag)
+    private func uploadViaNativeDialog(selector: String, path: String) async throws {
+        FileHandle.standardError.write(Data("⚠️  Controlling keyboard for native file dialog. Do not type until complete.\n".utf8))
+
+        // Click the file input to open dialog
+        let clickResult = try await SafariBridge.doJavaScript(
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()"
+        )
+        if clickResult == "NOT_FOUND" {
+            throw SafariBrowserError.elementNotFound(selector)
+        }
+
+        // Use System Events to navigate the native file dialog
+        try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
+            tell application "System Events"
+                tell process "Safari"
+                    set maxWait to 10
+                    set waited to 0
+                    repeat until exists sheet 1 of front window
+                        delay 0.5
+                        set waited to waited + 0.5
+                        if waited >= maxWait then
+                            error "File dialog did not appear"
+                        end if
+                    end repeat
+                    keystroke "g" using {command down, shift down}
+                    delay 1
+                    keystroke "\(path.escapedForAppleScript)"
                     keystroke return
                     delay 1
                     keystroke return
