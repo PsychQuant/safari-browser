@@ -30,6 +30,7 @@ struct PdfCommand: AsyncParsableCommand {
         let absolutePath = (path as NSString).standardizingPath
         let fullPath = absolutePath.hasPrefix("/") ? absolutePath : FileManager.default.currentDirectoryPath + "/" + path
 
+        // Step 1: Activate Safari and open the Export as PDF dialog
         try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
             tell application "Safari" to activate
             delay 0.5
@@ -38,25 +39,33 @@ struct PdfCommand: AsyncParsableCommand {
                     -- NOTE: Menu labels are English. On non-English macOS, use keyboard shortcut instead.
                     -- Cmd+P → "PDF" dropdown → "Save as PDF" is locale-independent but more complex.
                     click menu item "Export as PDF…" of menu "File" of menu bar 1
-                    delay 1
                     set maxWait to 10
                     set waited to 0
                     repeat until exists sheet 1 of front window
-                        delay 0.5
-                        set waited to waited + 0.5
+                        delay 0.2
+                        set waited to waited + 0.2
                         if waited >= maxWait then
-                            error "Save dialog did not appear"
+                            error "Save dialog did not appear within " & maxWait & " seconds"
                         end if
                     end repeat
-                    keystroke "g" using {command down, shift down}
-                    delay 1
-                    keystroke "\(fullPath.escapedForAppleScript)"
-                    keystroke return
-                    delay 1
-                    click button "Save" of sheet 1 of front window
-                    delay 1
+                end tell
+            end tell
+            """])
+
+        // Step 2: Navigate to path and click Save via shared helper
+        try await SafariBridge.navigateFileDialog(path: fullPath)
+
+        // Step 3: Handle "Replace" confirmation if file already exists
+        try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
+            tell application "System Events"
+                tell process "Safari"
+                    delay 0.5
                     if exists sheet 1 of sheet 1 of front window then
-                        click button "Replace" of sheet 1 of sheet 1 of front window
+                        try
+                            click (first button of sheet 1 of sheet 1 of front window whose value of attribute "AXDefault" is true)
+                        on error
+                            keystroke return
+                        end try
                     end if
                 end tell
             end tell

@@ -167,7 +167,7 @@ safari-browser upload <sel> <file>     # native file dialog (default, fast, larg
 safari-browser upload --js <sel> <file>  # JS DataTransfer injection (no permissions, slow for large files)
 ```
 
-`upload` tries JS `DataTransfer` injection first (no keyboard control). If it fails, use `--allow-hid` for System Events fallback. `pdf` always requires `--allow-hid` (no JS alternative).
+`upload` uses native file dialog by default when Accessibility permission is granted (fast, any file size). Without permission, it falls back to JS DataTransfer automatically. Use `--js` to force JS mode. `pdf` always requires `--allow-hid` (no JS alternative).
 
 ### Tab Management
 

@@ -28,21 +28,37 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.fileNotFound(filePath)
         }
 
-        // #14: --js explicitly selects JS DataTransfer path
+        // --js explicitly selects JS DataTransfer path
         if js {
             try await uploadViaJSDataTransfer(selector: selector, path: expandedPath)
             return
         }
 
-        // Default: native file dialog (also when --native or --allow-hid is passed)
-        FileHandle.standardError.write(Data("⚠️  Controlling keyboard for file dialog (~1s). Do not type in Safari until complete.\n".utf8))
-        try await clickFileInputAndNavigateDialog(selector: selector, path: expandedPath)
+        // --native or --allow-hid explicitly selects native path
+        if native || allowHid {
+            try await uploadViaNativeDialog(selector: selector, path: expandedPath)
+            return
+        }
+
+        // Smart default: native when Accessibility permission is granted, JS fallback otherwise
+        if SafariBridge.isAccessibilityPermitted() {
+            try await uploadViaNativeDialog(selector: selector, path: expandedPath)
+        } else {
+            FileHandle.standardError.write(Data("""
+                ℹ️  Using JS DataTransfer (slower for large files).
+                    Grant Accessibility permission in System Settings → Privacy & Security → Accessibility
+                    to enable fast native file dialog upload.\n
+                """.utf8))
+            try await uploadViaJSDataTransfer(selector: selector, path: expandedPath)
+        }
     }
 
-    // MARK: - Native file dialog (default)
+    // MARK: - Native file dialog
 
-    /// Click file input to open dialog, then navigate via System Events with precise waits.
-    private func clickFileInputAndNavigateDialog(selector: String, path: String) async throws {
+    /// Click file input to open dialog, then navigate via shared SafariBridge function.
+    private func uploadViaNativeDialog(selector: String, path: String) async throws {
+        FileHandle.standardError.write(Data("⚠️  Controlling keyboard for file dialog (~1s). Do not type in Safari until complete.\n".utf8))
+
         // Click the file input to open dialog
         let clickResult = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()"
@@ -51,11 +67,10 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.elementNotFound(selector)
         }
 
-        // #14: Use precise waits instead of blind delays
+        // Wait for file dialog sheet to appear
         try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
             tell application "System Events"
                 tell process "Safari"
-                    -- Wait for file dialog sheet to appear
                     set maxWait to 10
                     set waited to 0
                     repeat until exists sheet 1 of front window
@@ -65,40 +80,12 @@ struct UploadCommand: AsyncParsableCommand {
                             error "File dialog did not appear within " & maxWait & " seconds"
                         end if
                     end repeat
-
-                    -- Open "Go to Folder" panel
-                    keystroke "g" using {command down, shift down}
-
-                    -- Wait for Go to Folder nested sheet to appear (not blind delay)
-                    set waited to 0
-                    repeat until exists sheet 1 of sheet 1 of front window
-                        delay 0.2
-                        set waited to waited + 0.2
-                        if waited >= maxWait then
-                            error "Go to Folder panel did not appear within " & maxWait & " seconds"
-                        end if
-                    end repeat
-
-                    -- Type path and confirm
-                    keystroke "\(path.escapedForAppleScript)"
-                    keystroke return
-
-                    -- Wait for Go to Folder sheet to close (file selected)
-                    set waited to 0
-                    repeat until not (exists sheet 1 of sheet 1 of front window)
-                        delay 0.2
-                        set waited to waited + 0.2
-                        if waited >= maxWait then
-                            error "Go to Folder did not close within " & maxWait & " seconds"
-                        end if
-                    end repeat
-
-                    -- Click the default button (Upload/Open) — locale-independent
-                    delay 0.3
-                    click (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
                 end tell
             end tell
             """])
+
+        // Navigate dialog using shared clipboard-paste function
+        try await SafariBridge.navigateFileDialog(path: path)
     }
 
     // MARK: - JS DataTransfer (--js flag)
@@ -110,8 +97,8 @@ struct UploadCommand: AsyncParsableCommand {
         let fileName = URL(fileURLWithPath: path).lastPathComponent
         let mimeType = guessMimeType(for: fileName)
 
-        // #14: Record initial URL to detect page navigation during chunking
-        let initialURL = try await SafariBridge.doJavaScript("window.location.href")
+        // Record initial URL (strip fragment) to detect page navigation during chunking
+        let initialURL = try await SafariBridge.doJavaScript("window.location.href.split('#')[0]")
 
         // Transfer base64 in 200KB chunks via window variable
         _ = try await SafariBridge.doJavaScript("window.__sbUpload = ''")
@@ -120,19 +107,22 @@ struct UploadCommand: AsyncParsableCommand {
         var chunkCount = 0
         let totalChunks = (base64.count + chunkSize - 1) / chunkSize
         while offset < base64.endIndex {
-            // #14: Check URL hasn't changed (page navigation detection)
-            let currentURL = try await SafariBridge.doJavaScript("window.location.href")
-            if currentURL != initialURL {
-                throw SafariBrowserError.appleScriptFailed(
-                    "Page navigated away during upload (was: \(initialURL), now: \(currentURL)). Upload aborted. Use default upload (without --js) to avoid this."
-                )
-            }
-
             let end = base64.index(offset, offsetBy: chunkSize, limitedBy: base64.endIndex) ?? base64.endIndex
             let chunk = String(base64[offset..<end])
             _ = try await SafariBridge.doJavaScript("window.__sbUpload += '\(chunk.escapedForJS)'")
             offset = end
             chunkCount += 1
+
+            // Check URL every 10 chunks (strip fragment for comparison)
+            if chunkCount % 10 == 0 {
+                let currentURL = try await SafariBridge.doJavaScript("window.location.href.split('#')[0]")
+                if currentURL != initialURL {
+                    _ = try? await SafariBridge.doJavaScript("delete window.__sbUpload")
+                    throw SafariBrowserError.appleScriptFailed(
+                        "Page navigated away during upload (was: \(initialURL), now: \(currentURL)). Upload aborted."
+                    )
+                }
+            }
 
             // Progress indicator for large files
             if totalChunks > 10 && chunkCount % 10 == 0 {
@@ -164,10 +154,12 @@ struct UploadCommand: AsyncParsableCommand {
             """)
 
         if jsResult == "NOT_FOUND" {
+            _ = try? await SafariBridge.doJavaScript("delete window.__sbUpload")
             throw SafariBrowserError.elementNotFound(selector)
         }
 
         if jsResult != "OK" {
+            _ = try? await SafariBridge.doJavaScript("delete window.__sbUpload")
             throw SafariBrowserError.appleScriptFailed("JS file injection failed: \(jsResult)")
         }
     }

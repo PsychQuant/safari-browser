@@ -3,11 +3,14 @@
 ## 2026-04-07 — v2.3.0
 
 ### Breaking Changes
-- **#14: Upload default changed from JS DataTransfer to native file dialog** — `safari-browser upload` now uses System Events native file dialog by default (fast, handles large files, isTrusted events). Use `--js` flag for the old JS DataTransfer behavior. Requires Accessibility permission (System Settings → Privacy & Security → Accessibility).
+- **#14: Upload smart default** — Native file dialog when Accessibility permission is granted, auto-fallback to JS DataTransfer without permission. `AXIsProcessTrusted()` runtime detection. Use `--js` flag to force the old JS DataTransfer behavior.
 
 ### Features
-- **#14: Precise file dialog waits** — `repeat until exists` replaces blind `delay 1` in file dialog navigation. ~1s keyboard control vs ~3s previously.
-- **#14: Page navigation detection** — JS chunking (`--js`) now checks URL before each chunk. Aborts with clear error if page navigated away instead of silently truncating.
+- **#14: Clipboard paste for path input** — All file dialog path input now uses clipboard paste (`Cmd+V`) instead of `keystroke` — instant regardless of path length, supports all characters including CJK.
+- **#14: Shared `navigateFileDialog`** — Upload and PDF export now share a single dialog navigation function in `SafariBridge.swift`.
+- **#14: Precise dialog waits** — All dialog transitions use `repeat until exists` polling instead of blind `delay` — faster and more reliable.
+- **#14: AXDefault button** — Locale-independent dialog confirmation using accessibility attribute instead of hardcoded button names.
+- **#14: JS upload improvements** — URL navigation check every 10 chunks (not every chunk), ignores `#` fragment, `window.__sbUpload` cleanup on abort.
 
 ## 2026-04-06 — v2.2.0
 
