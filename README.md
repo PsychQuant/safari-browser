@@ -85,6 +85,9 @@ safari-browser snapshot -c             # compact (exclude hidden)
 safari-browser snapshot -d 3           # limit DOM depth
 safari-browser snapshot -s "form"      # scope to selector
 safari-browser snapshot --json         # JSON array output
+safari-browser snapshot --page         # full page state (accessibility tree + metadata)
+safari-browser snapshot --page --json  # full page state as JSON
+safari-browser snapshot --page -s "main"  # scoped page scan
 ```
 
 All selector-accepting commands support `@eN` refs.

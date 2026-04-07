@@ -41,4 +41,57 @@ final class CommandParsingTests: XCTestCase {
         let command = try WaitCommand.parse(["1000"])
         XCTAssertEqual(command.milliseconds, 1000)
     }
+
+    // MARK: - SnapshotCommand
+
+    func testSnapshotCommand_defaults() throws {
+        let command = try SnapshotCommand.parse([])
+        XCTAssertFalse(command.page)
+        XCTAssertFalse(command.compact)
+        XCTAssertFalse(command.json)
+        XCTAssertNil(command.selector)
+        XCTAssertNil(command.depth)
+    }
+
+    func testSnapshotCommand_pageFlag() throws {
+        let command = try SnapshotCommand.parse(["--page"])
+        XCTAssertTrue(command.page)
+        XCTAssertFalse(command.compact)
+        XCTAssertFalse(command.json)
+    }
+
+    func testSnapshotCommand_pageWithJson() throws {
+        let command = try SnapshotCommand.parse(["--page", "--json"])
+        XCTAssertTrue(command.page)
+        XCTAssertTrue(command.json)
+    }
+
+    func testSnapshotCommand_pageWithScope() throws {
+        let command = try SnapshotCommand.parse(["--page", "-s", "main"])
+        XCTAssertTrue(command.page)
+        XCTAssertEqual(command.selector, "main")
+    }
+
+    func testSnapshotCommand_pageWithCompact() throws {
+        let command = try SnapshotCommand.parse(["--page", "-c"])
+        XCTAssertTrue(command.page)
+        XCTAssertTrue(command.compact)
+    }
+
+    func testSnapshotCommand_pageWithAllFlags() throws {
+        let command = try SnapshotCommand.parse(["--page", "--json", "-c", "-s", "form", "-d", "5"])
+        XCTAssertTrue(command.page)
+        XCTAssertTrue(command.json)
+        XCTAssertTrue(command.compact)
+        XCTAssertEqual(command.selector, "form")
+        XCTAssertEqual(command.depth, 5)
+    }
+
+    func testSnapshotCommand_interactiveDefaultUnchanged() throws {
+        // Without --page, behavior should be identical to before
+        let command = try SnapshotCommand.parse(["-c", "--json"])
+        XCTAssertFalse(command.page)
+        XCTAssertTrue(command.compact)
+        XCTAssertTrue(command.json)
+    }
 }
