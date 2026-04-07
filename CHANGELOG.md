@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-04-07 — v2.3.0
+
+### Breaking Changes
+- **#14: Upload default changed from JS DataTransfer to native file dialog** — `safari-browser upload` now uses System Events native file dialog by default (fast, handles large files, isTrusted events). Use `--js` flag for the old JS DataTransfer behavior. Requires Accessibility permission (System Settings → Privacy & Security → Accessibility).
+
+### Features
+- **#14: Precise file dialog waits** — `repeat until exists` replaces blind `delay 1` in file dialog navigation. ~1s keyboard control vs ~3s previously.
+- **#14: Page navigation detection** — JS chunking (`--js`) now checks URL before each chunk. Aborts with clear error if page navigated away instead of silently truncating.
+
 ## 2026-04-06 — v2.2.0
 
 ### Removed

@@ -94,4 +94,33 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertTrue(command.compact)
         XCTAssertTrue(command.json)
     }
+
+    // MARK: - UploadCommand (#14)
+
+    func testUploadCommand_defaultIsNative() throws {
+        // Default (no flags) should use native file dialog
+        let command = try UploadCommand.parse(["input", "/tmp/test.txt"])
+        XCTAssertFalse(command.js)
+        XCTAssertFalse(command.native)
+        XCTAssertFalse(command.allowHid)
+    }
+
+    func testUploadCommand_jsFlag() throws {
+        let command = try UploadCommand.parse(["--js", "input", "/tmp/test.txt"])
+        XCTAssertTrue(command.js)
+    }
+
+    func testUploadCommand_nativeBackwardCompat() throws {
+        // --native still parses (backward compat), same as default
+        let command = try UploadCommand.parse(["--native", "input", "/tmp/test.txt"])
+        XCTAssertTrue(command.native)
+        XCTAssertFalse(command.js)
+    }
+
+    func testUploadCommand_allowHidBackwardCompat() throws {
+        // --allow-hid still parses (backward compat)
+        let command = try UploadCommand.parse(["--allow-hid", "input", "/tmp/test.txt"])
+        XCTAssertTrue(command.allowHid)
+        XCTAssertFalse(command.js)
+    }
 }
