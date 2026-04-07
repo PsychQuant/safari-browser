@@ -1,3 +1,4 @@
+import ApplicationServices
 import CoreGraphics
 import Foundation
 
@@ -281,6 +282,73 @@ enum SafariBridge {
 
         return String(data: outputData, encoding: .utf8)?
             .replacingOccurrences(of: "\\n$", with: "", options: .regularExpression) ?? ""
+    }
+
+    // MARK: - Accessibility Permission
+
+    /// Check if the current process has Accessibility (System Events) permission.
+    static func isAccessibilityPermitted() -> Bool {
+        AXIsProcessTrusted()
+    }
+
+    // MARK: - File Dialog Navigation
+
+    /// Navigate a macOS file dialog using System Events.
+    /// Uses clipboard paste (Cmd+V) for path input instead of keystroke.
+    /// Saves and restores the user's clipboard content.
+    /// Requires: a file dialog sheet to be already open on Safari's front window.
+    static func navigateFileDialog(path: String) async throws {
+        try await runShell("/usr/bin/osascript", ["-e", """
+            tell application "System Events"
+                tell process "Safari"
+                    -- Save user's clipboard
+                    set oldClip to the clipboard
+
+                    -- Open "Go to Folder" panel
+                    keystroke "g" using {command down, shift down}
+
+                    -- Wait for Go to Folder nested sheet to appear
+                    set maxWait to 10
+                    set waited to 0
+                    repeat until exists sheet 1 of sheet 1 of front window
+                        delay 0.2
+                        set waited to waited + 0.2
+                        if waited >= maxWait then
+                            set the clipboard to oldClip
+                            error "Go to Folder panel did not appear within " & maxWait & " seconds"
+                        end if
+                    end repeat
+
+                    -- Paste path via clipboard (fast, supports all characters)
+                    set the clipboard to "\(path.escapedForAppleScript)"
+                    keystroke "v" using command down
+                    delay 0.3
+                    keystroke return
+
+                    -- Wait for Go to Folder sheet to close (file selected)
+                    set waited to 0
+                    repeat until not (exists sheet 1 of sheet 1 of front window)
+                        delay 0.2
+                        set waited to waited + 0.2
+                        if waited >= maxWait then
+                            set the clipboard to oldClip
+                            error "Go to Folder did not close within " & maxWait & " seconds"
+                        end if
+                    end repeat
+
+                    -- Click the default button (Upload/Open/Save) — locale-independent
+                    delay 0.3
+                    try
+                        click (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
+                    on error
+                        keystroke return
+                    end try
+
+                    -- Restore user's clipboard
+                    set the clipboard to oldClip
+                end tell
+            end tell
+            """])
     }
 
     // MARK: - AppleScript Runner
