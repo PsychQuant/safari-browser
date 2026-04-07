@@ -67,8 +67,9 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.elementNotFound(selector)
         }
 
-        // Wait for file dialog sheet to appear
+        // Ensure Safari is frontmost before interacting with file dialog
         try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
+            tell application "Safari" to activate
             tell application "System Events"
                 tell process "Safari"
                     set maxWait to 10

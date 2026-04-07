@@ -304,48 +304,52 @@ enum SafariBridge {
                     -- Save user's clipboard
                     set oldClip to the clipboard
 
-                    -- Open "Go to Folder" panel
-                    keystroke "g" using {command down, shift down}
-
-                    -- Wait for Go to Folder nested sheet to appear
-                    set maxWait to 10
-                    set waited to 0
-                    repeat until exists sheet 1 of sheet 1 of front window
-                        delay 0.2
-                        set waited to waited + 0.2
-                        if waited >= maxWait then
-                            set the clipboard to oldClip
-                            error "Go to Folder panel did not appear within " & maxWait & " seconds"
-                        end if
-                    end repeat
-
-                    -- Paste path via clipboard (fast, supports all characters)
-                    set the clipboard to "\(path.escapedForAppleScript)"
-                    keystroke "v" using command down
-                    delay 0.3
-                    keystroke return
-
-                    -- Wait for Go to Folder sheet to close (file selected)
-                    set waited to 0
-                    repeat until not (exists sheet 1 of sheet 1 of front window)
-                        delay 0.2
-                        set waited to waited + 0.2
-                        if waited >= maxWait then
-                            set the clipboard to oldClip
-                            error "Go to Folder did not close within " & maxWait & " seconds"
-                        end if
-                    end repeat
-
-                    -- Click the default button (Upload/Open/Save) — locale-independent
-                    delay 0.3
                     try
-                        click (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
-                    on error
-                        keystroke return
-                    end try
+                        -- Open "Go to Folder" panel
+                        keystroke "g" using {command down, shift down}
 
-                    -- Restore user's clipboard
-                    set the clipboard to oldClip
+                        -- Wait for Go to Folder nested sheet to appear
+                        set maxWait to 10
+                        set waited to 0
+                        repeat until exists sheet 1 of sheet 1 of front window
+                            delay 0.2
+                            set waited to waited + 0.2
+                            if waited >= maxWait then
+                                error "Go to Folder panel did not appear within " & maxWait & " seconds"
+                            end if
+                        end repeat
+
+                        -- Paste path via clipboard (fast, supports all characters)
+                        set the clipboard to "\(path.escapedForAppleScript)"
+                        keystroke "v" using command down
+                        delay 0.3
+                        keystroke return
+
+                        -- Wait for Go to Folder sheet to close (file selected)
+                        set waited to 0
+                        repeat until not (exists sheet 1 of sheet 1 of front window)
+                            delay 0.2
+                            set waited to waited + 0.2
+                            if waited >= maxWait then
+                                error "Go to Folder did not close within " & maxWait & " seconds"
+                            end if
+                        end repeat
+
+                        -- Click the default button (Upload/Open/Save) — locale-independent
+                        delay 0.3
+                        try
+                            click (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
+                        on error
+                            keystroke return
+                        end try
+
+                        -- Restore user's clipboard
+                        set the clipboard to oldClip
+                    on error errMsg
+                        -- Always restore clipboard, even on unexpected errors
+                        set the clipboard to oldClip
+                        error errMsg
+                    end try
                 end tell
             end tell
             """])
