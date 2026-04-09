@@ -55,7 +55,9 @@ struct UploadCommand: AsyncParsableCommand {
 
     // MARK: - Native file dialog
 
-    /// Click file input to open dialog, then navigate via shared SafariBridge function.
+    /// Click file input to open dialog, then navigate via a single combined osascript.
+    /// Merges activate + wait + keystroke navigation into one osascript invocation
+    /// to prevent focus-stealing race conditions between separate calls (fixes #15).
     private func uploadViaNativeDialog(selector: String, path: String) async throws {
         FileHandle.standardError.write(Data("⚠️  Controlling keyboard for file dialog (~1s). Do not type in Safari until complete.\n".utf8))
 
@@ -67,11 +69,17 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.elementNotFound(selector)
         }
 
-        // Ensure Safari is frontmost before interacting with file dialog
+        // Single combined osascript: activate, wait for dialog, navigate, click Upload
         try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
             tell application "Safari" to activate
             tell application "System Events"
                 tell process "Safari"
+                    -- Verify Safari is frontmost before sending any keystrokes
+                    if not frontmost then
+                        error "Safari lost focus after activate — aborting to avoid sending keystrokes to wrong application"
+                    end if
+
+                    -- Wait for file dialog sheet to appear
                     set maxWait to 10
                     set waited to 0
                     repeat until exists sheet 1 of front window
@@ -81,12 +89,63 @@ struct UploadCommand: AsyncParsableCommand {
                             error "File dialog did not appear within " & maxWait & " seconds"
                         end if
                     end repeat
+
+                    -- Save user's clipboard
+                    set oldClip to the clipboard
+
+                    try
+                        -- Re-check frontmost right before keystrokes
+                        if not frontmost then
+                            error "Safari lost focus before keystrokes — aborting to avoid sending keys to wrong application"
+                        end if
+
+                        -- Open "Go to Folder" panel
+                        keystroke "g" using {command down, shift down}
+
+                        -- Wait for Go to Folder nested sheet to appear
+                        set waited to 0
+                        repeat until exists sheet 1 of sheet 1 of front window
+                            delay 0.2
+                            set waited to waited + 0.2
+                            if waited >= maxWait then
+                                error "Go to Folder panel did not appear within " & maxWait & " seconds"
+                            end if
+                        end repeat
+
+                        -- Paste path via clipboard (fast, supports all characters)
+                        set the clipboard to "\(path.escapedForAppleScript)"
+                        keystroke "v" using command down
+                        delay 0.3
+                        keystroke return
+
+                        -- Wait for Go to Folder sheet to close (file selected)
+                        set waited to 0
+                        repeat until not (exists sheet 1 of sheet 1 of front window)
+                            delay 0.2
+                            set waited to waited + 0.2
+                            if waited >= maxWait then
+                                error "Go to Folder did not close within " & maxWait & " seconds"
+                            end if
+                        end repeat
+
+                        -- Click the default button (Upload/Open/Save) — locale-independent
+                        delay 0.3
+                        try
+                            click (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
+                        on error
+                            keystroke return
+                        end try
+
+                        -- Restore user's clipboard
+                        set the clipboard to oldClip
+                    on error errMsg
+                        -- Always restore clipboard, even on unexpected errors
+                        set the clipboard to oldClip
+                        error errMsg
+                    end try
                 end tell
             end tell
             """])
-
-        // Navigate dialog using shared clipboard-paste function
-        try await SafariBridge.navigateFileDialog(path: path)
     }
 
     // MARK: - JS DataTransfer (--js flag)

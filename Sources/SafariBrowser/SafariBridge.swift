@@ -297,10 +297,18 @@ enum SafariBridge {
     /// Uses clipboard paste (Cmd+V) for path input instead of keystroke.
     /// Saves and restores the user's clipboard content.
     /// Requires: a file dialog sheet to be already open on Safari's front window.
+    /// Note: uploadViaNativeDialog uses its own combined osascript (see #15).
+    /// This function is kept for other callers but now includes a frontmost safety check.
     static func navigateFileDialog(path: String) async throws {
         try await runShell("/usr/bin/osascript", ["-e", """
+            tell application "Safari" to activate
             tell application "System Events"
                 tell process "Safari"
+                    -- Verify Safari is frontmost before sending any keystrokes
+                    if not frontmost then
+                        error "Safari is not frontmost — aborting to avoid sending keystrokes to wrong application"
+                    end if
+
                     -- Save user's clipboard
                     set oldClip to the clipboard
 
