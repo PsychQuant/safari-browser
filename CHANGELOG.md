@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+- **#19: Wall-clock timeout for osascript / shell subprocesses** — `runShell` and `runAppleScript` used `process.waitUntilExit()` with no timeout, so a stuck osascript (blocked on Safari's Apple Event dispatcher or unresponsive System Events) would hang the whole CLI until `kill -9`. New `runProcessWithTimeout` helper wraps `Process` with a `Task.detached` watchdog that sends SIGTERM, waits 1s, then SIGKILLs; surfaces `SafariBrowserError.processTimedOut(command:seconds:)` on timeout. Default 30s; `upload` uses 60s to accommodate its internal `maxWait to 10` waits.
+
+### Features
+- **#19: `upload --timeout <seconds>`** — Override the native file dialog subprocess timeout (default 60s) for slow machines or large directories.
+
 ## 2026-04-07 — v2.3.0
 
 ### Breaking Changes
