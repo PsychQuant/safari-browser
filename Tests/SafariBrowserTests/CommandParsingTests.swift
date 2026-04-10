@@ -103,6 +103,12 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertFalse(command.js)
         XCTAssertFalse(command.native)
         XCTAssertFalse(command.allowHid)
+        XCTAssertEqual(command.timeout, 60.0)
+    }
+
+    func testUploadCommand_customTimeout() throws {
+        let command = try UploadCommand.parse(["--timeout", "120", "input", "/tmp/test.txt"])
+        XCTAssertEqual(command.timeout, 120.0)
     }
 
     func testUploadCommand_jsFlag() throws {

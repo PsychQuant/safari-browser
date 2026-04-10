@@ -32,4 +32,12 @@ final class ErrorsTests: XCTestCase {
         let error = SafariBrowserError.elementNotFound("#login-btn")
         XCTAssertEqual(error.errorDescription, "Element not found: #login-btn")
     }
+
+    func testProcessTimedOut() {
+        let error = SafariBrowserError.processTimedOut(command: "/usr/bin/osascript -e ...", seconds: 30)
+        XCTAssertEqual(
+            error.errorDescription,
+            "Process timed out after 30 seconds: /usr/bin/osascript -e ..."
+        )
+    }
 }

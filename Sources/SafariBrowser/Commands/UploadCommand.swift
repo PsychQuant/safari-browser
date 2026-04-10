@@ -22,6 +22,9 @@ struct UploadCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Allow keyboard/mouse simulation (kept for backward compatibility)")
     var allowHid = false
 
+    @Option(name: .long, help: "Seconds before the native file dialog subprocess is terminated (default: 60)")
+    var timeout: Double = 60.0
+
     func run() async throws {
         let expandedPath = (filePath as NSString).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: expandedPath) else {
@@ -36,13 +39,13 @@ struct UploadCommand: AsyncParsableCommand {
 
         // --native or --allow-hid explicitly selects native path
         if native || allowHid {
-            try await uploadViaNativeDialog(selector: selector, path: expandedPath)
+            try await uploadViaNativeDialog(selector: selector, path: expandedPath, timeout: timeout)
             return
         }
 
         // Smart default: native when Accessibility permission is granted, JS fallback otherwise
         if SafariBridge.isAccessibilityPermitted() {
-            try await uploadViaNativeDialog(selector: selector, path: expandedPath)
+            try await uploadViaNativeDialog(selector: selector, path: expandedPath, timeout: timeout)
         } else {
             FileHandle.standardError.write(Data("""
                 ℹ️  Using JS DataTransfer (slower for large files).
@@ -58,7 +61,7 @@ struct UploadCommand: AsyncParsableCommand {
     /// Click file input to open dialog, then navigate via a single combined osascript.
     /// Merges activate + wait + keystroke navigation into one osascript invocation
     /// to prevent focus-stealing race conditions between separate calls (fixes #15).
-    private func uploadViaNativeDialog(selector: String, path: String) async throws {
+    private func uploadViaNativeDialog(selector: String, path: String, timeout: Double) async throws {
         FileHandle.standardError.write(Data("⚠️  Controlling keyboard for file dialog (~1s). Do not type in Safari until complete.\n".utf8))
 
         // Click the file input to open dialog
@@ -69,7 +72,10 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.elementNotFound(selector)
         }
 
-        // Single combined osascript: activate, wait for dialog, navigate, click Upload
+        // Single combined osascript: activate, wait for dialog, navigate, click Upload.
+        // Subprocess-level timeout (#19) bounds the whole osascript invocation in case
+        // System Events or Safari's Apple Event dispatcher is blocked and the inner
+        // `maxWait to 10` repeat loops never make progress.
         try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
             tell application "Safari" to activate
             tell application "System Events"
@@ -145,7 +151,7 @@ struct UploadCommand: AsyncParsableCommand {
                     end try
                 end tell
             end tell
-            """])
+            """], timeout: timeout)
     }
 
     // MARK: - JS DataTransfer (--js flag)

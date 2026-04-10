@@ -5,6 +5,7 @@ enum SafariBrowserError: LocalizedError {
     case fileNotFound(String)
     case invalidTabIndex(Int)
     case timeout(seconds: Int)
+    case processTimedOut(command: String, seconds: Int)
     case noSafariWindow
     case elementNotFound(String)
 
@@ -18,6 +19,8 @@ enum SafariBrowserError: LocalizedError {
             return "Invalid tab index: \(index)"
         case .timeout(let seconds):
             return "Timeout after \(seconds) seconds"
+        case .processTimedOut(let command, let seconds):
+            return "Process timed out after \(seconds) seconds: \(command)"
         case .noSafariWindow:
             return "No Safari window found"
         case .elementNotFound(let selector):

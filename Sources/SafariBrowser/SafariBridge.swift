@@ -256,8 +256,28 @@ enum SafariBridge {
 
     // MARK: - Shell Runner
 
+    /// Default timeout for AppleScript / shell subprocesses. Prevents infinite hangs
+    /// when Safari's Apple Event dispatcher or System Events is blocked (see #19).
+    static let defaultProcessTimeout: TimeInterval = 30.0
+
     @discardableResult
-    static func runShell(_ executable: String, _ arguments: [String]) async throws -> String {
+    static func runShell(
+        _ executable: String,
+        _ arguments: [String],
+        timeout: TimeInterval = SafariBridge.defaultProcessTimeout
+    ) async throws -> String {
+        try await runProcessWithTimeout(executable, arguments, timeout: timeout)
+    }
+
+    /// Run a subprocess with a wall-clock timeout.
+    /// On timeout: SIGTERM → 1s grace → SIGKILL → throws `.processTimedOut`.
+    /// Prevents `process.waitUntilExit()` from hanging forever when the child
+    /// (osascript, /bin/sh) is blocked on Safari / System Events (see #19).
+    private static func runProcessWithTimeout(
+        _ executable: String,
+        _ arguments: [String],
+        timeout: TimeInterval
+    ) async throws -> String {
         let process = Process()
         process.executableURL = URL(filePath: executable)
         process.arguments = arguments
@@ -269,10 +289,33 @@ enum SafariBridge {
 
         try process.run()
 
+        // Watchdog: terminate subprocess if timeout expires.
+        // Killing the process causes its stdout/stderr pipes to close, which unblocks
+        // the readDataToEndOfFile() calls below.
+        let watchdog = Task.detached {
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            if process.isRunning {
+                process.terminate() // SIGTERM
+                try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s grace
+                if process.isRunning {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+            }
+        }
+
         // Read pipes BEFORE waitUntilExit to prevent deadlock when output > 64KB
         let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
         let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
+        watchdog.cancel()
+
+        // A terminationReason of .uncaughtSignal means the process was killed
+        // (SIGTERM/SIGKILL). In our code path the only source of signals is the
+        // watchdog above, so this reliably indicates a timeout.
+        if process.terminationReason == .uncaughtSignal {
+            let cmdStr = ([executable] + arguments).joined(separator: " ")
+            throw SafariBrowserError.processTimedOut(command: cmdStr, seconds: Int(timeout.rounded()))
+        }
 
         if process.terminationStatus != 0 {
             let errorMessage = String(data: errorData, encoding: .utf8)?
@@ -366,31 +409,11 @@ enum SafariBridge {
     // MARK: - AppleScript Runner
 
     @discardableResult
-    private static func runAppleScript(_ script: String) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(filePath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        try process.run()
-
-        // Read pipes BEFORE waitUntilExit to prevent deadlock when output > 64KB
-        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        if process.terminationStatus != 0 {
-            let errorMessage = String(data: errorData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
-            throw SafariBrowserError.appleScriptFailed(errorMessage)
-        }
-
-        return String(data: outputData, encoding: .utf8)?
-            .replacingOccurrences(of: "\\n$", with: "", options: .regularExpression) ?? ""
+    private static func runAppleScript(
+        _ script: String,
+        timeout: TimeInterval = SafariBridge.defaultProcessTimeout
+    ) async throws -> String {
+        try await runProcessWithTimeout("/usr/bin/osascript", ["-e", script], timeout: timeout)
     }
 }
 
