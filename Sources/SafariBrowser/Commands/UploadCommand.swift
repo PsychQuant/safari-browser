@@ -22,8 +22,21 @@ struct UploadCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Allow keyboard/mouse simulation (kept for backward compatibility)")
     var allowHid = false
 
-    @Option(name: .long, help: "Seconds before the native file dialog subprocess is terminated (default: 60)")
+    @Option(
+        name: .long,
+        help: """
+            Seconds before the native file dialog subprocess is terminated (default: 60). \
+            Default 60 accommodates the inner AppleScript's three 10-second maxWait loops \
+            (dialog-open, Go-to-Folder-open, Go-to-Folder-close).
+            """
+    )
     var timeout: Double = 60.0
+
+    func validate() throws {
+        guard timeout.isFinite, timeout > 0 else {
+            throw ValidationError("--timeout must be a finite positive number, got \(timeout)")
+        }
+    }
 
     func run() async throws {
         let expandedPath = (filePath as NSString).expandingTildeInPath

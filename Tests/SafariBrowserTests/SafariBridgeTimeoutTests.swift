@@ -48,4 +48,80 @@ final class SafariBridgeTimeoutTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Input validation (#19 follow-up: F1/F5)
+
+    func testRunShellRejectsNegativeTimeout() async throws {
+        do {
+            _ = try await SafariBridge.runShell("/bin/echo", ["hi"], timeout: -1.0)
+            XCTFail("Expected invalidTimeout but runShell returned normally")
+        } catch let error as SafariBrowserError {
+            guard case .invalidTimeout(let value) = error else {
+                XCTFail("Expected .invalidTimeout but got \(error)")
+                return
+            }
+            XCTAssertEqual(value, -1.0)
+        }
+    }
+
+    func testRunShellRejectsZeroTimeout() async throws {
+        do {
+            _ = try await SafariBridge.runShell("/bin/echo", ["hi"], timeout: 0)
+            XCTFail("Expected invalidTimeout but runShell returned normally")
+        } catch let error as SafariBrowserError {
+            guard case .invalidTimeout = error else {
+                XCTFail("Expected .invalidTimeout but got \(error)")
+                return
+            }
+        }
+    }
+
+    func testRunShellRejectsNaNTimeout() async throws {
+        do {
+            _ = try await SafariBridge.runShell("/bin/echo", ["hi"], timeout: .nan)
+            XCTFail("Expected invalidTimeout but runShell returned normally")
+        } catch let error as SafariBrowserError {
+            guard case .invalidTimeout = error else {
+                XCTFail("Expected .invalidTimeout but got \(error)")
+                return
+            }
+        }
+    }
+
+    func testRunShellRejectsInfiniteTimeout() async throws {
+        do {
+            _ = try await SafariBridge.runShell("/bin/echo", ["hi"], timeout: .infinity)
+            XCTFail("Expected invalidTimeout but runShell returned normally")
+        } catch let error as SafariBrowserError {
+            guard case .invalidTimeout = error else {
+                XCTFail("Expected .invalidTimeout but got \(error)")
+                return
+            }
+        }
+    }
+
+    // MARK: - Signal attribution (#19 follow-up: F2)
+
+    func testRunShellDoesNotReportSelfKillAsTimeout() async throws {
+        // Child kills itself with SIGTERM via `kill -TERM $$`. This should
+        // NOT be reported as a timeout — only the watchdog's kill counts.
+        do {
+            _ = try await SafariBridge.runShell(
+                "/bin/sh",
+                ["-c", "kill -TERM $$"],
+                timeout: 10.0
+            )
+            XCTFail("Expected error but runShell returned normally")
+        } catch let error as SafariBrowserError {
+            if case .processTimedOut = error {
+                XCTFail("External SIGTERM was misreported as processTimedOut — F2 regression")
+                return
+            }
+            // .appleScriptFailed is the expected path (non-zero exit / signal exit)
+            guard case .appleScriptFailed = error else {
+                XCTFail("Expected .appleScriptFailed but got \(error)")
+                return
+            }
+        }
+    }
 }

@@ -269,6 +269,24 @@ enum SafariBridge {
         try await runProcessWithTimeout(executable, arguments, timeout: timeout)
     }
 
+    /// Thread-safe boolean flag used by `runProcessWithTimeout` to distinguish
+    /// "watchdog killed the child" from "child died for any other reason".
+    /// Prevents external signals (Ctrl+C, OOM killer, crash) being misreported as timeouts (#19 F2).
+    private final class TimeoutFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _value = false
+        func set() {
+            lock.lock()
+            _value = true
+            lock.unlock()
+        }
+        var value: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return _value
+        }
+    }
+
     /// Run a subprocess with a wall-clock timeout.
     /// On timeout: SIGTERM → 1s grace → SIGKILL → throws `.processTimedOut`.
     /// Prevents `process.waitUntilExit()` from hanging forever when the child
@@ -278,6 +296,12 @@ enum SafariBridge {
         _ arguments: [String],
         timeout: TimeInterval
     ) async throws -> String {
+        // #19 F1: reject invalid timeouts (negative, zero, NaN, infinity).
+        // Prevents runtime traps in UInt64(timeout * 1e9) below.
+        guard timeout.isFinite, timeout > 0 else {
+            throw SafariBrowserError.invalidTimeout(timeout)
+        }
+
         let process = Process()
         process.executableURL = URL(filePath: executable)
         process.arguments = arguments
@@ -292,9 +316,14 @@ enum SafariBridge {
         // Watchdog: terminate subprocess if timeout expires.
         // Killing the process causes its stdout/stderr pipes to close, which unblocks
         // the readDataToEndOfFile() calls below.
+        // #19 F2: set didTimeout BEFORE terminate() so the main thread can distinguish
+        // our kill from external signals.
+        let didTimeout = TimeoutFlag()
         let watchdog = Task.detached {
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            if Task.isCancelled { return }
             if process.isRunning {
+                didTimeout.set()
                 process.terminate() // SIGTERM
                 try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s grace
                 if process.isRunning {
@@ -309,12 +338,16 @@ enum SafariBridge {
         process.waitUntilExit()
         watchdog.cancel()
 
-        // A terminationReason of .uncaughtSignal means the process was killed
-        // (SIGTERM/SIGKILL). In our code path the only source of signals is the
-        // watchdog above, so this reliably indicates a timeout.
-        if process.terminationReason == .uncaughtSignal {
+        // Only report processTimedOut when the watchdog actually fired.
+        // External signals (Ctrl+C, OOM, crash) fall through to the normal
+        // non-zero-exit path below.
+        if didTimeout.value {
             let cmdStr = ([executable] + arguments).joined(separator: " ")
-            throw SafariBrowserError.processTimedOut(command: cmdStr, seconds: Int(timeout.rounded()))
+            // Use ceil so sub-second timeouts don't render as "0 seconds".
+            throw SafariBrowserError.processTimedOut(
+                command: cmdStr,
+                seconds: max(1, Int(timeout.rounded(.up)))
+            )
         }
 
         if process.terminationStatus != 0 {

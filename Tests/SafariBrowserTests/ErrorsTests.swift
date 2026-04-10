@@ -35,9 +35,22 @@ final class ErrorsTests: XCTestCase {
 
     func testProcessTimedOut() {
         let error = SafariBrowserError.processTimedOut(command: "/usr/bin/osascript -e ...", seconds: 30)
+        // Error description starts with the human-readable summary. F8 adds a
+        // troubleshooting hint line; assert prefix to stay robust to hint wording.
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(
+            description.hasPrefix("Process timed out after 30 seconds: /usr/bin/osascript -e ..."),
+            "Unexpected description: \(description)"
+        )
+        XCTAssertTrue(description.contains("Console.app") || description.contains("System Events"),
+                      "Expected troubleshooting hint in description, got: \(description)")
+    }
+
+    func testInvalidTimeout() {
+        let error = SafariBrowserError.invalidTimeout(-1.0)
         XCTAssertEqual(
             error.errorDescription,
-            "Process timed out after 30 seconds: /usr/bin/osascript -e ..."
+            "Invalid timeout value: -1.0 (must be a finite positive number)"
         )
     }
 }
