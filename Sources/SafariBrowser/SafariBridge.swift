@@ -389,9 +389,10 @@ enum SafariBridge {
     /// Probe whether `System Events` is responsive. Runs a short AppleScript
     /// inside `runShell(timeout:)` so the probe itself cannot hang — the
     /// watchdog from #19 bounds the worst case.
-    /// Any failure (timeout, non-zero exit, syntax error, etc.) is wrapped as
-    /// `SafariBrowserError.systemEventsNotResponding` so callers get one
-    /// actionable error type regardless of the underlying AppleScript failure.
+    /// Any failure (timeout, non-zero exit, syntax error, missing executable,
+    /// etc.) is wrapped as `SafariBrowserError.systemEventsNotResponding` so
+    /// callers get one actionable error type regardless of the underlying
+    /// failure mode.
     static func probeSystemEvents(timeout: TimeInterval = 2.0) async throws {
         // The canonical liveness check: ask System Events for its own name.
         // If System Events is up, this returns instantly with "System Events".
@@ -402,12 +403,20 @@ enum SafariBridge {
     }
 
     /// Internal seam for tests: run an arbitrary AppleScript under the probe's
-    /// error-wrapping semantics so tests can exercise timeout and failure paths
-    /// without depending on the real System Events process state.
-    static func probeSystemEvents(script: String, timeout: TimeInterval) async throws {
+    /// error-wrapping semantics so tests can exercise timeout, failure, and
+    /// executable-missing paths without depending on the real System Events
+    /// process state.
+    static func probeSystemEvents(
+        executable: String = "/usr/bin/osascript",
+        script: String,
+        timeout: TimeInterval
+    ) async throws {
         do {
-            _ = try await runShell("/usr/bin/osascript", ["-e", script], timeout: timeout)
-        } catch let error as SafariBrowserError {
+            _ = try await runShell(executable, ["-e", script], timeout: timeout)
+        } catch {
+            // #20 F1: generic catch. runShell can throw non-SafariBrowserError
+            // (e.g. CocoaError when the executable doesn't exist). Wrap every
+            // failure so the "one actionable error type" contract holds.
             throw SafariBrowserError.systemEventsNotResponding(
                 underlying: error.localizedDescription
             )
@@ -416,51 +425,70 @@ enum SafariBridge {
 
     /// Best-effort restart: `killall "System Events"` (ignoring failure since
     /// the process may already be down) and then re-probe. Relies on launchd
-    /// to relaunch System Events on the next Apple Event; we do not invoke
-    /// `launchctl kickstart` because it requires permissions that aren't
-    /// always available and tends to be flaky across macOS versions.
-    /// Returns `true` when the post-kill probe succeeds, `false` otherwise.
-    @discardableResult
-    static func restartSystemEvents() async -> Bool {
+    /// to relaunch System Events on the next Apple Event (it's an on-demand
+    /// LaunchAgent, not a KeepAlive process) — so the relaunch actually
+    /// happens inside the re-probe itself, not during the sleep. We keep a
+    /// short sleep to let launchd reap the killed PID before we talk to
+    /// the new one. `launchctl kickstart` is avoided because it requires
+    /// permissions that aren't always available and is flaky across macOS
+    /// versions.
+    /// Throws `.systemEventsNotResponding` if the post-kill probe still
+    /// fails, so callers can propagate the underlying detail without doing
+    /// a redundant extra probe themselves.
+    static func restartSystemEvents() async throws {
+        // #20 F3: loudly warn before interfering with other users of System
+        // Events. This violates the "don't interrupt unrelated automation"
+        // spirit of the non-interference spec unless we explicitly name the
+        // side effect, so the user at least sees what's happening.
+        FileHandle.standardError.write(Data("""
+            ⚠️  Restarting System Events. This will interrupt any other active
+               System Events automation (Keyboard Maestro, Alfred, Shortcuts, etc.).
+
+            """.utf8))
+
         // killall is best effort — if System Events is already dead, it will
         // exit non-zero and runShell will throw. We want to continue regardless.
         _ = try? await runShell("/usr/bin/killall", ["System Events"], timeout: 2.0)
-        // Give launchd a moment to notice and relaunch.
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        // Re-probe. Any remaining failure means the caller should surface
-        // `.systemEventsNotResponding` rather than pretend things recovered.
-        do {
-            try await probeSystemEvents()
-            return true
-        } catch {
-            return false
-        }
+        // Short pause so launchd can reap the killed process before we talk to
+        // the (on-demand) new instance via the re-probe below.
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        // #20 F6: propagate the probe error instead of swallowing to Bool so
+        // callers don't need a redundant third probe to recover it.
+        try await probeSystemEvents()
     }
 
-    /// Probe → restart → re-probe chain used by any command that sends keystrokes
-    /// through System Events. Throws `.systemEventsNotResponding` if the process
-    /// cannot be recovered, so callers can surface a single actionable error
-    /// instead of hanging inside the real AppleScript (#20).
+    /// Probe → (on failure) restart → re-probe chain used by any command
+    /// that sends keystrokes through System Events. Throws
+    /// `.systemEventsNotResponding` if the process cannot be recovered, so
+    /// callers can surface a single actionable error instead of hanging
+    /// inside the real AppleScript (#20).
     static func ensureSystemEventsLive() async throws {
+        // #20 F2: deferred "waiting" message. If the first probe finishes
+        // quickly (normal path) the user sees nothing; if it takes more than
+        // 500 ms (System Events struggling) we print a status line so the
+        // user never faces a silent hang — issue requirement 3.
+        let waitingMessage = Task.detached {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if Task.isCancelled { return }
+            FileHandle.standardError.write(
+                Data("⏳ Waiting for System Events...\n".utf8)
+            )
+        }
+        defer { waitingMessage.cancel() }
+
         do {
             try await probeSystemEvents()
             return
         } catch {
-            // First probe failed — tell the user before we try to restart, so
-            // they understand why there's a brief pause.
             FileHandle.standardError.write(
                 Data("⚠️  System Events not responding, attempting restart...\n".utf8)
             )
         }
 
-        if await restartSystemEvents() {
-            FileHandle.standardError.write(Data("✓ System Events recovered\n".utf8))
-            return
-        }
-
-        // Restart didn't help. Probe once more to capture the most recent
-        // underlying error for the thrown SafariBrowserError.
-        try await probeSystemEvents()
+        // #20 F6: restartSystemEvents now throws, so the underlying error is
+        // propagated directly. No redundant third probe.
+        try await restartSystemEvents()
+        FileHandle.standardError.write(Data("✓ System Events recovered\n".utf8))
     }
 
     // MARK: - File Dialog Navigation

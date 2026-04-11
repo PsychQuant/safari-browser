@@ -72,5 +72,17 @@ final class ErrorsTests: XCTestCase {
             description.contains("killall"),
             "Expected 'killall' recovery hint in description, got: \(description)"
         )
+        // #20 F3: the error must also warn about the non-interference side
+        // effect so users don't blindly run killall and break their other
+        // automation tools.
+        XCTAssertTrue(
+            description.contains("Keyboard Maestro") || description.contains("interrupt"),
+            "Expected non-interference warning in description, got: \(description)"
+        )
+        // #20 F7: user-facing CLI names, not internal Swift function names.
+        XCTAssertFalse(
+            description.contains("navigateFileDialog"),
+            "Should not leak internal Swift symbol names, got: \(description)"
+        )
     }
 }

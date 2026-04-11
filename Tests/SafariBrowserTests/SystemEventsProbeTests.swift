@@ -3,6 +3,16 @@ import XCTest
 
 final class SystemEventsProbeTests: XCTestCase {
 
+    override func setUp() async throws {
+        // #20 F4: these tests spawn a real osascript subprocess. Sandboxed CI
+        // runners may not have /usr/bin/osascript available — skip rather than
+        // hang or report a confusing failure.
+        try XCTSkipUnless(
+            FileManager.default.isExecutableFile(atPath: "/usr/bin/osascript"),
+            "osascript not available — these tests require macOS with AppleScript"
+        )
+    }
+
     // MARK: - Wrapping: runShell errors become SystemEventsNotResponding (#20)
 
     func testProbeSystemEventsWrapsTimeoutAsNotResponding() async throws {
@@ -52,5 +62,27 @@ final class SystemEventsProbeTests: XCTestCase {
             script: "return \"ok\"",
             timeout: 5.0
         )
+    }
+
+    // MARK: - F1: generic catch must wrap non-SafariBrowserError as well
+
+    func testProbeSystemEventsWrapsNonSafariBrowserError() async throws {
+        // If runShell throws something other than SafariBrowserError (e.g., a
+        // CocoaError from Process.run() when the executable doesn't exist),
+        // the probe must still wrap it as `.systemEventsNotResponding` so the
+        // "one actionable error type" contract holds across all failure modes.
+        do {
+            try await SafariBridge.probeSystemEvents(
+                executable: "/nonexistent/osascript",
+                script: "return \"ok\"",
+                timeout: 5.0
+            )
+            XCTFail("Expected systemEventsNotResponding but probe returned normally")
+        } catch let error as SafariBrowserError {
+            guard case .systemEventsNotResponding = error else {
+                XCTFail("Expected .systemEventsNotResponding but got \(error)")
+                return
+            }
+        }
     }
 }
