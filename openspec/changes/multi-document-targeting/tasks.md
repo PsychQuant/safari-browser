@@ -89,9 +89,9 @@
 
 ## 13. 最終驗證 — Risks / Trade-offs 確認
 
-- [ ] 13.1 手動測試：單視窗環境 `safari-browser get url` 行為不變（對應 design risk #1 的 mitigation）
-- [ ] 13.2 [P] 手動測試：多視窗環境 `safari-browser --url plaud get url` 指向正確 document，`safari-browser documents` 列出所有 documents
-- [ ] 13.3 [P] 手動測試：重現 #21 — 啟動一個 upload 卡在 modal sheet，同時跑 `safari-browser get url`，確認能立即回傳（不 hang）
-- [ ] 13.4 [P] 手動測試：錯誤路徑 — `safari-browser --url typo get url` 產生 `documentNotFound` 並列出所有可用 documents
-- [ ] 13.5 [P] 跑完整測試套件 `swift test`（#22 之後預設 skip E2E，不干擾 Safari）確認 0 regression
-- [ ] 13.6 [P] 執行 `/issue-driven-dev:idd-verify` 對應的 root issues（#17 / #18 / #21）— 每個 issue 跑一次 6-AI verify 確認原 findings 全部解決
+- [ ] 13.1 **User manual test**：單視窗環境 `safari-browser get url` 行為不變 — 要求 Safari 互動，請 user 執行
+- [ ] 13.2 [P] **User manual test**：多視窗環境 `safari-browser --url plaud get url` + `safari-browser documents` — 要求 Safari 互動
+- [ ] 13.3 [P] **User manual test**：重現 #21 — 啟動 upload 卡在 modal sheet，並行跑 `safari-browser get url` 確認不 hang — 要求 Safari 互動
+- [ ] 13.4 [P] **User manual test**：錯誤路徑 `safari-browser --url typo get url` — 要求 Safari 互動
+- [x] 13.5 [P] **自動化**：`swift test` → 78/78 通過，E2E auto-skip（#22）零 regression
+- [ ] 13.6 [P] 執行 `/issue-driven-dev:idd-verify #17` / `#18` / `#21` — 建議 archive 完成後再跑，一次驗證完整 diff
