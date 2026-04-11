@@ -26,7 +26,7 @@ enum SafariBrowserError: LocalizedError {
                 Hint: if this recurs, check Console.app for System Events or Apple Event dispatcher issues.
                 """
         case .invalidTimeout(let value):
-            return "Invalid timeout value: \(value) (must be a finite positive number)"
+            return "Invalid timeout value: \(value) (must be a finite number between 0.001 and 86400 seconds)"
         case .noSafariWindow:
             return "No Safari window found"
         case .elementNotFound(let selector):

@@ -50,7 +50,7 @@ final class ErrorsTests: XCTestCase {
         let error = SafariBrowserError.invalidTimeout(-1.0)
         XCTAssertEqual(
             error.errorDescription,
-            "Invalid timeout value: -1.0 (must be a finite positive number)"
+            "Invalid timeout value: -1.0 (must be a finite number between 0.001 and 86400 seconds)"
         )
     }
 }
