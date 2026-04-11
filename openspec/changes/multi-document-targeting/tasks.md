@@ -25,11 +25,11 @@
 
 ## 4. Window-scoped Operations 保留 front-window 語意
 
-- [ ] 4.1 `SafariBridge.listTabs(window:)` 支援 `window` 參數預設 front window，對應 tab-management "List all tabs"
-- [ ] 4.2 [P] `SafariBridge.switchToTab(index:window:)` 支援 `window` 參數，對應 tab-management "Switch to tab by index"
-- [ ] 4.3 [P] `SafariBridge.openNewTab(window:)` 支援 `window` 參數，對應 tab-management "Open new empty tab"
-- [ ] 4.4 [P] `SafariBridge.openURL(_:target:)` 支援 target override（透過 `do JavaScript "location.href=..." in <doc ref>`），對應 navigation "Open URL in current tab"
-- [ ] 4.5 [P] `SafariBridge.openURLInNewTab(_:window:)` 支援 `window` 參數，對應 navigation "Open URL in new tab"
+- [x] 4.1 `SafariBridge.listTabs(window:)` 支援 `window` 參數預設 front window，對應 tab-management "List all tabs"
+- [x] 4.2 [P] `SafariBridge.switchToTab(_:window:)` 支援 `window` 參數，對應 tab-management "Switch to tab by index"
+- [x] 4.3 [P] `SafariBridge.openNewTab(window:)` 支援 `window` 參數，對應 tab-management "Open new empty tab"
+- [x] 4.4 [P] `SafariBridge.openURL(_:target:)` 支援 target override（透過 `do JavaScript "location.href=..." in <doc ref>`），對應 navigation "Open URL in current tab"
+- [x] 4.5 [P] `SafariBridge.openURLInNewTab(_:window:)` 支援 `window` 參數，對應 navigation "Open URL in new tab"
 
 ## 5. Commands Wire-up — Get / Open / JS
 

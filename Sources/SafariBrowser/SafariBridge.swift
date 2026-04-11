@@ -44,10 +44,15 @@ enum SafariBridge {
 
     // MARK: - Navigation
 
-    static func openURL(_ url: String) async throws {
+    /// Navigate the target document to `url`. Uses `do JavaScript` against a
+    /// document-scoped reference (bypasses #21 modal block), falling back to
+    /// `set URL of <docRef>` if the script fails. When Safari has no windows,
+    /// a new document is always created regardless of target.
+    static func openURL(_ url: String, target: TargetDocument = .frontWindow) async throws {
         // #9: Use do JavaScript for navigation to avoid race with page's own JS redirects.
         // Fallback to set URL when do JavaScript fails (e.g., about:blank, no open tabs).
         let jsCode = "window.location.href=\(url.jsStringLiteral)"
+        let docRef = resolveDocumentReference(target)
         try await runAppleScript("""
             tell application "Safari"
                 activate
@@ -55,23 +60,28 @@ enum SafariBridge {
                     make new document with properties {URL:"\(url.escapedForAppleScript)"}
                 else
                     try
-                        do JavaScript "\(jsCode.escapedForAppleScript)" in current tab of front window
+                        do JavaScript "\(jsCode.escapedForAppleScript)" in \(docRef)
                     on error
-                        set URL of current tab of front window to "\(url.escapedForAppleScript)"
+                        set URL of \(docRef) to "\(url.escapedForAppleScript)"
                     end try
                 end if
             end tell
             """)
     }
 
-    static func openURLInNewTab(_ url: String) async throws {
+    /// Open `url` in a new tab of the target window. Only window-level
+    /// targeting makes sense here; document-level flags (`--url`, `--tab`,
+    /// `--document`) should be rejected by the caller via
+    /// `TargetOptions.validate()` before reaching this function.
+    static func openURLInNewTab(_ url: String, window: Int? = nil) async throws {
+        let windowRef = window.map { "window \($0)" } ?? "front window"
         try await runAppleScript("""
             tell application "Safari"
                 activate
                 if (count of windows) = 0 then
                     make new document with properties {URL:"\(url.escapedForAppleScript)"}
                 else
-                    tell front window
+                    tell \(windowRef)
                         set newTab to make new tab with properties {URL:"\(url.escapedForAppleScript)"}
                         set current tab to newTab
                     end tell
@@ -204,13 +214,18 @@ enum SafariBridge {
         let url: String
     }
 
-    static func listTabs() async throws -> [TabInfo] {
+    /// List all tabs of the target window. `window: nil` means the front
+    /// window (backward-compatible default). `tabs` / `switch-tab` only
+    /// support window-level targeting because listing tabs at document
+    /// granularity doesn't make sense.
+    static func listTabs(window: Int? = nil) async throws -> [TabInfo] {
+        let windowRef = window.map { "window \($0)" } ?? "front window"
         let countStr = try await runAppleScript("""
             tell application "Safari"
                 if (count of windows) = 0 then
                     return "0"
                 end if
-                count of tabs of front window
+                count of tabs of \(windowRef)
             end tell
             """)
 
@@ -222,12 +237,12 @@ enum SafariBridge {
         for i in 1...count {
             let title = try await runAppleScript("""
                 tell application "Safari"
-                    get name of tab \(i) of front window
+                    get name of tab \(i) of \(windowRef)
                 end tell
                 """)
             let url = try await runAppleScript("""
                 tell application "Safari"
-                    get URL of tab \(i) of front window
+                    get URL of tab \(i) of \(windowRef)
                 end tell
                 """)
             tabs.append(TabInfo(
@@ -239,22 +254,28 @@ enum SafariBridge {
         return tabs
     }
 
-    static func switchToTab(_ index: Int) async throws {
+    /// Switch the target window's current tab to tab `index`. `window: nil`
+    /// means the front window.
+    static func switchToTab(_ index: Int, window: Int? = nil) async throws {
+        let windowRef = window.map { "window \($0)" } ?? "front window"
         try await runAppleScript("""
             tell application "Safari"
-                set current tab of front window to tab \(index) of front window
+                set current tab of \(windowRef) to tab \(index) of \(windowRef)
             end tell
             """)
     }
 
-    static func openNewTab() async throws {
+    /// Open a new empty tab in the target window. `window: nil` means the
+    /// front window.
+    static func openNewTab(window: Int? = nil) async throws {
+        let windowRef = window.map { "window \($0)" } ?? "front window"
         try await runAppleScript("""
             tell application "Safari"
                 activate
                 if (count of windows) = 0 then
                     make new document
                 else
-                    tell front window
+                    tell \(windowRef)
                         set newTab to make new tab
                         set current tab to newTab
                     end tell
