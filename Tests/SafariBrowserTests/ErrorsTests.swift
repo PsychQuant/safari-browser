@@ -53,4 +53,24 @@ final class ErrorsTests: XCTestCase {
             "Invalid timeout value: -1.0 (must be a finite number between 0.001 and 86400 seconds)"
         )
     }
+
+    func testSystemEventsNotResponding() {
+        let error = SafariBrowserError.systemEventsNotResponding(underlying: "probe timed out after 2 seconds")
+        let description = error.errorDescription ?? ""
+        // The error must name the failing dependency and echo the underlying detail.
+        XCTAssertTrue(
+            description.contains("System Events"),
+            "Expected 'System Events' in description, got: \(description)"
+        )
+        XCTAssertTrue(
+            description.contains("probe timed out after 2 seconds"),
+            "Expected underlying detail in description, got: \(description)"
+        )
+        // Must surface a user-executable recovery command so CI / non-interactive
+        // users aren't left guessing how to fix this.
+        XCTAssertTrue(
+            description.contains("killall"),
+            "Expected 'killall' recovery hint in description, got: \(description)"
+        )
+    }
 }

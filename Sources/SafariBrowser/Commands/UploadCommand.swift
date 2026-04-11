@@ -78,6 +78,11 @@ struct UploadCommand: AsyncParsableCommand {
     /// Merges activate + wait + keystroke navigation into one osascript invocation
     /// to prevent focus-stealing race conditions between separate calls (fixes #15).
     private func uploadViaNativeDialog(selector: String, path: String, timeout: Double) async throws {
+        // #20: probe System Events before sending any keystrokes. A silent hang
+        // inside the combined osascript is the single worst failure mode of this
+        // command, and System Events being down is by far the most common cause.
+        try await SafariBridge.ensureSystemEventsLive()
+
         FileHandle.standardError.write(Data("⚠️  Controlling keyboard for file dialog (~1s). Do not type in Safari until complete.\n".utf8))
 
         // Click the file input to open dialog

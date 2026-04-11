@@ -384,6 +384,85 @@ enum SafariBridge {
         AXIsProcessTrusted()
     }
 
+    // MARK: - System Events Liveness (#20)
+
+    /// Probe whether `System Events` is responsive. Runs a short AppleScript
+    /// inside `runShell(timeout:)` so the probe itself cannot hang — the
+    /// watchdog from #19 bounds the worst case.
+    /// Any failure (timeout, non-zero exit, syntax error, etc.) is wrapped as
+    /// `SafariBrowserError.systemEventsNotResponding` so callers get one
+    /// actionable error type regardless of the underlying AppleScript failure.
+    static func probeSystemEvents(timeout: TimeInterval = 2.0) async throws {
+        // The canonical liveness check: ask System Events for its own name.
+        // If System Events is up, this returns instantly with "System Events".
+        try await probeSystemEvents(
+            script: #"tell application "System Events" to return name"#,
+            timeout: timeout
+        )
+    }
+
+    /// Internal seam for tests: run an arbitrary AppleScript under the probe's
+    /// error-wrapping semantics so tests can exercise timeout and failure paths
+    /// without depending on the real System Events process state.
+    static func probeSystemEvents(script: String, timeout: TimeInterval) async throws {
+        do {
+            _ = try await runShell("/usr/bin/osascript", ["-e", script], timeout: timeout)
+        } catch let error as SafariBrowserError {
+            throw SafariBrowserError.systemEventsNotResponding(
+                underlying: error.localizedDescription
+            )
+        }
+    }
+
+    /// Best-effort restart: `killall "System Events"` (ignoring failure since
+    /// the process may already be down) and then re-probe. Relies on launchd
+    /// to relaunch System Events on the next Apple Event; we do not invoke
+    /// `launchctl kickstart` because it requires permissions that aren't
+    /// always available and tends to be flaky across macOS versions.
+    /// Returns `true` when the post-kill probe succeeds, `false` otherwise.
+    @discardableResult
+    static func restartSystemEvents() async -> Bool {
+        // killall is best effort — if System Events is already dead, it will
+        // exit non-zero and runShell will throw. We want to continue regardless.
+        _ = try? await runShell("/usr/bin/killall", ["System Events"], timeout: 2.0)
+        // Give launchd a moment to notice and relaunch.
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        // Re-probe. Any remaining failure means the caller should surface
+        // `.systemEventsNotResponding` rather than pretend things recovered.
+        do {
+            try await probeSystemEvents()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Probe → restart → re-probe chain used by any command that sends keystrokes
+    /// through System Events. Throws `.systemEventsNotResponding` if the process
+    /// cannot be recovered, so callers can surface a single actionable error
+    /// instead of hanging inside the real AppleScript (#20).
+    static func ensureSystemEventsLive() async throws {
+        do {
+            try await probeSystemEvents()
+            return
+        } catch {
+            // First probe failed — tell the user before we try to restart, so
+            // they understand why there's a brief pause.
+            FileHandle.standardError.write(
+                Data("⚠️  System Events not responding, attempting restart...\n".utf8)
+            )
+        }
+
+        if await restartSystemEvents() {
+            FileHandle.standardError.write(Data("✓ System Events recovered\n".utf8))
+            return
+        }
+
+        // Restart didn't help. Probe once more to capture the most recent
+        // underlying error for the thrown SafariBrowserError.
+        try await probeSystemEvents()
+    }
+
     // MARK: - File Dialog Navigation
 
     /// Navigate a macOS file dialog using System Events.
@@ -393,6 +472,10 @@ enum SafariBridge {
     /// Note: uploadViaNativeDialog uses its own combined osascript (see #15).
     /// This function is kept for other callers but now includes a frontmost safety check.
     static func navigateFileDialog(path: String) async throws {
+        // #20: probe/restart System Events before touching the keyboard. Same
+        // rationale as `UploadCommand.uploadViaNativeDialog`.
+        try await ensureSystemEventsLive()
+
         try await runShell("/usr/bin/osascript", ["-e", """
             tell application "Safari" to activate
             tell application "System Events"

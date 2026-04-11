@@ -7,6 +7,7 @@ enum SafariBrowserError: LocalizedError {
     case timeout(seconds: Int)
     case processTimedOut(command: String, seconds: Int)
     case invalidTimeout(Double)
+    case systemEventsNotResponding(underlying: String)
     case noSafariWindow
     case elementNotFound(String)
 
@@ -27,6 +28,12 @@ enum SafariBrowserError: LocalizedError {
                 """
         case .invalidTimeout(let value):
             return "Invalid timeout value: \(value) (must be a finite number between 0.001 and 86400 seconds)"
+        case .systemEventsNotResponding(let underlying):
+            return """
+                System Events is not responding. Keyboard-simulating commands (upload --native, navigateFileDialog) cannot proceed.
+                Try restarting it manually: killall "System Events" && sleep 1 (launchd will relaunch it on next Apple Event)
+                Underlying: \(underlying)
+                """
         case .noSafariWindow:
             return "No Safari window found"
         case .elementNotFound(let selector):
