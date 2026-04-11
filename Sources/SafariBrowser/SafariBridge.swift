@@ -287,6 +287,14 @@ enum SafariBridge {
         }
     }
 
+    /// Minimum allowed timeout. Values below this round to 0 nanoseconds,
+    /// which would make the watchdog fire before the subprocess could complete.
+    private static let minimumProcessTimeout: TimeInterval = 0.001
+    /// Maximum allowed timeout. One day is well beyond any legitimate Safari
+    /// automation subprocess and keeps `timeout * 1e9` far below UInt64.max,
+    /// so neither the Double multiply nor the UInt64 cast can trap (#19 R2-F1').
+    private static let maximumProcessTimeout: TimeInterval = 86_400
+
     /// Run a subprocess with a wall-clock timeout.
     /// On timeout: SIGTERM → 1s grace → SIGKILL → throws `.processTimedOut`.
     /// Prevents `process.waitUntilExit()` from hanging forever when the child
@@ -296,9 +304,15 @@ enum SafariBridge {
         _ arguments: [String],
         timeout: TimeInterval
     ) async throws -> String {
-        // #19 F1: reject invalid timeouts (negative, zero, NaN, infinity).
-        // Prevents runtime traps in UInt64(timeout * 1e9) below.
-        guard timeout.isFinite, timeout > 0 else {
+        // #19 F1 + R2-F1' + R2-F1'': reject any timeout that can't survive the
+        // UInt64(timeout * 1e9) conversion or that rounds to 0 nanoseconds.
+        // Double.greatestFiniteMagnitude is finite but * 1e9 overflows to Inf,
+        // which is why the old `isFinite && > 0` guard was insufficient.
+        guard
+            timeout.isFinite,
+            timeout >= SafariBridge.minimumProcessTimeout,
+            timeout <= SafariBridge.maximumProcessTimeout
+        else {
             throw SafariBrowserError.invalidTimeout(timeout)
         }
 
@@ -338,10 +352,13 @@ enum SafariBridge {
         process.waitUntilExit()
         watchdog.cancel()
 
-        // Only report processTimedOut when the watchdog actually fired.
-        // External signals (Ctrl+C, OOM, crash) fall through to the normal
-        // non-zero-exit path below.
-        if didTimeout.value {
+        // Only report processTimedOut when the watchdog actually fired AND the
+        // subprocess didn't exit cleanly. The extra terminationStatus check
+        // closes the μs-wide race (#19 R2-F2') where the child exits naturally
+        // in the window between the watchdog's isRunning check and the main
+        // thread observing termination — in that case terminationStatus is 0
+        // and we should treat the run as successful, not a timeout.
+        if didTimeout.value && process.terminationStatus != 0 {
             let cmdStr = ([executable] + arguments).joined(separator: " ")
             // Use ceil so sub-second timeouts don't render as "0 seconds".
             throw SafariBrowserError.processTimedOut(

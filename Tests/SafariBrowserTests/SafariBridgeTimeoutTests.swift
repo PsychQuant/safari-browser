@@ -100,6 +100,64 @@ final class SafariBridgeTimeoutTests: XCTestCase {
         }
     }
 
+    // MARK: - Round 2 follow-up: R2-F1' huge finite + R2-F1'' sub-nanosecond (#19)
+
+    func testRunShellRejectsGreatestFiniteMagnitude() async throws {
+        // `.greatestFiniteMagnitude` ≈ 1.8e308 is finite and > 0, but
+        // multiplying by 1e9 overflows to +Inf, and UInt64(.infinity) traps.
+        // Guard must reject this BEFORE the multiplication.
+        do {
+            _ = try await SafariBridge.runShell(
+                "/bin/echo",
+                ["hi"],
+                timeout: .greatestFiniteMagnitude
+            )
+            XCTFail("Expected invalidTimeout but runShell returned normally")
+        } catch let error as SafariBrowserError {
+            guard case .invalidTimeout = error else {
+                XCTFail("Expected .invalidTimeout but got \(error)")
+                return
+            }
+        }
+    }
+
+    func testRunShellRejectsExcessivelyLargeTimeout() async throws {
+        // A year's worth of seconds is clearly beyond any legitimate subprocess
+        // and pushes timeout * 1e9 perilously close to UInt64 overflow.
+        do {
+            _ = try await SafariBridge.runShell(
+                "/bin/echo",
+                ["hi"],
+                timeout: 1e300
+            )
+            XCTFail("Expected invalidTimeout but runShell returned normally")
+        } catch let error as SafariBrowserError {
+            guard case .invalidTimeout = error else {
+                XCTFail("Expected .invalidTimeout but got \(error)")
+                return
+            }
+        }
+    }
+
+    func testRunShellRejectsSubNanosecondTimeout() async throws {
+        // Sub-nanosecond positive values (< 1e-9) round to 0 nanoseconds,
+        // causing the watchdog to fire instantly. Semantically invalid —
+        // reject as invalidTimeout rather than silently SIGKILLing everything.
+        do {
+            _ = try await SafariBridge.runShell(
+                "/bin/echo",
+                ["hi"],
+                timeout: 1e-12
+            )
+            XCTFail("Expected invalidTimeout but runShell returned normally")
+        } catch let error as SafariBrowserError {
+            guard case .invalidTimeout = error else {
+                XCTFail("Expected .invalidTimeout but got \(error)")
+                return
+            }
+        }
+    }
+
     // MARK: - Signal attribution (#19 follow-up: F2)
 
     func testRunShellDoesNotReportSelfKillAsTimeout() async throws {

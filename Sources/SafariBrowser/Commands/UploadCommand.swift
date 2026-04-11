@@ -33,8 +33,11 @@ struct UploadCommand: AsyncParsableCommand {
     var timeout: Double = 60.0
 
     func validate() throws {
-        guard timeout.isFinite, timeout > 0 else {
-            throw ValidationError("--timeout must be a finite positive number, got \(timeout)")
+        // Mirror runProcessWithTimeout's bounds so invalid CLI input surfaces
+        // with a user-friendly ArgumentParser usage error before reaching the
+        // library layer (#19 R2-F1').
+        guard timeout.isFinite, timeout >= 0.001, timeout <= 86_400 else {
+            throw ValidationError("--timeout must be a finite number between 0.001 and 86400 seconds, got \(timeout)")
         }
     }
 
