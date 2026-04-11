@@ -60,11 +60,11 @@
 
 ## 9. Document discovery：`documents` subcommand
 
-- [ ] 9.1 新增 `Sources/SafariBrowser/Commands/DocumentsCommand.swift`，實作 document-listing "List all Safari documents"，對應 design decision #6「Document discovery：`documents` subcommand」
-- [ ] 9.2 [P] `DocumentsCommand` 支援 `--json` flag，實作 document-listing "Machine-readable JSON output"
-- [ ] 9.3 [P] `DocumentsCommand` 處理空 Safari 狀態（無 windows）不 throw，實作 document-listing "Empty Safari state"
-- [ ] 9.4 [P] 確保 `DocumentsCommand` 輸出格式與 `SafariBrowserError.documentNotFound` 的 `availableDocuments` 列表一致，實作 document-listing "Discovery aid for documentNotFound errors"
-- [ ] 9.5 [P] 把 `DocumentsCommand` 註冊到 `SafariBrowser.swift` 的 subcommands 清單
+- [x] 9.1 新增 `Sources/SafariBrowser/Commands/DocumentsCommand.swift`，實作 document-listing "List all Safari documents"，對應 design decision #6「Document discovery：`documents` subcommand」。同步新增 `SafariBridge.listAllDocuments()` + `DocumentInfo` struct
+- [x] 9.2 [P] `DocumentsCommand` 支援 `--json` flag，實作 document-listing "Machine-readable JSON output"
+- [x] 9.3 [P] `DocumentsCommand` 處理空 Safari 狀態（無 documents）不 throw，print 空輸出 exit 0，實作 document-listing "Empty Safari state"
+- [x] 9.4 [P] 文字輸出 `[N] url — title` 格式與 `SafariBrowserError.documentNotFound` 的 listing 一致，實作 document-listing "Discovery aid for documentNotFound errors"
+- [x] 9.5 [P] `SafariBrowser.swift` subcommands 清單新增 `DocumentsCommand.self`；`CommandParsingTests` 覆蓋 `--json` flag parsing
 
 ## 10. Backward Compatibility 驗證
 

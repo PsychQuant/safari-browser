@@ -206,12 +206,61 @@ enum SafariBridge {
             """)
     }
 
-    // MARK: - Tab Management
+    // MARK: - Document / Tab Management
 
     struct TabInfo: Sendable {
         let index: Int
         let title: String
         let url: String
+    }
+
+    /// Metadata for a Safari document, used by `listAllDocuments()` and
+    /// `DocumentsCommand` to surface targeting candidates for `--url`,
+    /// `--document`, etc. Index is 1-based and matches the AppleScript
+    /// `document N` order, which is what `TargetDocument.documentIndex`
+    /// expects.
+    struct DocumentInfo: Sendable {
+        let index: Int
+        let title: String
+        let url: String
+    }
+
+    /// List every Safari document across all windows in document-collection
+    /// order. The index each entry carries is the value users pass to
+    /// `--document N` / `TargetDocument.documentIndex(n)` (#17/#18/#21).
+    static func listAllDocuments() async throws -> [DocumentInfo] {
+        let countStr = try await runAppleScript("""
+            tell application "Safari"
+                if (count of documents) = 0 then
+                    return "0"
+                end if
+                count of documents
+            end tell
+            """)
+
+        guard let count = Int(countStr.trimmingCharacters(in: .whitespacesAndNewlines)), count > 0 else {
+            return []
+        }
+
+        var docs: [DocumentInfo] = []
+        for i in 1...count {
+            let title = try await runAppleScript("""
+                tell application "Safari"
+                    get name of document \(i)
+                end tell
+                """)
+            let url = try await runAppleScript("""
+                tell application "Safari"
+                    get URL of document \(i)
+                end tell
+                """)
+            docs.append(DocumentInfo(
+                index: i,
+                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                url: url.trimmingCharacters(in: .whitespacesAndNewlines)
+            ))
+        }
+        return docs
     }
 
     /// List all tabs of the target window. `window: nil` means the front

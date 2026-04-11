@@ -183,6 +183,18 @@ final class CommandParsingTests: XCTestCase {
             try TargetOptions.parse(["--tab", "1", "--document", "2"])
         )
     }
+
+    // MARK: - DocumentsCommand (#17/#18/#21)
+
+    func testDocumentsCommand_defaultIsText() throws {
+        let command = try DocumentsCommand.parse([])
+        XCTAssertFalse(command.json)
+    }
+
+    func testDocumentsCommand_jsonFlag() throws {
+        let command = try DocumentsCommand.parse(["--json"])
+        XCTAssertTrue(command.json)
+    }
 }
 
 // MARK: - Equatable conformance for tests
