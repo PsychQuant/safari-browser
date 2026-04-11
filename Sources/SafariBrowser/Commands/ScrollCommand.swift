@@ -12,6 +12,8 @@ struct ScrollCommand: AsyncParsableCommand {
     @Argument(help: "Pixels to scroll (default: 500)")
     var pixels: Int = 500
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let (x, y): (Int, Int) = switch direction.lowercased() {
         case "down": (0, pixels)
@@ -21,6 +23,6 @@ struct ScrollCommand: AsyncParsableCommand {
         default:
             throw ValidationError("Direction must be up, down, left, or right")
         }
-        _ = try await SafariBridge.doJavaScript("window.scrollBy(\(x), \(y))")
+        _ = try await SafariBridge.doJavaScript("window.scrollBy(\(x), \(y))", target: target.resolve())
     }
 }

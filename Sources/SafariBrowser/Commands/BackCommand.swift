@@ -6,7 +6,9 @@ struct BackCommand: AsyncParsableCommand {
         abstract: "Navigate back in history"
     )
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
-        _ = try await SafariBridge.doJavaScript("history.back()")
+        _ = try await SafariBridge.doJavaScript("history.back()", target: target.resolve())
     }
 }

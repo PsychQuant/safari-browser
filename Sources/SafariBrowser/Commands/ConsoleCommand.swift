@@ -12,7 +12,10 @@ struct ConsoleCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Clear the captured buffer")
     var clear = false
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
+        let documentTarget = target.resolve()
         if start {
             _ = try await SafariBridge.doJavaScript("""
                 (function(){
@@ -33,12 +36,13 @@ struct ConsoleCommand: AsyncParsableCommand {
                         }
                     }
                 })()
-                """)
+                """, target: documentTarget)
         } else if clear {
-            _ = try await SafariBridge.doJavaScript("window.__sbConsole = []")
+            _ = try await SafariBridge.doJavaScript("window.__sbConsole = []", target: documentTarget)
         } else {
             let result = try await SafariBridge.doJavaScript(
-                "(window.__sbConsole || []).join('\\n')"
+                "(window.__sbConsole || []).join('\\n')",
+                target: documentTarget
             )
             if !result.isEmpty {
                 print(result)

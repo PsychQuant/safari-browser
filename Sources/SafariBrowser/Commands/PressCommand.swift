@@ -9,6 +9,8 @@ struct PressCommand: AsyncParsableCommand {
     @Argument(help: "Key to press (Enter, Tab, Shift+Tab, Escape, ArrowDown). Note: modifier combos like Control+a dispatch events but don't trigger native browser shortcuts.")
     var key: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let parts = key.split(separator: "+").map(String.init)
         let keyName: String
@@ -65,6 +67,6 @@ struct PressCommand: AsyncParsableCommand {
                 return 'OK';
             })()
             """
-        _ = try await SafariBridge.doJavaScript(js)
+        _ = try await SafariBridge.doJavaScript(js, target: target.resolve())
     }
 }

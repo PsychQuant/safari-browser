@@ -19,6 +19,8 @@ struct SetMedia: AsyncParsableCommand {
     @Argument(help: "Color scheme: dark or light")
     var scheme: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         guard scheme == "dark" || scheme == "light" else {
             throw ValidationError("Scheme must be 'dark' or 'light'")
@@ -35,6 +37,6 @@ struct SetMedia: AsyncParsableCommand {
                 document.head.appendChild(style);
                 document.documentElement.style.colorScheme = '\(scheme)';
             })()
-            """)
+            """, target: target.resolve())
     }
 }

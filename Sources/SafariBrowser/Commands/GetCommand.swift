@@ -24,8 +24,10 @@ struct GetURL: AsyncParsableCommand {
         abstract: "Get the current page URL"
     )
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
-        print(try await SafariBridge.getCurrentURL())
+        print(try await SafariBridge.getCurrentURL(target: target.resolve()))
     }
 }
 
@@ -35,8 +37,10 @@ struct GetTitle: AsyncParsableCommand {
         abstract: "Get the current page title"
     )
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
-        print(try await SafariBridge.getCurrentTitle())
+        print(try await SafariBridge.getCurrentTitle(target: target.resolve()))
     }
 }
 
@@ -49,10 +53,14 @@ struct GetText: AsyncParsableCommand {
     @Argument(help: "CSS selector (optional — omit for full page text)")
     var selector: String?
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
+        let documentTarget = target.resolve()
         if let selector {
             let result = try await SafariBridge.doJavaScript(
-                "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.textContent; })()"
+                "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.textContent; })()",
+                target: documentTarget
             )
             if result == "\0NOT_FOUND" {
                 throw SafariBrowserError.elementNotFound(selector)
@@ -60,15 +68,17 @@ struct GetText: AsyncParsableCommand {
             // Check if empty is genuine or truncation
             if result.isEmpty {
                 let lenStr = try await SafariBridge.doJavaScript(
-                    "(function(){ var el = \(selector.resolveRefJS); return el ? String(el.textContent.length) : '0'; })()"
+                    "(function(){ var el = \(selector.resolveRefJS); return el ? String(el.textContent.length) : '0'; })()",
+                    target: documentTarget
                 )
                 let len = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
                 if len > 0 {
                     // Truncated — use chunked read (no re-execution)
                     _ = try await SafariBridge.doJavaScript(
-                        "(function(){ var el = \(selector.resolveRefJS); window.__sbResult = el ? el.textContent : ''; window.__sbResultLen = window.__sbResult.length; })()"
+                        "(function(){ var el = \(selector.resolveRefJS); window.__sbResult = el ? el.textContent : ''; window.__sbResultLen = window.__sbResult.length; })()",
+                        target: documentTarget
                     )
-                    print(try await SafariBridge.doJavaScriptLarge("window.__sbResult"))
+                    print(try await SafariBridge.doJavaScriptLarge("window.__sbResult", target: documentTarget))
                 }
                 // else genuinely empty — print nothing
             } else {
@@ -76,10 +86,10 @@ struct GetText: AsyncParsableCommand {
             }
         } else {
             // Try native property first
-            let nativeResult = try await SafariBridge.getCurrentText()
+            let nativeResult = try await SafariBridge.getCurrentText(target: documentTarget)
             if nativeResult.isEmpty {
                 // Fallback to JS + chunked read for large pages
-                let jsResult = try await SafariBridge.doJavaScriptLarge("document.body.innerText")
+                let jsResult = try await SafariBridge.doJavaScriptLarge("document.body.innerText", target: documentTarget)
                 print(jsResult)
             } else {
                 print(nativeResult)
@@ -94,8 +104,10 @@ struct GetSource: AsyncParsableCommand {
         abstract: "Get the current page HTML source"
     )
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
-        print(try await SafariBridge.getCurrentSource())
+        print(try await SafariBridge.getCurrentSource(target: target.resolve()))
     }
 }
 
@@ -108,9 +120,13 @@ struct GetHTML: AsyncParsableCommand {
     @Argument(help: "CSS selector")
     var selector: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
+        let documentTarget = target.resolve()
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.innerHTML; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.innerHTML; })()",
+            target: documentTarget
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
@@ -118,14 +134,16 @@ struct GetHTML: AsyncParsableCommand {
         if result.isEmpty {
             // May be truncated — check length and use chunked read
             let lenStr = try await SafariBridge.doJavaScript(
-                "(function(){ var el = \(selector.resolveRefJS); return el ? String(el.innerHTML.length) : '0'; })()"
+                "(function(){ var el = \(selector.resolveRefJS); return el ? String(el.innerHTML.length) : '0'; })()",
+                target: documentTarget
             )
             let len = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
             if len > 0 {
                 _ = try await SafariBridge.doJavaScript(
-                    "(function(){ var el = \(selector.resolveRefJS); window.__sbResult = el ? el.innerHTML : ''; window.__sbResultLen = window.__sbResult.length; })()"
+                    "(function(){ var el = \(selector.resolveRefJS); window.__sbResult = el ? el.innerHTML : ''; window.__sbResultLen = window.__sbResult.length; })()",
+                    target: documentTarget
                 )
-                print(try await SafariBridge.doJavaScriptLarge("window.__sbResult"))
+                print(try await SafariBridge.doJavaScriptLarge("window.__sbResult", target: documentTarget))
                 return
             }
         }
@@ -142,9 +160,12 @@ struct GetValue: AsyncParsableCommand {
     @Argument(help: "CSS selector")
     var selector: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.value || ''; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.value || ''; })()",
+            target: target.resolve()
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
@@ -165,9 +186,12 @@ struct GetAttr: AsyncParsableCommand {
     @Argument(help: "Attribute name")
     var name: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.getAttribute('\(name.escapedForJS)') || ''; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.getAttribute('\(name.escapedForJS)') || ''; })()",
+            target: target.resolve()
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
@@ -185,9 +209,12 @@ struct GetCount: AsyncParsableCommand {
     @Argument(help: "CSS selector")
     var selector: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "document.querySelectorAll('\(selector.escapedForJS)').length"
+            "document.querySelectorAll('\(selector.escapedForJS)').length",
+            target: target.resolve()
         )
         print(result)
     }
@@ -202,9 +229,12 @@ struct GetBox: AsyncParsableCommand {
     @Argument(help: "CSS selector")
     var selector: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; var r = el.getBoundingClientRect(); return JSON.stringify({x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}); })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; var r = el.getBoundingClientRect(); return JSON.stringify({x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}); })()",
+            target: target.resolve()
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)

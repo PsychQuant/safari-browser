@@ -22,9 +22,12 @@ struct MouseMove: AsyncParsableCommand {
     @Argument(help: "X coordinate") var x: Int
     @Argument(help: "Y coordinate") var y: Int
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
-            "document.elementFromPoint(\(x),\(y)).dispatchEvent(new MouseEvent('mousemove',{clientX:\(x),clientY:\(y),bubbles:true}))"
+            "document.elementFromPoint(\(x),\(y)).dispatchEvent(new MouseEvent('mousemove',{clientX:\(x),clientY:\(y),bubbles:true}))",
+            target: target.resolve()
         )
     }
 }
@@ -35,9 +38,12 @@ struct MouseDown: AsyncParsableCommand {
         abstract: "Dispatch mousedown event"
     )
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
-            "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))"
+            "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))",
+            target: target.resolve()
         )
     }
 }
@@ -48,9 +54,12 @@ struct MouseUp: AsyncParsableCommand {
         abstract: "Dispatch mouseup event"
     )
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
-            "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mouseup',{bubbles:true}))"
+            "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mouseup',{bubbles:true}))",
+            target: target.resolve()
         )
     }
 }
@@ -63,9 +72,12 @@ struct MouseWheel: AsyncParsableCommand {
 
     @Argument(help: "Delta Y (positive = scroll down)") var deltaY: Int
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
-            "document.dispatchEvent(new WheelEvent('wheel',{deltaY:\(deltaY),bubbles:true}))"
+            "document.dispatchEvent(new WheelEvent('wheel',{deltaY:\(deltaY),bubbles:true}))",
+            target: target.resolve()
         )
     }
 }

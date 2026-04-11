@@ -33,30 +33,30 @@
 
 ## 5. Commands Wire-up — Get / Open / JS
 
-- [ ] 5.1 `GetCommand` 的 `GetURL` / `GetTitle` / `GetText` / `GetSource` 加 `@OptionGroup var target: TargetOptions`，透傳到 SafariBridge
-- [ ] 5.2 [P] `GetCommand` 的 `GetHTML` / `GetValue` / `GetAttr` / `GetCount` / `GetBox` 同樣透傳 target，實作 element-query "Element query commands honor document targeting"
-- [ ] 5.3 [P] `OpenCommand` 加 `@OptionGroup target`；`--new-tab` 的情境 reject 非 `--window` 的 flags（對應 navigation "Open URL in new tab" scenario）
-- [ ] 5.4 [P] `JSCommand` 加 `@OptionGroup target`，透傳到 `SafariBridge.doJavaScript(_:target:)`，對應 js-execution "Execute inline JavaScript" / "Execute JavaScript from file"
+- [x] 5.1 `GetCommand` 的 `GetURL` / `GetTitle` / `GetText` / `GetSource` 加 `@OptionGroup var target: TargetOptions`，透傳到 SafariBridge
+- [x] 5.2 [P] `GetCommand` 的 `GetHTML` / `GetValue` / `GetAttr` / `GetCount` / `GetBox` 同樣透傳 target，實作 element-query "Element query commands honor document targeting"
+- [x] 5.3 [P] `OpenCommand` 加 `@OptionGroup target`；`--new-tab` 的情境 reject 非 `--window` 的 flags（對應 navigation "Open URL in new tab" scenario）
+- [x] 5.4 [P] `JSCommand` 加 `@OptionGroup target`，透傳到 `SafariBridge.doJavaScript(_:target:)`，對應 js-execution "Execute inline JavaScript" / "Execute JavaScript from file"
 
 ## 6. Commands Wire-up — Element Interaction
 
-- [ ] 6.1 `ClickCommand` / `FillCommand` / `TypeCommand` / `SelectCommand` / `HoverCommand` / `DblclickCommand` 透傳 target，實作 element-interaction "Element interaction commands honor document targeting"
-- [ ] 6.2 [P] `ScrollCommand` / `ScrollIntoViewCommand` 透傳 target
-- [ ] 6.3 [P] `PressCommand` / `FocusCommand` / `DragCommand` 透傳 target
-- [ ] 6.4 [P] `FindCommand` 透傳 target（共用 element-query 語意）
+- [x] 6.1 `ClickCommand` / `FillCommand` / `TypeCommand` / `SelectCommand` / `HoverCommand` / `DblclickCommand` 透傳 target，實作 element-interaction "Element interaction commands honor document targeting"
+- [x] 6.2 [P] `ScrollCommand` / `ScrollIntoViewCommand` 透傳 target
+- [x] 6.3 [P] `PressCommand` / `FocusCommand` / `DragCommand`（後者用 `documentTarget` 避免與 drag target 名稱衝突）透傳 target
+- [x] 6.4 [P] `FindCommand` 透傳 target（共用 element-query 語意）
 
 ## 7. Tab-management Commands Wire-up
 
-- [ ] 7.1 `TabsCommand` 加 `@OptionGroup target`；reject `--url` / `--tab` / `--document`，只接受 `--window`，對應 tab-management "List all tabs" 的 rejection scenario
-- [ ] 7.2 [P] `TabCommand`（switch）同樣只接受 `--window`，對應 tab-management "Switch to tab by index"
-- [ ] 7.3 [P] `TabCommand` 的 `new` 子命令只接受 `--window`，對應 tab-management "Open new empty tab"
+- [x] 7.1 `TabsCommand` 加 `@OptionGroup target`；reject `--url` / `--tab` / `--document`，只接受 `--window`，對應 tab-management "List all tabs" 的 rejection scenario
+- [x] 7.2 [P] `TabCommand`（switch）同樣只接受 `--window`（用 `documentTarget` 避免與 local `tabArg` 衝突），對應 tab-management "Switch to tab by index"
+- [x] 7.3 [P] `TabCommand` 的 `new` 子命令只接受 `--window`，對應 tab-management "Open new empty tab"
 
 ## 8. 其他 Commands — Transparent Pass-through
 
-- [ ] 8.1 `ScreenshotCommand` / `PdfCommand` / `UploadCommand` 加 `@OptionGroup target`（透明透傳，但文件化）— keystroke/window 操作維持 front-window
-- [ ] 8.2 [P] `SnapshotCommand` / `SnapshotPageCommand` 透傳 target
-- [ ] 8.3 [P] `CookiesCommand` / `StorageCommand` / `ConsoleCommand` 透傳 target（都是 read-only，可走 document-scoped）
-- [ ] 8.4 [P] `WaitCommand` / `ReloadCommand` / `BackCommand` / `ForwardCommand` / `CloseCommand` / `ErrorsCommand` / `HighlightCommand` / `SetCommand` 透傳 target
+- [x] 8.1 `IsCommand`（4 subcommand）/ `CheckCommand` / `UncheckCommand` 透傳 target
+- [x] 8.2 [P] `BackCommand` / `ForwardCommand` / `ReloadCommand` / `HighlightCommand` 透傳 target
+- [x] 8.3 [P] `CookiesCommand`（3 subcommand）/ `ConsoleCommand` / `ErrorsCommand` / `SetCommand`（SetMedia）/ `MouseCommand`（4 subcommand）透傳 target
+- [ ] 8.4 Deferred（complexity / CLI flag conflicts）: `UploadCommand` native path（keystroke 只能走 front-window）、`WaitCommand`（本身有 `--url` local option 與 TargetOptions 衝突）、`CloseCommand` / `ScreenshotCommand` / `PdfCommand` / `SnapshotCommand` / `StorageCommand` — 這些 transparent callers 透過 SafariBridge 的 default target 已正確運作，可留到後續補強
 
 ## 9. Document discovery：`documents` subcommand
 

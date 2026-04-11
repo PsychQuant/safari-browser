@@ -19,6 +19,8 @@ struct JSCommand: AsyncParsableCommand {
     @Argument(help: "JavaScript code to execute")
     var code: String?
 
+    @OptionGroup var target: TargetOptions
+
     func validate() throws {
         if file == nil && code == nil {
             throw ValidationError("Provide JavaScript code as an argument or use --file")
@@ -37,41 +39,40 @@ struct JSCommand: AsyncParsableCommand {
             jsCode = code!
         }
 
+        let documentTarget = target.resolve()
         let result: String
         if large || output != nil {
-            // eval() wrapping supports multi-line scripts (intentional — CLI executes user JS)
-            result = try await SafariBridge.doJavaScriptLarge("eval(\(jsCode.jsStringLiteral))")
+            // Intentional code evaluation — this CLI runs user-provided JS by design.
+            result = try await SafariBridge.doJavaScriptLarge("eval(\(jsCode.jsStringLiteral))", target: documentTarget)
         } else {
             // Wrap user code so both single expressions and multi-line scripts work.
             // eval() is intentional here — this is a browser automation CLI that executes
             // arbitrary user-provided JavaScript by design (same as browser console).
+            // Intentional code evaluation — this CLI runs user-provided JS by design.
             _ = try await SafariBridge.doJavaScript(
-                "(function(){ try { var r = '' + eval(\(jsCode.jsStringLiteral)); window.__sbLen = r.length; window.__sbResult = r; } catch(e) { window.__sbLen = -1; window.__sbResult = e.message; } })()"
+                "(function(){ try { var r = '' + eval(\(jsCode.jsStringLiteral)); window.__sbLen = r.length; window.__sbResult = r; } catch(e) { window.__sbLen = -1; window.__sbResult = e.message; } })()",
+                target: documentTarget
             )
-            let lenStr = try await SafariBridge.doJavaScript("window.__sbLen")
+            let lenStr = try await SafariBridge.doJavaScript("window.__sbLen", target: documentTarget)
             // AppleScript returns numbers as "9.0" — parse via Double then truncate
             let len = Int(Double(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
 
             if len == -1 {
-                // JS execution error
-                let errMsg = try await SafariBridge.doJavaScript("window.__sbResult")
-                _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult")
+                let errMsg = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget)
+                _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget)
                 throw SafariBrowserError.appleScriptFailed("JavaScript error: \(errMsg)")
             } else if len == 0 {
-                // Genuinely empty — no retry needed
                 result = ""
             } else {
-                // Try reading the stored result
-                let stored = try await SafariBridge.doJavaScript("window.__sbResult")
+                let stored = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget)
                 if stored.isEmpty && len > 0 {
-                    // Truncated — read via chunks (no re-execution of user JS)
-                    result = try await SafariBridge.doJavaScriptLarge("window.__sbResult")
+                    result = try await SafariBridge.doJavaScriptLarge("window.__sbResult", target: documentTarget)
                     FileHandle.standardError.write(Data("warning: output was large, used chunked read. Use --large to skip this.\n".utf8))
                 } else {
                     result = stored
                 }
             }
-            _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult")
+            _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget)
         }
 
         if let output {

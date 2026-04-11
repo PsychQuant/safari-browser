@@ -18,7 +18,10 @@ struct FindCommand: AsyncParsableCommand {
     @Argument(help: "Text for fill action (optional)")
     var actionText: String?
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
+        let documentTarget = target.resolve()
         let findJS: String = switch locator.lowercased() {
         case "text":
             """
@@ -67,7 +70,7 @@ struct FindCommand: AsyncParsableCommand {
             throw ValidationError("Locator must be text, role, label, or placeholder")
         }
 
-        let findResult = try await SafariBridge.doJavaScript(findJS)
+        let findResult = try await SafariBridge.doJavaScript(findJS, target: documentTarget)
         if findResult == "NOT_FOUND" {
             throw SafariBrowserError.elementNotFound("\(locator)=\(value)")
         }
@@ -94,7 +97,7 @@ struct FindCommand: AsyncParsableCommand {
                     if (el === topEl || el.contains(topEl) || topEl.contains(el)) return 'OK';
                     return 'OBSTRUCTED:' + topEl.tagName;
                 })()
-                """)
+                """, target: documentTarget)
             if occlusionResult.isEmpty || occlusionResult == "HIDDEN" {
                 throw SafariBrowserError.elementNotFound("\(locator)=\(value) (element found but hidden)")
             }
@@ -102,13 +105,14 @@ struct FindCommand: AsyncParsableCommand {
                 let blocker = occlusionResult.replacingOccurrences(of: "OBSTRUCTED:", with: "")
                 throw SafariBrowserError.elementNotFound("\(locator)=\(value) (element obstructed by \(blocker))")
             }
-            _ = try await SafariBridge.doJavaScript("window.__sbFound.click()")
+            _ = try await SafariBridge.doJavaScript("window.__sbFound.click()", target: documentTarget)
         case "fill":
             guard let text = actionText else {
                 throw ValidationError("fill action requires text argument")
             }
             _ = try await SafariBridge.doJavaScript(
-                "(function(){ var el = window.__sbFound; el.value = '\(text.escapedForJS)'; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); })()"
+                "(function(){ var el = window.__sbFound; el.value = '\(text.escapedForJS)'; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); })()",
+                target: documentTarget
             )
         default:
             throw ValidationError("Action must be click or fill")

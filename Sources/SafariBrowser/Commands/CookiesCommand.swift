@@ -24,19 +24,24 @@ struct CookiesGet: AsyncParsableCommand {
     @Flag(name: .long, help: "Output as JSON object")
     var json = false
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
+        let documentTarget = target.resolve()
         if let name {
             let result = try await SafariBridge.doJavaScript(
-                "(function(){ var n = '\(name.escapedForJS)'.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); var m = document.cookie.match('(?:^|; )' + n + '=([^;]*)'); return m ? decodeURIComponent(m[1]) : ''; })()"
+                "(function(){ var n = '\(name.escapedForJS)'.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); var m = document.cookie.match('(?:^|; )' + n + '=([^;]*)'); return m ? decodeURIComponent(m[1]) : ''; })()",
+                target: documentTarget
             )
             print(result)
         } else if json {
             let result = try await SafariBridge.doJavaScript(
-                "(function(){ var o = {}; document.cookie.split(';').forEach(function(c){ var p = c.trim().split('='); if (p[0]) o[p[0]] = decodeURIComponent(p.slice(1).join('=')); }); return JSON.stringify(o); })()"
+                "(function(){ var o = {}; document.cookie.split(';').forEach(function(c){ var p = c.trim().split('='); if (p[0]) o[p[0]] = decodeURIComponent(p.slice(1).join('=')); }); return JSON.stringify(o); })()",
+                target: documentTarget
             )
             print(result)
         } else {
-            print(try await SafariBridge.doJavaScript("document.cookie"))
+            print(try await SafariBridge.doJavaScript("document.cookie", target: documentTarget))
         }
     }
 }
@@ -53,9 +58,12 @@ struct CookiesSet: AsyncParsableCommand {
     @Argument(help: "Cookie value")
     var value: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
-            "document.cookie = '\(name.escapedForJS)=\(value.escapedForJS); path=/'"
+            "document.cookie = '\(name.escapedForJS)=\(value.escapedForJS); path=/'",
+            target: target.resolve()
         )
     }
 }
@@ -66,9 +74,12 @@ struct CookiesClear: AsyncParsableCommand {
         abstract: "Clear all cookies for the current domain"
     )
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
-            "(function(){ document.cookie.split(';').forEach(function(c){ var n = c.split('=')[0].trim(); document.cookie = n + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'; }); })()"
+            "(function(){ document.cookie.split(';').forEach(function(c){ var n = c.split('=')[0].trim(); document.cookie = n + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'; }); })()",
+            target: target.resolve()
         )
     }
 }

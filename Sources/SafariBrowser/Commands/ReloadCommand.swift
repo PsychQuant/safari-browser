@@ -6,7 +6,9 @@ struct ReloadCommand: AsyncParsableCommand {
         abstract: "Reload the current page"
     )
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
-        _ = try await SafariBridge.doJavaScript("location.reload()")
+        _ = try await SafariBridge.doJavaScript("location.reload()", target: target.resolve())
     }
 }

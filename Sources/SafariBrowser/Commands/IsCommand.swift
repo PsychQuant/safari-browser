@@ -22,9 +22,12 @@ struct IsVisible: AsyncParsableCommand {
     @Argument(help: "CSS selector")
     var selector: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; var r = el.getBoundingClientRect(); var s = getComputedStyle(el); return (r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden') ? 'true' : 'false'; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; var r = el.getBoundingClientRect(); var s = getComputedStyle(el); return (r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden') ? 'true' : 'false'; })()",
+            target: target.resolve()
         )
         print(result)
     }
@@ -39,9 +42,12 @@ struct IsExists: AsyncParsableCommand {
     @Argument(help: "CSS selector")
     var selector: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "\(selector.resolveRefJS) !== null ? 'true' : 'false'"
+            "\(selector.resolveRefJS) !== null ? 'true' : 'false'",
+            target: target.resolve()
         )
         print(result)
     }
@@ -56,9 +62,12 @@ struct IsEnabled: AsyncParsableCommand {
     @Argument(help: "CSS selector")
     var selector: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return !el.disabled ? 'true' : 'false'; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return !el.disabled ? 'true' : 'false'; })()",
+            target: target.resolve()
         )
         print(result)
     }
@@ -73,9 +82,12 @@ struct IsChecked: AsyncParsableCommand {
     @Argument(help: "CSS selector")
     var selector: String
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
-            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return el.checked ? 'true' : 'false'; })()"
+            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return el.checked ? 'true' : 'false'; })()",
+            target: target.resolve()
         )
         print(result)
     }

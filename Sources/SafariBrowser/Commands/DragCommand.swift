@@ -12,6 +12,11 @@ struct DragCommand: AsyncParsableCommand {
     @Argument(help: "Target CSS selector or @ref")
     var target: String
 
+    // Property uses a different name to avoid colliding with the `target`
+    // drag-target argument. The @OptionGroup attribute macro still surfaces
+    // --url / --window / --tab / --document at the CLI level.
+    @OptionGroup var documentTarget: TargetOptions
+
     func run() async throws {
         let result = try await SafariBridge.doJavaScript("""
             (function(){
@@ -26,7 +31,7 @@ struct DragCommand: AsyncParsableCommand {
                 src.dispatchEvent(new DragEvent('dragend', {bubbles: true, dataTransfer: dt}));
                 return 'OK';
             })()
-            """)
+            """, target: documentTarget.resolve())
         if result == "SRC_NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(source)
         }
