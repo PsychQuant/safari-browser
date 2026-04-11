@@ -129,4 +129,77 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertTrue(command.allowHid)
         XCTAssertFalse(command.js)
     }
+
+    // MARK: - TargetOptions (#17/#18/#21)
+
+    func testTargetOptions_defaultIsFrontWindow() throws {
+        let options = try TargetOptions.parse([])
+        XCTAssertNil(options.url)
+        XCTAssertNil(options.window)
+        XCTAssertNil(options.tab)
+        XCTAssertNil(options.document)
+        XCTAssertEqual(options.resolve(), .frontWindow)
+    }
+
+    func testTargetOptions_urlFlag() throws {
+        let options = try TargetOptions.parse(["--url", "plaud"])
+        XCTAssertEqual(options.url, "plaud")
+        XCTAssertEqual(options.resolve(), .urlContains("plaud"))
+    }
+
+    func testTargetOptions_windowFlag() throws {
+        let options = try TargetOptions.parse(["--window", "2"])
+        XCTAssertEqual(options.window, 2)
+        XCTAssertEqual(options.resolve(), .windowIndex(2))
+    }
+
+    func testTargetOptions_tabFlag() throws {
+        // --tab is an alias for --document; both resolve to documentIndex
+        let options = try TargetOptions.parse(["--tab", "3"])
+        XCTAssertEqual(options.tab, 3)
+        XCTAssertEqual(options.resolve(), .documentIndex(3))
+    }
+
+    func testTargetOptions_documentFlag() throws {
+        let options = try TargetOptions.parse(["--document", "1"])
+        XCTAssertEqual(options.document, 1)
+        XCTAssertEqual(options.resolve(), .documentIndex(1))
+    }
+
+    func testTargetOptions_mutuallyExclusiveFlagsRejected() {
+        XCTAssertThrowsError(
+            try TargetOptions.parse(["--url", "plaud", "--window", "2"])
+        )
+    }
+
+    func testTargetOptions_urlAndDocumentMutuallyExclusive() {
+        XCTAssertThrowsError(
+            try TargetOptions.parse(["--url", "plaud", "--document", "2"])
+        )
+    }
+
+    func testTargetOptions_tabAndDocumentMutuallyExclusive() {
+        XCTAssertThrowsError(
+            try TargetOptions.parse(["--tab", "1", "--document", "2"])
+        )
+    }
+}
+
+// MARK: - Equatable conformance for tests
+
+extension SafariBridge.TargetDocument: Equatable {
+    public static func == (lhs: SafariBridge.TargetDocument, rhs: SafariBridge.TargetDocument) -> Bool {
+        switch (lhs, rhs) {
+        case (.frontWindow, .frontWindow):
+            return true
+        case (.windowIndex(let l), .windowIndex(let r)):
+            return l == r
+        case (.urlContains(let l), .urlContains(let r)):
+            return l == r
+        case (.documentIndex(let l), .documentIndex(let r)):
+            return l == r
+        default:
+            return false
+        }
+    }
 }

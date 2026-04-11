@@ -54,6 +54,41 @@ final class ErrorsTests: XCTestCase {
         )
     }
 
+    func testDocumentNotFound() {
+        let error = SafariBrowserError.documentNotFound(
+            pattern: "plud",
+            availableDocuments: [
+                "https://web.plaud.ai/",
+                "https://platform.claude.com/oauth/",
+            ]
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(
+            description.contains("plud"),
+            "Expected pattern in description, got: \(description)"
+        )
+        XCTAssertTrue(
+            description.contains("https://web.plaud.ai/"),
+            "Expected first available document in description, got: \(description)"
+        )
+        XCTAssertTrue(
+            description.contains("https://platform.claude.com/oauth/"),
+            "Expected second available document in description, got: \(description)"
+        )
+    }
+
+    func testDocumentNotFoundWithEmptyList() {
+        let error = SafariBrowserError.documentNotFound(
+            pattern: "xyz",
+            availableDocuments: []
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(
+            description.contains("xyz"),
+            "Expected pattern in description, got: \(description)"
+        )
+    }
+
     func testSystemEventsNotResponding() {
         let error = SafariBrowserError.systemEventsNotResponding(underlying: "probe timed out after 2 seconds")
         let description = error.errorDescription ?? ""

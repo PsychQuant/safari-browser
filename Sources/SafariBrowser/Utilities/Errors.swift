@@ -8,6 +8,7 @@ enum SafariBrowserError: LocalizedError {
     case processTimedOut(command: String, seconds: Int)
     case invalidTimeout(Double)
     case systemEventsNotResponding(underlying: String)
+    case documentNotFound(pattern: String, availableDocuments: [String])
     case noSafariWindow
     case elementNotFound(String)
 
@@ -34,6 +35,21 @@ enum SafariBrowserError: LocalizedError {
                 Try restarting it manually: killall "System Events" (launchd will relaunch it on the next Apple Event)
                 Note: this will interrupt other active System Events automation (Keyboard Maestro, Alfred, Shortcuts, etc.).
                 Underlying: \(underlying)
+                """
+        case .documentNotFound(let pattern, let availableDocuments):
+            let listing: String
+            if availableDocuments.isEmpty {
+                listing = "  (no Safari documents are currently open)"
+            } else {
+                listing = availableDocuments.enumerated()
+                    .map { "  [\($0.offset + 1)] \($0.element)" }
+                    .joined(separator: "\n")
+            }
+            return """
+                No Safari document matches "\(pattern)".
+                Available documents:
+                \(listing)
+                Run `safari-browser documents` to list documents, or use a different --url / --window / --document value.
                 """
         case .noSafariWindow:
             return "No Safari window found"

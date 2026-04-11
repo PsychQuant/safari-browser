@@ -3,6 +3,45 @@ import CoreGraphics
 import Foundation
 
 enum SafariBridge {
+    // MARK: - Document Targeting (#17/#18/#21)
+
+    /// Selects which Safari document a command should operate on. Every case
+    /// resolves to a concrete AppleScript document reference via
+    /// `resolveDocumentReference(_:)`, which is safe to interpolate into a
+    /// `tell application "Safari"` block.
+    ///
+    /// The default `.frontWindow` resolves to `document 1` rather than
+    /// `current tab of front window` so that read-only queries bypass
+    /// modal-sheet blocks on the front window (#21).
+    enum TargetDocument: Sendable {
+        case frontWindow
+        case windowIndex(Int)
+        case urlContains(String)
+        case documentIndex(Int)
+    }
+
+    /// Translate a `TargetDocument` into a Safari AppleScript document
+    /// reference expression. The returned string is designed to replace
+    /// `document 1` (or equivalently `current tab of front window`) inside
+    /// any `tell application "Safari" to ...` block.
+    ///
+    /// URL patterns are escaped via `escapedForAppleScript` so that quotes
+    /// and backslashes in user input cannot break out of the AppleScript
+    /// string literal.
+    static func resolveDocumentReference(_ target: TargetDocument) -> String {
+        switch target {
+        case .frontWindow:
+            return "document 1"
+        case .windowIndex(let n):
+            return "document of window \(n)"
+        case .urlContains(let pattern):
+            let escaped = pattern.escapedForAppleScript
+            return #"first document whose URL contains "\#(escaped)""#
+        case .documentIndex(let n):
+            return "document \(n)"
+        }
+    }
+
     // MARK: - Navigation
 
     static func openURL(_ url: String) async throws {
@@ -60,24 +99,34 @@ enum SafariBridge {
 
     // MARK: - JavaScript
 
-    static func doJavaScript(_ code: String) async throws -> String {
-        try await runAppleScript("""
+    static func doJavaScript(
+        _ code: String,
+        target: TargetDocument = .frontWindow
+    ) async throws -> String {
+        let docRef = resolveDocumentReference(target)
+        return try await runAppleScript("""
             tell application "Safari"
-                do JavaScript "\(code.escapedForAppleScript)" in current tab of front window
+                do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
             end tell
             """)
     }
 
     /// Execute JS and read large results via chunked transfer.
     /// Stores result in window.__sbResult, then reads back in 256KB chunks.
-    static func doJavaScriptLarge(_ code: String) async throws -> String {
+    /// All chunks are read from the same target document so results stay
+    /// consistent across multi-document Safari sessions.
+    static func doJavaScriptLarge(
+        _ code: String,
+        target: TargetDocument = .frontWindow
+    ) async throws -> String {
         // Store result in window variable
         _ = try await doJavaScript(
-            "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()"
+            "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()",
+            target: target
         )
 
         // Get total length
-        let lenStr = try await doJavaScript("window.__sbResultLen")
+        let lenStr = try await doJavaScript("window.__sbResultLen", target: target)
         guard let totalLen = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)), totalLen > 0 else {
             return ""
         }
@@ -88,47 +137,61 @@ enum SafariBridge {
         var offset = 0
         while offset < totalLen {
             let end = min(offset + chunkSize, totalLen)
-            let chunk = try await doJavaScript("window.__sbResult.substring(\(offset), \(end))")
+            let chunk = try await doJavaScript(
+                "window.__sbResult.substring(\(offset), \(end))",
+                target: target
+            )
             result += chunk
             offset = end
         }
 
         // Cleanup
-        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen")
+        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen", target: target)
 
         return result
     }
 
     // MARK: - Page Info
 
-    static func getCurrentURL() async throws -> String {
-        try await runAppleScript("""
+    /// Read the URL of the target document. Uses a document-scoped
+    /// AppleScript reference (via `resolveDocumentReference`) so the query
+    /// bypasses any modal file dialog sheet blocking Safari's front window
+    /// (#21).
+    static func getCurrentURL(target: TargetDocument = .frontWindow) async throws -> String {
+        let docRef = resolveDocumentReference(target)
+        return try await runAppleScript("""
             tell application "Safari"
-                get URL of current tab of front window
+                get URL of \(docRef)
             end tell
             """)
     }
 
-    static func getCurrentTitle() async throws -> String {
-        try await runAppleScript("""
+    /// Read the title of the target document. Document-scoped for modal bypass (#21).
+    static func getCurrentTitle(target: TargetDocument = .frontWindow) async throws -> String {
+        let docRef = resolveDocumentReference(target)
+        return try await runAppleScript("""
             tell application "Safari"
-                get name of current tab of front window
+                get name of \(docRef)
             end tell
             """)
     }
 
-    static func getCurrentText() async throws -> String {
-        try await runAppleScript("""
+    /// Read the plain-text content of the target document. Document-scoped for modal bypass (#21).
+    static func getCurrentText(target: TargetDocument = .frontWindow) async throws -> String {
+        let docRef = resolveDocumentReference(target)
+        return try await runAppleScript("""
             tell application "Safari"
-                get text of current tab of front window
+                get text of \(docRef)
             end tell
             """)
     }
 
-    static func getCurrentSource() async throws -> String {
-        try await runAppleScript("""
+    /// Read the HTML source of the target document. Document-scoped for modal bypass (#21).
+    static func getCurrentSource(target: TargetDocument = .frontWindow) async throws -> String {
+        let docRef = resolveDocumentReference(target)
+        return try await runAppleScript("""
             tell application "Safari"
-                get source of current tab of front window
+                get source of \(docRef)
             end tell
             """)
     }
