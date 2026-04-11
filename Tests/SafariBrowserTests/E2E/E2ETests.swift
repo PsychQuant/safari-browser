@@ -3,17 +3,28 @@ import XCTest
 /// E2E tests that invoke the safari-browser binary and require Safari to be running.
 /// These tests use Process to call the CLI directly.
 ///
-/// Run manually: swift test --filter E2ETests
-/// Requires: Safari running, Accessibility permissions granted, binary installed at ~/bin/safari-browser
+/// Opt-in only: set `RUN_E2E=1` to run them. By default they are skipped so
+/// plain `swift test` never activates Safari or steals focus from the user
+/// (#22). This mirrors the non-interference principle in
+/// `openspec/specs/non-interference/spec.md`.
 ///
+///   RUN_E2E=1 swift test --filter E2ETests
+///
+/// Requires: Safari running, Accessibility permissions granted, binary
+/// installed at `~/bin/safari-browser`.
 /// NOTE: These tests may fail in sandboxed environments (Xcode, swift test via IDE).
 /// Run from Terminal directly for best results.
 final class E2ETests: XCTestCase {
 
     override class var defaultTestSuite: XCTestSuite {
-        // Skip E2E tests when running in CI or when SKIP_E2E is set
-        if ProcessInfo.processInfo.environment["SKIP_E2E"] != nil {
-            return XCTestSuite(name: "E2ETests (skipped)")
+        // Default to skipped — see class docstring and #22.
+        // SKIP_E2E is kept as an explicit opt-out for callers that previously
+        // relied on it; RUN_E2E=1 is the new opt-in.
+        let env = ProcessInfo.processInfo.environment
+        let isOptIn = env["RUN_E2E"] == "1"
+        let isOptedOut = env["SKIP_E2E"] != nil
+        guard isOptIn, !isOptedOut else {
+            return XCTestSuite(name: "E2ETests (skipped — set RUN_E2E=1 to run)")
         }
         return super.defaultTestSuite
     }
