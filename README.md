@@ -172,10 +172,55 @@ safari-browser upload --js <sel> <file>  # JS DataTransfer injection (no permiss
 ### Tab Management
 
 ```bash
-safari-browser tabs [--json]           # list all tabs
+safari-browser tabs [--json]           # list all tabs (front window)
+safari-browser --window 2 tabs         # list tabs of window 2
 safari-browser tab <n>                 # switch to tab
 safari-browser tab new                 # new tab
+safari-browser --window 2 tab new      # new tab in window 2
 ```
+
+### Multi-window Targeting (#17 #18 #21)
+
+When Safari has more than one window, every subcommand that reads from or
+drives a document accepts one of four mutually exclusive global flags:
+
+```bash
+safari-browser --url <pattern> <cmd>   # first document whose URL contains pattern
+safari-browser --window <n> <cmd>      # current document of the Nth window (1-indexed)
+safari-browser --tab <n> <cmd>         # document N (alias for --document)
+safari-browser --document <n> <cmd>    # document N in Safari's document collection
+```
+
+Without any flag, commands default to `document 1` — equivalent to
+`current tab of front window` in single-window usage, so existing scripts
+keep working unchanged. Read-only queries (`get url`, `get title`,
+`get source`, `js`, etc.) use document-scoped access so they still return
+even when the front window has a modal file dialog sheet open (the
+classic `#21` hang).
+
+```bash
+# Discover which documents are currently open
+safari-browser documents                # [1] https://… — title (per line)
+safari-browser documents --json         # machine-readable [{index, url, title}]
+
+# Target by URL substring (most common)
+safari-browser --url plaud get url      # https://web.plaud.ai/
+safari-browser --url plaud click "button.upload"
+safari-browser --url plaud js "document.title"
+
+# Target by window or document index
+safari-browser --window 2 get title
+safari-browser --document 3 fill "input#email" "user@example.com"
+```
+
+`tabs`, `tab <n>`, `tab new`, `open --new-tab`, and `open --new-window`
+only accept `--window` because they are window-level UI operations;
+supplying `--url`, `--tab`, or `--document` is rejected with a usage
+error. URL matching is case-sensitive (AppleScript's native behavior).
+Substring match — no regex — so `--url plaud` matches any URL containing
+"plaud". If no document matches, you get a `documentNotFound` error
+whose description lists every currently open document so you can fix
+the pattern without running another command.
 
 ### Wait
 

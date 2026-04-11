@@ -68,24 +68,24 @@
 
 ## 10. Backward Compatibility 驗證
 
-- [ ] 10.1 確認所有 SafariBridge public API 的新 `target:` 參數都有 `.frontWindow` 預設值，對應 document-targeting "Backward compatibility with existing scripts"
-- [ ] 10.2 [P] `grep` 確認 `Sources/` 沒有任何殘留的 `current tab of front window`（除了明確保留 keystroke/window 操作的地方）
-- [ ] 10.3 [P] 新增測試 `testSingleWindowDefaultMatchesLegacy`：在模擬單視窗環境下，預設 `get url` 行為與舊版 `current tab of front window` 一致
+- [x] 10.1 確認所有 SafariBridge public API 的新 `target:` 參數都有 `.frontWindow` 預設值；driver grep 確認 `runShell`/`runAppleScript` 通過所有 callers
+- [x] 10.2 [P] `grep "current tab of front window"` 確認僅剩 intentional window-scoped operations：`closeCurrentTab`, `getWindowID`, `navigateFileDialog`, `uploadViaNativeDialog`, `pdfExport`, `ScreenshotCommand` — 全部是 design decision #5 明確允許的
+- [x] 10.3 [P] 新增 `testFrontWindowProducesLegacyEquivalentReference` 鎖定預設 target = `document 1`，且**不**含 `front window` / `current tab`（防止 future refactor 誤改）
 
 ## 11. 測試
 
-- [ ] 11.1 `SafariBridgeTargetTests.swift` 覆蓋 `TargetDocument` 解析所有 case，含 URL 含特殊字元的 escape
-- [ ] 11.2 [P] `CommandParsingTests.swift` 新增 `TargetOptions` 互斥驗證、各 subcommand 的 target 繼承測試
-- [ ] 11.3 [P] `ErrorsTests.swift` 新增 `testDocumentNotFound`：驗證 description 包含 pattern + availableDocuments 列表
-- [ ] 11.4 [P] 新增整合測試 mock 多 document 環境，驗證 `--url` / `--window` / `--document` 各自 route 到正確 document
-- [ ] 11.5 [P] 新增 modal sheet bypass 測試：驗證 read-only query 在 front window 有 sheet 時仍 return
+- [x] 11.1 `SafariBridgeTargetTests.swift` 覆蓋 `TargetDocument` 四個 case、URL 特殊字元 escape（雙引號、backslash、unicode、空 pattern）、`Sendable` conformance
+- [x] 11.2 [P] `CommandParsingTests.swift` 覆蓋 `TargetOptions` 互斥驗證 + `DocumentsCommand --json` flag parsing
+- [x] 11.3 [P] `ErrorsTests.swift` 的 `testDocumentNotFound` 驗證 description 包含 pattern + availableDocuments 列表 + 空 list 情境
+- [ ] 11.4 [P] 整合測試 mock 多 document 環境 — **deferred**：SafariBridge 的 `runAppleScript` 沒有注入 seam，真實多 document 測試需要 Safari 實例，留到 Phase 13 手動驗證
+- [ ] 11.5 [P] Modal sheet bypass 測試 — **deferred**：同上，無法在 unit test 重現 modal，留到 Phase 13 手動驗證
 
 ## 12. 文件
 
-- [ ] 12.1 `README.md` 新增「Multi-window scenarios」段落，示範 `--url` 用法
-- [ ] 12.2 [P] `CHANGELOG.md` `Unreleased` 區塊新增完整 #17 / #18 / #21 解決的描述，含 Migration Plan 的 subtle behavior change 說明
-- [ ] 12.3 [P] `CLAUDE.md` 更新 safari-browser plugin 指引，建議 AI agents 在多視窗環境用 `--url` 明確 target
-- [ ] 12.4 [P] 在 `README.md` 新增 `documents` subcommand 使用範例
+- [x] 12.1 `README.md` 新增「Multi-window Targeting (#17 #18 #21)」段落，示範 `--url` / `--window` / `--tab` / `--document` 用法與互斥規則
+- [x] 12.2 [P] `CHANGELOG.md` `Unreleased` 區塊新增 #17/#18/#21 主條目 + `documents` subcommand 獨立條目
+- [x] 12.3 [P] `CLAUDE.md` 新增「Multi-window / Multi-document targeting」段落，明確建議 AI agent 先跑 `documents` 再用 `--url`
+- [x] 12.4 [P] `README.md` 的「Tab Management」段落示範 `--window` override；新 targeting 段落含 `documents` subcommand 使用範例
 
 ## 13. 最終驗證 — Risks / Trade-offs 確認
 
