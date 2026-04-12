@@ -36,9 +36,52 @@ enum SafariBridge {
             return "document of window \(n)"
         case .urlContains(let pattern):
             let escaped = pattern.escapedForAppleScript
-            return #"first document whose URL contains "\#(escaped)""#
+            return "(first document whose URL contains \"\(escaped)\")"
         case .documentIndex(let n):
             return "document \(n)"
+        }
+    }
+
+    /// Run an AppleScript against a target document, translating "not found"
+    /// errors from `.urlContains` / `.windowIndex` / `.documentIndex` into
+    /// the user-friendly `documentNotFound` error that lists all available
+    /// Safari documents. Without this wrapper, the user would see a raw
+    /// AppleScript error like "Can't get first document whose URL contains...".
+    private static func runTargetedAppleScript(
+        _ script: String,
+        target: TargetDocument,
+        timeout: TimeInterval = SafariBridge.defaultProcessTimeout
+    ) async throws -> String {
+        do {
+            return try await runAppleScript(script, timeout: timeout)
+        } catch let error as SafariBrowserError {
+            // Only translate when the error is plausibly "document not found"
+            // from a non-default target. AppleScript uses error codes -1719
+            // (invalid index) and -1728 (object not found) for missing
+            // documents. We also match localized error strings.
+            if case .frontWindow = target {
+                // Default target: propagate as-is (backward compat).
+                throw error
+            }
+            if case .appleScriptFailed(let msg) = error,
+               msg.contains("-1719") || msg.contains("-1728") || msg.contains("Can't get") || msg.contains("無法取得") {
+                let docs = (try? await listAllDocuments()) ?? []
+                throw SafariBrowserError.documentNotFound(
+                    pattern: targetDescription(target),
+                    availableDocuments: docs.map { $0.url }
+                )
+            }
+            throw error
+        }
+    }
+
+    /// Human-readable description of a target for error messages.
+    private static func targetDescription(_ target: TargetDocument) -> String {
+        switch target {
+        case .frontWindow: return "document 1 (default)"
+        case .windowIndex(let n): return "window \(n)"
+        case .urlContains(let pattern): return pattern
+        case .documentIndex(let n): return "document \(n)"
         }
     }
 
@@ -114,11 +157,11 @@ enum SafariBridge {
         target: TargetDocument = .frontWindow
     ) async throws -> String {
         let docRef = resolveDocumentReference(target)
-        return try await runAppleScript("""
+        return try await runTargetedAppleScript("""
             tell application "Safari"
                 do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
             end tell
-            """)
+            """, target: target)
     }
 
     /// Execute JS and read large results via chunked transfer.
@@ -169,41 +212,41 @@ enum SafariBridge {
     /// (#21).
     static func getCurrentURL(target: TargetDocument = .frontWindow) async throws -> String {
         let docRef = resolveDocumentReference(target)
-        return try await runAppleScript("""
+        return try await runTargetedAppleScript("""
             tell application "Safari"
                 get URL of \(docRef)
             end tell
-            """)
+            """, target: target)
     }
 
     /// Read the title of the target document. Document-scoped for modal bypass (#21).
     static func getCurrentTitle(target: TargetDocument = .frontWindow) async throws -> String {
         let docRef = resolveDocumentReference(target)
-        return try await runAppleScript("""
+        return try await runTargetedAppleScript("""
             tell application "Safari"
                 get name of \(docRef)
             end tell
-            """)
+            """, target: target)
     }
 
     /// Read the plain-text content of the target document. Document-scoped for modal bypass (#21).
     static func getCurrentText(target: TargetDocument = .frontWindow) async throws -> String {
         let docRef = resolveDocumentReference(target)
-        return try await runAppleScript("""
+        return try await runTargetedAppleScript("""
             tell application "Safari"
                 get text of \(docRef)
             end tell
-            """)
+            """, target: target)
     }
 
     /// Read the HTML source of the target document. Document-scoped for modal bypass (#21).
     static func getCurrentSource(target: TargetDocument = .frontWindow) async throws -> String {
         let docRef = resolveDocumentReference(target)
-        return try await runAppleScript("""
+        return try await runTargetedAppleScript("""
             tell application "Safari"
                 get source of \(docRef)
             end tell
-            """)
+            """, target: target)
     }
 
     // MARK: - Document / Tab Management

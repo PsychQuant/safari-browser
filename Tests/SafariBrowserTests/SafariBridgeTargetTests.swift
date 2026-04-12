@@ -31,19 +31,19 @@ final class SafariBridgeTargetTests: XCTestCase {
 
     func testUrlContainsResolvesWithQuotedPattern() {
         let reference = SafariBridge.resolveDocumentReference(.urlContains("plaud"))
-        XCTAssertEqual(reference, #"first document whose URL contains "plaud""#)
+        XCTAssertEqual(reference, #"(first document whose URL contains "plaud")"#)
     }
 
     func testUrlContainsEscapesDoubleQuotes() {
         // If the pattern contains a double quote, it must be AppleScript-escaped
         // (\" inside an AppleScript string literal) to avoid breaking the tell block.
         let reference = SafariBridge.resolveDocumentReference(.urlContains(#"example"dquote"#))
-        XCTAssertEqual(reference, #"first document whose URL contains "example\"dquote""#)
+        XCTAssertEqual(reference, #"(first document whose URL contains "example\"dquote")"#)
     }
 
     func testUrlContainsEscapesBackslashes() {
         let reference = SafariBridge.resolveDocumentReference(.urlContains(#"path\subdir"#))
-        XCTAssertEqual(reference, #"first document whose URL contains "path\\subdir""#)
+        XCTAssertEqual(reference, #"(first document whose URL contains "path\\subdir")"#)
     }
 
     // MARK: - TargetDocument.documentIndex
@@ -105,25 +105,17 @@ final class SafariBridgeTargetTests: XCTestCase {
     // MARK: - URL pattern with special characters (#17/#18)
 
     func testUrlContainsWithEmptyPattern() {
-        // An empty pattern matches any document with any URL (including about:blank),
-        // which is probably not what the user wants but is valid AppleScript.
-        // Users should normally hit the error path from `documentNotFound` with
-        // a non-matching pattern — document this by confirming the reference is
-        // still well-formed.
         let reference = SafariBridge.resolveDocumentReference(.urlContains(""))
-        XCTAssertEqual(reference, #"first document whose URL contains """#)
+        XCTAssertEqual(reference, #"(first document whose URL contains "")"#)
     }
 
     func testUrlContainsWithUnicodePattern() {
-        // CJK / emoji patterns should pass through unchanged as long as no
-        // double quotes or backslashes are involved.
         let reference = SafariBridge.resolveDocumentReference(.urlContains("日本語"))
-        XCTAssertEqual(reference, #"first document whose URL contains "日本語""#)
+        XCTAssertEqual(reference, #"(first document whose URL contains "日本語")"#)
     }
 
     func testUrlContainsWithMultipleSpecialChars() {
-        // Combined backslash + double quote should both be escaped.
         let reference = SafariBridge.resolveDocumentReference(.urlContains(#"a\b"c"#))
-        XCTAssertEqual(reference, #"first document whose URL contains "a\\b\"c""#)
+        XCTAssertEqual(reference, #"(first document whose URL contains "a\\b\"c")"#)
     }
 }

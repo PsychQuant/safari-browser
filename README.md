@@ -173,10 +173,10 @@ safari-browser upload --js <sel> <file>  # JS DataTransfer injection (no permiss
 
 ```bash
 safari-browser tabs [--json]           # list all tabs (front window)
-safari-browser --window 2 tabs         # list tabs of window 2
+safari-browser tabs --window 2         # list tabs of window 2
 safari-browser tab <n>                 # switch to tab
 safari-browser tab new                 # new tab
-safari-browser --window 2 tab new      # new tab in window 2
+safari-browser tab new --window 2      # new tab in window 2
 ```
 
 ### Multi-window Targeting (#17 #18 #21)
@@ -185,10 +185,10 @@ When Safari has more than one window, every subcommand that reads from or
 drives a document accepts one of four mutually exclusive global flags:
 
 ```bash
-safari-browser --url <pattern> <cmd>   # first document whose URL contains pattern
-safari-browser --window <n> <cmd>      # current document of the Nth window (1-indexed)
-safari-browser --tab <n> <cmd>         # document N (alias for --document)
-safari-browser --document <n> <cmd>    # document N in Safari's document collection
+safari-browser <cmd> --url <pattern>   # first document whose URL contains pattern
+safari-browser <cmd> --window <n>      # current document of the Nth window (1-indexed)
+safari-browser <cmd> --tab <n>         # document N (alias for --document)
+safari-browser <cmd> --document <n>    # document N in Safari's document collection
 ```
 
 Without any flag, commands default to `document 1` — equivalent to
@@ -204,13 +204,13 @@ safari-browser documents                # [1] https://… — title (per line)
 safari-browser documents --json         # machine-readable [{index, url, title}]
 
 # Target by URL substring (most common)
-safari-browser --url plaud get url      # https://web.plaud.ai/
-safari-browser --url plaud click "button.upload"
-safari-browser --url plaud js "document.title"
+safari-browser get url --url plaud      # https://web.plaud.ai/
+safari-browser click "button.upload" --url plaud
+safari-browser js "document.title" --url plaud
 
 # Target by window or document index
-safari-browser --window 2 get title
-safari-browser --document 3 fill "input#email" "user@example.com"
+safari-browser get title --window 2
+safari-browser fill "input#email" "user@example.com" --document 3
 ```
 
 `tabs`, `tab <n>`, `tab new`, `open --new-tab`, and `open --new-window`

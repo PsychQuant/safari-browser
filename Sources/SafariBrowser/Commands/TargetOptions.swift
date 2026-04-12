@@ -50,6 +50,19 @@ struct TargetOptions: ParsableArguments {
                 "The targeting flags \(providedFlags.joined(separator: ", ")) are mutually exclusive — pick one."
             )
         }
+
+        // Index flags must be positive (1-indexed per AppleScript convention).
+        // document 0 / window 0 / tab 0 produce AppleScript runtime errors
+        // that surface as opaque appleScriptFailed messages — fail fast here.
+        if let w = window, w < 1 {
+            throw ValidationError("--window must be >= 1 (1-indexed), got \(w)")
+        }
+        if let t = tab, t < 1 {
+            throw ValidationError("--tab must be >= 1 (1-indexed), got \(t)")
+        }
+        if let d = document, d < 1 {
+            throw ValidationError("--document must be >= 1 (1-indexed), got \(d)")
+        }
     }
 
     /// Convert the parsed flags into a `TargetDocument`. Callers pass the

@@ -56,9 +56,9 @@ Claude Code plugin 位於另一個 repo：
 safari-browser documents
 
 # 針對特定 document
-safari-browser --url plaud get url
-safari-browser --url plaud click "button.upload"
-safari-browser --window 2 get title
+safari-browser get url --url plaud
+safari-browser click "button.upload" --url plaud
+safari-browser get title --window 2
 ```
 
 **規則**：
