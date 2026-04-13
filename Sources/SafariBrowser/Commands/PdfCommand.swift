@@ -13,7 +13,13 @@ struct PdfCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Allow keyboard/mouse simulation (required for PDF export)")
     var allowHid = false
 
-    @OptionGroup var windowTarget: WindowOnlyTargetOptions
+    /// #26: pdf now accepts the full TargetOptions (`--url`, `--tab`,
+    /// `--document`, `--window`). The native-path resolver maps each
+    /// targeting flag to a physical window + tab-in-window. When the
+    /// target is a background tab, `performTabSwitchIfNeeded` brings it
+    /// to the front of its window before the PDF export menu/dialog
+    /// keystroke sequence runs.
+    @OptionGroup var target: TargetOptions
 
     func run() async throws {
         guard allowHid else {
@@ -30,30 +36,41 @@ struct PdfCommand: AsyncParsableCommand {
         let absolutePath = (path as NSString).standardizingPath
         let fullPath = absolutePath.hasPrefix("/") ? absolutePath : FileManager.default.currentDirectoryPath + "/" + path
 
-        // #23: PDF export is keystroke-driven and inherently window-scoped —
-        // menu clicks and sheet waits resolve against whichever window we
-        // put in front. When --window N is supplied, raise that window to
-        // the front before activating Safari, so both `click menu item`
-        // and `sheet 1 of front window` land on the requested window.
-        let windowIndex = windowTarget.window
-        // #23 verify R1→R2: preflight the window so a bad `--window 99`
-        // surfaces `documentNotFound` with the available-docs listing
-        // BEFORE we print the keyboard-takeover warning and touch
-        // System Events. R2 moves the preflight ahead of the stderr
-        // warning so users with bad `--window N` never see a misleading
+        // #26: route through the native-path resolver. The resolver
+        // short-circuits for .frontWindow / .windowIndex (preserving the
+        // #23 behavior for --window N / no flag) and enumerates windows
+        // only for --url / --tab / --document. Preflight is implicit in
+        // the resolver — a bad window index / URL pattern throws
+        // documentNotFound or ambiguousWindowMatch before any stderr
+        // warning, so users with a typo never see the misleading
         // "Controlling keyboard..." message for a run that fails
         // immediately without touching the keyboard.
-        if let idx = windowIndex {
-            _ = try await SafariBridge.getCurrentURL(target: .windowIndex(idx))
+        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve())
+
+        // Tab switch is a passively interfering side effect transitively
+        // authorized by --allow-hid. Emit the addendum before the
+        // keyboard takeover warning so users see the full interaction
+        // plan up front.
+        if resolved.tabIndexInWindow != nil {
+            FileHandle.standardError.write(Data(
+                "ℹ️  Target tab will be brought to the front of its window before PDF export.\n".utf8
+            ))
         }
+        try await SafariBridge.performTabSwitchIfNeeded(
+            window: resolved.windowIndex,
+            tab: resolved.tabIndexInWindow
+        )
 
         FileHandle.standardError.write(Data("⚠️  Controlling keyboard for PDF export. Do not type until complete.\n".utf8))
 
-        let raisePrelude = windowIndex.map { idx in
+        // The resolved window index always raises explicitly — even
+        // when the user passed no targeting flag (resolved windowIndex
+        // is 1, corresponding to front window / document 1), the raise
+        // AppleScript is a no-op for an already-frontmost window, so
+        // we keep the code path uniform.
+        let raisePrelude = """
+            tell application "Safari" to set index of window \(resolved.windowIndex) to 1
             """
-            tell application "Safari" to set index of window \(idx) to 1
-            """
-        } ?? ""
 
         // Step 1: Activate Safari and open the Export as PDF dialog
         try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """

@@ -50,54 +50,56 @@ struct UploadCommand: AsyncParsableCommand {
             throw ValidationError("--timeout must be a finite number between 0.001 and 86400 seconds, got \(timeout)")
         }
 
-        // #23: --native / --allow-hid drives a System Events keystroke path
-        // that is inherently window-scoped — there's no document-level
-        // primitive for "navigate file dialog of document N". Reject
-        // document-level targeting at parse time so the user gets an
-        // immediate error instead of a half-run keystroke attempt.
-        if native || allowHid {
-            if target.url != nil || target.tab != nil || target.document != nil {
-                throw ValidationError(
-                    "--native / --allow-hid only supports --window for targeting; --url / --tab / --document require --js (JS DataTransfer)."
-                )
-            }
+        // #26: --native / --allow-hid no longer rejects --url / --tab /
+        // --document. The native-path resolver (SafariBridge.resolveNativeTarget)
+        // maps those targeting flags to a concrete (window, tab) pair at
+        // runtime and performs tab-switch + raise before keystroke dispatch.
+        // The previous #23 R5 reject was removed here; see proposal #26.
+
+        // #24: hard cap --js at 10 MB. The cap fires for explicit --js
+        // (where the user has definitely chosen the JS path) and for the
+        // fallback JS path in run() when Accessibility permission is
+        // absent. Smart-default routing with targeting flags can no
+        // longer be assumed to force JS at validate time — under #26,
+        // smart default with targeting routes through native when AX is
+        // available. The runtime fallback check in run() handles the
+        // no-AX-perm case; see checkJsSizeCapIfNeeded().
+        if js {
+            try checkJsSizeCap()
         }
+    }
 
-        // #24: hard cap --js at 10 MB. Skip the check for --native /
-        // --allow-hid explicit paths since they don't hit the JS DataTransfer
-        // code. Also apply to smart default routes that WILL force JS —
-        // explicit `--js`, or document-level targeting (--url/--tab/--document)
-        // without explicit --native.
-        let wantsDocumentTargeting = target.url != nil || target.tab != nil || target.document != nil
-        let willForceJSPath = js || (wantsDocumentTargeting && !native && !allowHid)
-        if willForceJSPath {
-            let expandedPath = (filePath as NSString).expandingTildeInPath
-            // Only check size if the file actually exists — run() will throw
-            // fileNotFound separately for missing files, no double-error here.
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: expandedPath),
-               let size = attrs[.size] as? Int {
-                if size > UploadCommand.jsHardCapBytes {
-                    let sizeMB = Double(size) / 1_048_576
-                    throw ValidationError("""
-                        --js mode is capped at 10 MB (file is \(String(format: "%.1f", sizeMB)) MB).
-                        Reason: --js uses JavaScript DataTransfer + base64 chunking which is fundamentally \
-                        memory-heavy and does not mimic human upload behavior. Previous attempts with large \
-                        files crashed Safari even on machines with 128 GB RAM (see #24).
+    /// Enforce the 10 MB hard cap on the JS DataTransfer path. Called
+    /// from validate() for explicit `--js` and from run() when falling
+    /// back to JS without Accessibility permission.
+    internal func checkJsSizeCap() throws {
+        let expandedPath = (filePath as NSString).expandingTildeInPath
+        // Missing file is a separate error thrown in run(); don't double-error.
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: expandedPath),
+              let size = attrs[.size] as? Int else {
+            return
+        }
+        if size > UploadCommand.jsHardCapBytes {
+            let sizeMB = Double(size) / 1_048_576
+            throw ValidationError("""
+                --js mode is capped at 10 MB (file is \(String(format: "%.1f", sizeMB)) MB).
+                Reason: --js uses JavaScript DataTransfer + base64 chunking which is fundamentally \
+                memory-heavy and does not mimic human upload behavior. Previous attempts with large \
+                files crashed Safari even on machines with 128 GB RAM (see #24).
 
-                        For larger files use --native:
-                          safari-browser upload --native "\(selector)" "\(filePath)" --window N
+                For larger files use --native (which now accepts --url / --tab / --document via the \
+                native-path resolver, #26):
+                  safari-browser upload --native "\(selector)" "\(filePath)" --url <pattern>
 
-                        --native requires Accessibility permission but is the canonical large-file path
-                        (mimics human "choose file" dialog exactly). Small files (<10 MB) can still use --js.
-                        """)
-                }
-                if size > UploadCommand.jsSoftWarnBytes {
-                    let sizeMB = Double(size) / 1_048_576
-                    FileHandle.standardError.write(Data(
-                        "⚠️  File is \(String(format: "%.1f", sizeMB)) MB — --js is slow for files >5 MB. Consider --native.\n".utf8
-                    ))
-                }
-            }
+                --native requires Accessibility permission but is the canonical large-file path
+                (mimics human "choose file" dialog exactly). Small files (<10 MB) can still use --js.
+                """)
+        }
+        if size > UploadCommand.jsSoftWarnBytes {
+            let sizeMB = Double(size) / 1_048_576
+            FileHandle.standardError.write(Data(
+                "⚠️  File is \(String(format: "%.1f", sizeMB)) MB — --js is slow for files >5 MB. Consider --native.\n".utf8
+            ))
         }
     }
 
@@ -107,39 +109,73 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.fileNotFound(filePath)
         }
 
-        // --js explicitly selects JS DataTransfer path
+        // --js explicitly selects JS DataTransfer path. Size cap already
+        // enforced at validate() time.
         if js {
             try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve())
             return
         }
 
-        // --native or --allow-hid explicitly selects native path
-        if native || allowHid {
-            try await uploadViaNativeDialog(selector: selector, path: expandedPath, timeout: timeout, window: target.window)
+        // Decide whether to go native. Conditions:
+        //   - Explicit --native / --allow-hid (user chose)
+        //   - OR Accessibility permission is granted (smart default)
+        // In both cases, #26 routes through the resolver so --url /
+        // --tab / --document all land on a concrete (window, tab) pair
+        // before keystroke dispatch.
+        let wantNative = native || allowHid || SafariBridge.isAccessibilityPermitted()
+        if wantNative {
+            try await runNativeWithResolver(expandedPath: expandedPath)
             return
         }
 
-        // #23: Smart default + document-level targeting → force JS path.
-        // If the user asked for --url / --tab / --document, they want a
-        // specific document, and only the JS DataTransfer path can honor
-        // that. --window alone is still compatible with native.
-        let wantsDocumentTargeting = target.url != nil || target.tab != nil || target.document != nil
-        if wantsDocumentTargeting {
-            try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve())
-            return
-        }
+        // No AX permission and no explicit --native → fall back to JS
+        // with an informational stderr note. The size cap must be
+        // enforced here because the validate-time check only fires for
+        // explicit --js (we don't know at validate time which path the
+        // runtime will pick).
+        try checkJsSizeCap()
+        FileHandle.standardError.write(Data("""
+            ℹ️  Using JS DataTransfer (slower for large files).
+                Grant Accessibility permission in System Settings → Privacy & Security → Accessibility
+                to enable fast native file dialog upload.\n
+            """.utf8))
+        try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve())
+    }
 
-        // Smart default: native when Accessibility permission is granted, JS fallback otherwise
-        if SafariBridge.isAccessibilityPermitted() {
-            try await uploadViaNativeDialog(selector: selector, path: expandedPath, timeout: timeout, window: target.window)
-        } else {
-            FileHandle.standardError.write(Data("""
-                ℹ️  Using JS DataTransfer (slower for large files).
-                    Grant Accessibility permission in System Settings → Privacy & Security → Accessibility
-                    to enable fast native file dialog upload.\n
-                """.utf8))
-            try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve())
+    /// Resolve the target to a (windowIndex, tabIndexInWindow) pair via
+    /// `SafariBridge.resolveNativeTarget`, perform the tab switch if
+    /// needed, then dispatch the native file-dialog keystroke path to
+    /// the resolved window.
+    ///
+    /// This is the #26 replacement for the old "native only accepts
+    /// --window" path. `--url` / `--tab` / `--document` flags all flow
+    /// through the resolver, eliminating the shell `documents | grep`
+    /// workaround and restoring AI-agent autonomy in multi-window
+    /// Safari sessions.
+    private func runNativeWithResolver(expandedPath: String) async throws {
+        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve())
+
+        // Tab switch is a passively interfering side effect transitively
+        // authorized by --native / --allow-hid. The stderr warning in
+        // uploadViaNativeDialog covers keyboard control; here we add a
+        // tab-switch addendum when applicable so the user knows what
+        // extra interaction is about to happen.
+        if resolved.tabIndexInWindow != nil {
+            FileHandle.standardError.write(Data(
+                "ℹ️  Target tab will be brought to the front of its window before upload.\n".utf8
+            ))
         }
+        try await SafariBridge.performTabSwitchIfNeeded(
+            window: resolved.windowIndex,
+            tab: resolved.tabIndexInWindow
+        )
+
+        try await uploadViaNativeDialog(
+            selector: selector,
+            path: expandedPath,
+            timeout: timeout,
+            window: resolved.windowIndex
+        )
     }
 
     // MARK: - Native file dialog

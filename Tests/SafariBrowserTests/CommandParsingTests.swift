@@ -282,17 +282,37 @@ final class CommandParsingTests: XCTestCase {
         )
     }
 
-    func testUploadCommand_smartDefaultWithUrlTargetRejectsOver10MB() throws {
-        // Smart default with --url forces JS path (because --url targeting
-        // requires document-scoped JS), so the cap must also fire here.
+    func testUploadCommand_smartDefaultWithUrlTargetAllowsLargeFileAtValidate() throws {
+        // #26 updates the smart-default routing: --url with no explicit
+        // --js/--native now routes through the native-path resolver when
+        // Accessibility permission is granted, so validate() can no
+        // longer assume a large file + --url means JS. The 10 MB cap
+        // only fires at validate() for explicit --js, and at run() for
+        // the no-AX-perm JS fallback. Here we just assert validate()
+        // does NOT throw for the targeting+large-file combo — the
+        // runtime will decide the path.
+        let tmpFile = try Self.createTempFile(sizeBytes: 11 * 1_048_576)
+        defer { try? FileManager.default.removeItem(atPath: tmpFile) }
+
+        XCTAssertNoThrow(
+            try UploadCommand.parse(["input", tmpFile, "--url", "plaud"]).validate(),
+            "Smart default with --url should no longer force JS path at validate time (#26)"
+        )
+    }
+
+    func testUploadCommand_explicitJsWithUrlRejectsOver10MB() throws {
+        // Explicit --js still rejects large files at validate time, and
+        // the error message now points users to --native --url as the
+        // #26-enabled alternative.
         let tmpFile = try Self.createTempFile(sizeBytes: 11 * 1_048_576)
         defer { try? FileManager.default.removeItem(atPath: tmpFile) }
 
         XCTAssertThrowsError(
-            try UploadCommand.parse(["input", tmpFile, "--url", "plaud"]).validate()
+            try UploadCommand.parse(["--js", "input", tmpFile, "--url", "plaud"]).validate()
         ) { error in
             let desc = String(describing: error)
             XCTAssertTrue(desc.contains("--js mode is capped"), "Got: \(desc)")
+            XCTAssertTrue(desc.contains("--native"), "Error should point to --native, got: \(desc)")
         }
     }
 
@@ -374,30 +394,48 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertEqual(command.target.resolve(), .windowIndex(2))
     }
 
-    func testUploadCommand_nativeModeRejectsUrlTarget() {
-        // validate() runs during parse() — the mutually-exclusive check
-        // fails at parse-time rather than at run-time.
-        XCTAssertThrowsError(
-            try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--url", "plaud"])
-        )
+    // #26: native and --allow-hid now accept full TargetOptions. The
+    // native-path resolver (SafariBridge.resolveNativeTarget) maps
+    // --url / --tab / --document to a (window, tab) pair and performs
+    // tab-switch + raise before keystroke dispatch. These tests lock
+    // in the parse + validate contract; end-to-end resolution is
+    // covered by WindowIndexResolverTests (pure) and task 10.1
+    // (integration with live Safari).
+
+    func testUploadCommand_nativeModeAcceptsUrlTarget() throws {
+        // The old behavior (#23 R5) was to reject at parse-time. #26
+        // removes that reject so the resolver can run at runtime.
+        let command = try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--url", "plaud"])
+        XCTAssertTrue(command.native)
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
     }
 
-    func testUploadCommand_nativeModeRejectsTabTarget() {
-        XCTAssertThrowsError(
-            try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--tab", "2"])
-        )
+    func testUploadCommand_nativeModeAcceptsTabTarget() throws {
+        let command = try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--tab", "2"])
+        XCTAssertTrue(command.native)
+        XCTAssertEqual(command.target.resolve(), .documentIndex(2))
     }
 
-    func testUploadCommand_nativeModeRejectsDocumentTarget() {
-        XCTAssertThrowsError(
-            try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--document", "2"])
-        )
+    func testUploadCommand_nativeModeAcceptsDocumentTarget() throws {
+        let command = try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--document", "2"])
+        XCTAssertTrue(command.native)
+        XCTAssertEqual(command.target.resolve(), .documentIndex(2))
     }
 
-    func testUploadCommand_allowHidRejectsUrlTarget() {
-        // --allow-hid is a legacy alias for --native; same restrictions apply.
+    func testUploadCommand_allowHidAcceptsUrlTarget() throws {
+        // --allow-hid is a legacy alias for --native; same #26 relaxation applies.
+        let command = try UploadCommand.parse(["--allow-hid", "input", "/tmp/test.txt", "--url", "plaud"])
+        XCTAssertTrue(command.allowHid)
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
+    func testUploadCommand_nativeRejectsMutuallyExclusiveTargets() {
+        // The mutually-exclusive check on TargetOptions itself still
+        // fires — you can't pass --url AND --window on the same
+        // invocation. This was never about native-vs-js; it's
+        // TargetOptions hygiene.
         XCTAssertThrowsError(
-            try UploadCommand.parse(["--allow-hid", "input", "/tmp/test.txt", "--url", "plaud"])
+            try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--url", "plaud", "--window", "2"])
         )
     }
 
@@ -427,77 +465,214 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertEqual(SafariBridge.TargetDocument.forWindow(nil), .frontWindow)
     }
 
-    func testWindowOnlyTargetOptions_resolveAsTargetDocument_matchesForWindow() {
-        // The struct method must produce the same result as the
-        // underlying static so there is only one mapping to reason about.
-        let opts = try! WindowOnlyTargetOptions.parse(["--window", "3"])
-        XCTAssertEqual(opts.resolveAsTargetDocument(), .windowIndex(3))
-        XCTAssertEqual(opts.resolveAsTargetDocument(), SafariBridge.TargetDocument.forWindow(3))
+    // #26: WindowOnlyTargetOptions has been removed — window-only
+    // commands (close, screenshot, pdf, upload --native) now accept the
+    // full TargetOptions surface. The pre-existing tests for the struct
+    // itself are deleted along with the type. Tests for the new surface
+    // live under each command's target-wiring section below, and the
+    // TargetOptions parse contract (zero/negative window rejection,
+    // mutual exclusion) is already covered by the TargetOptions tests
+    // earlier in this file.
 
-        let defaults = try! WindowOnlyTargetOptions.parse([])
-        XCTAssertEqual(defaults.resolveAsTargetDocument(), .frontWindow)
+    // MARK: - #26 Backward compatibility invariants (source-level guards)
+
+    /// Parse-level assertion: every window-capable command resolves to
+    /// `.frontWindow` when no target flag is supplied, preserving the
+    /// #23 "default target = document 1 = front window" invariant
+    /// that existing scripts rely on (document-targeting spec MODIFIED
+    /// "Backward compatibility with existing scripts" — "Keystroke
+    /// operations preserve front-window semantics when no flag given"
+    /// scenario). Runtime behavior is validated by task 10.1
+    /// integration test.
+    func testNoTargetFlagResolvesToFrontWindowForAllWindowCommands() throws {
+        XCTAssertEqual(try UploadCommand.parse(["--native", "in", "/tmp/f"]).target.resolve(), .frontWindow)
+        XCTAssertEqual(try CloseCommand.parse([]).target.resolve(), .frontWindow)
+        XCTAssertEqual(try PdfCommand.parse(["--allow-hid", "o.pdf"]).target.resolve(), .frontWindow)
+        XCTAssertEqual(try ScreenshotCommand.parse([]).target.resolve(), .frontWindow)
     }
 
-    // MARK: - WindowOnlyTargetOptions (#23)
-
-    func testWindowOnlyTargetOptions_defaultIsNil() throws {
-        let options = try WindowOnlyTargetOptions.parse([])
-        XCTAssertNil(options.window)
+    /// Source-level assertion: each native-path command routes
+    /// targeting flags through `SafariBridge.resolveNativeTarget` so
+    /// `--url plaud` on a non-front window correctly resolves + raises
+    /// the plaud window before keystroke dispatch. This catches
+    /// regressions where a refactor forgets to call the resolver and
+    /// falls back to `target.window` directly — which would silently
+    /// drop `--url` and keystroke the wrong window (the #23 R5 failure
+    /// mode the resolver is supposed to eliminate).
+    func testNativePathCommandsRouteThroughResolver() throws {
+        for sourcePath in [
+            "Sources/SafariBrowser/Commands/UploadCommand.swift",
+            "Sources/SafariBrowser/Commands/CloseCommand.swift",
+            "Sources/SafariBrowser/Commands/PdfCommand.swift",
+        ] {
+            let src = try String(contentsOfFile: sourcePath, encoding: .utf8)
+            XCTAssertTrue(
+                src.contains("resolveNativeTarget"),
+                "\(sourcePath) must call resolveNativeTarget to honor --url/--tab/--document (#26)"
+            )
+        }
     }
 
-    func testWindowOnlyTargetOptions_windowFlag() throws {
-        let options = try WindowOnlyTargetOptions.parse(["--window", "2"])
-        XCTAssertEqual(options.window, 2)
-    }
+    // MARK: - #26 Tab-switch interference warning
 
-    func testWindowOnlyTargetOptions_rejectsZeroWindow() {
-        XCTAssertThrowsError(
-            try WindowOnlyTargetOptions.parse(["--window", "0"])
+    /// Source-level assertion: upload --native and pdf emit a stderr
+    /// addendum when tab switching is about to happen. Non-interference
+    /// spec #26 requires the user to be informed that a background tab
+    /// will be brought to the front as part of the keystroke sequence.
+    /// Close is not required to warn (it's the closing operation
+    /// itself, so tab switch is part of the user's intent).
+    func testTabSwitchWarningEmittedForUploadAndPdf() throws {
+        let uploadSrc = try String(contentsOfFile: "Sources/SafariBrowser/Commands/UploadCommand.swift", encoding: .utf8)
+        XCTAssertTrue(
+            uploadSrc.contains("Target tab will be brought to the front"),
+            "UploadCommand must emit tab-switch stderr addendum when tabIndexInWindow is non-nil (#26)"
+        )
+
+        let pdfSrc = try String(contentsOfFile: "Sources/SafariBrowser/Commands/PdfCommand.swift", encoding: .utf8)
+        XCTAssertTrue(
+            pdfSrc.contains("Target tab will be brought to the front"),
+            "PdfCommand must emit tab-switch stderr addendum when tabIndexInWindow is non-nil (#26)"
         )
     }
 
-    func testWindowOnlyTargetOptions_rejectsNegativeWindow() {
-        XCTAssertThrowsError(
-            try WindowOnlyTargetOptions.parse(["--window", "-1"])
-        )
-    }
-
-    // MARK: - CloseCommand target wiring (#23)
+    // MARK: - CloseCommand target wiring (#23 → #26)
 
     func testCloseCommand_defaultsNoTarget() throws {
         let command = try CloseCommand.parse([])
-        XCTAssertNil(command.windowTarget.window)
+        XCTAssertEqual(command.target.resolve(), .frontWindow)
     }
 
     func testCloseCommand_acceptsWindowFlag() throws {
         let command = try CloseCommand.parse(["--window", "2"])
-        XCTAssertEqual(command.windowTarget.window, 2)
+        XCTAssertEqual(command.target.resolve(), .windowIndex(2))
     }
 
-    // MARK: - ScreenshotCommand target wiring (#23)
+    // #26: close lost its WindowOnlyTargetOptions restriction — the
+    // native-path resolver maps --url / --tab / --document to a
+    // (window, tab) pair and tab-switches before `close current tab of
+    // window N` runs, so every targeting flag is now valid.
+
+    func testCloseCommand_acceptsUrlFlag() throws {
+        let command = try CloseCommand.parse(["--url", "plaud"])
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
+    func testCloseCommand_acceptsDocumentFlag() throws {
+        let command = try CloseCommand.parse(["--document", "2"])
+        XCTAssertEqual(command.target.resolve(), .documentIndex(2))
+    }
+
+    func testCloseCommand_acceptsTabFlag() throws {
+        let command = try CloseCommand.parse(["--tab", "3"])
+        XCTAssertEqual(command.target.resolve(), .documentIndex(3))
+    }
+
+    func testCloseCommand_rejectsMutuallyExclusiveTargets() {
+        // TargetOptions' mutual-exclusion check still applies — unchanged from #23.
+        XCTAssertThrowsError(
+            try CloseCommand.parse(["--url", "plaud", "--window", "2"])
+        )
+    }
+
+    // MARK: - ScreenshotCommand target wiring (#23 → #26)
 
     func testScreenshotCommand_defaultsNoTarget() throws {
         let command = try ScreenshotCommand.parse([])
-        XCTAssertNil(command.windowTarget.window)
+        XCTAssertEqual(command.target.resolve(), .frontWindow)
     }
 
     func testScreenshotCommand_acceptsWindowFlag() throws {
         let command = try ScreenshotCommand.parse(["--window", "2", "out.png"])
-        XCTAssertEqual(command.windowTarget.window, 2)
+        XCTAssertEqual(command.target.resolve(), .windowIndex(2))
         XCTAssertEqual(command.path, "out.png")
     }
 
-    // MARK: - PdfCommand target wiring (#23)
+    // #26: screenshot accepts full TargetOptions. The key distinguishing
+    // property vs upload/pdf/close is that screenshot does NOT tab-
+    // switch — it observes without interfering. A --url that resolves to
+    // a background tab captures the window's currently visible content.
+
+    func testScreenshotCommand_acceptsUrlFlag() throws {
+        let command = try ScreenshotCommand.parse(["--url", "plaud", "out.png"])
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
+    func testScreenshotCommand_acceptsDocumentFlag() throws {
+        let command = try ScreenshotCommand.parse(["--document", "2", "out.png"])
+        XCTAssertEqual(command.target.resolve(), .documentIndex(2))
+    }
+
+    func testScreenshotCommand_acceptsTabFlag() throws {
+        let command = try ScreenshotCommand.parse(["--tab", "3", "out.png"])
+        XCTAssertEqual(command.target.resolve(), .documentIndex(3))
+    }
+
+    func testScreenshotCommand_acceptsFullWithUrl() throws {
+        // --full --url plaud: doJavaScript reads dims from plaud via
+        // document-scoped access, window-level ops use the resolved
+        // window index.
+        let command = try ScreenshotCommand.parse(["--full", "--url", "plaud", "out.png"])
+        XCTAssertTrue(command.full)
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
+    func testScreenshotCommand_rejectsMutuallyExclusiveTargets() {
+        XCTAssertThrowsError(
+            try ScreenshotCommand.parse(["--url", "plaud", "--window", "2", "out.png"])
+        )
+    }
+
+    /// #26 regression guard: screenshot source must NOT call
+    /// `performTabSwitchIfNeeded`. Screenshot is non-interfering by
+    /// design — tab-switching a background tab would break that
+    /// contract. This source-level assertion catches any future
+    /// refactor that tries to make screenshot "helpful" by
+    /// auto-switching tabs.
+    func testScreenshotCommand_sourceDoesNotTabSwitch() throws {
+        let sourcePath = "Sources/SafariBrowser/Commands/ScreenshotCommand.swift"
+        let src = try String(contentsOfFile: sourcePath, encoding: .utf8)
+        XCTAssertFalse(
+            src.contains("performTabSwitchIfNeeded"),
+            "ScreenshotCommand must NOT tab-switch — breaks non-interference spec #26"
+        )
+    }
+
+    // MARK: - PdfCommand target wiring (#23 → #26)
 
     func testPdfCommand_defaultsNoTarget() throws {
         let command = try PdfCommand.parse([])
-        XCTAssertNil(command.windowTarget.window)
+        XCTAssertEqual(command.target.resolve(), .frontWindow)
     }
 
     func testPdfCommand_acceptsWindowFlag() throws {
         let command = try PdfCommand.parse(["--window", "2", "--allow-hid", "out.pdf"])
-        XCTAssertEqual(command.windowTarget.window, 2)
+        XCTAssertEqual(command.target.resolve(), .windowIndex(2))
         XCTAssertEqual(command.path, "out.pdf")
+    }
+
+    // #26: pdf accepts full TargetOptions. Tab switch before keystroke
+    // lets us export a background tab as PDF without the user manually
+    // raising it first.
+
+    func testPdfCommand_acceptsUrlFlag() throws {
+        let command = try PdfCommand.parse(["--url", "docs", "--allow-hid", "out.pdf"])
+        XCTAssertEqual(command.target.resolve(), .urlContains("docs"))
+    }
+
+    func testPdfCommand_acceptsDocumentFlag() throws {
+        let command = try PdfCommand.parse(["--document", "2", "--allow-hid", "out.pdf"])
+        XCTAssertEqual(command.target.resolve(), .documentIndex(2))
+    }
+
+    func testPdfCommand_acceptsTabFlag() throws {
+        let command = try PdfCommand.parse(["--tab", "3", "--allow-hid", "out.pdf"])
+        XCTAssertEqual(command.target.resolve(), .documentIndex(3))
+    }
+
+    func testPdfCommand_rejectsMutuallyExclusiveTargets() {
+        XCTAssertThrowsError(
+            try PdfCommand.parse(["--url", "docs", "--window", "2", "--allow-hid", "out.pdf"])
+        )
     }
 
     // MARK: - StorageCommand target wiring (#23)

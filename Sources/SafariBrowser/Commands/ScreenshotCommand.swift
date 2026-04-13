@@ -14,19 +14,56 @@ struct ScreenshotCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Capture full scrollable page")
     var full = false
 
-    @OptionGroup var windowTarget: WindowOnlyTargetOptions
+    /// #26: screenshot now accepts the full TargetOptions (`--url`,
+    /// `--tab`, `--document`, `--window`). The native-path resolver
+    /// maps each targeting flag to a window index. Unlike upload / pdf
+    /// / close, screenshot **does NOT** tab-switch — per the #26
+    /// non-interference spec, screenshot observes without interfering.
+    /// If the resolver points at a background tab, the AX path captures
+    /// the window's current visible content (which may differ from the
+    /// targeted tab). For users who need DOM-level content of a
+    /// background tab, the `--full` flag reads page dimensions through
+    /// `doJavaScript` on the target document directly and computes a
+    /// scrolled capture — but the captured pixels are still window-
+    /// level and limited to whatever tab is foregrounded in that window.
+    @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // Preserve the #23 legacy fallback: when the user supplies no
+        // targeting flag AND Accessibility permission is absent,
+        // `resolveWindowForCapture(window: nil)` takes the CG name-
+        // match path which does not require AX. Only resolve to a
+        // concrete window index when the user explicitly asked for a
+        // target — otherwise the `nil` signal tells the capture
+        // resolver to preserve its existing fallback behavior.
+        let hasExplicitTarget = target.url != nil
+            || target.window != nil
+            || target.tab != nil
+            || target.document != nil
+
+        let resolvedWindowIndex: Int?
+        if hasExplicitTarget {
+            let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve())
+            resolvedWindowIndex = resolved.windowIndex
+            // Screenshot does NOT tab-switch (#26 design: screenshot
+            // observes without interfering). `resolved.tabIndexInWindow`
+            // is intentionally ignored here.
+        } else {
+            resolvedWindowIndex = nil
+        }
+
         // #23 verify R7: resolve both CG ID AND AX element so --full mode
         // can do bounds operations on the SAME window we're about to
         // capture. This eliminates the R6 F42 cross-API mismatch where
         // CG ID came from AX but bounds resize went through AS `window N`
         // (could be a different window).
-        let (windowID, axWindow) = try await SafariBridge.resolveWindowForCapture(window: windowTarget.window)
+        let (windowID, axWindow) = try await SafariBridge.resolveWindowForCapture(window: resolvedWindowIndex)
 
-        // JS target for dimensions / scroll state. Uses the same window
-        // index the user passed via CLI (or front window for nil).
-        let docTarget = windowTarget.resolveAsTargetDocument()
+        // JS target for dimensions / scroll state. Uses the full
+        // TargetOptions resolution so `--full --url plaud` reads
+        // plaud's dimensions via doJavaScript even when plaud is in a
+        // background tab of its owning window.
+        let docTarget = target.resolve()
 
         if !full {
             // Simple path: capture whatever CG ID resolved. Always silent (-x).
