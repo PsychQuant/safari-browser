@@ -241,6 +241,120 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertTrue(command.json)
     }
 
+    // MARK: - UploadCommand #24 JS file size hard cap
+
+    func testUploadCommand_jsRejectsOver10MB() throws {
+        let tmpFile = try Self.createTempFile(sizeBytes: 11 * 1_048_576)  // 11 MB
+        defer { try? FileManager.default.removeItem(atPath: tmpFile) }
+
+        XCTAssertThrowsError(
+            try UploadCommand.parse(["--js", "input", tmpFile]).validate()
+        ) { error in
+            let desc = String(describing: error)
+            XCTAssertTrue(
+                desc.contains("--js mode is capped at 10 MB"),
+                "Expected 10 MB cap message, got: \(desc)"
+            )
+            XCTAssertTrue(
+                desc.contains("--native"),
+                "Error should point users to --native, got: \(desc)"
+            )
+        }
+    }
+
+    func testUploadCommand_jsAllowsUnder10MB() throws {
+        let tmpFile = try Self.createTempFile(sizeBytes: 1024)  // 1 KB
+        defer { try? FileManager.default.removeItem(atPath: tmpFile) }
+
+        XCTAssertNoThrow(
+            try UploadCommand.parse(["--js", "input", tmpFile]).validate()
+        )
+    }
+
+    func testUploadCommand_nativeAllowsLargeFile() throws {
+        let tmpFile = try Self.createTempFile(sizeBytes: 200 * 1_048_576)  // 200 MB
+        defer { try? FileManager.default.removeItem(atPath: tmpFile) }
+
+        // --native path bypasses the 10 MB cap (it uses the file dialog,
+        // not the base64 JS path).
+        XCTAssertNoThrow(
+            try UploadCommand.parse(["--native", "input", tmpFile]).validate()
+        )
+    }
+
+    func testUploadCommand_smartDefaultWithUrlTargetRejectsOver10MB() throws {
+        // Smart default with --url forces JS path (because --url targeting
+        // requires document-scoped JS), so the cap must also fire here.
+        let tmpFile = try Self.createTempFile(sizeBytes: 11 * 1_048_576)
+        defer { try? FileManager.default.removeItem(atPath: tmpFile) }
+
+        XCTAssertThrowsError(
+            try UploadCommand.parse(["input", tmpFile, "--url", "plaud"]).validate()
+        ) { error in
+            let desc = String(describing: error)
+            XCTAssertTrue(desc.contains("--js mode is capped"), "Got: \(desc)")
+        }
+    }
+
+    func testUploadCommand_smartDefaultNoTargetingAllowsLargeFile() throws {
+        // Without any targeting or explicit --js, smart default MAY route
+        // to native (if AXIsProcessTrusted). Size cap should NOT fire at
+        // validate time — run() decides mode based on permission state.
+        let tmpFile = try Self.createTempFile(sizeBytes: 200 * 1_048_576)
+        defer { try? FileManager.default.removeItem(atPath: tmpFile) }
+
+        XCTAssertNoThrow(
+            try UploadCommand.parse(["input", tmpFile]).validate()
+        )
+    }
+
+    /// #24 source-level regression guard: the JS chunking path must use
+    /// `Array.push` + `join`, NOT `String +=`. The old `+=` pattern caused
+    /// V8 O(n²) string concatenation which allocated ~83 GB of transient
+    /// garbage for a 131 MB file and crashed Safari even on 128 GB RAM.
+    /// This test reads the source file directly so a future refactor that
+    /// reverts to `+=` fails loudly at CI time.
+    func testUploadCommand_jsChunkingUsesArrayPushNotStringConcat() throws {
+        let sourcePath = Self.uploadCommandSourcePath()
+        let src = try String(contentsOfFile: sourcePath, encoding: .utf8)
+
+        // Must use array push (O(1) amortized) for chunk accumulation.
+        XCTAssertTrue(
+            src.contains("__sbUploadChunks.push"),
+            "Chunked upload must use __sbUploadChunks.push to avoid V8 string concat O(n²) — see #24"
+        )
+
+        // Must NOT use String += pattern on window.__sbUpload.
+        XCTAssertFalse(
+            src.contains("__sbUpload += '"),
+            "String += pattern forbidden on __sbUpload — causes 128 GB+ memory explosion (see #24)"
+        )
+
+        // Final join must be present for the DataTransfer injection.
+        XCTAssertTrue(
+            src.contains("__sbUploadChunks.join"),
+            "DataTransfer injection must call __sbUploadChunks.join to materialize the full base64 string once"
+        )
+    }
+
+    // Helpers for #24 tests
+
+    private static func createTempFile(sizeBytes: Int) throws -> String {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sb-upload-test-\(UUID().uuidString).bin")
+        // Write zero bytes — macOS HFS+/APFS supports sparse files for this,
+        // so 200 MB tests don't actually consume 200 MB on disk.
+        let data = Data(count: sizeBytes)
+        try data.write(to: url)
+        return url.path
+    }
+
+    private static func uploadCommandSourcePath() -> String {
+        // Walk up from this test file's location to find the source.
+        // Tests run with cwd = package root, so relative path works.
+        return "Sources/SafariBrowser/Commands/UploadCommand.swift"
+    }
+
     // MARK: - UploadCommand target wiring (#23)
 
     func testUploadCommand_jsModeAcceptsUrlTarget() throws {

@@ -34,6 +34,14 @@ struct UploadCommand: AsyncParsableCommand {
 
     @OptionGroup var target: TargetOptions
 
+    /// #24 fix: `--js` path hard cap. Above this size, the base64 + JS
+    /// DataTransfer approach is fundamentally unsafe (V8 memory pressure,
+    /// osascript roundtrip count) even with the R1 Array.push fix. Users
+    /// MUST use `--native` for large files — it mimics human upload and
+    /// is the canonical path.
+    private static let jsHardCapBytes = 10 * 1_048_576   // 10 MB
+    private static let jsSoftWarnBytes = 5 * 1_048_576   // 5 MB
+
     func validate() throws {
         // Mirror runProcessWithTimeout's bounds so invalid CLI input surfaces
         // with a user-friendly ArgumentParser usage error before reaching the
@@ -52,6 +60,43 @@ struct UploadCommand: AsyncParsableCommand {
                 throw ValidationError(
                     "--native / --allow-hid only supports --window for targeting; --url / --tab / --document require --js (JS DataTransfer)."
                 )
+            }
+        }
+
+        // #24: hard cap --js at 10 MB. Skip the check for --native /
+        // --allow-hid explicit paths since they don't hit the JS DataTransfer
+        // code. Also apply to smart default routes that WILL force JS —
+        // explicit `--js`, or document-level targeting (--url/--tab/--document)
+        // without explicit --native.
+        let wantsDocumentTargeting = target.url != nil || target.tab != nil || target.document != nil
+        let willForceJSPath = js || (wantsDocumentTargeting && !native && !allowHid)
+        if willForceJSPath {
+            let expandedPath = (filePath as NSString).expandingTildeInPath
+            // Only check size if the file actually exists — run() will throw
+            // fileNotFound separately for missing files, no double-error here.
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: expandedPath),
+               let size = attrs[.size] as? Int {
+                if size > UploadCommand.jsHardCapBytes {
+                    let sizeMB = Double(size) / 1_048_576
+                    throw ValidationError("""
+                        --js mode is capped at 10 MB (file is \(String(format: "%.1f", sizeMB)) MB).
+                        Reason: --js uses JavaScript DataTransfer + base64 chunking which is fundamentally \
+                        memory-heavy and does not mimic human upload behavior. Previous attempts with large \
+                        files crashed Safari even on machines with 128 GB RAM (see #24).
+
+                        For larger files use --native:
+                          safari-browser upload --native "\(selector)" "\(filePath)" --window N
+
+                        --native requires Accessibility permission but is the canonical large-file path
+                        (mimics human "choose file" dialog exactly). Small files (<10 MB) can still use --js.
+                        """)
+                }
+                if size > UploadCommand.jsSoftWarnBytes {
+                    let sizeMB = Double(size) / 1_048_576
+                    FileHandle.standardError.write(Data(
+                        "⚠️  File is \(String(format: "%.1f", sizeMB)) MB — --js is slow for files >5 MB. Consider --native.\n".utf8
+                    ))
+                }
             }
         }
     }
@@ -229,9 +274,20 @@ struct UploadCommand: AsyncParsableCommand {
 
     // MARK: - JS DataTransfer (--js flag)
 
-    /// Upload via JS base64 chunking + DataTransfer injection. Slow for large files, no permissions needed.
-    /// `target` selects which Safari document the upload lands in; defaults
-    /// to `.frontWindow` for backward compatibility (#23).
+    /// Upload via JS base64 chunking + DataTransfer injection. Bounded by
+    /// a 10 MB hard cap (`validate()`) because the base64 + JS roundtrip
+    /// path is fundamentally memory-heavy and **not** a "mimic human"
+    /// upload path — it's an accessibility-free fallback only.
+    ///
+    /// #24 fix: chunking uses `Array.push` + `Array.join` instead of
+    /// `String +=`. V8's `string += string` is O(n²) cumulative — for
+    /// a 131 MB file (175 MB base64) with 200 KB chunks, the old
+    /// pattern allocated ~83 GB of transient garbage strings and
+    /// crashed Safari even on machines with 128 GB RAM. Array push is
+    /// O(1) amortized and the final join is a single allocation.
+    ///
+    /// `target` selects which Safari document the upload lands in;
+    /// defaults to `.frontWindow` for backward compatibility (#23).
     private func uploadViaJSDataTransfer(
         selector: String,
         path: String,
@@ -248,8 +304,12 @@ struct UploadCommand: AsyncParsableCommand {
             target: target
         )
 
-        // Transfer base64 in 200KB chunks via window variable
-        _ = try await SafariBridge.doJavaScript("window.__sbUpload = ''", target: target)
+        // #24: Transfer base64 in 200KB chunks via Array.push (NOT String +=).
+        // String += triggers V8 O(n²) string concatenation which allocated
+        // ~83 GB of transient garbage strings for a 131 MB file and crashed
+        // Safari even on 128 GB RAM. Array.push is O(1) amortized; final
+        // join is a single contiguous allocation.
+        _ = try await SafariBridge.doJavaScript("window.__sbUploadChunks = []", target: target)
         let chunkSize = 200_000
         var offset = base64.startIndex
         var chunkCount = 0
@@ -257,7 +317,7 @@ struct UploadCommand: AsyncParsableCommand {
         while offset < base64.endIndex {
             let end = base64.index(offset, offsetBy: chunkSize, limitedBy: base64.endIndex) ?? base64.endIndex
             let chunk = String(base64[offset..<end])
-            _ = try await SafariBridge.doJavaScript("window.__sbUpload += '\(chunk.escapedForJS)'", target: target)
+            _ = try await SafariBridge.doJavaScript("window.__sbUploadChunks.push('\(chunk.escapedForJS)')", target: target)
             offset = end
             chunkCount += 1
 
@@ -268,7 +328,7 @@ struct UploadCommand: AsyncParsableCommand {
                     target: target
                 )
                 if currentURL != initialURL {
-                    _ = try? await SafariBridge.doJavaScript("delete window.__sbUpload", target: target)
+                    _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target)
                     throw SafariBrowserError.appleScriptFailed(
                         "Page navigated away during upload (was: \(initialURL), now: \(currentURL)). Upload aborted."
                     )
@@ -281,16 +341,19 @@ struct UploadCommand: AsyncParsableCommand {
             }
         }
 
-        // Inject file via DataTransfer
+        // Inject file via DataTransfer — join chunks once, then decode + wrap.
         let jsResult = try await SafariBridge.doJavaScript("""
             (function(){
                 var el = \(selector.resolveRefJS);
                 if (!el) return 'NOT_FOUND';
                 try {
-                    var bin = atob(window.__sbUpload);
-                    delete window.__sbUpload;
+                    var full = window.__sbUploadChunks.join('');
+                    delete window.__sbUploadChunks;
+                    var bin = atob(full);
+                    full = null;
                     var bytes = new Uint8Array(bin.length);
                     for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                    bin = null;
                     var blob = new Blob([bytes], {type: '\(mimeType)'});
                     var file = new File([blob], '\(fileName.escapedForJS)', {type: '\(mimeType)'});
                     var dt = new DataTransfer();
@@ -305,12 +368,12 @@ struct UploadCommand: AsyncParsableCommand {
             """, target: target)
 
         if jsResult == "NOT_FOUND" {
-            _ = try? await SafariBridge.doJavaScript("delete window.__sbUpload", target: target)
+            _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target)
             throw SafariBrowserError.elementNotFound(selector)
         }
 
         if jsResult != "OK" {
-            _ = try? await SafariBridge.doJavaScript("delete window.__sbUpload", target: target)
+            _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target)
             throw SafariBrowserError.appleScriptFailed("JS file injection failed: \(jsResult)")
         }
     }
