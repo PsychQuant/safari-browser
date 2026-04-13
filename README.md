@@ -216,10 +216,17 @@ safari-browser fill "input#email" "user@example.com" --document 3
 `tabs`, `tab <n>`, `tab new`, `open --new-tab`, and `open --new-window`
 only accept `--window` because they are window-level UI operations;
 supplying `--url`, `--tab`, or `--document` is rejected with a usage
-error. `close`, `screenshot`, `pdf`, and `upload --native` also only
-accept `--window` because they drive window-scoped primitives
-(AppleScript `close current tab of window N`, CG window ID capture,
-System Events keystrokes against the frontmost window) — see #23.
+error.
+
+`close`, `screenshot`, `pdf`, and `upload --native` **accept the full
+targeting surface** (`--url`, `--window`, `--tab`, `--document`) via
+the native-path resolver introduced in #26 — the resolver maps every
+targeting flag to a concrete `(windowIndex, tabIndexInWindow)` pair
+before dispatching the keystroke / AX operation. Multi-match `--url`
+patterns fail closed with `ambiguousWindowMatch` listing every
+candidate, rather than silently picking first-match — deterministic
+automation behavior.
+
 URL matching is case-sensitive (AppleScript's native behavior).
 Substring match — no regex — so `--url plaud` matches any URL containing
 "plaud". If no document matches, you get a `documentNotFound` error
@@ -238,20 +245,37 @@ safari-browser wait --for-url "/dashboard" --url plaud
 safari-browser snapshot --url plaud
 safari-browser snapshot --page --document 2
 
-# Upload split path (#23) — JS targets any document, native is window-only
+# Upload split path (#23 → #26) — both paths accept full targeting
 safari-browser upload --js "input[type=file]" file.mp3 --url plaud
+safari-browser upload --native "input[type=file]" file.mp3 --url plaud  # #26
 safari-browser upload --native "input[type=file]" file.mp3 --window 2
 
-# Window-scoped operations (#23)
+# Window-scoped operations (#23 → #26)
+safari-browser close --url plaud             # closes the plaud tab
+safari-browser screenshot --url plaud out.png  # captures plaud's window
+safari-browser pdf --url docs --allow-hid out.pdf
 safari-browser close --window 2              # closes window 2's current tab
-safari-browser screenshot --window 2 out.png # raises window 2, then captures
+safari-browser screenshot --window 2 out.png # captures window 2
 safari-browser pdf --window 2 --allow-hid out.pdf
 ```
 
-`pdf --window N` and `upload --native --window N` briefly **raise
-window N to the front** before their respective System Events keystroke
+`pdf`, `upload --native`, and `close` briefly **raise the resolved
+window to the front** before their respective System Events keystroke
 operations. Keystrokes inherently target the front window, so the raise
-is part of the operation, not just identification.
+is part of the operation, not just identification. When the resolver
+identifies a background tab within that window, these commands also
+briefly switch to that tab (`set current tab of window N to tab T`)
+before dispatching — documented as a passively interfering side effect
+transitively authorized by `--native` / `--allow-hid` in the
+non-interference spec.
+
+`screenshot` deliberately does **not** tab-switch — it observes without
+interfering. A `--url` that resolves to a background tab captures the
+window's currently-visible content (which may differ from the targeted
+tab). Users who need DOM-level content of a background tab should
+switch tabs first, or use document-scoped commands (`snapshot --url`,
+`get text --url`, `get source --url`) that read via JavaScript without
+touching window focus.
 
 `screenshot` (R7) uses the **AXUIElement private SPI**
 (`_AXUIElementGetWindow`) to map AppleScript window indices to CG
