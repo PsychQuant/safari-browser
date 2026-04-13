@@ -624,7 +624,7 @@ enum SafariBridge {
             throw SafariBrowserError.noSafariWindow
         default:
             throw SafariBrowserError.windowIdentityAmbiguous(
-                reason: "\(validCandidates.count) visible Safari windows exist and kAXMainWindowAttribute did not resolve to any of them — cannot determine frontmost without an unverified iteration-order assumption"
+                reason: "\(validCandidates.count) visible Safari windows exist and no unique frontmost candidate could be identified — cannot pick one without an unverified iteration-order assumption"
             )
         }
     }
@@ -661,6 +661,34 @@ enum SafariBridge {
         return axApp
     }
 
+    /// Map an `AXError` to its Swift case name (e.g. `cannotComplete`,
+    /// `attributeUnsupported`). `String(describing: AXError.foo)` does
+    /// NOT produce the case name — it produces `"AXError(rawValue: -25204)"`
+    /// because `AXError` is a C-bridged struct with `RawRepresentable<Int32>`,
+    /// not a Swift enum. R9 commit message wrongly claimed `\(posErr)`
+    /// emits the case name; this helper actually does (#23 verify R9 F60).
+    private static func axErrorName(_ error: AXError) -> String {
+        switch error {
+        case .success: return "success"
+        case .failure: return "failure"
+        case .illegalArgument: return "illegalArgument"
+        case .invalidUIElement: return "invalidUIElement"
+        case .invalidUIElementObserver: return "invalidUIElementObserver"
+        case .cannotComplete: return "cannotComplete"
+        case .attributeUnsupported: return "attributeUnsupported"
+        case .actionUnsupported: return "actionUnsupported"
+        case .notificationUnsupported: return "notificationUnsupported"
+        case .notImplemented: return "notImplemented"
+        case .notificationAlreadyRegistered: return "notificationAlreadyRegistered"
+        case .notificationNotRegistered: return "notificationNotRegistered"
+        case .apiDisabled: return "apiDisabled"
+        case .noValue: return "noValue"
+        case .parameterizedAttributeUnsupported: return "parameterizedAttributeUnsupported"
+        case .notEnoughPrecision: return "notEnoughPrecision"
+        @unknown default: return "AXError(rawValue: \(error.rawValue))"
+        }
+    }
+
     /// Set `kAXPositionAttribute` and `kAXSizeAttribute` on an AX
     /// window element. Used by `screenshot --full` to resize the
     /// captured window to its full content size (#23 verify R6 F42).
@@ -689,11 +717,11 @@ enum SafariBridge {
         // position is pending).
         let posErr = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, posValue)
         guard posErr == .success else {
-            throw SafariBrowserError.axOperationFailed("set kAXPositionAttribute → \(posErr)")
+            throw SafariBrowserError.axOperationFailed("set kAXPositionAttribute → \(axErrorName(posErr))")
         }
         let sizeErr = AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, sizeValue)
         guard sizeErr == .success else {
-            throw SafariBrowserError.axOperationFailed("set kAXSizeAttribute → \(sizeErr)")
+            throw SafariBrowserError.axOperationFailed("set kAXSizeAttribute → \(axErrorName(sizeErr))")
         }
     }
 
