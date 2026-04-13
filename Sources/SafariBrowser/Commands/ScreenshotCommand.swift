@@ -114,26 +114,47 @@ struct ScreenshotCommand: AsyncParsableCommand {
             }
         }
 
-        // Restore bounds. Always run, even on capture failure.
+        // Restore bounds. Always run, even on capture failure. R9 F58:
+        // capture restoreError separately so we can warn the user when
+        // the window is left in a non-original state.
+        var restoreError: Error?
         if let axWindow, let rect = savedRect {
-            try? SafariBridge.setAXWindowBounds(
-                axWindow,
-                x: Double(rect.origin.x),
-                y: Double(rect.origin.y),
-                width: Double(rect.size.width),
-                height: Double(rect.size.height)
-            )
+            do {
+                try SafariBridge.setAXWindowBounds(
+                    axWindow,
+                    x: Double(rect.origin.x),
+                    y: Double(rect.origin.y),
+                    width: Double(rect.size.width),
+                    height: Double(rect.size.height)
+                )
+            } catch {
+                restoreError = error
+            }
         } else if let asBoundsRaw {
-            _ = try? await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
-                tell application "Safari"
-                    set bounds of front window to {\(asBoundsRaw)}
-                end tell
-                """])
+            do {
+                _ = try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
+                    tell application "Safari"
+                        set bounds of front window to {\(asBoundsRaw)}
+                    end tell
+                    """])
+            } catch {
+                restoreError = error
+            }
         }
 
-        // Restore scroll position.
+        // Restore scroll position. Less critical (page state) so still
+        // best-effort; failure not warned.
         if let sx = scrollX, let sy = scrollY {
             _ = try? await SafariBridge.doJavaScript("window.scrollTo(\(sx),\(sy))", target: docTarget)
+        }
+
+        // R9 F58: if restore failed, warn on stderr regardless of
+        // whether resize/capture also failed. The user needs to know
+        // their window may be left at the resize dimensions.
+        if let restoreError {
+            FileHandle.standardError.write(Data(
+                "⚠️  Window bounds restore failed: \(restoreError.localizedDescription) — window state may be modified.\n".utf8
+            ))
         }
 
         // R8 F55: propagate resize error first (command never ran the

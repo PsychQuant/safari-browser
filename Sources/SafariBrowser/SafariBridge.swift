@@ -456,11 +456,6 @@ enum SafariBridge {
         return (try getFrontWindowID(), nil)
     }
 
-    /// Back-compat wrapper for callers that only need the CG ID string.
-    /// `getWindowID` is preserved for non-Screenshot paths (if any).
-    static func getWindowID(window: Int? = nil) async throws -> String {
-        return try await resolveWindowForCapture(window: window).cgID
-    }
 
     /// #23 verify R6→R7: AXUIElement SPI resolver for `--window N`.
     /// Returns both the CG window ID and the AX element handle so
@@ -562,64 +557,94 @@ enum SafariBridge {
         throw SafariBrowserError.noSafariWindow
     }
 
-    /// #23 verify R7: AX-based front-window resolver. Used by the
-    /// default (no `--window`) path when Accessibility is granted.
-    /// Replaces the legacy `getFrontWindowID` title-match + height-
-    /// fallback which had all the R1-R5 silent-wrong-window bugs.
+    /// #23 verify R7→R9: AX-based front-window resolver with strict
+    /// fail-closed semantics on the fallback path.
     ///
-    /// Uses `kAXMainWindowAttribute` to get Safari's current main
-    /// (frontmost) window, then `_AXUIElementGetWindow` for the CG ID.
-    /// Falls through to the first non-minimized non-zero-size window
-    /// in `kAXWindowsAttribute` if mainWindow isn't available. R8
-    /// (#23 verify R7 F56 + DA) added the non-minimized and non-zero
-    /// filters so the fallback can't return a hidden/collapsed window.
+    /// Algorithm:
+    ///   1. Try `kAXMainWindowAttribute` + filter (reject minimized,
+    ///      zero-size) → return if valid
+    ///   2. Enumerate `kAXWindowsAttribute`, filter each for validity
+    ///   3. Zero valid candidates → `noSafariWindow`
+    ///   4. Exactly one valid candidate → return it
+    ///   5. Multiple valid candidates AND main-window failed to
+    ///      resolve → `windowIdentityAmbiguous` (R9 fix for Codex F56)
+    ///
+    /// The R8 version iterated and returned the FIRST qualifying
+    /// window — which assumed `axWindows[0]` is frontmost. That's
+    /// established Hammerspoon/yabai/Rectangle convention but NOT
+    /// Apple-documented. Codex R8 correctly flagged this as the last
+    /// remaining silent heuristic in the `--window N` ecosystem. R9
+    /// removes it: when main-window attribute can't disambiguate AND
+    /// multiple candidates are visible, throw instead of guess.
     private static func getFrontWindowIDViaAX() throws -> (cgID: String, axWindow: AXUIElement?) {
         guard AXIsProcessTrusted() else {
             throw SafariBrowserError.accessibilityNotGranted
         }
         let axApp = try safariAXApplication()
 
-        // Prefer main window (frontmost in the app's sense).
+        // Prefer main window. R9 now validates it passes the
+        // non-minimized + non-zero-size filter BEFORE accepting (R8
+        // DA F57 was that the mainWindow early return skipped the
+        // filter that the fallback applied).
         var mainValue: CFTypeRef?
         if AXUIElementCopyAttributeValue(axApp, kAXMainWindowAttribute as CFString, &mainValue) == .success,
            let mainWin = mainValue,
            CFGetTypeID(mainWin) == AXUIElementGetTypeID() {
             // swiftlint:disable:next force_cast
             let axElement = mainWin as! AXUIElement
-            var cgID: CGWindowID = 0
-            if _AXUIElementGetWindow(axElement, &cgID) == .success, cgID != 0 {
-                return (String(cgID), axElement)
+            if isValidFrontCandidate(axElement) {
+                var cgID: CGWindowID = 0
+                if _AXUIElementGetWindow(axElement, &cgID) == .success, cgID != 0 {
+                    return (String(cgID), axElement)
+                }
             }
         }
 
-        // Fallback: iterate kAXWindowsAttribute, skip minimized + zero-size.
+        // Fallback: enumerate kAXWindowsAttribute, filter, and require
+        // EXACTLY one valid candidate. Multiple visible candidates with
+        // mainWindow unavailable means we can't prove which is frontmost
+        // — throw ambiguous instead of silently guessing.
         var windowsValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
               let axWindows = windowsValue as? [AXUIElement], !axWindows.isEmpty else {
             throw SafariBrowserError.noSafariWindow
         }
 
-        for axWin in axWindows {
-            // Skip minimized windows — they're not frontmost in any meaningful sense.
-            var minimizedValue: CFTypeRef?
-            if AXUIElementCopyAttributeValue(axWin, kAXMinimizedAttribute as CFString, &minimizedValue) == .success,
-               let minimized = minimizedValue as? Bool, minimized {
-                continue
-            }
+        let validCandidates = axWindows.filter(isValidFrontCandidate)
 
-            // Skip zero-size windows (placeholder / detached state).
-            guard let (_, _) = axSize(axWin, attribute: kAXSizeAttribute as CFString)
-                .flatMap({ (w, h) -> (Double, Double)? in (w > 0 && h > 0) ? (w, h) : nil })
-            else {
-                continue
-            }
-
+        switch validCandidates.count {
+        case 0:
+            throw SafariBrowserError.noSafariWindow
+        case 1:
+            let axWin = validCandidates[0]
             var cgID: CGWindowID = 0
             if _AXUIElementGetWindow(axWin, &cgID) == .success, cgID != 0 {
                 return (String(cgID), axWin)
             }
+            throw SafariBrowserError.noSafariWindow
+        default:
+            throw SafariBrowserError.windowIdentityAmbiguous(
+                reason: "\(validCandidates.count) visible Safari windows exist and kAXMainWindowAttribute did not resolve to any of them — cannot determine frontmost without an unverified iteration-order assumption"
+            )
         }
-        throw SafariBrowserError.noSafariWindow
+    }
+
+    /// Filter helper for `getFrontWindowIDViaAX`: returns true if the
+    /// AX window is a viable "front window" candidate — not minimized,
+    /// not zero-size. Extracted to a single place so the mainWindow
+    /// path and the fallback iteration apply identical validation.
+    private static func isValidFrontCandidate(_ axWindow: AXUIElement) -> Bool {
+        // Reject minimized windows.
+        var minimizedValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(axWindow, kAXMinimizedAttribute as CFString, &minimizedValue) == .success,
+           let minimized = minimizedValue as? Bool, minimized {
+            return false
+        }
+        // Reject zero-size / placeholder windows.
+        guard let (w, h) = axSize(axWindow, attribute: kAXSizeAttribute as CFString), w > 0, h > 0 else {
+            return false
+        }
+        return true
     }
 
     /// Find Safari's running process and return its AX application
@@ -664,11 +689,11 @@ enum SafariBridge {
         // position is pending).
         let posErr = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, posValue)
         guard posErr == .success else {
-            throw SafariBrowserError.axOperationFailed("set kAXPositionAttribute → AXError(\(posErr.rawValue))")
+            throw SafariBrowserError.axOperationFailed("set kAXPositionAttribute → \(posErr)")
         }
         let sizeErr = AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, sizeValue)
         guard sizeErr == .success else {
-            throw SafariBrowserError.axOperationFailed("set kAXSizeAttribute → AXError(\(sizeErr.rawValue))")
+            throw SafariBrowserError.axOperationFailed("set kAXSizeAttribute → \(sizeErr)")
         }
     }
 
@@ -685,10 +710,11 @@ enum SafariBridge {
     }
 
     /// Read an AX point attribute (kAXPositionAttribute) into (x, y).
-    /// Returns nil on any failure (missing attribute, wrong type) —
-    /// R7 hardening (#23 verify R6 logic+security P2): replaces
-    /// `as! AXValue` force-cast with `as?` so corrupt AX state doesn't
-    /// trap the process.
+    /// Returns nil on any failure (missing attribute, wrong type).
+    /// R7 hardening (#23 verify R6 logic+security P2): the
+    /// `as! AXValue` cast is now gated by an explicit
+    /// `CFGetTypeID(value) == AXValueGetTypeID()` check so corrupt AX
+    /// state doesn't trap the process — the cast is provably safe.
     private static func axPoint(_ element: AXUIElement, attribute: CFString) -> (Double, Double)? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,

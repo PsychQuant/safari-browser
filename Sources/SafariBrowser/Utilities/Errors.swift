@@ -71,12 +71,13 @@ enum SafariBrowserError: LocalizedError {
         case .windowIdentityAmbiguous(let reason):
             return """
                 Could not uniquely identify the target Safari window: \(reason)
-                This happens when multiple Safari windows share identical bounds
-                (e.g., several maximized windows on the same display) and R7
-                removed the unreliable AS-index-as-tiebreak heuristic that
-                previous rounds used as a silent fallback.
+                This happens when multiple Safari windows cannot be distinguished
+                by bounds (e.g., several maximized windows on the same display)
+                and no unique frontmost candidate exists. The CLI fails loudly
+                rather than silently guessing which window to act on.
                 Workarounds:
                   - Resize one of the collision windows so bounds differ
+                  - Unminimize or bring forward one of the candidates
                   - Use document-scoped commands instead: `snapshot --url`,
                     `get text --url`, `get source --url` — these bypass the
                     CG window-ID boundary entirely
