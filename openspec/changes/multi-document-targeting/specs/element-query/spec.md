@@ -8,22 +8,22 @@ All element-query commands SHALL use document-scoped AppleScript references so m
 
 #### Scenario: Get HTML from specific document
 
-- **WHEN** Safari has two documents and user runs `safari-browser --url plaud get html ".main"`
+- **WHEN** Safari has two documents and user runs `safari-browser get html --url plaud ".main"`
 - **THEN** stdout contains the innerHTML of `.main` inside the document whose URL contains `plaud`
 
 #### Scenario: Get count honors window targeting
 
-- **WHEN** user runs `safari-browser --window 2 get count "a"`
+- **WHEN** user runs `safari-browser get count --window 2 "a"`
 - **THEN** stdout contains the count of `<a>` elements inside the document of window 2
 
 #### Scenario: Get value honors document index
 
-- **WHEN** user runs `safari-browser --document 3 get value "input#email"`
+- **WHEN** user runs `safari-browser get value --document 3 "input#email"`
 - **THEN** stdout contains the value of `input#email` inside document 3
 
 #### Scenario: Get box honors targeting
 
-- **WHEN** user runs `safari-browser --url plaud get box ".upload-button"`
+- **WHEN** user runs `safari-browser get box --url plaud ".upload-button"`
 - **THEN** stdout contains the bounding box JSON of `.upload-button` inside the matched document
 - **AND** the coordinates SHALL be relative to that document's viewport
 
@@ -37,7 +37,7 @@ All element-query commands SHALL use document-scoped AppleScript references so m
 #### Scenario: Element not found is scoped to target document
 
 - **WHEN** Safari has two documents — only one contains `.missing`
-- **AND** user runs `safari-browser --url plaud get html ".missing"`
+- **AND** user runs `safari-browser get html --url plaud ".missing"`
 - **AND** the `plaud` document does not contain `.missing`
 - **THEN** the CLI SHALL exit with non-zero status and stderr SHALL contain `Element not found: .missing`
 - **AND** SHALL NOT report the content from the other document

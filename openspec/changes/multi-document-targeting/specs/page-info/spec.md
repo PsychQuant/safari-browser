@@ -12,7 +12,7 @@ The system SHALL print the target document's URL to stdout using Safari's native
 #### Scenario: Get URL from specific document by URL substring
 
 - **WHEN** Safari has two documents `[https://example.com/, https://web.plaud.ai/]`
-- **AND** user runs `safari-browser --url plaud get url`
+- **AND** user runs `safari-browser get --url plaud url`
 - **THEN** stdout contains `https://web.plaud.ai/`
 
 #### Scenario: Get URL while modal file dialog is open
@@ -34,7 +34,7 @@ The system SHALL print the target document's title to stdout using Safari's nati
 
 #### Scenario: Get title by window index
 
-- **WHEN** user runs `safari-browser --window 2 get title`
+- **WHEN** user runs `safari-browser get --window 2 title`
 - **THEN** stdout contains the title of the document belonging to window 2
 
 ---
@@ -49,7 +49,7 @@ The system SHALL print the target document's plain text content to stdout using 
 
 #### Scenario: Get text from targeted document
 
-- **WHEN** user runs `safari-browser --document 2 get text`
+- **WHEN** user runs `safari-browser get --document 2 text`
 - **THEN** stdout contains the visible text content of `document 2`
 
 ---
@@ -64,5 +64,5 @@ The system SHALL print the target document's HTML source to stdout using Safari'
 
 #### Scenario: Get source from targeted document by URL
 
-- **WHEN** Safari has two documents and user runs `safari-browser --url plaud get source`
+- **WHEN** Safari has two documents and user runs `safari-browser get --url plaud source`
 - **THEN** stdout contains the HTML source of the document whose URL contains `plaud`

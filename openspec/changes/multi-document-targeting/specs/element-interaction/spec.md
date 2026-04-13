@@ -8,27 +8,27 @@ When an element cannot be located inside the resolved target document, the syste
 
 #### Scenario: Click honors URL targeting
 
-- **WHEN** Safari has two documents and user runs `safari-browser --url plaud click "button.submit"`
+- **WHEN** Safari has two documents and user runs `safari-browser click --url plaud "button.submit"`
 - **THEN** the click SHALL execute inside the document whose URL contains `plaud`
 - **AND** SHALL NOT trigger any handler in the other document
 
 #### Scenario: Fill honors window targeting
 
-- **WHEN** user runs `safari-browser --window 2 fill "input#email" "user@example.com"`
+- **WHEN** user runs `safari-browser fill --window 2 "input#email" "user@example.com"`
 - **THEN** the input is filled inside the document of window 2
 - **AND** the same selector in window 1 SHALL remain unchanged
 
 #### Scenario: Element not found is scoped to target
 
 - **WHEN** Safari has two documents — one with `.submit`, one without
-- **AND** user runs `safari-browser --document 2 click ".submit"`
+- **AND** user runs `safari-browser click --document 2 ".submit"`
 - **AND** document 2 does not contain `.submit`
 - **THEN** the CLI SHALL exit with non-zero status and stderr SHALL contain `Element not found: .submit`
 - **AND** SHALL NOT click `.submit` in document 1
 
 #### Scenario: Scroll honors targeting
 
-- **WHEN** user runs `safari-browser --url plaud scroll down 200`
+- **WHEN** user runs `safari-browser scroll down --url plaud 200`
 - **THEN** only the document whose URL contains `plaud` SHALL scroll
 - **AND** other documents SHALL remain at their current scroll position
 

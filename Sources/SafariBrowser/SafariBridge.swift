@@ -96,7 +96,10 @@ enum SafariBridge {
         // Fallback to set URL when do JavaScript fails (e.g., about:blank, no open tabs).
         let jsCode = "window.location.href=\(url.jsStringLiteral)"
         let docRef = resolveDocumentReference(target)
-        try await runAppleScript("""
+        // Route through runTargetedAppleScript so `--url typo open ...` also
+        // gets the user-friendly documentNotFound error with available docs
+        // listed, matching the read-only getter behavior.
+        _ = try await runTargetedAppleScript("""
             tell application "Safari"
                 activate
                 if (count of windows) = 0 then
@@ -109,7 +112,7 @@ enum SafariBridge {
                     end try
                 end if
             end tell
-            """)
+            """, target: target)
     }
 
     /// Open `url` in a new tab of the target window. Only window-level

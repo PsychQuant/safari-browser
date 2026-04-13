@@ -13,19 +13,19 @@ When no Safari window exists, the system SHALL create a new document regardless 
 
 #### Scenario: Open URL in specific document by URL pattern
 
-- **WHEN** Safari has two documents and user runs `safari-browser --url plaud open https://plaud.ai/upload`
+- **WHEN** Safari has two documents and user runs `safari-browser open --url plaud https://plaud.ai/upload`
 - **THEN** the system navigates only the document whose URL already contains `plaud` to `https://plaud.ai/upload`
 - **AND** the other document SHALL remain unchanged
 
 #### Scenario: Open URL in specific window
 
-- **WHEN** user runs `safari-browser --window 2 open https://example.com`
+- **WHEN** user runs `safari-browser open --window 2 https://example.com`
 - **THEN** the system navigates the current tab of window 2 to `https://example.com`
 - **AND** window 1 SHALL remain unchanged
 
 #### Scenario: Target not found during open
 
-- **WHEN** user runs `safari-browser --url missing open https://example.com`
+- **WHEN** user runs `safari-browser open --url missing https://example.com`
 - **AND** no document URL contains the substring `missing`
 - **THEN** the system SHALL throw `documentNotFound` listing all available document URLs
 - **AND** no navigation SHALL occur
@@ -42,11 +42,11 @@ The system SHALL open a given URL in a new tab of the target window. When no tar
 
 #### Scenario: New tab in specific window
 
-- **WHEN** user runs `safari-browser --window 2 open https://example.com --new-tab`
+- **WHEN** user runs `safari-browser open --window 2 https://example.com --new-tab`
 - **THEN** the system opens a new tab in window 2
 - **AND** window 1 SHALL remain unchanged
 
 #### Scenario: New tab rejects document-level targeting
 
-- **WHEN** user runs `safari-browser --url plaud open https://example.com --new-tab`
+- **WHEN** user runs `safari-browser open --url plaud https://example.com --new-tab`
 - **THEN** the system SHALL reject the invocation with a validation error explaining that `--new-tab` only accepts `--window`

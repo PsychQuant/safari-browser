@@ -11,7 +11,7 @@ The system SHALL list the open tabs of the target Safari window, printing each t
 
 #### Scenario: List tabs of specific window
 
-- **WHEN** user runs `safari-browser --window 2 tabs`
+- **WHEN** user runs `safari-browser tabs --window 2`
 - **AND** window 2 has three tabs
 - **THEN** stdout contains exactly three lines, listing the tabs of window 2
 - **AND** SHALL NOT include any tabs from window 1
@@ -23,7 +23,7 @@ The system SHALL list the open tabs of the target Safari window, printing each t
 
 #### Scenario: tabs rejects document-level targeting
 
-- **WHEN** user runs `safari-browser --url plaud tabs`
+- **WHEN** user runs `safari-browser tabs --url plaud`
 - **THEN** the system SHALL reject the invocation with a validation error explaining that `tabs` only accepts `--window`
 
 ---
@@ -38,7 +38,7 @@ The system SHALL switch the target Safari window's current tab to the tab at the
 
 #### Scenario: Switch to tab in specific window
 
-- **WHEN** user runs `safari-browser --window 2 tab 3`
+- **WHEN** user runs `safari-browser tab --window 2 3`
 - **THEN** window 2's current tab becomes the tab at index 3
 - **AND** window 1's current tab SHALL remain unchanged
 
@@ -59,5 +59,5 @@ The system SHALL open a new empty tab in the target Safari window. The default t
 
 #### Scenario: New tab in specific window
 
-- **WHEN** user runs `safari-browser --window 2 tab new`
+- **WHEN** user runs `safari-browser tab --window 2 new`
 - **THEN** a new tab is created in window 2 and becomes its current tab

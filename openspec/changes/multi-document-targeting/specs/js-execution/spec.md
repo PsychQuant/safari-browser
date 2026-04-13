@@ -16,18 +16,18 @@ The system SHALL execute a JavaScript string in the target Safari document using
 
 #### Scenario: JS in targeted document by URL
 
-- **WHEN** Safari has two documents and user runs `safari-browser --url plaud js "window.location.href"`
+- **WHEN** Safari has two documents and user runs `safari-browser js --url plaud "window.location.href"`
 - **THEN** stdout contains the URL of the document whose URL contains `plaud`
 - **AND** SHALL NOT return the URL of any other document
 
 #### Scenario: JS in targeted document by window
 
-- **WHEN** user runs `safari-browser --window 2 js "document.title"`
+- **WHEN** user runs `safari-browser js --window 2 "document.title"`
 - **THEN** stdout contains the title of the document belonging to window 2
 
 #### Scenario: JS execution error in targeted document
 
-- **WHEN** user runs `safari-browser --url plaud js "undefinedVar.prop"`
+- **WHEN** user runs `safari-browser js --url plaud "undefinedVar.prop"`
 - **AND** the matched document evaluates the script and raises a reference error
 - **THEN** the CLI exits with non-zero status and stderr contains the JavaScript error message
 - **AND** SHALL NOT leak errors from any other document
@@ -51,7 +51,7 @@ The system SHALL read a JavaScript file and execute its contents in the target d
 
 #### Scenario: Execute from file in targeted document
 
-- **WHEN** user runs `safari-browser --url plaud js --file script.js`
+- **WHEN** user runs `safari-browser js --file script.js --url plaud`
 - **THEN** the script runs against the document whose URL contains `plaud`
 
 #### Scenario: File not found

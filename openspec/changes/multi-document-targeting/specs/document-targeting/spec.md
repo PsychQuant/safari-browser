@@ -12,34 +12,34 @@ The system SHALL provide four mutually exclusive global CLI flags that select th
 
 #### Scenario: URL substring targeting
 
-- **WHEN** user runs `safari-browser --url "plaud" get url`
+- **WHEN** user runs `safari-browser get --url "plaud" url`
 - **AND** Safari has multiple documents, one of which has `https://web.plaud.ai/` as its URL
 - **THEN** the system resolves the target to the first document whose URL contains the substring `plaud`
 - **AND** the command returns `https://web.plaud.ai/`
 
 #### Scenario: Window index targeting
 
-- **WHEN** user runs `safari-browser --window 2 get url`
+- **WHEN** user runs `safari-browser get --window 2 url`
 - **AND** Safari has at least two windows
 - **THEN** the system resolves the target to the document of the second window (1-indexed)
 - **AND** the command returns that window's document URL
 
 #### Scenario: Document index targeting
 
-- **WHEN** user runs `safari-browser --document 3 get url`
+- **WHEN** user runs `safari-browser get --document 3 url`
 - **AND** Safari has at least three documents in its document collection
 - **THEN** the system resolves the target to `document 3`
 - **AND** the command returns that document's URL
 
 #### Scenario: Tab alias for document
 
-- **WHEN** user runs `safari-browser --tab 2 get url`
+- **WHEN** user runs `safari-browser get --tab 2 url`
 - **THEN** the system treats `--tab 2` identically to `--document 2`
 - **AND** the command returns the URL of `document 2`
 
 #### Scenario: Mutually exclusive flags rejected
 
-- **WHEN** user runs `safari-browser --url plaud --window 2 get url`
+- **WHEN** user runs `safari-browser get url --url plaud --window 2`
 - **THEN** the system SHALL print a usage error identifying the mutually exclusive flags
 - **AND** the system SHALL exit with a non-zero status before invoking any Safari operation
 
@@ -84,7 +84,7 @@ The system SHALL route read-only document queries (getting URL, title, text, sou
 #### Scenario: Read-only query respects target override during modal block
 
 - **WHEN** Safari has two documents and the front window has a modal sheet open
-- **AND** user runs `safari-browser --document 2 get url`
+- **AND** user runs `safari-browser get --document 2 url`
 - **THEN** the command returns document 2's URL without waiting for the modal
 
 ---
@@ -95,14 +95,14 @@ When the user supplies a target flag that does not match any document (URL subst
 #### Scenario: URL substring with no matching document
 
 - **WHEN** Safari has documents `[https://web.plaud.ai/, https://platform.claude.com/]`
-- **AND** user runs `safari-browser --url xyz get url`
+- **AND** user runs `safari-browser get --url xyz url`
 - **THEN** the system SHALL throw `documentNotFound` with `pattern: "xyz"` and `availableDocuments` listing both URLs
 - **AND** the error description SHALL contain both `https://web.plaud.ai/` and `https://platform.claude.com/`
 
 #### Scenario: Window index out of range
 
 - **WHEN** Safari has one window
-- **AND** user runs `safari-browser --window 5 get url`
+- **AND** user runs `safari-browser get --window 5 url`
 - **THEN** the system SHALL throw `documentNotFound` identifying the requested window index
 - **AND** the error description SHALL list available windows
 
