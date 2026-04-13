@@ -18,6 +18,17 @@ enum SafariBridge {
         case windowIndex(Int)
         case urlContains(String)
         case documentIndex(Int)
+
+        /// Map a `--window N` integer to the correct targeting case
+        /// (`.windowIndex(N)` → "document of window N"). Critical for
+        /// window-scoped commands: do NOT use `.documentIndex(N)` here —
+        /// that resolves to Safari's global `document N` collection
+        /// index, which is NOT window N's current tab in multi-window
+        /// sessions (#23 verify R1 finding). Passing `nil` preserves
+        /// legacy `.frontWindow` behavior.
+        static func forWindow(_ n: Int?) -> TargetDocument {
+            n.map { .windowIndex($0) } ?? .frontWindow
+        }
     }
 
     /// Translate a `TargetDocument` into a Safari AppleScript document
@@ -418,15 +429,25 @@ enum SafariBridge {
         return try getFrontWindowID()
     }
 
-    /// #23 verify R1: bounds-based resolver for `--window N`. Asks Safari
-    /// for the target window's `bounds` in global coordinates, then
-    /// scans CG windows for a Safari-owned, layer-0 window with matching
-    /// rect (±2px tolerance). This is the same global coordinate space
-    /// used by both subsystems so an exact match is expected; the
-    /// tolerance only exists for defensive rounding on exotic displays.
-    /// Errors out on no match instead of falling back to "first Safari
-    /// window with height > 100" — silent fallback is how the previous
-    /// implementation could capture the wrong window entirely.
+    /// #23 verify R1→R2: bounds + title resolver for `--window N`. Asks
+    /// Safari for the target window's `bounds` and `name`, then scans CG
+    /// windows for a Safari-owned, layer-0 window with matching rect
+    /// (±2px tolerance).
+    ///
+    /// **Why the title tiebreaker exists** (#23 verify R2): a pure
+    /// bounds-based match was the R1 fix for a name-collision bug, but
+    /// live testing showed that N maximized Safari windows all share
+    /// identical bounds on the same display — bounds collision is a real
+    /// failure mode (not rare on anyone who uses Safari maximized). The
+    /// R2 fix queries BOTH bounds AND name and, when multiple CG windows
+    /// match the bounds, prefers the one whose CG `kCGWindowName` equals
+    /// the AS `name of window N`. Bounds + title is a joint identity
+    /// stronger than either alone; collisions on BOTH are vanishingly
+    /// rare (same-site, same-title, same-size, same-position).
+    ///
+    /// Errors out on no bounds match — no silent fallback, so a bad
+    /// `--window 99` surfaces cleanly instead of capturing the wrong
+    /// window.
     private static func getWindowIDByBounds(windowIndex: Int) throws -> String {
         let proc = Process()
         proc.executableURL = URL(filePath: "/usr/bin/osascript")
@@ -435,7 +456,8 @@ enum SafariBridge {
                 -- Verify browser window (has a tab) so Settings / Preferences are filtered out
                 set t to current tab of window \(windowIndex)
                 set b to bounds of window \(windowIndex)
-                return ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string)
+                set n to name of window \(windowIndex)
+                return ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string) & "|" & n
             end tell
             """]
         let pipe = Pipe()
@@ -449,7 +471,14 @@ enum SafariBridge {
               !raw.isEmpty else {
             throw SafariBrowserError.noSafariWindow
         }
-        let parts = raw.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        // Format: "x1,y1,x2,y2|window name". Split on FIRST '|' only —
+        // the title itself may contain '|' characters.
+        guard let pipeIdx = raw.firstIndex(of: "|") else {
+            throw SafariBrowserError.noSafariWindow
+        }
+        let boundsPart = String(raw[..<pipeIdx])
+        let asName = String(raw[raw.index(after: pipeIdx)...])
+        let parts = boundsPart.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
         guard parts.count == 4 else {
             throw SafariBrowserError.noSafariWindow
         }
@@ -461,6 +490,11 @@ enum SafariBridge {
         guard let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
             throw SafariBrowserError.noSafariWindow
         }
+
+        // First pass: collect ALL Safari layer-0 windows with matching
+        // bounds. Typically one hit; multiple means a collision (e.g.,
+        // two maximized windows on the same display).
+        var candidates: [(id: Int, name: String)] = []
         for w in windows {
             guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
                   let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
@@ -474,10 +508,33 @@ enum SafariBridge {
                abs(cgY - asY) <= tolerance &&
                abs(cgW - asW) <= tolerance &&
                abs(cgH - asH) <= tolerance {
-                return String(num)
+                let cgName = (w[kCGWindowName as String] as? String) ?? ""
+                candidates.append((id: num, name: cgName))
             }
         }
-        throw SafariBrowserError.noSafariWindow
+
+        if candidates.isEmpty {
+            throw SafariBrowserError.noSafariWindow
+        }
+
+        // Single bounds match → done.
+        if candidates.count == 1 {
+            return String(candidates[0].id)
+        }
+
+        // Multiple bounds matches → title tiebreaker. Safari's page titles
+        // are displayed in the CG window name on normal browser windows.
+        // Prefer the candidate whose CG name matches the AS name exactly.
+        if let titleMatch = candidates.first(where: { $0.name == asName }) {
+            return String(titleMatch.id)
+        }
+
+        // Neither bounds nor title disambiguates (extremely rare: two
+        // windows with identical bounds AND identical titles). Return
+        // the first bounds match and accept the ambiguity — better than
+        // erroring out on a user who just wants to screenshot any one
+        // of them.
+        return String(candidates[0].id)
     }
 
     /// Legacy front-window resolver (used when `--window` is not set).

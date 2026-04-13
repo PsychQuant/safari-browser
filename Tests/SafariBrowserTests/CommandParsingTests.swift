@@ -295,6 +295,35 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
     }
 
+    // MARK: - TargetDocument.forWindow regression guard (#23 verify R2)
+
+    func testTargetDocument_forWindow_mapsIntToWindowIndex() {
+        // CRITICAL invariant: --window N MUST map to .windowIndex(N),
+        // NOT .documentIndex(N). Safari's global document collection
+        // index is NOT equivalent to "current tab of window N" in
+        // multi-window sessions. The R0 implementation shipped with
+        // .documentIndex and was only caught by devil's-advocate + codex
+        // in R1 verify — this test locks the mapping so a regression
+        // flips tests red immediately.
+        XCTAssertEqual(SafariBridge.TargetDocument.forWindow(2), .windowIndex(2))
+        XCTAssertEqual(SafariBridge.TargetDocument.forWindow(5), .windowIndex(5))
+    }
+
+    func testTargetDocument_forWindow_nilMapsToFrontWindow() {
+        XCTAssertEqual(SafariBridge.TargetDocument.forWindow(nil), .frontWindow)
+    }
+
+    func testWindowOnlyTargetOptions_resolveAsTargetDocument_matchesForWindow() {
+        // The struct method must produce the same result as the
+        // underlying static so there is only one mapping to reason about.
+        let opts = try! WindowOnlyTargetOptions.parse(["--window", "3"])
+        XCTAssertEqual(opts.resolveAsTargetDocument(), .windowIndex(3))
+        XCTAssertEqual(opts.resolveAsTargetDocument(), SafariBridge.TargetDocument.forWindow(3))
+
+        let defaults = try! WindowOnlyTargetOptions.parse([])
+        XCTAssertEqual(defaults.resolveAsTargetDocument(), .frontWindow)
+    }
+
     // MARK: - WindowOnlyTargetOptions (#23)
 
     func testWindowOnlyTargetOptions_defaultIsNil() throws {

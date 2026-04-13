@@ -22,11 +22,10 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // and the resized Safari window stay in sync (#23).
         let windowRef = windowTarget.window.map { "window \($0)" } ?? "front window"
         // JavaScript-scoped target for the dimensions / scroll state.
-        // MUST use .windowIndex (→ "document of window N"), NOT
-        // .documentIndex (→ "document N" which is Safari's global
-        // document-collection index, not window N's current tab).
-        // Discovered via #23 verify round 1 by devil's-advocate + codex.
-        let docTarget: SafariBridge.TargetDocument = windowTarget.window.map { .windowIndex($0) } ?? .frontWindow
+        // The mapping `--window N` → `.windowIndex(N)` is centralized on
+        // `WindowOnlyTargetOptions.resolveAsTargetDocument()` with a
+        // regression-guard unit test (#23 verify R2).
+        let docTarget = windowTarget.resolveAsTargetDocument()
 
         if full {
             // Get full page dimensions and current scroll position

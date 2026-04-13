@@ -27,8 +27,6 @@ struct PdfCommand: AsyncParsableCommand {
             throw SafariBrowserError.appleScriptFailed("PDF export requires --allow-hid flag")
         }
 
-        FileHandle.standardError.write(Data("⚠️  Controlling keyboard for PDF export. Do not type until complete.\n".utf8))
-
         let absolutePath = (path as NSString).standardizingPath
         let fullPath = absolutePath.hasPrefix("/") ? absolutePath : FileManager.default.currentDirectoryPath + "/" + path
 
@@ -38,16 +36,19 @@ struct PdfCommand: AsyncParsableCommand {
         // the front before activating Safari, so both `click menu item`
         // and `sheet 1 of front window` land on the requested window.
         let windowIndex = windowTarget.window
-        // #23 verify R1: preflight the window so a bad `--window 99`
+        // #23 verify R1→R2: preflight the window so a bad `--window 99`
         // surfaces `documentNotFound` with the available-docs listing
-        // BEFORE we touch System Events. Routes through
-        // SafariBridge.getCurrentURL(target: .windowIndex(N)) which goes
-        // through runTargetedAppleScript and translates -1719/-1728 into
-        // the consistent error contract shared by every other targeted
-        // command.
+        // BEFORE we print the keyboard-takeover warning and touch
+        // System Events. R2 moves the preflight ahead of the stderr
+        // warning so users with bad `--window N` never see a misleading
+        // "Controlling keyboard..." message for a run that fails
+        // immediately without touching the keyboard.
         if let idx = windowIndex {
             _ = try await SafariBridge.getCurrentURL(target: .windowIndex(idx))
         }
+
+        FileHandle.standardError.write(Data("⚠️  Controlling keyboard for PDF export. Do not type until complete.\n".utf8))
+
         let raisePrelude = windowIndex.map { idx in
             """
             tell application "Safari" to set index of window \(idx) to 1

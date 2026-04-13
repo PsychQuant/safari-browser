@@ -125,11 +125,11 @@ struct UploadCommand: AsyncParsableCommand {
 
         // Click the file input to open dialog. When --window N is set, the
         // click must land on that window's current tab — thread the window
-        // through doJavaScript via .windowIndex so the JS runs against
-        // "document of window N", NOT the global "document N" which is
-        // Safari's document-collection index and may belong to a different
-        // window entirely (discovered via #23 verify round 1).
-        let jsTarget: SafariBridge.TargetDocument = window.map { .windowIndex($0) } ?? .frontWindow
+        // through doJavaScript via the centralized `.forWindow` helper
+        // (enforces `--window N` → `.windowIndex(N)`, never
+        // `.documentIndex(N)`). A single unit test guards this invariant
+        // against regression (#23 verify R1→R2).
+        let jsTarget = SafariBridge.TargetDocument.forWindow(window)
         let clickResult = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()",
             target: jsTarget

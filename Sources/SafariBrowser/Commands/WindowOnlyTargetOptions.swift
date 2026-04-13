@@ -25,4 +25,15 @@ struct WindowOnlyTargetOptions: ParsableArguments {
             throw ValidationError("--window must be >= 1 (1-indexed), got \(w)")
         }
     }
+
+    /// Map `--window N` to the matching `TargetDocument` case. Thin
+    /// pass-through to `SafariBridge.TargetDocument.forWindow` — kept as
+    /// a struct method for ergonomic call sites
+    /// (`windowTarget.resolveAsTargetDocument()`). The invariant
+    /// `--window N` → `.windowIndex(N)` is guarded by a unit test so a
+    /// regression back to `.documentIndex(N)` (the R0 bug) fails loudly
+    /// (#23 verify R2).
+    func resolveAsTargetDocument() -> SafariBridge.TargetDocument {
+        .forWindow(window)
+    }
 }
