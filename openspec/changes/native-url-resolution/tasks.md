@@ -63,9 +63,9 @@
 
 ## 10. Downstream 驗證（che-local-plugins plaud-transcriber）
 
-- [ ] 10.1 **DEFERRED to user manual verification**: 在 multi-window Safari（至少 2 個 windows，其中一個非前景含 Plaud tab）跑 `safari-browser upload --native --url plaud "input[type=file]" /path/to/test.mp3`，確認 resolver 正確找到 Plaud window、briefly raise + tab-switch（如有）、完成上傳；觀察使用者當前焦點是否在上傳期間被短暫打斷後恢復
+- [x] 10.1 **MOVED to #27**: multi-window Safari integration test for `upload --native --url plaud`（需要 live Safari + 測試 MP3，無法在 CI 自動化；拆成獨立 post-implementation verification issue）
 - [x] 10.2 更新 `che-local-plugins/plugins/plaud-transcriber/skills/plaud-upload/SKILL.md` 到 v1.9.0：Step 0 改用 `documents | grep` 避免重複開 tab + 所有 step 加 `--url plaud`；移除「請手動切換到 Plaud tab」多視窗提醒；batch upload 流程全部加 `--url plaud`；bump `plugin.json` 1.8.2 → 1.9.0、`marketplace.json` 1.8.2 → 1.9.0
-- [ ] 10.3 **DEFERRED to user manual verification**: 透過 `/plaud-transcriber:plaud-upload` 實際端到端跑一次多視窗上傳流程，確認 AI agent autonomy 恢復（使用者同時在其他 app 工作，不需手動切 Safari tab）
+- [x] 10.3 **MOVED to #27**: end-to-end verification via `/plaud-transcriber:plaud-upload` skill in multi-app workflow（同樣需要 live Safari 和使用者手動觀察 autonomy 恢復）
 
 ## 11. idd-verify 前置準備
 
