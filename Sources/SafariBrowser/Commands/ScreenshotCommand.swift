@@ -76,28 +76,42 @@ struct ScreenshotCommand: AsyncParsableCommand {
             scrollY = json["sy"] as? Int
         }
 
-        // Resize for full capture.
+        // #23 verify R7 F55: R8 wraps resize in a do-catch and tracks
+        // the error separately. If resize throws, we still run the
+        // restore block below (which may be a no-op if save also
+        // failed). This avoids leaving the window half-resized when
+        // the new strict `setAXWindowBounds` (R8 F54) throws on
+        // fullscreen / minimized targets.
+        var resizeError: Error?
         if let targetW, let targetH {
-            _ = try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: docTarget)
-            try await Task.sleep(nanoseconds: 300_000_000)
-            if let axWindow {
-                try SafariBridge.setAXWindowBounds(axWindow, x: 0, y: 0, width: Double(targetW), height: Double(targetH))
-            } else {
-                try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
-                    tell application "Safari"
-                        set bounds of front window to {0, 0, \(targetW), \(targetH)}
-                    end tell
-                    """])
+            do {
+                _ = try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: docTarget)
+                try await Task.sleep(nanoseconds: 300_000_000)
+                if let axWindow {
+                    try SafariBridge.setAXWindowBounds(axWindow, x: 0, y: 0, width: Double(targetW), height: Double(targetH))
+                } else {
+                    try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
+                        tell application "Safari"
+                            set bounds of front window to {0, 0, \(targetW), \(targetH)}
+                        end tell
+                        """])
+                }
+                try await Task.sleep(nanoseconds: 500_000_000)
+            } catch {
+                resizeError = error
             }
-            try await Task.sleep(nanoseconds: 500_000_000)
         }
 
-        // Capture.
+        // Capture — skipped if resize failed (nothing to capture at
+        // the expected size). Still fall through to restore so the
+        // save path can undo any partial mutation.
         var captureError: Error?
-        do {
-            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
-        } catch {
-            captureError = error
+        if resizeError == nil {
+            do {
+                try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
+            } catch {
+                captureError = error
+            }
         }
 
         // Restore bounds. Always run, even on capture failure.
@@ -122,6 +136,10 @@ struct ScreenshotCommand: AsyncParsableCommand {
             _ = try? await SafariBridge.doJavaScript("window.scrollTo(\(sx),\(sy))", target: docTarget)
         }
 
+        // R8 F55: propagate resize error first (command never ran the
+        // actual capture in that case), then capture error. User sees
+        // the root cause, not a downstream symptom.
+        if let resizeError { throw resizeError }
         if let captureError { throw captureError }
     }
 }

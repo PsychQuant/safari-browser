@@ -12,6 +12,8 @@ enum SafariBrowserError: LocalizedError {
     case noSafariWindow
     case elementNotFound(String)
     case accessibilityNotGranted
+    case axOperationFailed(String)
+    case windowIdentityAmbiguous(reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -56,6 +58,29 @@ enum SafariBrowserError: LocalizedError {
             return "No Safari window found"
         case .elementNotFound(let selector):
             return "Element not found: \(selector)"
+        case .axOperationFailed(let message):
+            return """
+                Accessibility operation failed: \(message)
+                This can happen when the target Safari window is in a state that
+                rejects AX mutations (fullscreen, minimized, split-view, or in
+                the middle of a Space transition). Workarounds:
+                  - Exit fullscreen and unminimize the target window
+                  - Use `safari-browser screenshot --window N` (without --full)
+                    which does not require AX bounds mutation
+                """
+        case .windowIdentityAmbiguous(let reason):
+            return """
+                Could not uniquely identify the target Safari window: \(reason)
+                This happens when multiple Safari windows share identical bounds
+                (e.g., several maximized windows on the same display) and R7
+                removed the unreliable AS-index-as-tiebreak heuristic that
+                previous rounds used as a silent fallback.
+                Workarounds:
+                  - Resize one of the collision windows so bounds differ
+                  - Use document-scoped commands instead: `snapshot --url`,
+                    `get text --url`, `get source --url` — these bypass the
+                    CG window-ID boundary entirely
+                """
         case .accessibilityNotGranted:
             return """
                 Accessibility permission required for `screenshot --window N`.

@@ -542,22 +542,23 @@ enum SafariBridge {
             return (String(boundsMatches[0].cgID), boundsMatches[0].ax)
         }
 
-        // Multiple bounds matches (e.g., several maximized windows) →
-        // tiebreak by looking for the AS-indexed AX window among the
-        // matches. If the AS-indexed AX window is in the match set,
-        // use it; otherwise FAIL CLOSED — do not guess.
-        if boundsMatches.count > 1,
-           windowIndex >= 1, windowIndex <= axWindows.count {
-            let target = axWindows[windowIndex - 1]
-            if let match = boundsMatches.first(where: { $0.ax == target }) {
-                return (String(match.cgID), match.ax)
-            }
+        // R8 strict fail-closed (#23 verify R7 F53 + DA + Codex):
+        // Multiple bounds matches means several Safari windows share
+        // identical bounds (e.g., maximized). R7 tried to break the tie
+        // by looking for `axWindows[windowIndex - 1]` in the match set —
+        // but that silently assumes AS-index = AX-index, which DA and
+        // Codex showed could return wrong window under ordering drift.
+        // R8 removes the tiebreak entirely and throws a specific
+        // `windowIdentityAmbiguous` error so the user knows the failure
+        // mode and can work around (rearrange windows or use document-
+        // scoped commands).
+        if boundsMatches.count > 1 {
+            throw SafariBrowserError.windowIdentityAmbiguous(
+                reason: "\(boundsMatches.count) Safari windows share bounds {\(asX),\(asY),\(asX + asW),\(asY + asH)}"
+            )
         }
 
-        // Zero or unverifiable bounds match → fail loudly. The R6 silent
-        // fallback re-introduced R5-class wrong-window bugs; R7 prefers
-        // an explicit error over a guessed answer (#23 verify R6 F41 +
-        // Codex P1).
+        // Zero bounds match → AS and AX disagree. Fail loudly.
         throw SafariBrowserError.noSafariWindow
     }
 
@@ -568,8 +569,10 @@ enum SafariBridge {
     ///
     /// Uses `kAXMainWindowAttribute` to get Safari's current main
     /// (frontmost) window, then `_AXUIElementGetWindow` for the CG ID.
-    /// Falls through to `kAXWindowsAttribute[0]` if mainWindow isn't
-    /// available (rare).
+    /// Falls through to the first non-minimized non-zero-size window
+    /// in `kAXWindowsAttribute` if mainWindow isn't available. R8
+    /// (#23 verify R7 F56 + DA) added the non-minimized and non-zero
+    /// filters so the fallback can't return a hidden/collapsed window.
     private static func getFrontWindowIDViaAX() throws -> (cgID: String, axWindow: AXUIElement?) {
         guard AXIsProcessTrusted() else {
             throw SafariBrowserError.accessibilityNotGranted
@@ -589,16 +592,32 @@ enum SafariBridge {
             }
         }
 
-        // Fallback: first window in kAXWindowsAttribute.
+        // Fallback: iterate kAXWindowsAttribute, skip minimized + zero-size.
         var windowsValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
-              let axWindows = windowsValue as? [AXUIElement],
-              let first = axWindows.first else {
+              let axWindows = windowsValue as? [AXUIElement], !axWindows.isEmpty else {
             throw SafariBrowserError.noSafariWindow
         }
-        var cgID: CGWindowID = 0
-        if _AXUIElementGetWindow(first, &cgID) == .success, cgID != 0 {
-            return (String(cgID), first)
+
+        for axWin in axWindows {
+            // Skip minimized windows — they're not frontmost in any meaningful sense.
+            var minimizedValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axWin, kAXMinimizedAttribute as CFString, &minimizedValue) == .success,
+               let minimized = minimizedValue as? Bool, minimized {
+                continue
+            }
+
+            // Skip zero-size windows (placeholder / detached state).
+            guard let (_, _) = axSize(axWin, attribute: kAXSizeAttribute as CFString)
+                .flatMap({ (w, h) -> (Double, Double)? in (w > 0 && h > 0) ? (w, h) : nil })
+            else {
+                continue
+            }
+
+            var cgID: CGWindowID = 0
+            if _AXUIElementGetWindow(axWin, &cgID) == .success, cgID != 0 {
+                return (String(cgID), axWin)
+            }
         }
         throw SafariBrowserError.noSafariWindow
     }
@@ -623,18 +642,34 @@ enum SafariBridge {
     /// Operating directly on the AX element we resolved avoids the
     /// cross-API window-identity mismatch that plagued R1-R6 when
     /// bounds ops went through AS while captures went through CG.
+    ///
+    /// **R8 strict error propagation** (#23 verify R7 F54 + DA +
+    /// Logic + Security + Codex convergent P1): previously discarded
+    /// the AXError return. On fullscreen / minimized / split-view
+    /// Safari windows, the AX setter rejects with `.cannotComplete`
+    /// and the caller silently proceeds, producing a mis-sized
+    /// `screenshot --full` capture. R8 checks both return codes and
+    /// throws `axOperationFailed` with a descriptive error message so
+    /// the user gets a clear failure instead of a wrong-dimensions
+    /// file.
     static func setAXWindowBounds(_ element: AXUIElement, x: Double, y: Double, width: Double, height: Double) throws {
         var position = CGPoint(x: x, y: y)
         var size = CGSize(width: width, height: height)
         guard let posValue = AXValueCreate(.cgPoint, &position),
               let sizeValue = AXValueCreate(.cgSize, &size) else {
-            throw SafariBrowserError.noSafariWindow
+            throw SafariBrowserError.axOperationFailed("AXValueCreate returned nil for CGPoint/CGSize")
         }
         // Position first, then size — setting both in that order is the
         // standard AX pattern (some window servers may ignore size if
         // position is pending).
-        _ = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, posValue)
-        _ = AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, sizeValue)
+        let posErr = AXUIElementSetAttributeValue(element, kAXPositionAttribute as CFString, posValue)
+        guard posErr == .success else {
+            throw SafariBrowserError.axOperationFailed("set kAXPositionAttribute → AXError(\(posErr.rawValue))")
+        }
+        let sizeErr = AXUIElementSetAttributeValue(element, kAXSizeAttribute as CFString, sizeValue)
+        guard sizeErr == .success else {
+            throw SafariBrowserError.axOperationFailed("set kAXSizeAttribute → AXError(\(sizeErr.rawValue))")
+        }
     }
 
     /// Read the current `kAXPositionAttribute` and `kAXSizeAttribute`
