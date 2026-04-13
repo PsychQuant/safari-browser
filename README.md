@@ -254,9 +254,19 @@ System Events operations. This is the only unambiguous way to identify
 the target window across the AppleScript ↔ Core Graphics boundary —
 bounds and titles both fail to disambiguate in real scenarios (multiple
 maximized windows share bounds; titles drift during auth callbacks and
-bidi URLs — see `#23 verify R3` for the live-repro evidence). If you
-need to capture a background window without disrupting z-order, use
-`--url <pattern>` + the JS-side API instead.
+bidi URLs — see `#23 verify R3` for the live-repro evidence). If the
+window is on another macOS Space, raise succeeds at the AS layer but
+the window stays in its own Space — the command errors out with
+`noSafariWindow` rather than silently capturing a wrong window in the
+current Space.
+
+There is currently **no way to screenshot a Safari window without
+raising it** — the CG window-ID lookup has no public API that maps AS
+`window N` to a CG ID without the raise. If you need document content
+in a non-disruptive way, use document-scoped commands that don't
+require a CG window ID: `snapshot --url <pattern>`, `get text --url
+<pattern>`, `get source --url <pattern>`, etc. — these bypass the
+window-ID boundary entirely.
 
 ### Wait
 

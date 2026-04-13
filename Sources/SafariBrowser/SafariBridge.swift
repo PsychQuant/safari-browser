@@ -431,46 +431,87 @@ enum SafariBridge {
         return try getFrontWindowID()
     }
 
-    /// #23 verify R1→R2→R3→R4: raise-then-front resolver for `--window N`.
+    /// #23 verify R1→R2→R3→R4→R5: raise-then-direct-CG resolver for
+    /// `--window N`. Earlier rounds layered different matching heuristics
+    /// — bounds (R1), bounds+title (R2), title drift fixes (R3), raise-
+    /// then-delegate (R4). Every round hit an edge case in real Safari
+    /// usage. R5 commits to the raise strategy but reads CG directly
+    /// instead of delegating to `getFrontWindowID` (which still did
+    /// title matching with a silent fallback).
     ///
-    /// Earlier rounds tried bounds matching (R1), bounds+title (R2), and
-    /// various refinements — all eventually hit failure modes in real
-    /// Safari:
-    ///   - Two+ maximized windows share identical bounds (R1 bug)
-    ///   - CG `kCGWindowName` drifts from AS `name of window N` on
-    ///     auth callbacks, bidi URLs, stale page titles (R3 Logic+DA)
-    ///   - CG entries occasionally have empty names (R3 DA)
-    ///   - `trimmingCharacters` corrupts trailing-whitespace titles (R3 Codex+DA)
+    /// Algorithm:
+    ///   1. Raise window N via AppleScript (routes through
+    ///      `runTargetedAppleScript` → `documentNotFound` on bad index)
+    ///   2. Poll CG for up to 500ms, looking for the topmost Safari
+    ///      layer-0 ONSCREEN window. Consider it settled when two
+    ///      consecutive reads return the same window ID.
+    ///   3. After raise + stable top = window N's CG window ID.
     ///
-    /// The R4 approach abandons title-based identity entirely. `set
-    /// index of window N to 1` via AppleScript raises the target window
-    /// to the front, which is unambiguous by definition. We then delegate
-    /// to the legacy front-window resolver.
+    /// No title matching, no bounds matching — just raise + poll.
     ///
-    /// **Side effect**: window Z-order is mutated. `PdfCommand --window N`
-    /// and `UploadCommand --native --window N` already do this via
-    /// `raisePrelude`, so extending the pattern to `ScreenshotCommand`
-    /// keeps CLI-wide behavior consistent.
+    /// **Cross-Space detection** (#23 verify R4-DA F29): if window N is
+    /// in another macOS Space, `set index` succeeds on the AS layer but
+    /// the window is not onscreen in the current Space. `kCGWindowIsOnscreen`
+    /// filters to current-Space windows, and if NO onscreen Safari
+    /// windows are found after polling, we throw `noSafariWindow`
+    /// rather than returning a wrong window ID. (The narrower case
+    /// where target is in Space B while ANOTHER Safari window is in
+    /// Space A still returns the wrong window — that would require
+    /// title matching to detect, which R3 showed is unreliable.)
     ///
-    /// Routes through `runTargetedAppleScript` so a bad `--window 99`
-    /// surfaces `documentNotFound` with the available-docs listing,
-    /// matching the error contract of every other targeted command.
+    /// **Side effect**: window Z-order is mutated. Consistent with
+    /// `pdf --window N` and `upload --native --window N`.
     private static func getWindowIDByRaise(windowIndex: Int) async throws -> String {
         _ = try await runTargetedAppleScript("""
             tell application "Safari"
-                -- Verify browser window (has a tab) so Settings / Preferences error out early
                 set t to current tab of window \(windowIndex)
-                -- Raise to front so the subsequent CG resolution is unambiguous
                 set index of window \(windowIndex) to 1
             end tell
             """, target: .windowIndex(windowIndex))
 
-        // Give Safari's window server a moment to reflect the z-order
-        // change before CG scans — 100ms is empirically enough and
-        // consistent with the delays used elsewhere in this file.
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Poll CG for z-order to settle. Success = top Safari layer-0
+        // onscreen window is stable across two consecutive reads.
+        let deadline = Date().addingTimeInterval(0.5)
+        var previous: Int? = nil
+        while Date() < deadline {
+            let current = firstOnscreenSafariWindowID()
+            if let current, previous == current {
+                return String(current)
+            }
+            previous = current
+            try await Task.sleep(nanoseconds: 25_000_000) // 25ms
+        }
 
-        return try getFrontWindowID()
+        // Timeout — return whatever is topmost now, or throw if cross-Space.
+        if let final = firstOnscreenSafariWindowID() {
+            return String(final)
+        }
+        throw SafariBrowserError.noSafariWindow
+    }
+
+    /// Return the CG window ID of the topmost Safari layer-0 onscreen
+    /// browser window (has a content region > 100pt high, filtering out
+    /// Settings/Preferences-style small utility windows).
+    ///
+    /// `CGWindowListCopyWindowInfo([.optionAll], ...)` returns windows in
+    /// front-to-back z-order. `kCGWindowIsOnscreen == true` filters to
+    /// the current macOS Space, so cross-Space Safari windows are not
+    /// returned here (the raise-then-direct-CG resolver uses the absence
+    /// of onscreen Safari windows to detect cross-Space targets).
+    private static func firstOnscreenSafariWindowID() -> Int? {
+        guard let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        for w in windows {
+            guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
+                  let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
+                  (w[kCGWindowIsOnscreen as String] as? Bool) == true,
+                  let bounds = w[kCGWindowBounds as String] as? [String: Any],
+                  let height = bounds["Height"] as? Int, height > 100,
+                  let num = w[kCGWindowNumber as String] as? Int else { continue }
+            return num
+        }
+        return nil
     }
 
     /// Legacy front-window resolver (used when `--window` is not set).
