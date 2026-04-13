@@ -13,6 +13,8 @@ struct PdfCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Allow keyboard/mouse simulation (required for PDF export)")
     var allowHid = false
 
+    @OptionGroup var windowTarget: WindowOnlyTargetOptions
+
     func run() async throws {
         guard allowHid else {
             FileHandle.standardError.write(Data("""
@@ -30,8 +32,21 @@ struct PdfCommand: AsyncParsableCommand {
         let absolutePath = (path as NSString).standardizingPath
         let fullPath = absolutePath.hasPrefix("/") ? absolutePath : FileManager.default.currentDirectoryPath + "/" + path
 
+        // #23: PDF export is keystroke-driven and inherently window-scoped —
+        // menu clicks and sheet waits resolve against whichever window we
+        // put in front. When --window N is supplied, raise that window to
+        // the front before activating Safari, so both `click menu item`
+        // and `sheet 1 of front window` land on the requested window.
+        let windowIndex = windowTarget.window
+        let raisePrelude = windowIndex.map { idx in
+            """
+            tell application "Safari" to set index of window \(idx) to 1
+            """
+        } ?? ""
+
         // Step 1: Activate Safari and open the Export as PDF dialog
         try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
+            \(raisePrelude)
             tell application "Safari" to activate
             delay 0.5
             tell application "System Events"

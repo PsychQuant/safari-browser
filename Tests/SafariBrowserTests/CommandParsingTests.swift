@@ -221,6 +221,68 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertTrue(command.json)
     }
 
+    // MARK: - WindowOnlyTargetOptions (#23)
+
+    func testWindowOnlyTargetOptions_defaultIsNil() throws {
+        let options = try WindowOnlyTargetOptions.parse([])
+        XCTAssertNil(options.window)
+    }
+
+    func testWindowOnlyTargetOptions_windowFlag() throws {
+        let options = try WindowOnlyTargetOptions.parse(["--window", "2"])
+        XCTAssertEqual(options.window, 2)
+    }
+
+    func testWindowOnlyTargetOptions_rejectsZeroWindow() {
+        XCTAssertThrowsError(
+            try WindowOnlyTargetOptions.parse(["--window", "0"])
+        )
+    }
+
+    func testWindowOnlyTargetOptions_rejectsNegativeWindow() {
+        XCTAssertThrowsError(
+            try WindowOnlyTargetOptions.parse(["--window", "-1"])
+        )
+    }
+
+    // MARK: - CloseCommand target wiring (#23)
+
+    func testCloseCommand_defaultsNoTarget() throws {
+        let command = try CloseCommand.parse([])
+        XCTAssertNil(command.windowTarget.window)
+    }
+
+    func testCloseCommand_acceptsWindowFlag() throws {
+        let command = try CloseCommand.parse(["--window", "2"])
+        XCTAssertEqual(command.windowTarget.window, 2)
+    }
+
+    // MARK: - ScreenshotCommand target wiring (#23)
+
+    func testScreenshotCommand_defaultsNoTarget() throws {
+        let command = try ScreenshotCommand.parse([])
+        XCTAssertNil(command.windowTarget.window)
+    }
+
+    func testScreenshotCommand_acceptsWindowFlag() throws {
+        let command = try ScreenshotCommand.parse(["--window", "2", "out.png"])
+        XCTAssertEqual(command.windowTarget.window, 2)
+        XCTAssertEqual(command.path, "out.png")
+    }
+
+    // MARK: - PdfCommand target wiring (#23)
+
+    func testPdfCommand_defaultsNoTarget() throws {
+        let command = try PdfCommand.parse([])
+        XCTAssertNil(command.windowTarget.window)
+    }
+
+    func testPdfCommand_acceptsWindowFlag() throws {
+        let command = try PdfCommand.parse(["--window", "2", "--allow-hid", "out.pdf"])
+        XCTAssertEqual(command.windowTarget.window, 2)
+        XCTAssertEqual(command.path, "out.pdf")
+    }
+
     // MARK: - StorageCommand target wiring (#23)
 
     func testStorageLocalGet_acceptsUrlTarget() throws {

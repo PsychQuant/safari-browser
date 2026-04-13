@@ -6,7 +6,9 @@ struct CloseCommand: AsyncParsableCommand {
         abstract: "Close the current tab"
     )
 
+    @OptionGroup var windowTarget: WindowOnlyTargetOptions
+
     func run() async throws {
-        try await SafariBridge.closeCurrentTab()
+        try await SafariBridge.closeCurrentTab(window: windowTarget.window)
     }
 }

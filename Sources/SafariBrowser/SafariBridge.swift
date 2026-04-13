@@ -145,10 +145,17 @@ enum SafariBridge {
             """)
     }
 
-    static func closeCurrentTab() async throws {
+    /// Close the current tab of the target window (#23). `nil` preserves
+    /// the legacy `front window` behavior; an explicit index targets
+    /// `window N`. This is window-scoped — there is no AppleScript
+    /// primitive for "close current tab of document N" — so `--url`,
+    /// `--tab`, `--document` are rejected at the CLI layer via
+    /// `WindowOnlyTargetOptions`.
+    static func closeCurrentTab(window: Int? = nil) async throws {
+        let windowRef = window.map { "window \($0)" } ?? "front window"
         try await runAppleScript("""
             tell application "Safari"
-                close current tab of front window
+                close current tab of \(windowRef)
             end tell
             """)
     }
@@ -381,8 +388,14 @@ enum SafariBridge {
 
     // MARK: - Screenshot
 
-    static func getWindowID() throws -> String {
-        // Use AppleScript to get front document window's name and verify it has a tab (= browser window)
+    /// Resolve a Core Graphics window ID for the target Safari browser
+    /// window. `nil` preserves the legacy front-window behavior; an
+    /// explicit index targets `window N`, used by `screenshot --window`
+    /// and `pdf --window` (#23). Settings/Preferences windows are filtered
+    /// out by requiring the window to have a current tab.
+    static func getWindowID(window: Int? = nil) throws -> String {
+        let windowRef = window.map { "window \($0)" } ?? "front window"
+        // Use AppleScript to get the target browser window's name and verify it has a tab (= browser window)
         // Settings/Preferences windows have no tabs, so this filters them out
         let frontBrowserWindowName: String? = {
             let proc = Process()
@@ -390,9 +403,9 @@ enum SafariBridge {
             proc.arguments = ["-e", """
                 tell application "Safari"
                     try
-                        -- front window is always the topmost; check if it's a browser window (has tabs)
-                        set t to current tab of front window
-                        return name of front window
+                        -- Target window; verify it is a browser window (has tabs)
+                        set t to current tab of \(windowRef)
+                        return name of \(windowRef)
                     end try
                 end tell
                 """]
