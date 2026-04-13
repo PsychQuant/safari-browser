@@ -253,14 +253,26 @@ window N to the front** before their respective System Events keystroke
 operations. Keystrokes inherently target the front window, so the raise
 is part of the operation, not just identification.
 
-`screenshot --window N` (R6) uses the **AXUIElement private SPI**
-(`_AXUIElementGetWindow`) to map AS `window N` to a CG window ID
-**without raising the window**. This avoids the silent wrong-window
-failure modes that bedevil bounds- and title-based matching (see #23
-verify R1-R5 for the saga). The trade-off is that `screenshot --window`
-now requires Accessibility permission for the CLI's host process
-(Terminal.app / iTerm / etc) — first-time use without permission throws
+`screenshot` (R7) uses the **AXUIElement private SPI**
+(`_AXUIElementGetWindow`) to map AppleScript window indices to CG
+window IDs **without raising the window**. Both `screenshot --window N`
+and default `screenshot` (no flag) use AX when Accessibility is
+granted — eliminating the silent wrong-window failure modes that
+bedevil bounds- and title-based matching (see #23 verify R1-R6 for
+the saga). Without Accessibility, `screenshot` (no flag) falls back
+to the legacy CG name-match resolver; `screenshot --window N` throws
 `accessibilityNotGranted` with grant instructions.
+
+When `--full` is combined with AX-resolved targeting, window bounds
+read/write also go through AX (`kAXPositionAttribute` /
+`kAXSizeAttribute`) on the same element that was resolved for CG
+capture — eliminating the R6 cross-API mismatch where resize could
+hit a different window than the capture.
+
+Ambiguity is fail-closed: if AX bounds matching can't uniquely
+identify the requested window, the command throws `noSafariWindow`
+instead of silently guessing. Previous rounds silently fell back to
+"guess by AS-index = AX-index" — R7 removes that path entirely.
 
 ```bash
 # Grant once via System Settings → Privacy & Security → Accessibility,

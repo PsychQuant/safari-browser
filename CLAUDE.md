@@ -79,7 +79,7 @@ safari-browser upload --native "input[type=file]" file.mp3 --window 2
 - **Window-level UI ops**（`tabs` / `tab` / `open --new-tab` / `open --new-window`）只接受 `--window`
 - **Window-only primitives**（`close` / `screenshot` / `pdf` / `upload --native`）只接受 `--window` — 底層是 AppleScript `close current tab of window N` / CGWindowListCopyWindowInfo / System Events keystrokes，沒有 document-scoped 版本（#23）
 - **`pdf` / `upload --native` 的 `--window N` 會 briefly raise window N to front**（#23 verify R4）— 因為 keystrokes 一定打 front window，raise 是操作的一部分，不只是 identification。
-- **`screenshot --window N`（R6 C1）使用 AXUIElement private SPI**（`_AXUIElementGetWindow`）映射 AS `window N` → CG window ID，**不 raise**。避免 R1-R5 的 bounds/title 失敗模式。代價是需要 Accessibility 權限 — 第一次跑會丟 `accessibilityNotGranted` error 並指引使用者去 System Settings 開權限。
+- **`screenshot`（R7 C）全路徑使用 AXUIElement private SPI**（`_AXUIElementGetWindow`）：`--window N` 和預設 `screenshot`（無 flag）都走 AX 當 `AXIsProcessTrusted()` 為 true。`--full` mode 下 bounds read/write 也走 AX（`kAXPositionAttribute` / `kAXSizeAttribute`）同一個 AX element，消除 R6 cross-API mismatch。Fail-closed — AX bounds 比對不 unique 就 throw，不再 silent guess。沒 Accessibility 權限時 `screenshot`（無 flag）回退 legacy CG name-match；`screenshot --window N` 丟 `accessibilityNotGranted` 錯誤並指引去 System Settings。
 - 不想授權 Accessibility → 改用 document-scoped 命令（`snapshot --url`, `get text --url`, `get source --url`）讀 DOM content 不需要 CG window ID。
 - **Upload split path**（#23）：`--js` 接受完整 TargetOptions、`--native` / `--allow-hid` 只接受 `--window`；沒指定 mode 時若帶了 `--url` / `--tab` / `--document` 會自動走 JS path
 - **Wait breaking change**（#23）：原本的 `wait --url <pattern>` 改為 `wait --for-url <pattern>`，因為 `--url` 現在是 targeting flag

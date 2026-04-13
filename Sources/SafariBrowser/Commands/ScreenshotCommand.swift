@@ -1,4 +1,5 @@
 import ArgumentParser
+import CoreGraphics
 import Foundation
 
 struct ScreenshotCommand: AsyncParsableCommand {
@@ -16,76 +17,111 @@ struct ScreenshotCommand: AsyncParsableCommand {
     @OptionGroup var windowTarget: WindowOnlyTargetOptions
 
     func run() async throws {
-        let windowID = try await SafariBridge.getWindowID(window: windowTarget.window)
-        // AppleScript window reference used for bounds operations — the
-        // same one `getWindowID` resolved above, so the captured CG window
-        // and the resized Safari window stay in sync (#23).
-        let windowRef = windowTarget.window.map { "window \($0)" } ?? "front window"
-        // JavaScript-scoped target for the dimensions / scroll state.
-        // The mapping `--window N` → `.windowIndex(N)` is centralized on
-        // `WindowOnlyTargetOptions.resolveAsTargetDocument()` with a
-        // regression-guard unit test (#23 verify R2).
+        // #23 verify R7: resolve both CG ID AND AX element so --full mode
+        // can do bounds operations on the SAME window we're about to
+        // capture. This eliminates the R6 F42 cross-API mismatch where
+        // CG ID came from AX but bounds resize went through AS `window N`
+        // (could be a different window).
+        let (windowID, axWindow) = try await SafariBridge.resolveWindowForCapture(window: windowTarget.window)
+
+        // JS target for dimensions / scroll state. Uses the same window
+        // index the user passed via CLI (or front window for nil).
         let docTarget = windowTarget.resolveAsTargetDocument()
 
-        if full {
-            // Get full page dimensions and current scroll position
-            let dims = try await SafariBridge.doJavaScript(
-                "JSON.stringify({sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,cw:document.documentElement.clientWidth,ch:document.documentElement.clientHeight,sx:window.scrollX,sy:window.scrollY})",
-                target: docTarget
-            )
+        if !full {
+            // Simple path: capture whatever CG ID resolved. Always silent (-x).
+            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
+            return
+        }
 
-            // Save current window bounds
-            let bounds = try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
+        // --full path: resize, capture, restore. R7 prefers AX bounds ops
+        // when axWindow is available (AXIsProcessTrusted + targeted or
+        // default-with-permission path). Falls back to AS bounds for the
+        // legacy default path (no Accessibility + no --window).
+
+        // Read page dimensions via JS (same window we're capturing).
+        let dims = try await SafariBridge.doJavaScript(
+            "JSON.stringify({sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,cw:document.documentElement.clientWidth,ch:document.documentElement.clientHeight,sx:window.scrollX,sy:window.scrollY})",
+            target: docTarget
+        )
+
+        var savedRect: CGRect? = nil
+        var asBoundsRaw: String? = nil
+
+        if let axWindow {
+            savedRect = try SafariBridge.getAXWindowBounds(axWindow)
+        } else {
+            // Legacy default-no-AX path — AS `front window` is coherent here
+            // because the nil case used `getFrontWindowID` which matches
+            // whatever Safari's AS front window is.
+            asBoundsRaw = try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
                 tell application "Safari"
-                    get bounds of \(windowRef)
+                    get bounds of front window
                 end tell
                 """])
+        }
 
-            // Resize window to full page size
-            if let data = dims.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let sw = json["sw"] as? Int,
-               let sh = json["sh"] as? Int {
-                let width = min(sw + 50, 3000)  // cap to reasonable size
-                let height = min(sh + 150, 10000)
-                _ = try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: docTarget)
-                try await Task.sleep(nanoseconds: 300_000_000)
+        // Parse dims JSON once.
+        var targetW: Int? = nil
+        var targetH: Int? = nil
+        var scrollX: Int? = nil
+        var scrollY: Int? = nil
+        if let data = dims.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let sw = json["sw"] as? Int, let sh = json["sh"] as? Int {
+                targetW = min(sw + 50, 3000)
+                targetH = min(sh + 150, 10000)
+            }
+            scrollX = json["sx"] as? Int
+            scrollY = json["sy"] as? Int
+        }
+
+        // Resize for full capture.
+        if let targetW, let targetH {
+            _ = try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: docTarget)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            if let axWindow {
+                try SafariBridge.setAXWindowBounds(axWindow, x: 0, y: 0, width: Double(targetW), height: Double(targetH))
+            } else {
                 try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
                     tell application "Safari"
-                        set bounds of \(windowRef) to {0, 0, \(width), \(height)}
+                        set bounds of front window to {0, 0, \(targetW), \(targetH)}
                     end tell
                     """])
-                try await Task.sleep(nanoseconds: 500_000_000)
             }
+            try await Task.sleep(nanoseconds: 500_000_000)
+        }
 
-            // Take screenshot, always restore window bounds afterward.
-            // -x: silent mode (no shutter sound) — required for agent automation (#10)
-            var captureError: Error?
-            do {
-                try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
-            } catch {
-                captureError = error
-            }
+        // Capture.
+        var captureError: Error?
+        do {
+            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
+        } catch {
+            captureError = error
+        }
 
-            // Restore window bounds (always, even if capture failed)
+        // Restore bounds. Always run, even on capture failure.
+        if let axWindow, let rect = savedRect {
+            try? SafariBridge.setAXWindowBounds(
+                axWindow,
+                x: Double(rect.origin.x),
+                y: Double(rect.origin.y),
+                width: Double(rect.size.width),
+                height: Double(rect.size.height)
+            )
+        } else if let asBoundsRaw {
             _ = try? await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
                 tell application "Safari"
-                    set bounds of \(windowRef) to {\(bounds)}
+                    set bounds of front window to {\(asBoundsRaw)}
                 end tell
                 """])
-
-            // Restore scroll position
-            if let data = dims.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let sx = json["sx"] as? Int,
-               let sy = json["sy"] as? Int {
-                _ = try? await SafariBridge.doJavaScript("window.scrollTo(\(sx),\(sy))", target: docTarget)
-            }
-
-            if let captureError { throw captureError }
-        } else {
-            // -x: silent mode (no shutter sound) — required for agent automation (#10)
-            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
         }
+
+        // Restore scroll position.
+        if let sx = scrollX, let sy = scrollY {
+            _ = try? await SafariBridge.doJavaScript("window.scrollTo(\(sx),\(sy))", target: docTarget)
+        }
+
+        if let captureError { throw captureError }
     }
 }
