@@ -107,6 +107,15 @@ struct UploadCommand: AsyncParsableCommand {
     /// preserves the legacy front-window behavior; an explicit index
     /// raises `window N` to the front before activating Safari (#23).
     private func uploadViaNativeDialog(selector: String, path: String, timeout: Double, window: Int? = nil) async throws {
+        // #23 verify R1: preflight the window so a bad `--window 99`
+        // surfaces `documentNotFound` with the available-docs listing
+        // before we touch System Events. The subsequent doJavaScript call
+        // on `.windowIndex(window)` would already error, but we want the
+        // error BEFORE we warn the user about keyboard takeover below.
+        if let window {
+            _ = try await SafariBridge.getCurrentURL(target: .windowIndex(window))
+        }
+
         // #20: probe System Events before sending any keystrokes. A silent hang
         // inside the combined osascript is the single worst failure mode of this
         // command, and System Events being down is by far the most common cause.
@@ -116,9 +125,11 @@ struct UploadCommand: AsyncParsableCommand {
 
         // Click the file input to open dialog. When --window N is set, the
         // click must land on that window's current tab — thread the window
-        // through doJavaScript via .documentIndex so the JS runs against the
-        // document of the correct window.
-        let jsTarget: SafariBridge.TargetDocument = window.map { .documentIndex($0) } ?? .frontWindow
+        // through doJavaScript via .windowIndex so the JS runs against
+        // "document of window N", NOT the global "document N" which is
+        // Safari's document-collection index and may belong to a different
+        // window entirely (discovered via #23 verify round 1).
+        let jsTarget: SafariBridge.TargetDocument = window.map { .windowIndex($0) } ?? .frontWindow
         let clickResult = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()",
             target: jsTarget

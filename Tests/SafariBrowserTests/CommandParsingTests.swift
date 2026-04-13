@@ -54,11 +54,31 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
     }
 
-    func testWaitCommand_oldUrlFlagRejected() {
-        // Old `wait --url <pattern>` syntax no longer means "wait for URL".
-        // It parses as a targeting flag — and without --for-url / --js /
-        // milliseconds, validate() rejects the invocation.
-        XCTAssertThrowsError(try WaitCommand.parse(["--url", "plaud"]).validate())
+    func testWaitCommand_oldUrlFlagRejectedWithRenameHint() {
+        // #23 verify R1: old `wait --url <pattern>` syntax parses --url
+        // as a targeting flag. validate() detects the rename trap and
+        // throws a helpful error pointing at --for-url, not the cryptic
+        // "Provide milliseconds..." message that assert-locked the bad
+        // UX before the round 1 fix.
+        XCTAssertThrowsError(try WaitCommand.parse(["--url", "plaud"]).validate()) { error in
+            let description = String(describing: error)
+            XCTAssertTrue(
+                description.contains("--for-url"),
+                "Expected rename hint mentioning --for-url, got: \(description)"
+            )
+        }
+    }
+
+    func testWaitCommand_missingConditionWithNonUrlTarget() {
+        // --document / --window / --tab as the only flag is NOT the
+        // rename trap — fall through to the generic error.
+        XCTAssertThrowsError(try WaitCommand.parse(["--document", "2"]).validate()) { error in
+            let description = String(describing: error)
+            XCTAssertTrue(
+                description.contains("Provide milliseconds"),
+                "Expected generic error, got: \(description)"
+            )
+        }
     }
 
     func testWaitCommand_jsWithTarget() throws {

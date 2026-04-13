@@ -151,13 +151,23 @@ enum SafariBridge {
     /// primitive for "close current tab of document N" — so `--url`,
     /// `--tab`, `--document` are rejected at the CLI layer via
     /// `WindowOnlyTargetOptions`.
+    ///
+    /// When `window` is supplied the call routes through
+    /// `runTargetedAppleScript` so `--window 99` surfaces a user-friendly
+    /// `documentNotFound` error listing every open document, matching the
+    /// error contract of all other targeted commands (#23 verify R1).
     static func closeCurrentTab(window: Int? = nil) async throws {
         let windowRef = window.map { "window \($0)" } ?? "front window"
-        try await runAppleScript("""
+        let script = """
             tell application "Safari"
                 close current tab of \(windowRef)
             end tell
-            """)
+            """
+        if let window {
+            _ = try await runTargetedAppleScript(script, target: .windowIndex(window))
+        } else {
+            try await runAppleScript(script)
+        }
     }
 
     // MARK: - JavaScript
@@ -393,19 +403,96 @@ enum SafariBridge {
     /// explicit index targets `window N`, used by `screenshot --window`
     /// and `pdf --window` (#23). Settings/Preferences windows are filtered
     /// out by requiring the window to have a current tab.
+    ///
+    /// When `window` is set, matching is done by **bounds** (not title)
+    /// so two Safari windows with the same page title — or one title
+    /// being a prefix of another — cannot produce a wrong CG window ID.
+    /// The previous name-only match picked the first z-order hit and
+    /// silently captured the wrong window; the previous `hasPrefix`
+    /// fuzzy match also mis-identified windows like `"Example"` vs
+    /// `"Example — Extra"` (discovered via #23 verify round 1).
     static func getWindowID(window: Int? = nil) throws -> String {
-        let windowRef = window.map { "window \($0)" } ?? "front window"
-        // Use AppleScript to get the target browser window's name and verify it has a tab (= browser window)
-        // Settings/Preferences windows have no tabs, so this filters them out
+        if let window {
+            return try getWindowIDByBounds(windowIndex: window)
+        }
+        return try getFrontWindowID()
+    }
+
+    /// #23 verify R1: bounds-based resolver for `--window N`. Asks Safari
+    /// for the target window's `bounds` in global coordinates, then
+    /// scans CG windows for a Safari-owned, layer-0 window with matching
+    /// rect (±2px tolerance). This is the same global coordinate space
+    /// used by both subsystems so an exact match is expected; the
+    /// tolerance only exists for defensive rounding on exotic displays.
+    /// Errors out on no match instead of falling back to "first Safari
+    /// window with height > 100" — silent fallback is how the previous
+    /// implementation could capture the wrong window entirely.
+    private static func getWindowIDByBounds(windowIndex: Int) throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(filePath: "/usr/bin/osascript")
+        proc.arguments = ["-e", """
+            tell application "Safari"
+                -- Verify browser window (has a tab) so Settings / Preferences are filtered out
+                set t to current tab of window \(windowIndex)
+                set b to bounds of window \(windowIndex)
+                return ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string)
+            end tell
+            """]
+        let pipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = errPipe
+        try? proc.run()
+        proc.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
+            throw SafariBrowserError.noSafariWindow
+        }
+        let parts = raw.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count == 4 else {
+            throw SafariBrowserError.noSafariWindow
+        }
+        let asX = parts[0], asY = parts[1], asX2 = parts[2], asY2 = parts[3]
+        let asW = asX2 - asX
+        let asH = asY2 - asY
+        let tolerance = 2.0
+
+        guard let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+            throw SafariBrowserError.noSafariWindow
+        }
+        for w in windows {
+            guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
+                  let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
+                  let boundsDict = w[kCGWindowBounds as String] as? [String: Any],
+                  let cgX = (boundsDict["X"] as? Double) ?? (boundsDict["X"] as? Int).map(Double.init),
+                  let cgY = (boundsDict["Y"] as? Double) ?? (boundsDict["Y"] as? Int).map(Double.init),
+                  let cgW = (boundsDict["Width"] as? Double) ?? (boundsDict["Width"] as? Int).map(Double.init),
+                  let cgH = (boundsDict["Height"] as? Double) ?? (boundsDict["Height"] as? Int).map(Double.init),
+                  let num = w[kCGWindowNumber as String] as? Int else { continue }
+            if abs(cgX - asX) <= tolerance &&
+               abs(cgY - asY) <= tolerance &&
+               abs(cgW - asW) <= tolerance &&
+               abs(cgH - asH) <= tolerance {
+                return String(num)
+            }
+        }
+        throw SafariBrowserError.noSafariWindow
+    }
+
+    /// Legacy front-window resolver (used when `--window` is not set).
+    /// Matches by exact title equality (not `hasPrefix`) because the old
+    /// prefix match would mis-identify `"Example"` against
+    /// `"Example — Extra"` — that was a latent bug surfaced by #23 verify.
+    private static func getFrontWindowID() throws -> String {
         let frontBrowserWindowName: String? = {
             let proc = Process()
             proc.executableURL = URL(filePath: "/usr/bin/osascript")
             proc.arguments = ["-e", """
                 tell application "Safari"
                     try
-                        -- Target window; verify it is a browser window (has tabs)
-                        set t to current tab of \(windowRef)
-                        return name of \(windowRef)
+                        set t to current tab of front window
+                        return name of front window
                     end try
                 end tell
                 """]
@@ -422,19 +509,20 @@ enum SafariBridge {
             throw SafariBrowserError.noSafariWindow
         }
 
-        // First pass: match by browser window name
+        // First pass: exact title match (no fuzzy prefix).
         if let name = frontBrowserWindowName, !name.isEmpty {
             for w in windows {
                 guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
                       let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
                       let wName = w[kCGWindowName as String] as? String,
-                      wName == name || name.hasPrefix(wName),
+                      wName == name,
                       let num = w[kCGWindowNumber as String] as? Int else { continue }
                 return String(num)
             }
         }
 
-        // Fallback: first Safari window with height > 100 (original behavior)
+        // Fallback: first Safari window with height > 100 (legacy behavior
+        // preserved for the no-target case; --window N never lands here).
         for w in windows {
             guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
                   let layer = w[kCGWindowLayer as String] as? Int, layer == 0,

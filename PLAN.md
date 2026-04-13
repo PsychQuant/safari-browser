@@ -112,9 +112,9 @@ safari-browser tab close               # 關閉當前 tab
 ### 等待
 
 ```bash
-safari-browser wait <ms>               # 等待 N 毫秒
-safari-browser wait --url "<pattern>"  # 等到 URL 匹配
-safari-browser wait --js "<expr>"      # 等到 JS 表達式為 truthy
+safari-browser wait <ms>                   # 等待 N 毫秒
+safari-browser wait --for-url "<pattern>"  # 等到 URL 匹配（#23: 原 --url 改名）
+safari-browser wait --js "<expr>"          # 等到 JS 表達式為 truthy
 ```
 
 ## Safari AppleScript 能力對照表

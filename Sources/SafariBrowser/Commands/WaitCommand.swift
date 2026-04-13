@@ -26,6 +26,17 @@ struct WaitCommand: AsyncParsableCommand {
 
     func validate() throws {
         if milliseconds == nil && forUrl == nil && js == nil {
+            // #23 verify R1 finding: detect the rename trap. Users running
+            // old `wait --url <pattern>` syntax parse --url as a targeting
+            // flag (not a wait predicate) and hit this validate() with a
+            // cryptic "Provide milliseconds..." error. If target.url is
+            // the ONLY thing they set, they almost certainly meant the old
+            // wait-for-URL semantic — point them at --for-url explicitly.
+            if target.url != nil && target.window == nil && target.tab == nil && target.document == nil {
+                throw ValidationError(
+                    "`wait --url <pattern>` was renamed to `wait --for-url <pattern>` in #23 — `--url` is now a global targeting flag. Retry as `safari-browser wait --for-url \"\(target.url!)\"` (see CHANGELOG)."
+                )
+            }
             throw ValidationError("Provide milliseconds, --for-url, or --js")
         }
     }
