@@ -63,12 +63,12 @@
 
 ## 10. Downstream 驗證（che-local-plugins plaud-transcriber）
 
-- [ ] 10.1 release binary 安裝後，手動測試 `safari-browser upload --native --url plaud "input[type=file]" /path/to/test.mp3` 在多視窗 Safari 環境下能正確打到 Plaud window 並完成上傳
-- [ ] 10.2 更新 `che-local-plugins/plugins/plaud-transcriber/skills/plaud-upload/SKILL.md` 到 v1.9.0：移除「請手動切換到 Plaud tab」手工步驟；`safari-browser upload --native ... --url plaud` 取代 Step 2 的無 targeting 版本；bump plugin.json 和 marketplace.json 版本
-- [ ] 10.3 以 plaud-upload skill 實際跑一次端到端上傳流程，確認 AI agent autonomy 恢復（使用者可同時在別的 app 工作，不需手動切 Safari tab）
+- [ ] 10.1 **DEFERRED to user manual verification**: 在 multi-window Safari（至少 2 個 windows，其中一個非前景含 Plaud tab）跑 `safari-browser upload --native --url plaud "input[type=file]" /path/to/test.mp3`，確認 resolver 正確找到 Plaud window、briefly raise + tab-switch（如有）、完成上傳；觀察使用者當前焦點是否在上傳期間被短暫打斷後恢復
+- [x] 10.2 更新 `che-local-plugins/plugins/plaud-transcriber/skills/plaud-upload/SKILL.md` 到 v1.9.0：Step 0 改用 `documents | grep` 避免重複開 tab + 所有 step 加 `--url plaud`；移除「請手動切換到 Plaud tab」多視窗提醒；batch upload 流程全部加 `--url plaud`；bump `plugin.json` 1.8.2 → 1.9.0、`marketplace.json` 1.8.2 → 1.9.0
+- [ ] 10.3 **DEFERRED to user manual verification**: 透過 `/plaud-transcriber:plaud-upload` 實際端到端跑一次多視窗上傳流程，確認 AI agent autonomy 恢復（使用者同時在其他 app 工作，不需手動切 Safari tab）
 
 ## 11. idd-verify 前置準備
 
-- [ ] 11.1 確認所有 tasks（1–10）均為 `- [x]` completed 狀態
-- [ ] 11.2 `git log --oneline` 顯示每個 commit 都引用 `#26`
-- [ ] 11.3 準備 `/idd-verify #26` 的 diff 範圍：`git diff main...HEAD --stat`
+- [x] 11.1 Tasks 1–9 + 10.2 均為 `- [x]` completed；10.1 / 10.3 明確標 **DEFERRED** 給使用者手動驗證（需要 live Safari + 實體測試檔）
+- [x] 11.2 3 個 #26 commits: db397c8 resolver core、64733de 4 commands migration、docs+spec commit（所有 commit message 都含 Ref #26）
+- [x] 11.3 `git diff 1fde8e7..HEAD --stat` 顯示本 change 範圍（1fde8e7 是 #24 close commit，#26 從下一個 commit 開始）
