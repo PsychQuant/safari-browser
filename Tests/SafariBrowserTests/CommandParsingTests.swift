@@ -221,6 +221,60 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertTrue(command.json)
     }
 
+    // MARK: - UploadCommand target wiring (#23)
+
+    func testUploadCommand_jsModeAcceptsUrlTarget() throws {
+        let command = try UploadCommand.parse(["--js", "input", "/tmp/test.txt", "--url", "plaud"])
+        XCTAssertTrue(command.js)
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
+    func testUploadCommand_jsModeAcceptsDocumentTarget() throws {
+        let command = try UploadCommand.parse(["--js", "input", "/tmp/test.txt", "--document", "2"])
+        XCTAssertEqual(command.target.resolve(), .documentIndex(2))
+    }
+
+    func testUploadCommand_nativeModeAcceptsWindowTarget() throws {
+        let command = try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--window", "2"])
+        XCTAssertTrue(command.native)
+        XCTAssertEqual(command.target.resolve(), .windowIndex(2))
+    }
+
+    func testUploadCommand_nativeModeRejectsUrlTarget() {
+        // validate() runs during parse() — the mutually-exclusive check
+        // fails at parse-time rather than at run-time.
+        XCTAssertThrowsError(
+            try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--url", "plaud"])
+        )
+    }
+
+    func testUploadCommand_nativeModeRejectsTabTarget() {
+        XCTAssertThrowsError(
+            try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--tab", "2"])
+        )
+    }
+
+    func testUploadCommand_nativeModeRejectsDocumentTarget() {
+        XCTAssertThrowsError(
+            try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--document", "2"])
+        )
+    }
+
+    func testUploadCommand_allowHidRejectsUrlTarget() {
+        // --allow-hid is a legacy alias for --native; same restrictions apply.
+        XCTAssertThrowsError(
+            try UploadCommand.parse(["--allow-hid", "input", "/tmp/test.txt", "--url", "plaud"])
+        )
+    }
+
+    func testUploadCommand_smartDefaultAcceptsUrlTarget() throws {
+        // Without explicit --native or --js, the smart default logic
+        // picks at runtime. Parse-time validation cannot know the mode
+        // in advance, so --url is accepted and the runtime path decides.
+        let command = try UploadCommand.parse(["input", "/tmp/test.txt", "--url", "plaud"])
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
     // MARK: - WindowOnlyTargetOptions (#23)
 
     func testWindowOnlyTargetOptions_defaultIsNil() throws {
