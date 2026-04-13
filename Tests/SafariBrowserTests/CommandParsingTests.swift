@@ -195,6 +195,74 @@ final class CommandParsingTests: XCTestCase {
         let command = try DocumentsCommand.parse(["--json"])
         XCTAssertTrue(command.json)
     }
+
+    // MARK: - StorageCommand target wiring (#23)
+
+    func testStorageLocalGet_acceptsUrlTarget() throws {
+        let command = try StorageLocalGet.parse(["token", "--url", "plaud"])
+        XCTAssertEqual(command.key, "token")
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
+    func testStorageLocalSet_acceptsDocumentTarget() throws {
+        let command = try StorageLocalSet.parse(["k", "v", "--document", "2"])
+        XCTAssertEqual(command.key, "k")
+        XCTAssertEqual(command.value, "v")
+        XCTAssertEqual(command.target.resolve(), .documentIndex(2))
+    }
+
+    func testStorageLocalRemove_acceptsWindowTarget() throws {
+        let command = try StorageLocalRemove.parse(["k", "--window", "3"])
+        XCTAssertEqual(command.target.resolve(), .windowIndex(3))
+    }
+
+    func testStorageLocalClear_acceptsTarget() throws {
+        let command = try StorageLocalClear.parse(["--url", "oauth"])
+        XCTAssertEqual(command.target.resolve(), .urlContains("oauth"))
+    }
+
+    func testStorageSessionGet_acceptsUrlTarget() throws {
+        let command = try StorageSessionGet.parse(["sid", "--url", "plaud"])
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
+    func testStorageSessionSet_acceptsTarget() throws {
+        let command = try StorageSessionSet.parse(["k", "v", "--tab", "1"])
+        XCTAssertEqual(command.target.resolve(), .documentIndex(1))
+    }
+
+    func testStorageSessionRemove_acceptsTarget() throws {
+        let command = try StorageSessionRemove.parse(["k", "--document", "4"])
+        XCTAssertEqual(command.target.resolve(), .documentIndex(4))
+    }
+
+    func testStorageSessionClear_acceptsTarget() throws {
+        let command = try StorageSessionClear.parse(["--window", "2"])
+        XCTAssertEqual(command.target.resolve(), .windowIndex(2))
+    }
+
+    func testStorageLocalGet_defaultTargetIsFrontWindow() throws {
+        let command = try StorageLocalGet.parse(["token"])
+        XCTAssertEqual(command.target.resolve(), .frontWindow)
+    }
+
+    // MARK: - SnapshotCommand target wiring (#23)
+
+    func testSnapshotCommand_acceptsUrlTarget() throws {
+        let command = try SnapshotCommand.parse(["--url", "plaud"])
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
+    func testSnapshotCommand_pageWithTarget() throws {
+        let command = try SnapshotCommand.parse(["--page", "--document", "2"])
+        XCTAssertTrue(command.page)
+        XCTAssertEqual(command.target.resolve(), .documentIndex(2))
+    }
+
+    func testSnapshotCommand_defaultTargetIsFrontWindow() throws {
+        let command = try SnapshotCommand.parse([])
+        XCTAssertEqual(command.target.resolve(), .frontWindow)
+    }
 }
 
 // MARK: - Equatable conformance for tests

@@ -25,6 +25,8 @@ struct SnapshotCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Output as JSON array")
     var json = false
 
+    @OptionGroup var target: TargetOptions
+
     func run() async throws {
         if page {
             try await runPageScan()
@@ -105,11 +107,12 @@ struct SnapshotCommand: AsyncParsableCommand {
             })()
             """
 
-        var result = try await SafariBridge.doJavaScript(js)
+        let resolvedTarget = target.resolve()
+        var result = try await SafariBridge.doJavaScript(js, target: resolvedTarget)
 
         // If result is empty or not valid JSON, it may be truncated — retry with chunked read
         if result.isEmpty || result.data(using: .utf8).flatMap({ try? JSONSerialization.jsonObject(with: $0) }) == nil {
-            result = try await SafariBridge.doJavaScriptLarge(js)
+            result = try await SafariBridge.doJavaScriptLarge(js, target: resolvedTarget)
         }
 
         guard let data = result.data(using: .utf8),
@@ -347,10 +350,11 @@ struct SnapshotCommand: AsyncParsableCommand {
             })()
             """
 
-        var result = try await SafariBridge.doJavaScript(js)
+        let resolvedTarget = target.resolve()
+        var result = try await SafariBridge.doJavaScript(js, target: resolvedTarget)
 
         if result.isEmpty || result.data(using: .utf8).flatMap({ try? JSONSerialization.jsonObject(with: $0) }) == nil {
-            result = try await SafariBridge.doJavaScriptLarge(js)
+            result = try await SafariBridge.doJavaScriptLarge(js, target: resolvedTarget)
         }
 
         guard let data = result.data(using: .utf8),
