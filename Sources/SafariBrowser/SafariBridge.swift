@@ -415,126 +415,62 @@ enum SafariBridge {
     /// and `pdf --window` (#23). Settings/Preferences windows are filtered
     /// out by requiring the window to have a current tab.
     ///
-    /// When `window` is set, matching is done by **bounds** (not title)
-    /// so two Safari windows with the same page title — or one title
-    /// being a prefix of another — cannot produce a wrong CG window ID.
-    /// The previous name-only match picked the first z-order hit and
-    /// silently captured the wrong window; the previous `hasPrefix`
-    /// fuzzy match also mis-identified windows like `"Example"` vs
-    /// `"Example — Extra"` (discovered via #23 verify round 1).
-    static func getWindowID(window: Int? = nil) throws -> String {
+    /// When `window` is set, the resolver **raises `window N` to the
+    /// front** and then delegates to the front-window resolver. This
+    /// is the cleanest unambiguous identity strategy — bounds+title
+    /// matching (tried in R1 / R2) had multiple fail modes (duplicate
+    /// maximized bounds in R1, title drift on auth callbacks / empty
+    /// CG names in R2/R3). Once the window is front, there is exactly
+    /// one CG candidate. Side effect: window Z-order is mutated.
+    /// Consistent with `pdf --window N` and `upload --native --window N`
+    /// which already raise via `raisePrelude`.
+    static func getWindowID(window: Int? = nil) async throws -> String {
         if let window {
-            return try getWindowIDByBounds(windowIndex: window)
+            return try await getWindowIDByRaise(windowIndex: window)
         }
         return try getFrontWindowID()
     }
 
-    /// #23 verify R1→R2: bounds + title resolver for `--window N`. Asks
-    /// Safari for the target window's `bounds` and `name`, then scans CG
-    /// windows for a Safari-owned, layer-0 window with matching rect
-    /// (±2px tolerance).
+    /// #23 verify R1→R2→R3→R4: raise-then-front resolver for `--window N`.
     ///
-    /// **Why the title tiebreaker exists** (#23 verify R2): a pure
-    /// bounds-based match was the R1 fix for a name-collision bug, but
-    /// live testing showed that N maximized Safari windows all share
-    /// identical bounds on the same display — bounds collision is a real
-    /// failure mode (not rare on anyone who uses Safari maximized). The
-    /// R2 fix queries BOTH bounds AND name and, when multiple CG windows
-    /// match the bounds, prefers the one whose CG `kCGWindowName` equals
-    /// the AS `name of window N`. Bounds + title is a joint identity
-    /// stronger than either alone; collisions on BOTH are vanishingly
-    /// rare (same-site, same-title, same-size, same-position).
+    /// Earlier rounds tried bounds matching (R1), bounds+title (R2), and
+    /// various refinements — all eventually hit failure modes in real
+    /// Safari:
+    ///   - Two+ maximized windows share identical bounds (R1 bug)
+    ///   - CG `kCGWindowName` drifts from AS `name of window N` on
+    ///     auth callbacks, bidi URLs, stale page titles (R3 Logic+DA)
+    ///   - CG entries occasionally have empty names (R3 DA)
+    ///   - `trimmingCharacters` corrupts trailing-whitespace titles (R3 Codex+DA)
     ///
-    /// Errors out on no bounds match — no silent fallback, so a bad
-    /// `--window 99` surfaces cleanly instead of capturing the wrong
-    /// window.
-    private static func getWindowIDByBounds(windowIndex: Int) throws -> String {
-        let proc = Process()
-        proc.executableURL = URL(filePath: "/usr/bin/osascript")
-        proc.arguments = ["-e", """
+    /// The R4 approach abandons title-based identity entirely. `set
+    /// index of window N to 1` via AppleScript raises the target window
+    /// to the front, which is unambiguous by definition. We then delegate
+    /// to the legacy front-window resolver.
+    ///
+    /// **Side effect**: window Z-order is mutated. `PdfCommand --window N`
+    /// and `UploadCommand --native --window N` already do this via
+    /// `raisePrelude`, so extending the pattern to `ScreenshotCommand`
+    /// keeps CLI-wide behavior consistent.
+    ///
+    /// Routes through `runTargetedAppleScript` so a bad `--window 99`
+    /// surfaces `documentNotFound` with the available-docs listing,
+    /// matching the error contract of every other targeted command.
+    private static func getWindowIDByRaise(windowIndex: Int) async throws -> String {
+        _ = try await runTargetedAppleScript("""
             tell application "Safari"
-                -- Verify browser window (has a tab) so Settings / Preferences are filtered out
+                -- Verify browser window (has a tab) so Settings / Preferences error out early
                 set t to current tab of window \(windowIndex)
-                set b to bounds of window \(windowIndex)
-                set n to name of window \(windowIndex)
-                return ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string) & "|" & n
+                -- Raise to front so the subsequent CG resolution is unambiguous
+                set index of window \(windowIndex) to 1
             end tell
-            """]
-        let pipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = pipe
-        proc.standardError = errPipe
-        try? proc.run()
-        proc.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else {
-            throw SafariBrowserError.noSafariWindow
-        }
-        // Format: "x1,y1,x2,y2|window name". Split on FIRST '|' only —
-        // the title itself may contain '|' characters.
-        guard let pipeIdx = raw.firstIndex(of: "|") else {
-            throw SafariBrowserError.noSafariWindow
-        }
-        let boundsPart = String(raw[..<pipeIdx])
-        let asName = String(raw[raw.index(after: pipeIdx)...])
-        let parts = boundsPart.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
-        guard parts.count == 4 else {
-            throw SafariBrowserError.noSafariWindow
-        }
-        let asX = parts[0], asY = parts[1], asX2 = parts[2], asY2 = parts[3]
-        let asW = asX2 - asX
-        let asH = asY2 - asY
-        let tolerance = 2.0
+            """, target: .windowIndex(windowIndex))
 
-        guard let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
-            throw SafariBrowserError.noSafariWindow
-        }
+        // Give Safari's window server a moment to reflect the z-order
+        // change before CG scans — 100ms is empirically enough and
+        // consistent with the delays used elsewhere in this file.
+        try await Task.sleep(nanoseconds: 100_000_000)
 
-        // First pass: collect ALL Safari layer-0 windows with matching
-        // bounds. Typically one hit; multiple means a collision (e.g.,
-        // two maximized windows on the same display).
-        var candidates: [(id: Int, name: String)] = []
-        for w in windows {
-            guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
-                  let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
-                  let boundsDict = w[kCGWindowBounds as String] as? [String: Any],
-                  let cgX = (boundsDict["X"] as? Double) ?? (boundsDict["X"] as? Int).map(Double.init),
-                  let cgY = (boundsDict["Y"] as? Double) ?? (boundsDict["Y"] as? Int).map(Double.init),
-                  let cgW = (boundsDict["Width"] as? Double) ?? (boundsDict["Width"] as? Int).map(Double.init),
-                  let cgH = (boundsDict["Height"] as? Double) ?? (boundsDict["Height"] as? Int).map(Double.init),
-                  let num = w[kCGWindowNumber as String] as? Int else { continue }
-            if abs(cgX - asX) <= tolerance &&
-               abs(cgY - asY) <= tolerance &&
-               abs(cgW - asW) <= tolerance &&
-               abs(cgH - asH) <= tolerance {
-                let cgName = (w[kCGWindowName as String] as? String) ?? ""
-                candidates.append((id: num, name: cgName))
-            }
-        }
-
-        if candidates.isEmpty {
-            throw SafariBrowserError.noSafariWindow
-        }
-
-        // Single bounds match → done.
-        if candidates.count == 1 {
-            return String(candidates[0].id)
-        }
-
-        // Multiple bounds matches → title tiebreaker. Safari's page titles
-        // are displayed in the CG window name on normal browser windows.
-        // Prefer the candidate whose CG name matches the AS name exactly.
-        if let titleMatch = candidates.first(where: { $0.name == asName }) {
-            return String(titleMatch.id)
-        }
-
-        // Neither bounds nor title disambiguates (extremely rare: two
-        // windows with identical bounds AND identical titles). Return
-        // the first bounds match and accept the ambiguity — better than
-        // erroring out on a user who just wants to screenshot any one
-        // of them.
-        return String(candidates[0].id)
+        return try getFrontWindowID()
     }
 
     /// Legacy front-window resolver (used when `--window` is not set).

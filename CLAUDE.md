@@ -78,6 +78,7 @@ safari-browser upload --native "input[type=file]" file.mp3 --window 2
 - Read-only query 自動 document-scoped，modal sheet 不會 block（#21 fix）
 - **Window-level UI ops**（`tabs` / `tab` / `open --new-tab` / `open --new-window`）只接受 `--window`
 - **Window-only primitives**（`close` / `screenshot` / `pdf` / `upload --native`）只接受 `--window` — 底層是 AppleScript `close current tab of window N` / CGWindowListCopyWindowInfo / System Events keystrokes，沒有 document-scoped 版本（#23）
+- **`screenshot` / `pdf` / `upload --native` 的 `--window N` 會 briefly raise window N to front**（#23 verify R4）— 這是跨 AppleScript ↔ CoreGraphics 邊界唯一可靠的 window identity 策略。Bounds / title 兩種 disambiguation 在 real world 都會失敗（maximized windows 同 bounds、auth callbacks 讓 AS URL ≠ CG cached title）。三個命令統一走 raise-then-resolve。需要不干擾 z-order 的背景抓取 → 改用 `--url` + JS API
 - **Upload split path**（#23）：`--js` 接受完整 TargetOptions、`--native` / `--allow-hid` 只接受 `--window`；沒指定 mode 時若帶了 `--url` / `--tab` / `--document` 會自動走 JS path
 - **Wait breaking change**（#23）：原本的 `wait --url <pattern>` 改為 `wait --for-url <pattern>`，因為 `--url` 現在是 targeting flag
 

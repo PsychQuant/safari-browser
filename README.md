@@ -244,9 +244,19 @@ safari-browser upload --native "input[type=file]" file.mp3 --window 2
 
 # Window-scoped operations (#23)
 safari-browser close --window 2              # closes window 2's current tab
-safari-browser screenshot --window 2 out.png
+safari-browser screenshot --window 2 out.png # raises window 2, then captures
 safari-browser pdf --window 2 --allow-hid out.pdf
 ```
+
+`screenshot --window N`, `pdf --window N`, and `upload --native --window N`
+all briefly **raise window N to the front** before their respective CG /
+System Events operations. This is the only unambiguous way to identify
+the target window across the AppleScript ↔ Core Graphics boundary —
+bounds and titles both fail to disambiguate in real scenarios (multiple
+maximized windows share bounds; titles drift during auth callbacks and
+bidi URLs — see `#23 verify R3` for the live-repro evidence). If you
+need to capture a background window without disrupting z-order, use
+`--url <pattern>` + the JS-side API instead.
 
 ### Wait
 

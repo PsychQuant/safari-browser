@@ -16,7 +16,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
     @OptionGroup var windowTarget: WindowOnlyTargetOptions
 
     func run() async throws {
-        let windowID = try SafariBridge.getWindowID(window: windowTarget.window)
+        let windowID = try await SafariBridge.getWindowID(window: windowTarget.window)
         // AppleScript window reference used for bounds operations — the
         // same one `getWindowID` resolved above, so the captured CG window
         // and the resized Safari window stay in sync (#23).
