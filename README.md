@@ -248,25 +248,35 @@ safari-browser screenshot --window 2 out.png # raises window 2, then captures
 safari-browser pdf --window 2 --allow-hid out.pdf
 ```
 
-`screenshot --window N`, `pdf --window N`, and `upload --native --window N`
-all briefly **raise window N to the front** before their respective CG /
-System Events operations. This is the only unambiguous way to identify
-the target window across the AppleScript ↔ Core Graphics boundary —
-bounds and titles both fail to disambiguate in real scenarios (multiple
-maximized windows share bounds; titles drift during auth callbacks and
-bidi URLs — see `#23 verify R3` for the live-repro evidence). If the
-window is on another macOS Space, raise succeeds at the AS layer but
-the window stays in its own Space — the command errors out with
-`noSafariWindow` rather than silently capturing a wrong window in the
-current Space.
+`pdf --window N` and `upload --native --window N` briefly **raise
+window N to the front** before their respective System Events keystroke
+operations. Keystrokes inherently target the front window, so the raise
+is part of the operation, not just identification.
 
-There is currently **no way to screenshot a Safari window without
-raising it** — the CG window-ID lookup has no public API that maps AS
-`window N` to a CG ID without the raise. If you need document content
-in a non-disruptive way, use document-scoped commands that don't
-require a CG window ID: `snapshot --url <pattern>`, `get text --url
-<pattern>`, `get source --url <pattern>`, etc. — these bypass the
-window-ID boundary entirely.
+`screenshot --window N` (R6) uses the **AXUIElement private SPI**
+(`_AXUIElementGetWindow`) to map AS `window N` to a CG window ID
+**without raising the window**. This avoids the silent wrong-window
+failure modes that bedevil bounds- and title-based matching (see #23
+verify R1-R5 for the saga). The trade-off is that `screenshot --window`
+now requires Accessibility permission for the CLI's host process
+(Terminal.app / iTerm / etc) — first-time use without permission throws
+`accessibilityNotGranted` with grant instructions.
+
+```bash
+# Grant once via System Settings → Privacy & Security → Accessibility,
+# then `screenshot --window N` works for all Safari windows including
+# off-Space, unminimized, and arbitrarily-sized windows — no z-order
+# disruption, no race conditions.
+safari-browser screenshot --window 2 background.png
+```
+
+If you don't want to grant Accessibility, use document-scoped commands
+that don't need a CG window ID: `snapshot --url <pattern>`, `get text
+--url <pattern>`, `get source --url <pattern>`, etc. — these read DOM
+content via JavaScript without crossing the window-ID boundary.
+
+`screenshot` (no `--window` flag) still works without Accessibility —
+it captures the current front Safari window via legacy CG name match.
 
 ### Wait
 

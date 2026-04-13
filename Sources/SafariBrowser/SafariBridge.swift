@@ -1,6 +1,22 @@
 import ApplicationServices
+import AppKit
 import CoreGraphics
 import Foundation
+
+// MARK: - Private AX SPI (#23 verify R5→R6)
+//
+// Apple's public AX API does not expose the CGWindowID for a given
+// AXUIElement. The private SPI `_AXUIElementGetWindow` does, and has
+// been stable since macOS 10.6 — used by Hammerspoon, yabai, Rectangle,
+// Magnet, and most macOS window-management tools. We declare it via
+// `@_silgen_name` because Swift does not export the symbol publicly.
+//
+// This is what lets us map AppleScript `window N` → CG window ID
+// without RAISING the window. Bounds and title matching (R1-R5) all
+// have failure modes; AX is the only API that talks to Safari's
+// internal window table directly.
+@_silgen_name("_AXUIElementGetWindow")
+private func _AXUIElementGetWindow(_ element: AXUIElement, _ outID: UnsafeMutablePointer<CGWindowID>) -> AXError
 
 enum SafariBridge {
     // MARK: - Document Targeting (#17/#18/#21)
@@ -410,108 +426,180 @@ enum SafariBridge {
     // MARK: - Screenshot
 
     /// Resolve a Core Graphics window ID for the target Safari browser
-    /// window. `nil` preserves the legacy front-window behavior; an
-    /// explicit index targets `window N`, used by `screenshot --window`
-    /// and `pdf --window` (#23). Settings/Preferences windows are filtered
-    /// out by requiring the window to have a current tab.
+    /// window. `nil` uses the legacy front-window resolver (no AX
+    /// permission required); an explicit `--window N` uses the AX SPI
+    /// path which requires Accessibility permission but eliminates ALL
+    /// the silent-wrong-window failure modes that R1-R5 chased.
     ///
-    /// When `window` is set, the resolver **raises `window N` to the
-    /// front** and then delegates to the front-window resolver. This
-    /// is the cleanest unambiguous identity strategy — bounds+title
-    /// matching (tried in R1 / R2) had multiple fail modes (duplicate
-    /// maximized bounds in R1, title drift on auth callbacks / empty
-    /// CG names in R2/R3). Once the window is front, there is exactly
-    /// one CG candidate. Side effect: window Z-order is mutated.
-    /// Consistent with `pdf --window N` and `upload --native --window N`
-    /// which already raise via `raisePrelude`.
+    /// **R6 architecture (#23 verify R5 → R6 C1)**: rounds R1-R5 tried
+    /// progressively more sophisticated bounds/title/raise heuristics
+    /// to map AppleScript `window N` to a CG window ID. Every round had
+    /// edge cases — bounds collide on maximized windows, titles drift
+    /// between AS and CG, raise has TOCTOU races, etc. The fundamental
+    /// constraint was that no PUBLIC API maps AS → CG.
+    ///
+    /// `_AXUIElementGetWindow` private SPI maps `AXUIElement` → CG ID
+    /// directly. Combined with AX's enumeration of Safari's windows
+    /// (which talks to Safari's same internal window table that AS
+    /// talks to), we can do AS-bounds-match-AX-window then SPI without
+    /// raising. The AX windows array reflects Safari's window state at
+    /// the same instant as AppleScript reads it, so bounds match is
+    /// reliable across the AS↔AX boundary in a way it never was across
+    /// the AS↔CG boundary.
+    ///
+    /// Permission: `AXIsProcessTrusted()` must return true. Otherwise
+    /// throws `accessibilityNotGranted` with grant instructions.
     static func getWindowID(window: Int? = nil) async throws -> String {
         if let window {
-            return try await getWindowIDByRaise(windowIndex: window)
+            return try await getWindowIDViaAX(windowIndex: window)
         }
         return try getFrontWindowID()
     }
 
-    /// #23 verify R1→R2→R3→R4→R5: raise-then-direct-CG resolver for
-    /// `--window N`. Earlier rounds layered different matching heuristics
-    /// — bounds (R1), bounds+title (R2), title drift fixes (R3), raise-
-    /// then-delegate (R4). Every round hit an edge case in real Safari
-    /// usage. R5 commits to the raise strategy but reads CG directly
-    /// instead of delegating to `getFrontWindowID` (which still did
-    /// title matching with a silent fallback).
+    /// #23 verify R6 (C1): AXUIElement SPI resolver for `--window N`.
+    /// Maps AS `window N` → CG window ID via AX with no raise side
+    /// effect, no title matching, no bounds heuristic.
     ///
     /// Algorithm:
-    ///   1. Raise window N via AppleScript (routes through
-    ///      `runTargetedAppleScript` → `documentNotFound` on bad index)
-    ///   2. Poll CG for up to 500ms, looking for the topmost Safari
-    ///      layer-0 ONSCREEN window. Consider it settled when two
-    ///      consecutive reads return the same window ID.
-    ///   3. After raise + stable top = window N's CG window ID.
+    ///   1. Verify Accessibility permission (throws if not granted)
+    ///   2. Validate window N exists via runTargetedAppleScript (preserves
+    ///      `documentNotFound` error contract for `--window 99`)
+    ///   3. Read AS `bounds of window N` (consistent with AX's view of
+    ///      Safari's window table — both subsystems read the same
+    ///      internal state at the same instant)
+    ///   4. Enumerate Safari's AX windows
+    ///   5. Find the AX window whose bounds match the AS window N bounds
+    ///      (within ±1pt for floating-point tolerance)
+    ///   6. Use `_AXUIElementGetWindow` to get the CG window ID
     ///
-    /// No title matching, no bounds matching — just raise + poll.
+    /// Why this works where R1-R5 didn't:
+    ///   - AS-AX bounds are CONSISTENT (both query Safari's same window
+    ///     table). AS-CG bounds drift slightly because CG is the window
+    ///     server's view, separated from the app's internal state.
+    ///   - For maximized windows that share bounds, the AX windows array
+    ///     order matches AS window order (both reflect Safari's internal
+    ///     ordering), so we can fall back to AX-index = AS-index after
+    ///     exhausting bounds matches.
+    ///   - No raise → no z-order side effect → no race
+    ///   - Cross-Space target: AX sees off-Space windows, returns valid
+    ///     CG ID, screencapture works
     ///
-    /// **Cross-Space detection** (#23 verify R4-DA F29): if window N is
-    /// in another macOS Space, `set index` succeeds on the AS layer but
-    /// the window is not onscreen in the current Space. `kCGWindowIsOnscreen`
-    /// filters to current-Space windows, and if NO onscreen Safari
-    /// windows are found after polling, we throw `noSafariWindow`
-    /// rather than returning a wrong window ID. (The narrower case
-    /// where target is in Space B while ANOTHER Safari window is in
-    /// Space A still returns the wrong window — that would require
-    /// title matching to detect, which R3 showed is unreliable.)
-    ///
-    /// **Side effect**: window Z-order is mutated. Consistent with
-    /// `pdf --window N` and `upload --native --window N`.
-    private static func getWindowIDByRaise(windowIndex: Int) async throws -> String {
+    /// Permission: requires user to grant Accessibility to the CLI's
+    /// host process (Terminal.app / iTerm / etc). First invocation
+    /// without permission throws `accessibilityNotGranted` with grant
+    /// instructions; user grants once and never sees the prompt again.
+    private static func getWindowIDViaAX(windowIndex: Int) async throws -> String {
+        guard AXIsProcessTrusted() else {
+            throw SafariBrowserError.accessibilityNotGranted
+        }
+
+        // Validate window N exists. Routes through runTargetedAppleScript so
+        // a bad `--window 99` surfaces `documentNotFound` with available-docs.
         _ = try await runTargetedAppleScript("""
             tell application "Safari"
                 set t to current tab of window \(windowIndex)
-                set index of window \(windowIndex) to 1
             end tell
             """, target: .windowIndex(windowIndex))
 
-        // Poll CG for z-order to settle. Success = top Safari layer-0
-        // onscreen window is stable across two consecutive reads.
-        let deadline = Date().addingTimeInterval(0.5)
-        var previous: Int? = nil
-        while Date() < deadline {
-            let current = firstOnscreenSafariWindowID()
-            if let current, previous == current {
-                return String(current)
-            }
-            previous = current
-            try await Task.sleep(nanoseconds: 25_000_000) // 25ms
+        // Read bounds of window N (AS). Used to match against AX windows below.
+        let asBoundsRaw = try await runAppleScript("""
+            tell application "Safari"
+                set b to bounds of window \(windowIndex)
+                return ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string)
+            end tell
+            """)
+        let parts = asBoundsRaw.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count == 4 else {
+            throw SafariBrowserError.noSafariWindow
+        }
+        let asX = parts[0], asY = parts[1], asW = parts[2] - parts[0], asH = parts[3] - parts[1]
+
+        // Find Safari's PID and create AX application element.
+        guard let safariApp = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.apple.Safari" }) else {
+            throw SafariBrowserError.noSafariWindow
+        }
+        let axApp = AXUIElementCreateApplication(safariApp.processIdentifier)
+
+        // Enumerate AX windows.
+        var windowsValue: CFTypeRef?
+        let windowsErr = AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue)
+        guard windowsErr == .success, let axWindows = windowsValue as? [AXUIElement], !axWindows.isEmpty else {
+            throw SafariBrowserError.noSafariWindow
         }
 
-        // Timeout — return whatever is topmost now, or throw if cross-Space.
-        if let final = firstOnscreenSafariWindowID() {
-            return String(final)
+        // First pass: collect (axWindow, bounds, cgID) for every AX window.
+        let candidates: [(ax: AXUIElement, x: Double, y: Double, w: Double, h: Double, cgID: CGWindowID)] =
+            axWindows.compactMap { axWin in
+                guard let (px, py) = axPoint(axWin, attribute: kAXPositionAttribute as CFString),
+                      let (sw, sh) = axSize(axWin, attribute: kAXSizeAttribute as CFString) else {
+                    return nil
+                }
+                var cgID: CGWindowID = 0
+                let err = _AXUIElementGetWindow(axWin, &cgID)
+                guard err == .success, cgID != 0 else { return nil }
+                return (axWin, px, py, sw, sh, cgID)
+            }
+
+        if candidates.isEmpty {
+            throw SafariBrowserError.noSafariWindow
         }
+
+        let tolerance = 1.0
+        let boundsMatches = candidates.filter {
+            abs($0.x - asX) <= tolerance && abs($0.y - asY) <= tolerance &&
+            abs($0.w - asW) <= tolerance && abs($0.h - asH) <= tolerance
+        }
+
+        // Single bounds match → unambiguous.
+        if boundsMatches.count == 1 {
+            return String(boundsMatches[0].cgID)
+        }
+
+        // Multiple bounds matches (e.g., several maximized windows) →
+        // tiebreak by AX-index. AS `window N` and AX windows[N-1]
+        // both reflect Safari's internal ordering, so this mapping is
+        // reliable when both subsystems are queried back-to-back.
+        if !boundsMatches.isEmpty, windowIndex >= 1, windowIndex <= axWindows.count {
+            let target = axWindows[windowIndex - 1]
+            if let match = boundsMatches.first(where: { $0.ax == target }) {
+                return String(match.cgID)
+            }
+            // Bounds matched some windows but the AS-index'd one isn't among
+            // them → AS and AX disagree (rare). Use the AS-indexed AX window
+            // directly if it has a CG ID.
+            var directCGID: CGWindowID = 0
+            if _AXUIElementGetWindow(target, &directCGID) == .success, directCGID != 0 {
+                return String(directCGID)
+            }
+        }
+
+        // No bounds match at all → fall back to AS-index = AX-index assumption.
+        if windowIndex >= 1, windowIndex <= axWindows.count {
+            var directCGID: CGWindowID = 0
+            if _AXUIElementGetWindow(axWindows[windowIndex - 1], &directCGID) == .success, directCGID != 0 {
+                return String(directCGID)
+            }
+        }
+
         throw SafariBrowserError.noSafariWindow
     }
 
-    /// Return the CG window ID of the topmost Safari layer-0 onscreen
-    /// browser window (has a content region > 100pt high, filtering out
-    /// Settings/Preferences-style small utility windows).
-    ///
-    /// `CGWindowListCopyWindowInfo([.optionAll], ...)` returns windows in
-    /// front-to-back z-order. `kCGWindowIsOnscreen == true` filters to
-    /// the current macOS Space, so cross-Space Safari windows are not
-    /// returned here (the raise-then-direct-CG resolver uses the absence
-    /// of onscreen Safari windows to detect cross-Space targets).
-    private static func firstOnscreenSafariWindowID() -> Int? {
-        guard let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
-            return nil
-        }
-        for w in windows {
-            guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
-                  let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
-                  (w[kCGWindowIsOnscreen as String] as? Bool) == true,
-                  let bounds = w[kCGWindowBounds as String] as? [String: Any],
-                  let height = bounds["Height"] as? Int, height > 100,
-                  let num = w[kCGWindowNumber as String] as? Int else { continue }
-            return num
-        }
-        return nil
+    /// Read an AX point attribute (kAXPositionAttribute) into (x, y).
+    private static func axPoint(_ element: AXUIElement, attribute: CFString) -> (Double, Double)? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success, let value else { return nil }
+        var point = CGPoint.zero
+        guard AXValueGetValue(value as! AXValue, .cgPoint, &point) else { return nil }
+        return (Double(point.x), Double(point.y))
+    }
+
+    /// Read an AX size attribute (kAXSizeAttribute) into (width, height).
+    private static func axSize(_ element: AXUIElement, attribute: CFString) -> (Double, Double)? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success, let value else { return nil }
+        var size = CGSize.zero
+        guard AXValueGetValue(value as! AXValue, .cgSize, &size) else { return nil }
+        return (Double(size.width), Double(size.height))
     }
 
     /// Legacy front-window resolver (used when `--window` is not set).

@@ -11,6 +11,7 @@ enum SafariBrowserError: LocalizedError {
     case documentNotFound(pattern: String, availableDocuments: [String])
     case noSafariWindow
     case elementNotFound(String)
+    case accessibilityNotGranted
 
     var errorDescription: String? {
         switch self {
@@ -55,6 +56,25 @@ enum SafariBrowserError: LocalizedError {
             return "No Safari window found"
         case .elementNotFound(let selector):
             return "Element not found: \(selector)"
+        case .accessibilityNotGranted:
+            return """
+                Accessibility permission required for `screenshot --window N`.
+                The CLI uses the AXUIElement private SPI (_AXUIElementGetWindow) to
+                map AppleScript window indices to Core Graphics window IDs without
+                raising the window — this avoids the silent wrong-window failure
+                modes that bedevil bounds- and title-based matching (#23 verify R1-R5).
+
+                Grant permission:
+                  System Settings → Privacy & Security → Accessibility → enable
+                  Terminal (or your shell) and re-run the command.
+
+                Without permission, `screenshot` (no --window flag) still works
+                — it captures the current front Safari window via the legacy CG
+                name match path. `pdf --window N` and `upload --native --window N`
+                also still work because they intentionally raise window N before
+                their keystroke operations (keystrokes inherently target the
+                front window).
+                """
         }
     }
 }
