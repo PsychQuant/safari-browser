@@ -353,6 +353,261 @@ enum SafariBridge {
         return docs
     }
 
+    // MARK: - Native Path Resolver (#26)
+
+    /// A tab within a window. Used only by `listAllWindows` /
+    /// `pickNativeTarget` — distinct from the public `TabInfo` so the
+    /// native-path resolver owns its own shape and `isCurrent` flag.
+    struct TabInWindow: Sendable, Equatable {
+        let tabIndex: Int
+        let url: String
+        let isCurrent: Bool
+    }
+
+    /// All tabs of a single Safari window, with the current-tab pointer
+    /// already resolved. Produced by `listAllWindows` and consumed by
+    /// `pickNativeTarget`.
+    struct WindowInfo: Sendable, Equatable {
+        let windowIndex: Int
+        let currentTabIndex: Int
+        let tabs: [TabInWindow]
+    }
+
+    /// Output of the native-path resolver. `windowIndex` is the Safari
+    /// AppleScript `window N` index. `tabIndexInWindow` is `nil` when no
+    /// tab switch is needed — either the target is already the current
+    /// tab, or the target request didn't specify a tab (`.frontWindow` /
+    /// `.windowIndex`). Native commands call `performTabSwitchIfNeeded`
+    /// with both fields before raising / keystroking.
+    struct ResolvedWindowTarget: Sendable, Equatable {
+        let windowIndex: Int
+        let tabIndexInWindow: Int?
+    }
+
+    /// Pure resolver core. Maps a `TargetDocument` to a concrete
+    /// `ResolvedWindowTarget` given a pre-enumerated list of Safari
+    /// windows. All AppleScript I/O happens in `listAllWindows`; this
+    /// function is fully unit-testable without a live Safari
+    /// (WindowIndexResolverTests).
+    ///
+    /// Fail-closed on ambiguity: `.urlContains` matches > 1 window throw
+    /// `ambiguousWindowMatch` rather than silently picking one (#26
+    /// design decision: Multi-match fail-closed with `ambiguousWindowMatch`
+    /// error — deterministic behavior is worth more to automation than
+    /// convenience of first-match).
+    ///
+    /// - Throws: `SafariBrowserError.documentNotFound` for zero matches
+    ///   or out-of-range index. `SafariBrowserError.ambiguousWindowMatch`
+    ///   for multi-match URL patterns.
+    static func pickNativeTarget(
+        _ target: TargetDocument,
+        in windows: [WindowInfo]
+    ) throws -> ResolvedWindowTarget {
+        switch target {
+        case .frontWindow:
+            // Trivial case — skipped by the async orchestrator anyway,
+            // but covered here so the pure function is total over all
+            // TargetDocument cases.
+            return ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil)
+
+        case .windowIndex(let n):
+            if n < 1 || n > windows.count {
+                let availableSummary = windows.map { w -> String in
+                    let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+                    return "window \(w.windowIndex): \(cur)"
+                }
+                throw SafariBrowserError.documentNotFound(
+                    pattern: "window \(n)",
+                    availableDocuments: availableSummary
+                )
+            }
+            return ResolvedWindowTarget(windowIndex: n, tabIndexInWindow: nil)
+
+        case .documentIndex(let n):
+            // Map flat document index → (window, tab in window) by
+            // walking windows in index order and counting tabs. We treat
+            // `--document N` as "the N-th tab across all windows in
+            // spatial/window-index order", which is more predictable
+            // for automation than Safari's MRU-ordered document
+            // collection. For users who need Safari's exact document-
+            // index semantics, the JS path (document-scoped AppleScript
+            // via TargetOptions.resolve) retains the original behavior.
+            var remaining = n
+            for window in windows {
+                if remaining <= window.tabs.count {
+                    let tab = window.tabs[remaining - 1]
+                    return ResolvedWindowTarget(
+                        windowIndex: window.windowIndex,
+                        tabIndexInWindow: tab.isCurrent ? nil : tab.tabIndex
+                    )
+                }
+                remaining -= window.tabs.count
+            }
+            let totalTabs = windows.reduce(0) { $0 + $1.tabs.count }
+            let availableSummary = windows.map { w -> String in
+                let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+                return "window \(w.windowIndex): \(cur) (\(w.tabs.count) tab(s))"
+            }
+            throw SafariBrowserError.documentNotFound(
+                pattern: "document \(n) (only \(totalTabs) tab(s) available)",
+                availableDocuments: availableSummary
+            )
+
+        case .urlContains(let pattern):
+            var matches: [(windowIndex: Int, tabIndex: Int, url: String, isCurrent: Bool)] = []
+            for window in windows {
+                for tab in window.tabs where tab.url.contains(pattern) {
+                    matches.append((
+                        windowIndex: window.windowIndex,
+                        tabIndex: tab.tabIndex,
+                        url: tab.url,
+                        isCurrent: tab.isCurrent
+                    ))
+                }
+            }
+
+            if matches.isEmpty {
+                let allUrls = windows.flatMap { w in
+                    w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                }
+                throw SafariBrowserError.documentNotFound(
+                    pattern: pattern,
+                    availableDocuments: allUrls
+                )
+            }
+
+            if matches.count > 1 {
+                throw SafariBrowserError.ambiguousWindowMatch(
+                    pattern: pattern,
+                    matches: matches.map { (windowIndex: $0.windowIndex, url: $0.url) }
+                )
+            }
+
+            let match = matches[0]
+            return ResolvedWindowTarget(
+                windowIndex: match.windowIndex,
+                tabIndexInWindow: match.isCurrent ? nil : match.tabIndex
+            )
+        }
+    }
+
+    /// Async orchestrator. Resolves `.frontWindow` / `.windowIndex`
+    /// synchronously without touching AppleScript; falls through to a
+    /// single `listAllWindows` enumeration for `.urlContains` /
+    /// `.documentIndex`.
+    ///
+    /// Stateless — no caching between calls (#26 design decision:
+    /// Stateless resolver — no cache). Safari's window state may change
+    /// between invocations, and the AppleScript enumeration cost is
+    /// dominated by roundtrip fixed overhead, not work, so caching
+    /// trades very little for a real correctness risk.
+    static func resolveNativeTarget(from target: TargetDocument) async throws -> ResolvedWindowTarget {
+        switch target {
+        case .frontWindow:
+            return ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil)
+        case .windowIndex(let n):
+            return ResolvedWindowTarget(windowIndex: n, tabIndexInWindow: nil)
+        case .urlContains, .documentIndex:
+            let windows = try await listAllWindows()
+            return try pickNativeTarget(target, in: windows)
+        }
+    }
+
+    /// Enumerate every Safari window with its tabs in a single
+    /// AppleScript roundtrip. URLs are emitted between ASCII group
+    /// separators (GS, U+001D) and records terminated with the ASCII
+    /// record separator (RS, U+001E). These bytes do not appear in
+    /// percent-encoded URLs, so the parser needs no escape handling.
+    ///
+    /// Performance: O(1) AppleScript roundtrips regardless of window /
+    /// tab count, vs. the naive per-tab query approach which would
+    /// dominate upload latency (10 windows × 5 tabs ≈ 70 roundtrips).
+    static func listAllWindows() async throws -> [WindowInfo] {
+        let script = """
+            tell application "Safari"
+                set windowCount to count of windows
+                if windowCount = 0 then
+                    return ""
+                end if
+                set output to ""
+                set GS to (character id 29)
+                set RS to (character id 30)
+                repeat with w from 1 to windowCount
+                    set currentIdx to index of current tab of window w
+                    set tabCount to count of tabs of window w
+                    repeat with t from 1 to tabCount
+                        set tabUrl to URL of tab t of window w
+                        if tabUrl is missing value then set tabUrl to ""
+                        if t = currentIdx then
+                            set isCur to "1"
+                        else
+                            set isCur to "0"
+                        end if
+                        set output to output & w & GS & t & GS & isCur & GS & tabUrl & RS
+                    end repeat
+                end repeat
+                return output
+            end tell
+            """
+        let raw = try await runAppleScript(script)
+        return parseWindowEnumeration(raw)
+    }
+
+    /// Parse the `listAllWindows` output format. Exposed for unit
+    /// testing the parser independently of Safari.
+    static func parseWindowEnumeration(_ raw: String) -> [WindowInfo] {
+        let gs = "\u{1D}"
+        let rs = "\u{1E}"
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return [] }
+
+        var byWindow: [Int: [TabInWindow]] = [:]
+        var currentTabByWindow: [Int: Int] = [:]
+
+        for record in trimmed.components(separatedBy: rs) where !record.isEmpty {
+            let fields = record.components(separatedBy: gs)
+            guard fields.count == 4,
+                  let winIdx = Int(fields[0]),
+                  let tabIdx = Int(fields[1]) else {
+                continue
+            }
+            let isCurrent = fields[2] == "1"
+            let url = fields[3]
+            byWindow[winIdx, default: []].append(TabInWindow(
+                tabIndex: tabIdx,
+                url: url,
+                isCurrent: isCurrent
+            ))
+            if isCurrent {
+                currentTabByWindow[winIdx] = tabIdx
+            }
+        }
+
+        return byWindow.keys.sorted().map { w in
+            let tabs = (byWindow[w] ?? []).sorted(by: { $0.tabIndex < $1.tabIndex })
+            return WindowInfo(
+                windowIndex: w,
+                currentTabIndex: currentTabByWindow[w] ?? 1,
+                tabs: tabs
+            )
+        }
+    }
+
+    /// Switch window N's current tab to tab T if T is non-nil and
+    /// different from the current tab. Called by native-path commands
+    /// after `resolveNativeTarget` identifies a target tab. The tab
+    /// switch is classified as a passively interfering side effect
+    /// transitively authorized by `--native` / `--allow-hid` (#26
+    /// non-interference spec delta).
+    static func performTabSwitchIfNeeded(window: Int, tab: Int?) async throws {
+        guard let tab = tab else { return }
+        try await runAppleScript("""
+            tell application "Safari"
+                set current tab of window \(window) to tab \(tab) of window \(window)
+            end tell
+            """)
+    }
+
     /// List all tabs of the target window. `window: nil` means the front
     /// window (backward-compatible default). `tabs` / `switch-tab` only
     /// support window-level targeting because listing tabs at document

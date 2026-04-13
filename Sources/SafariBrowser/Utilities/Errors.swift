@@ -9,6 +9,7 @@ enum SafariBrowserError: LocalizedError {
     case invalidTimeout(Double)
     case systemEventsNotResponding(underlying: String)
     case documentNotFound(pattern: String, availableDocuments: [String])
+    case ambiguousWindowMatch(pattern: String, matches: [(windowIndex: Int, url: String)])
     case noSafariWindow
     case elementNotFound(String)
     case accessibilityNotGranted
@@ -53,6 +54,20 @@ enum SafariBrowserError: LocalizedError {
                 Available documents:
                 \(listing)
                 Run `safari-browser documents` to list documents, or use a different --url / --window / --document value.
+                """
+        case .ambiguousWindowMatch(let pattern, let matches):
+            let listing: String
+            if matches.isEmpty {
+                listing = "  (internal error: empty matches array)"
+            } else {
+                listing = matches
+                    .map { "  [window \($0.windowIndex)] \($0.url)" }
+                    .joined(separator: "\n")
+            }
+            return """
+                Multiple Safari windows match "\(pattern)":
+                \(listing)
+                Use a more specific substring to disambiguate (append more of the URL path, e.g., "plaud.ai/file/abc" instead of just "plaud").
                 """
         case .noSafariWindow:
             return "No Safari window found"

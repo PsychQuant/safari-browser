@@ -89,6 +89,71 @@ final class ErrorsTests: XCTestCase {
         )
     }
 
+    // #26: native-url-resolution — ambiguous match fails closed and
+    // surfaces every candidate so the user can pick a more specific
+    // substring without running a follow-up command.
+    func testAmbiguousWindowMatch() {
+        let error = SafariBrowserError.ambiguousWindowMatch(
+            pattern: "plaud",
+            matches: [
+                (windowIndex: 1, url: "https://web.plaud.ai/file/a"),
+                (windowIndex: 3, url: "https://web.plaud.ai/file/b"),
+            ]
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(
+            description.contains("plaud"),
+            "Expected pattern in description, got: \(description)"
+        )
+        XCTAssertTrue(
+            description.contains("https://web.plaud.ai/file/a"),
+            "Expected first matching URL in description, got: \(description)"
+        )
+        XCTAssertTrue(
+            description.contains("https://web.plaud.ai/file/b"),
+            "Expected second matching URL in description, got: \(description)"
+        )
+        // Each match must carry its window index so the user can cross-reference
+        // with `safari-browser documents` output. The ambiguity resolution path
+        // depends on users knowing which window is which.
+        XCTAssertTrue(
+            description.contains("window 1"),
+            "Expected 'window 1' label in description, got: \(description)"
+        )
+        XCTAssertTrue(
+            description.contains("window 3"),
+            "Expected 'window 3' label in description, got: \(description)"
+        )
+        // The error must tell the user how to recover — appending more of the
+        // URL path is the canonical disambiguation strategy. Without this hint,
+        // users hit the error, don't know what to change, and give up.
+        XCTAssertTrue(
+            description.contains("more specific") || description.contains("disambiguate"),
+            "Expected disambiguation hint in description, got: \(description)"
+        )
+    }
+
+    func testAmbiguousWindowMatchWithEmptyMatches() {
+        // Defensive: an empty matches array shouldn't happen (the resolver
+        // should throw documentNotFound for zero matches, not
+        // ambiguousWindowMatch), but if it does, the description must not
+        // crash and must surface the internal-error signal so it gets caught
+        // by tests rather than confusing an end user.
+        let error = SafariBrowserError.ambiguousWindowMatch(
+            pattern: "plaud",
+            matches: []
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(
+            description.contains("plaud"),
+            "Expected pattern in description even for empty matches, got: \(description)"
+        )
+        XCTAssertTrue(
+            description.contains("internal error") || description.contains("empty"),
+            "Expected internal-error signal for empty matches, got: \(description)"
+        )
+    }
+
     func testSystemEventsNotResponding() {
         let error = SafariBrowserError.systemEventsNotResponding(underlying: "probe timed out after 2 seconds")
         let description = error.errorDescription ?? ""
