@@ -61,7 +61,7 @@ safari-browser fill @e2 "secret"
 safari-browser click @e3
 
 # Wait for navigation
-safari-browser wait --url "dashboard"
+safari-browser wait --for-url "dashboard"
 
 # Extract data
 safari-browser get text "h1"
@@ -225,10 +225,16 @@ the pattern without running another command.
 ### Wait
 
 ```bash
-safari-browser wait <ms>               # wait milliseconds
-safari-browser wait --url <pattern>    # wait for URL match
-safari-browser wait --js <expr>        # wait for JS truthy
-safari-browser wait --timeout <ms>     # custom timeout (default 30s)
+safari-browser wait <ms>                 # wait milliseconds
+safari-browser wait --for-url <pattern>  # wait for URL match
+safari-browser wait --js <expr>          # wait for JS truthy
+safari-browser wait --timeout <ms>       # custom timeout (default 30s)
+
+# Multi-window targeting (#23): wait polls the targeted document, not
+# the front window, so you can wait for a Plaud redirect while some
+# other window has focus.
+safari-browser wait --for-url "/dashboard" --url plaud
+safari-browser wait --js "window.loaded" --document 2
 ```
 
 ### Storage

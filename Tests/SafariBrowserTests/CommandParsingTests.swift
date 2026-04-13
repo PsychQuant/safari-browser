@@ -31,15 +31,40 @@ final class CommandParsingTests: XCTestCase {
 
     // MARK: - WaitCommand
 
-    func testWaitCommand_urlAndTimeout() throws {
-        let command = try WaitCommand.parse(["--url", "dashboard", "--timeout", "5000"])
-        XCTAssertEqual(command.url, "dashboard")
+    func testWaitCommand_forUrlAndTimeout() throws {
+        // #23: --url was renamed to --for-url to avoid collision with
+        // TargetOptions.url (which now means "target the document whose URL
+        // contains this substring").
+        let command = try WaitCommand.parse(["--for-url", "dashboard", "--timeout", "5000"])
+        XCTAssertEqual(command.forUrl, "dashboard")
         XCTAssertEqual(command.timeout, 5000)
     }
 
     func testWaitCommand_milliseconds() throws {
         let command = try WaitCommand.parse(["1000"])
         XCTAssertEqual(command.milliseconds, 1000)
+    }
+
+    func testWaitCommand_urlIsNowTargetingFlag() throws {
+        // #23: --url is now inherited from TargetOptions and targets the
+        // document whose URL contains this substring — NOT the pattern
+        // to wait for.
+        let command = try WaitCommand.parse(["--for-url", "dashboard", "--url", "plaud"])
+        XCTAssertEqual(command.forUrl, "dashboard")
+        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+    }
+
+    func testWaitCommand_oldUrlFlagRejected() {
+        // Old `wait --url <pattern>` syntax no longer means "wait for URL".
+        // It parses as a targeting flag — and without --for-url / --js /
+        // milliseconds, validate() rejects the invocation.
+        XCTAssertThrowsError(try WaitCommand.parse(["--url", "plaud"]).validate())
+    }
+
+    func testWaitCommand_jsWithTarget() throws {
+        let command = try WaitCommand.parse(["--js", "ready", "--document", "2"])
+        XCTAssertEqual(command.js, "ready")
+        XCTAssertEqual(command.target.resolve(), .documentIndex(2))
     }
 
     // MARK: - SnapshotCommand

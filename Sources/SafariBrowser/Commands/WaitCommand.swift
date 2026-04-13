@@ -7,11 +7,14 @@ struct WaitCommand: AsyncParsableCommand {
         abstract: "Wait for a duration, URL pattern, or JS condition"
     )
 
-    @Argument(help: "Milliseconds to wait (when no --url or --js is used)")
+    @Argument(help: "Milliseconds to wait (when no --for-url or --js is used)")
     var milliseconds: Int?
 
+    // #23: renamed from --url to --for-url. The old `--url` now belongs to
+    // TargetOptions and means "target the document whose URL contains <x>",
+    // not "wait until the URL contains <x>". Breaking change — see CHANGELOG.
     @Option(name: .long, help: "Wait until the URL contains this pattern")
-    var url: String?
+    var forUrl: String?
 
     @Option(name: .long, help: "Wait until this JS expression is truthy")
     var js: String?
@@ -19,15 +22,17 @@ struct WaitCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Timeout in milliseconds (default: 30000)")
     var timeout: Int = 30000
 
+    @OptionGroup var target: TargetOptions
+
     func validate() throws {
-        if milliseconds == nil && url == nil && js == nil {
-            throw ValidationError("Provide milliseconds, --url, or --js")
+        if milliseconds == nil && forUrl == nil && js == nil {
+            throw ValidationError("Provide milliseconds, --for-url, or --js")
         }
     }
 
     func run() async throws {
-        if let url {
-            try await waitForURL(pattern: url)
+        if let forUrl {
+            try await waitForURL(pattern: forUrl)
         } else if let js {
             try await waitForJS(expression: js)
         } else if let milliseconds {
@@ -39,9 +44,10 @@ struct WaitCommand: AsyncParsableCommand {
     }
 
     private func waitForURL(pattern: String) async throws {
+        let resolvedTarget = target.resolve()
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
         while Date() < deadline {
-            let currentURL = try await SafariBridge.getCurrentURL()
+            let currentURL = try await SafariBridge.getCurrentURL(target: resolvedTarget)
             if currentURL.contains(pattern) {
                 return
             }
@@ -51,10 +57,12 @@ struct WaitCommand: AsyncParsableCommand {
     }
 
     private func waitForJS(expression: String) async throws {
+        let resolvedTarget = target.resolve()
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
         while Date() < deadline {
             let result = try await SafariBridge.doJavaScript(
-                "!!(\(expression)) ? 'true' : ''"
+                "!!(\(expression)) ? 'true' : ''",
+                target: resolvedTarget
             )
             if result.trimmingCharacters(in: .whitespacesAndNewlines) == "true" {
                 return

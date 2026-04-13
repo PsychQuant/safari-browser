@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Breaking Changes
+- **#23: `wait --url <pattern>` renamed to `wait --for-url <pattern>`** — The old `--url` flag on `wait` collided with `TargetOptions.url` (which now means "target the document whose URL contains this substring" across the CLI). Scripts that used the previous syntax must update to `safari-browser wait --for-url "<pattern>"`. The new `--url` on `wait` is a targeting flag inherited from `TargetOptions` — `wait --for-url "/dashboard" --url plaud` polls the URL of the Plaud document instead of the front window. Milliseconds and `--js` forms are unchanged.
+
 ### Bug Fixes
 - **#19: Wall-clock timeout for osascript / shell subprocesses** — `runShell` and `runAppleScript` used `process.waitUntilExit()` with no timeout, so a stuck osascript (blocked on Safari's Apple Event dispatcher or unresponsive System Events) would hang the whole CLI until `kill -9`. New `runProcessWithTimeout` helper wraps `Process` with a `Task.detached` watchdog that sends SIGTERM, waits 1s, then SIGKILLs; surfaces `SafariBrowserError.processTimedOut(command:seconds:)` on timeout. Default 30s; `upload` uses 60s to accommodate its internal `maxWait to 10` waits.
 - **#19 F1 / R2-F1': Bound `--timeout` to a safe finite range** — The first follow-up only rejected `NaN`, `±infinity`, and non-positive values, but `Double.greatestFiniteMagnitude` (and any value like `1e300`) slipped through and still trapped inside `UInt64(timeout * 1e9)`. The guard now enforces `0.001 ≤ timeout ≤ 86_400` in both `UploadCommand.validate()` and `runProcessWithTimeout`, so no reachable input can overflow the nanosecond conversion or round to zero nanoseconds. `SafariBrowserError.invalidTimeout(Double)` surfaces the violation with a clear message.
