@@ -179,7 +179,7 @@ safari-browser tab new                 # new tab
 safari-browser tab new --window 2      # new tab in window 2
 ```
 
-### Multi-window Targeting (#17 #18 #21)
+### Multi-window Targeting (#17 #18 #21 #23)
 
 When Safari has more than one window, every subcommand that reads from or
 drives a document accepts one of four mutually exclusive global flags:
@@ -216,11 +216,37 @@ safari-browser fill "input#email" "user@example.com" --document 3
 `tabs`, `tab <n>`, `tab new`, `open --new-tab`, and `open --new-window`
 only accept `--window` because they are window-level UI operations;
 supplying `--url`, `--tab`, or `--document` is rejected with a usage
-error. URL matching is case-sensitive (AppleScript's native behavior).
+error. `close`, `screenshot`, `pdf`, and `upload --native` also only
+accept `--window` because they drive window-scoped primitives
+(AppleScript `close current tab of window N`, CG window ID capture,
+System Events keystrokes against the frontmost window) — see #23.
+URL matching is case-sensitive (AppleScript's native behavior).
 Substring match — no regex — so `--url plaud` matches any URL containing
 "plaud". If no document matches, you get a `documentNotFound` error
 whose description lists every currently open document so you can fix
 the pattern without running another command.
+
+```bash
+# Storage targeting (#23) — critical for per-origin tokens
+safari-browser storage local get token --url plaud   # Plaud's token
+safari-browser storage local get token --url oauth   # OAuth provider's token
+
+# Wait targeting (#23)
+safari-browser wait --for-url "/dashboard" --url plaud
+
+# Snapshot targeting (#23)
+safari-browser snapshot --url plaud
+safari-browser snapshot --page --document 2
+
+# Upload split path (#23) — JS targets any document, native is window-only
+safari-browser upload --js "input[type=file]" file.mp3 --url plaud
+safari-browser upload --native "input[type=file]" file.mp3 --window 2
+
+# Window-scoped operations (#23)
+safari-browser close --window 2              # closes window 2's current tab
+safari-browser screenshot --window 2 out.png
+safari-browser pdf --window 2 --allow-hid out.pdf
+```
 
 ### Wait
 
