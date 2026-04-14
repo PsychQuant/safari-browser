@@ -6311,7 +6311,9 @@ When a `--url <pattern>` targeting flag matches more than one window's document 
 ---
 ### Requirement: Tab auto-switch before keystroke dispatch
 
-When the resolver determines that a target document resides in a non-current tab of its owning window, the system SHALL switch that window's active tab to the target before dispatching any keystroke. The tab switch SHALL use AppleScript `set current tab of window N to tab T` within the same AppleScript session as the subsequent raise and keystroke. The tab switch SHALL be classified as a passively interfering side effect transitively authorized by the `--native` or `--allow-hid` opt-in flag.
+When the resolver determines that a target document resides in a non-current tab of its owning window, the system SHALL switch that window's active tab to the target before dispatching any keystroke. The tab switch SHALL use AppleScript `set current tab of window N to tab T`. The tab switch SHALL be classified as a passively interfering side effect transitively authorized by the `--native` or `--allow-hid` opt-in flag.
+
+**Concurrent modification window** (#26 verify P1-3): The native-path workflow spans multiple independent `osascript` sessions — `listAllWindows` (resolver enumeration), `performTabSwitchIfNeeded` (optional tab switch), `getCurrentURL` / `ensureSystemEventsLive` (preflight), and the main upload / PDF / close keystroke dispatch. Safari window state MAY change between sessions (user closes a window, another AppleScript client reorders tabs); when the target window or tab disappears mid-workflow, downstream AppleScript surfaces the resulting runtime error rather than the user-friendly `documentNotFound` translation. Callers that cannot tolerate this race SHALL snapshot Safari state before invocation and validate it afterward; future hardening MAY consolidate the sessions behind a single `osascript` to close the gap.
 
 #### Scenario: Target URL in background tab of a window
 

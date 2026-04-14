@@ -133,6 +133,32 @@ final class ErrorsTests: XCTestCase {
         )
     }
 
+    // #26 verify P1-2: screenshot refuses to capture a background-tab
+    // target and surfaces a recovery-hinted error instead of silently
+    // screenshotting the wrong tab's visible pixels.
+    func testBackgroundTabNotCapturable() {
+        let error = SafariBrowserError.backgroundTabNotCapturable(windowIndex: 2, tabIndex: 3)
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(
+            description.contains("background tab"),
+            "Expected 'background tab' in description, got: \(description)"
+        )
+        XCTAssertTrue(
+            description.contains("window 2"),
+            "Expected 'window 2' in description, got: \(description)"
+        )
+        XCTAssertTrue(
+            description.contains("tab 3"),
+            "Expected 'tab 3' in description, got: \(description)"
+        )
+        // Recovery hint: the error must point to the two viable
+        // workarounds (manual tab switch or document-scoped command).
+        XCTAssertTrue(
+            description.contains("snapshot") || description.contains("get source"),
+            "Expected document-scoped command hint, got: \(description)"
+        )
+    }
+
     func testAmbiguousWindowMatchWithEmptyMatches() {
         // Defensive: an empty matches array shouldn't happen (the resolver
         // should throw documentNotFound for zero matches, not

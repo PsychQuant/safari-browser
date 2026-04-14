@@ -10,6 +10,7 @@ enum SafariBrowserError: LocalizedError {
     case systemEventsNotResponding(underlying: String)
     case documentNotFound(pattern: String, availableDocuments: [String])
     case ambiguousWindowMatch(pattern: String, matches: [(windowIndex: Int, url: String)])
+    case backgroundTabNotCapturable(windowIndex: Int, tabIndex: Int)
     case noSafariWindow
     case elementNotFound(String)
     case accessibilityNotGranted
@@ -54,6 +55,20 @@ enum SafariBrowserError: LocalizedError {
                 Available documents:
                 \(listing)
                 Run `safari-browser documents` to list documents, or use a different --url / --window / --document value.
+                """
+        case .backgroundTabNotCapturable(let windowIndex, let tabIndex):
+            return """
+                Screenshot target resolves to a background tab (window \(windowIndex), tab \(tabIndex))
+                but screenshot captures window-level visible pixels — it cannot render a tab that
+                isn't currently visible in its window. Either bring the target tab to the front
+                manually (Safari → click the tab, or `safari-browser tab \(tabIndex) --window \(windowIndex)`)
+                then re-run the screenshot, or use a document-scoped command that reads DOM content
+                instead of visible pixels:
+                  `safari-browser snapshot --url <pattern>` / `get source --url <pattern>`
+
+                Note: upload / pdf / close do switch tabs automatically because their keystroke
+                path is interfering anyway; screenshot intentionally preserves non-interference
+                and refuses to switch tabs for you (see #26 non-interference spec).
                 """
         case .ambiguousWindowMatch(let pattern, let matches):
             let listing: String

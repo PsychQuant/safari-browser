@@ -44,10 +44,22 @@ struct ScreenshotCommand: AsyncParsableCommand {
         let resolvedWindowIndex: Int?
         if hasExplicitTarget {
             let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve())
+
+            // #26 verify P1-2: fail-closed when the resolved target is a
+            // background tab. Screenshot captures window-level visible
+            // pixels — a background-tab target would silently produce
+            // the currently-visible (wrong) tab's screenshot. Rather
+            // than break the non-interference contract by switching
+            // tabs (upload/pdf/close do that explicitly) or silently
+            // wrong-target, refuse and point the user at alternatives.
+            if resolved.tabIndexInWindow != nil {
+                throw SafariBrowserError.backgroundTabNotCapturable(
+                    windowIndex: resolved.windowIndex,
+                    tabIndex: resolved.tabIndexInWindow ?? -1
+                )
+            }
+
             resolvedWindowIndex = resolved.windowIndex
-            // Screenshot does NOT tab-switch (#26 design: screenshot
-            // observes without interfering). `resolved.tabIndexInWindow`
-            // is intentionally ignored here.
         } else {
             resolvedWindowIndex = nil
         }

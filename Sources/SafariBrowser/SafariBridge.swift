@@ -424,6 +424,21 @@ enum SafariBridge {
             return ResolvedWindowTarget(windowIndex: n, tabIndexInWindow: nil)
 
         case .documentIndex(let n):
+            // Guard against .documentIndex(0) / negative — would land on
+            // tabs[-1] once `remaining <= window.tabs.count` was trivially
+            // true. `TargetOptions.validate()` already rejects <= 0 at the
+            // CLI layer, but this function is a public pure entry point
+            // that tests and future callers can exercise directly, so
+            // surface a clean `documentNotFound` here rather than
+            // trapping.
+            if n < 1 {
+                throw SafariBrowserError.documentNotFound(
+                    pattern: "document \(n)",
+                    availableDocuments: windows.flatMap { w in
+                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                    }
+                )
+            }
             // Map flat document index → (window, tab in window) by
             // walking windows in index order and counting tabs. We treat
             // `--document N` as "the N-th tab across all windows in

@@ -220,6 +220,37 @@ final class WindowIndexResolverTests: XCTestCase {
         }
     }
 
+    /// #26 verify P1-1: `.documentIndex(0)` used to trap on
+    /// `window.tabs[-1]` because the for-loop's `remaining <= count`
+    /// check was trivially true for `remaining = 0`. CLI is guarded by
+    /// `TargetOptions.validate()` (>= 1), but `pickNativeTarget` is a
+    /// public pure function that tests and future callers can invoke
+    /// directly — so the crash was reachable. The fix adds a `n < 1`
+    /// guard that throws `documentNotFound` cleanly.
+    func testPickDocumentIndexZeroThrowsDocumentNotFound() {
+        let windows = [makeWindow(index: 1, tabs: [(url: "https://a.com", isCurrent: true)])]
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(.documentIndex(0), in: windows)
+        ) { error in
+            guard case SafariBrowserError.documentNotFound = error else {
+                XCTFail("Expected documentNotFound, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testPickDocumentIndexNegativeThrowsDocumentNotFound() {
+        let windows = [makeWindow(index: 1, tabs: [(url: "https://a.com", isCurrent: true)])]
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(.documentIndex(-5), in: windows)
+        ) { error in
+            guard case SafariBrowserError.documentNotFound = error else {
+                XCTFail("Expected documentNotFound, got \(error)")
+                return
+            }
+        }
+    }
+
     // MARK: - Parser unit tests
 
     func testParseEmptyEnumeration() {
