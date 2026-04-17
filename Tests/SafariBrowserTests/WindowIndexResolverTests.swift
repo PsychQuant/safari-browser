@@ -22,6 +22,7 @@ final class WindowIndexResolverTests: XCTestCase {
             SafariBridge.TabInWindow(
                 tabIndex: i + 1,
                 url: t.url,
+                title: "",
                 isCurrent: t.isCurrent
             )
         }
@@ -30,6 +31,116 @@ final class WindowIndexResolverTests: XCTestCase {
             windowIndex: index,
             currentTabIndex: currentIdx,
             tabs: tabInfos
+        )
+    }
+
+    // MARK: - .windowTab (composite target — issue #28 gap #2)
+
+    func testPickWindowTabResolvesCompositeTarget() throws {
+        let windows = [
+            makeWindow(index: 1, tabs: [
+                (url: "https://a.com", isCurrent: true),
+                (url: "https://b.com", isCurrent: false),
+            ]),
+        ]
+        // Target tab 2 of window 1 (background).
+        let result = try SafariBridge.pickNativeTarget(
+            .windowTab(window: 1, tabInWindow: 2),
+            in: windows
+        )
+        XCTAssertEqual(result.windowIndex, 1)
+        XCTAssertEqual(result.tabIndexInWindow, 2,
+                       "Background tab target must carry tab-switch index")
+    }
+
+    func testPickWindowTabCurrentTabOmitsSwitch() throws {
+        let windows = [
+            makeWindow(index: 1, tabs: [
+                (url: "https://a.com", isCurrent: false),
+                (url: "https://b.com", isCurrent: true),
+            ]),
+        ]
+        // Target the current tab — no switch needed.
+        let result = try SafariBridge.pickNativeTarget(
+            .windowTab(window: 1, tabInWindow: 2),
+            in: windows
+        )
+        XCTAssertEqual(result.windowIndex, 1)
+        XCTAssertNil(result.tabIndexInWindow,
+                     "Current-tab target must not request a tab switch")
+    }
+
+    func testPickWindowTabSameURLDuplicateDisambiguation() throws {
+        // Issue #28 gap #2 scenario — two tabs share an identical URL.
+        // --url cannot disambiguate them; --window + --tab-in-window
+        // addresses each individually.
+        let windows = [
+            makeWindow(index: 1, tabs: [
+                (url: "https://web.plaud.ai/", isCurrent: true),
+                (url: "https://web.plaud.ai/", isCurrent: false),
+            ]),
+        ]
+        // Target the second plaud tab specifically.
+        let result = try SafariBridge.pickNativeTarget(
+            .windowTab(window: 1, tabInWindow: 2),
+            in: windows
+        )
+        XCTAssertEqual(result.windowIndex, 1)
+        XCTAssertEqual(result.tabIndexInWindow, 2)
+    }
+
+    func testPickWindowTabWindowOutOfRangeThrows() {
+        let windows = [makeWindow(index: 1, tabs: [(url: "https://a.com", isCurrent: true)])]
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(
+                .windowTab(window: 99, tabInWindow: 1),
+                in: windows
+            )
+        ) { error in
+            guard case SafariBrowserError.documentNotFound = error else {
+                XCTFail("Expected documentNotFound for window out of range, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testPickWindowTabTabOutOfRangeThrows() {
+        let windows = [
+            makeWindow(index: 1, tabs: [
+                (url: "https://a.com", isCurrent: true),
+            ]),
+        ]
+        // Window exists but tab 5 does not.
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(
+                .windowTab(window: 1, tabInWindow: 5),
+                in: windows
+            )
+        ) { error in
+            guard case SafariBrowserError.documentNotFound = error else {
+                XCTFail("Expected documentNotFound for tab out of range, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testPickWindowTabZeroWindowRejected() {
+        let windows = [makeWindow(index: 1, tabs: [(url: "https://a.com", isCurrent: true)])]
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(
+                .windowTab(window: 0, tabInWindow: 1),
+                in: windows
+            )
+        )
+    }
+
+    func testPickWindowTabZeroTabRejected() {
+        let windows = [makeWindow(index: 1, tabs: [(url: "https://a.com", isCurrent: true)])]
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(
+                .windowTab(window: 1, tabInWindow: 0),
+                in: windows
+            )
         )
     }
 

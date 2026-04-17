@@ -1,12 +1,22 @@
 import ArgumentParser
+import Foundation
 
 /// Global CLI flags selecting which Safari document a subcommand operates on.
 /// Added via `@OptionGroup` to any subcommand that reads from or writes to
 /// a Safari document so multi-window users can target by URL, window, or
 /// document index instead of relying on `front window` z-order (#17/#18/#21).
 ///
-/// The four flags are mutually exclusive — supplying more than one in a
-/// single invocation is a validation error.
+/// Targeting modes:
+/// - `--url <substring>` (standalone)
+/// - `--window N` (standalone, or paired with `--tab-in-window`)
+/// - `--window N --tab-in-window M` (composite, same-URL escape hatch — #28)
+/// - `--tab N` (standalone, **deprecated** — alias for `--document`)
+/// - `--document N` (standalone)
+///
+/// Exclusivity rules:
+/// 1. `--tab-in-window` SHALL pair with `--window`; solo usage is rejected.
+/// 2. `--window` SHALL NOT combine with `--url`, `--tab`, or `--document`.
+/// 3. `--url`, `--tab`, `--document` are mutually exclusive with each other.
 struct TargetOptions: ParsableArguments {
     @Option(
         name: .long,
@@ -19,7 +29,7 @@ struct TargetOptions: ParsableArguments {
 
     @Option(
         name: .long,
-        help: "Target the document of the Nth Safari window (1-indexed)."
+        help: "Target the document of the Nth Safari window (1-indexed). Pair with --tab-in-window to select a specific tab."
     )
     var window: Int?
 
@@ -35,25 +45,77 @@ struct TargetOptions: ParsableArguments {
     )
     var document: Int?
 
-    /// The four targeting flags are mutually exclusive. Supplying more than
-    /// one produces a validation error before any AppleScript runs.
+    @Option(
+        name: .long,
+        help: ArgumentHelp(
+            "Target the Nth tab within --window M (1-indexed). Same-URL escape hatch.",
+            discussion: "Requires --window. Example: --window 1 --tab-in-window 2 targets the second tab of window 1, useful when multiple tabs share the same URL."
+        )
+    )
+    var tabInWindow: Int?
+
+    @Flag(
+        name: .long,
+        help: ArgumentHelp(
+            "Opt-in: when --url <substring> matches multiple tabs, select the first match (with stderr warning).",
+            discussion: "Without this flag, multi-match URL substrings fail-closed with ambiguousWindowMatch — safer default per the human-emulation principle."
+        )
+    )
+    var firstMatch = false
+
+    /// Pure helper: produce a deprecation warning message when the
+    /// caller used the `--tab` alias. Returns nil when `--tab` was not
+    /// supplied. Kept pure so tests do not need to capture stderr.
+    static func deprecationMessage(tab: Int?) -> String? {
+        guard tab != nil else { return nil }
+        return "warning: --tab is deprecated and will be removed in v3.0. "
+            + "Use --document N for the global document index (current behavior), "
+            + "or --window M --tab-in-window N for a specific tab within a window.\n"
+    }
+
+    /// Enforce the exclusivity rules documented at the top of the type.
+    /// This runs before any AppleScript executes, so invalid combinations
+    /// fail fast with a clear message rather than surfacing as opaque
+    /// `appleScriptFailed` errors downstream.
+    ///
+    /// Also side-effects: when `--tab` is supplied, emits the
+    /// deprecation warning to stderr. This is validate-time (not
+    /// run-time) so even parse-only tooling surfaces the warning.
     func validate() throws {
-        let providedFlags = [
+        if let msg = TargetOptions.deprecationMessage(tab: tab) {
+            FileHandle.standardError.write(Data(msg.utf8))
+        }
+
+        // Rule 1: --tab-in-window requires --window
+        if tabInWindow != nil && window == nil {
+            throw ValidationError(
+                "--tab-in-window requires --window (e.g. --window 1 --tab-in-window 2)"
+            )
+        }
+
+        let standaloneFlags: [String] = [
             url.map { _ in "--url" },
-            window.map { _ in "--window" },
             tab.map { _ in "--tab" },
             document.map { _ in "--document" },
         ].compactMap { $0 }
 
-        if providedFlags.count > 1 {
+        // Rule 2: --window not combinable with standalone flags
+        if window != nil && !standaloneFlags.isEmpty {
             throw ValidationError(
-                "The targeting flags \(providedFlags.joined(separator: ", ")) are mutually exclusive — pick one."
+                "--window is mutually exclusive with \(standaloneFlags.joined(separator: ", "))"
+            )
+        }
+
+        // Rule 3: standalone flags mutually exclusive with each other
+        if standaloneFlags.count > 1 {
+            throw ValidationError(
+                "The targeting flags \(standaloneFlags.joined(separator: ", ")) are mutually exclusive — pick one."
             )
         }
 
         // Index flags must be positive (1-indexed per AppleScript convention).
-        // document 0 / window 0 / tab 0 produce AppleScript runtime errors
-        // that surface as opaque appleScriptFailed messages — fail fast here.
+        // 0 / negative produce AppleScript runtime errors that surface as
+        // opaque appleScriptFailed messages — fail fast here.
         if let w = window, w < 1 {
             throw ValidationError("--window must be >= 1 (1-indexed), got \(w)")
         }
@@ -63,12 +125,22 @@ struct TargetOptions: ParsableArguments {
         if let d = document, d < 1 {
             throw ValidationError("--document must be >= 1 (1-indexed), got \(d)")
         }
+        if let m = tabInWindow, m < 1 {
+            throw ValidationError("--tab-in-window must be >= 1 (1-indexed), got \(m)")
+        }
     }
 
-    /// Convert the parsed flags into a `TargetDocument`. Callers pass the
-    /// result into SafariBridge getters as the `target:` parameter.
-    /// Returns `.frontWindow` when no flag is set, preserving legacy behavior.
+    /// Convert the parsed flags into a `TargetDocument`. Precedence
+    /// (already checked as mutually exclusive by `validate()`):
+    /// 1. `--window + --tab-in-window` → `.windowTab(w, m)`
+    /// 2. `--url` → `.urlContains`
+    /// 3. `--window` only → `.windowIndex`
+    /// 4. `--tab` / `--document` → `.documentIndex`
+    /// 5. none → `.frontWindow`
     func resolve() -> SafariBridge.TargetDocument {
+        if let w = window, let m = tabInWindow {
+            return .windowTab(window: w, tabInWindow: m)
+        }
         if let url = url {
             return .urlContains(url)
         }

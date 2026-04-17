@@ -82,7 +82,10 @@ enum SafariBrowserError: LocalizedError {
             return """
                 Multiple Safari windows match "\(pattern)":
                 \(listing)
-                Use a more specific substring to disambiguate (append more of the URL path, e.g., "plaud.ai/file/abc" instead of just "plaud").
+                Disambiguate by:
+                  1. Use a more specific --url substring (e.g., "plaud.ai/file/abc" instead of "plaud").
+                  2. Use --window N --tab-in-window M to target a specific tab by position.
+                  3. Pass --first-match to accept the first match (with a stderr warning listing all candidates).
                 """
         case .noSafariWindow:
             return "No Safari window found"

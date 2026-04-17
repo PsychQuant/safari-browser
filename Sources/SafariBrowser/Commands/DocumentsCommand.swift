@@ -1,16 +1,21 @@
 import ArgumentParser
 import Foundation
 
-/// Lists every Safari document across all windows so users can discover
-/// which index / URL substring to pass to the global targeting flags
-/// (`--url`, `--window`, `--tab`, `--document`). Complements the
+/// Lists every Safari tab across all windows so users can discover
+/// which index / URL substring / `(window, tab-in-window)` coordinate
+/// to pass to the global targeting flags (`--url`, `--window`,
+/// `--tab-in-window`, `--document`). Complements the
 /// `SafariBrowserError.documentNotFound` error, whose description uses
-/// the same listing format. Part of the multi-document-targeting change
-/// (#17 / #18 / #21).
+/// the same listing format.
+///
+/// Output is tab-level (one line per tab, including background tabs),
+/// not window-level — per the `human-emulation` principle, the tab bar
+/// is the ground truth a user sees, so the CLI enumerates the same
+/// thing.
 struct DocumentsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "documents",
-        abstract: "List all Safari documents (index, URL, title) for target discovery"
+        abstract: "List all Safari tabs (index, window, tab-in-window, URL, title) for target discovery"
     )
 
     @Flag(name: .long, help: "Output as JSON array")
@@ -23,6 +28,9 @@ struct DocumentsCommand: AsyncParsableCommand {
             let array = documents.map { doc in
                 [
                     "index": doc.index,
+                    "window": doc.window,
+                    "tab_in_window": doc.tabInWindow,
+                    "is_current": doc.isCurrent,
                     "url": doc.url,
                     "title": doc.title,
                 ] as [String: Any]
@@ -35,15 +43,20 @@ struct DocumentsCommand: AsyncParsableCommand {
             return
         }
 
-        // Text mode: `[N] url — title` per document. Matches the error-list
-        // format in SafariBrowserError.documentNotFound so users who see
-        // that error and then run `documents` see identical formatting.
         if documents.isEmpty {
-            // Empty Safari state — print nothing, exit 0.
             return
         }
-        for doc in documents {
-            print("[\(doc.index)] \(doc.url) — \(doc.title)")
+        for line in DocumentsCommand.formatText(documents) {
+            print(line)
+        }
+    }
+
+    /// Pure formatter for the text output mode. Exposed for unit testing
+    /// independently of Safari.
+    static func formatText(_ documents: [SafariBridge.DocumentInfo]) -> [String] {
+        documents.map { doc in
+            let marker = doc.isCurrent ? "*" : " "
+            return "[\(doc.index)] \(marker) w\(doc.window).t\(doc.tabInWindow)  \(doc.url) — \(doc.title)"
         }
     }
 }

@@ -375,6 +375,25 @@ safari-browser mouse down / up / wheel <dy>
 | Element discovery | CDP accessibility tree | JS DOM scan (snapshot) |
 | Parallel sessions | Isolated instances | Shared Safari (multi-tab) |
 
+## Migrating from v2.4 to v2.5 (tab-targeting-v2)
+
+Four breaking changes. Each has a simple opt-out for scripts that cannot migrate immediately.
+
+| Old behavior (v2.4) | New behavior (v2.5) | Migration |
+|---|---|---|
+| `open <url>` navigates the front window's current tab via JavaScript, regardless of whether that URL is already open elsewhere. | `open <url>` focuses the existing tab if any tab's URL exactly matches; otherwise opens a new tab. Cross-window focus uses the spatial interaction gradient (`open --focus-existing` behavior). | Need the navigate-front-tab semantics? Use `safari-browser open --replace-tab <url>`. |
+| `js --url plaud "..."` with two matching tabs silently picks the first. | `js --url plaud "..."` with two matching tabs exits with `ambiguousWindowMatch` listing every candidate. | Need silent first-match? Add `--first-match` (emits a stderr warning enumerating all matches and the chosen one). Or target a specific tab: `--window M --tab-in-window N`. |
+| `--tab N` aliases `--document N` (global document index). | `--tab N` still works but emits a stderr deprecation warning. Will be removed in v3.0. | Rename to `--document N` for identical semantics, or rewrite as `--window M --tab-in-window N` to address a specific tab within a window. |
+| `safari-browser documents` prints one line per Safari window (each window's front tab). | Prints one line per tab across all windows. Format: `[global] <current-marker> w<window>.t<tab>  <url> — <title>`. `--json` adds `window` / `tab_in_window` / `is_current` fields. | Shell parsers counting document lines as "number of windows" must switch to grouping by the `w{N}` prefix or use `--json`. The `--document N` semantic is unchanged — it still targets the Nth tab in enumeration order. |
+
+New flags:
+
+- **`--tab-in-window N`** — requires `--window M`. Targets the Nth tab within the Mth window. Escape hatch for duplicate-URL tabs.
+- **`--first-match`** — accepts first `--url` match when multiple tabs match (paired with stderr warning).
+- **`--replace-tab`** — on `open`, restores v2.4 navigate-front-tab behavior. Mutually exclusive with `--new-tab` / `--new-window`.
+
+Design rationale lives in `openspec/changes/archive/*-tab-targeting-v2/` after archive (or `openspec/changes/tab-targeting-v2/` while in-flight). The new `human-emulation` principle is documented alongside `non-interference` in `CLAUDE.md`.
+
 ## Development
 
 ```bash

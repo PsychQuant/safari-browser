@@ -18,6 +18,30 @@ import Foundation
 @_silgen_name("_AXUIElementGetWindow")
 private func _AXUIElementGetWindow(_ element: AXUIElement, _ outID: UnsafeMutablePointer<CGWindowID>) -> AXError
 
+// MARK: - Private CGS SPI (Group 9: Spatial gradient Space detection)
+//
+// Space detection needs the CGSServices ("SkyLight") private SPI. Apple
+// does not expose Space membership through any public API — NSWorkspace
+// lacks it, CGWindow dicts don't include it. The CGS SPI has been used
+// by yabai, Witch, Contexts, and every serious window manager for
+// ~15 years and is stable across macOS 10.x → 15.
+//
+// `CGSMainConnectionID()` returns the default GUI connection ID.
+// `CGSGetActiveSpace(cid)` returns the Space ID of the active Space.
+// `CGSGetWindowWorkspace(cid, wid, &space)` returns the Space ID of a
+// given window (0 == success; non-zero == failure).
+//
+// Space IDs are opaque UInt64 — we never interpret them, just compare
+// equality to decide same-Space vs cross-Space in the spatial gradient.
+@_silgen_name("CGSMainConnectionID")
+private func CGSMainConnectionID() -> Int32
+
+@_silgen_name("CGSGetActiveSpace")
+private func CGSGetActiveSpace(_ cid: Int32) -> UInt64
+
+@_silgen_name("CGSGetWindowWorkspace")
+private func CGSGetWindowWorkspace(_ cid: Int32, _ wid: CGWindowID, _ space: UnsafeMutablePointer<UInt64>) -> Int32
+
 enum SafariBridge {
     // MARK: - Document Targeting (#17/#18/#21)
 
@@ -34,6 +58,13 @@ enum SafariBridge {
         case windowIndex(Int)
         case urlContains(String)
         case documentIndex(Int)
+        /// Composite target: the tab-in-window-th tab of the window-th
+        /// window. Addresses same-URL duplicate tabs that `.urlContains`
+        /// cannot disambiguate (issue #28 gap #2). Always requires both
+        /// coordinates — `TargetOptions.validate()` rejects solo
+        /// `--tab-in-window` at the CLI boundary, and `pickNativeTarget`
+        /// rejects out-of-range values.
+        case windowTab(window: Int, tabInWindow: Int)
 
         /// Map a `--window N` integer to the correct targeting case
         /// (`.windowIndex(N)` → "document of window N"). Critical for
@@ -66,6 +97,226 @@ enum SafariBridge {
             return "(first document whose URL contains \"\(escaped)\")"
         case .documentIndex(let n):
             return "document \(n)"
+        case .windowTab(let w, let t):
+            return "tab \(t) of window \(w)"
+        }
+    }
+
+    /// Produce an AppleScript document reference from a
+    /// `ResolvedWindowTarget`. Pure — used by `resolveToAppleScript`
+    /// after Native-path resolution. When `tabIndexInWindow` is set,
+    /// the reference points at that specific tab; otherwise it points
+    /// at the current tab's document via `document of window N`.
+    static func docRefFromResolved(_ resolved: ResolvedWindowTarget) -> String {
+        if let tab = resolved.tabIndexInWindow {
+            return "tab \(tab) of window \(resolved.windowIndex)"
+        }
+        return "document of window \(resolved.windowIndex)"
+    }
+
+    /// Async dispatch: produce an AppleScript document reference after
+    /// (when needed) running the Native-path resolver. This is the
+    /// unified entry point for `.urlContains` / `.documentIndex` /
+    /// `.windowTab` targets — they go through `resolveNativeTarget`
+    /// first so multi-match `.urlContains` fails closed with
+    /// `ambiguousWindowMatch` (per the `human-emulation` fail-closed
+    /// requirement) instead of silently picking the first match as
+    /// `(first document whose URL contains ...)` would.
+    ///
+    /// `.frontWindow` / `.windowIndex` bypass enumeration and use the
+    /// sync mapping directly — no resolution needed.
+    static func resolveToAppleScript(_ target: TargetDocument) async throws -> String {
+        switch target {
+        case .frontWindow, .windowIndex:
+            return resolveDocumentReference(target)
+        case .urlContains, .documentIndex, .windowTab:
+            let resolved = try await resolveNativeTarget(from: target)
+            return docRefFromResolved(resolved)
+        }
+    }
+
+    // MARK: - Focus-existing (Group 8: open default)
+
+    /// Pure helper: given an enumeration of windows, find the first tab
+    /// whose URL exactly matches `url`. Returns `(windowIndex,
+    /// tabInWindow, isCurrent)` or `nil`. Exact match (not substring)
+    /// so `open` does not focus unrelated pages that share a prefix.
+    static func findExactMatch(url: String, in windows: [WindowInfo]) -> (window: Int, tabInWindow: Int, isCurrent: Bool)? {
+        for window in windows {
+            for tab in window.tabs where tab.url == url {
+                return (window.windowIndex, tab.tabIndex, tab.isCurrent)
+            }
+        }
+        return nil
+    }
+
+    /// Async wrapper: enumerate Safari windows and search for an exact
+    /// URL match. Used by `open` default dispatch (focus-existing) to
+    /// decide between revealing the existing tab and opening a new one.
+    static func findExactMatchingTab(url: String) async throws -> (window: Int, tabInWindow: Int, isCurrent: Bool)? {
+        let windows = try await listAllWindows()
+        return findExactMatch(url: url, in: windows)
+    }
+
+    /// One of four spatial-gradient outcomes for `open` focus-existing
+    /// per the `human-emulation` principle and `non-interference` spec
+    /// spatial-gradient requirement. The mapping:
+    ///
+    /// | Action | Spatial relationship | Interference class |
+    /// |---|---|---|
+    /// | `noop` | Target is the front tab of the front window | non-interfering |
+    /// | `sameWindowTabSwitch` | Target is a background tab of the front window | passively interfering (no warning) |
+    /// | `sameSpaceRaise` | Target is in a different window on the current Space | passively interfering (stderr warning) |
+    /// | `crossSpaceNewTab` | Target is on a different macOS Space | non-interfering (new tab in current Space) |
+    enum FocusAction: Sendable, Equatable {
+        case noop
+        case sameWindowTabSwitch
+        case sameSpaceRaise
+        case crossSpaceNewTab
+    }
+
+    /// Pure policy function for the spatial-interference gradient.
+    /// Decides which of the four `FocusAction` cases applies given the
+    /// target tab's position (window + isCurrent) and Space context.
+    ///
+    /// - Parameters:
+    ///   - targetWindow: AppleScript window index of the matching tab (1-indexed).
+    ///   - targetIsCurrent: whether the match is its window's current tab.
+    ///   - frontWindowIndex: AppleScript's current front window index
+    ///     (typically `1`, but parameterized so tests can exercise edge cases).
+    ///   - currentSpace: opaque Space ID of the caller's active Space, or
+    ///     `nil` when Space detection is unavailable (missing permission,
+    ///     SPI failure, etc.).
+    ///   - targetSpace: opaque Space ID of the target window's Space, or
+    ///     `nil` when Space detection is unavailable.
+    ///
+    /// Fallback policy: when either Space ID is `nil`, the policy treats
+    /// the target as same-Space (Layer 3 raise). This is the conservative
+    /// direction — it matches legacy "always raise" behavior rather than
+    /// silently skipping the raise because we couldn't detect Spaces.
+    static func selectFocusAction(
+        targetWindow: Int,
+        targetIsCurrent: Bool,
+        frontWindowIndex: Int = 1,
+        currentSpace: UInt64? = nil,
+        targetSpace: UInt64? = nil
+    ) -> FocusAction {
+        if targetWindow == frontWindowIndex && targetIsCurrent {
+            return .noop
+        }
+        if targetWindow == frontWindowIndex {
+            return .sameWindowTabSwitch
+        }
+        if let cur = currentSpace, let tgt = targetSpace, cur != tgt {
+            return .crossSpaceNewTab
+        }
+        return .sameSpaceRaise
+    }
+
+    // MARK: - Space detection (Group 9: CGS SPI)
+
+    /// Return the active macOS Space ID via the private CGS SPI
+    /// `CGSGetActiveSpace`. Returns `nil` when the SPI returns 0 (which
+    /// the SPI uses for error conditions — e.g., WindowServer not
+    /// reachable). This function is synchronous and does not require
+    /// Accessibility permission.
+    static func getCurrentSpace() -> UInt64? {
+        let cid = CGSMainConnectionID()
+        let space = CGSGetActiveSpace(cid)
+        return space == 0 ? nil : space
+    }
+
+    /// Return the Space ID of a given CGWindow, or `nil` on failure.
+    static func detectSpace(cgWindowID: CGWindowID) -> UInt64? {
+        let cid = CGSMainConnectionID()
+        var space: UInt64 = 0
+        let err = CGSGetWindowWorkspace(cid, cgWindowID, &space)
+        guard err == 0, space != 0 else { return nil }
+        return space
+    }
+
+    /// Best-effort: map AppleScript `window N` to its CGWindowID via
+    /// the AX bridge. Requires Accessibility permission. Returns `nil`
+    /// when permission is unavailable, when Safari is not running, or
+    /// when the index is out of range for the AX window list.
+    ///
+    /// The returned CGWindowID can be passed to `detectSpace` to obtain
+    /// the target window's Space ID. If this function returns `nil`,
+    /// `selectFocusAction`'s `targetSpace` parameter should be `nil`
+    /// and the policy falls back to Layer 3 (same-Space raise).
+    static func detectWindowSpace(windowIndex: Int) -> UInt64? {
+        guard AXIsProcessTrusted() else { return nil }
+        guard let safari = NSWorkspace.shared.runningApplications
+            .first(where: { $0.bundleIdentifier == "com.apple.Safari" })
+        else { return nil }
+        let axApp = AXUIElementCreateApplication(safari.processIdentifier)
+        AXUIElementSetMessagingTimeout(axApp, 2.0)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let axWindows = windowsRef as? [AXUIElement],
+              windowIndex >= 1, windowIndex <= axWindows.count
+        else { return nil }
+        var cgID: CGWindowID = 0
+        guard _AXUIElementGetWindow(axWindows[windowIndex - 1], &cgID) == .success, cgID != 0 else {
+            return nil
+        }
+        return detectSpace(cgWindowID: cgID)
+    }
+
+    /// Raise (activate) AppleScript `window N` so it becomes the
+    /// frontmost Safari window. Used by spatial gradient Layer 3.
+    /// AppleScript `set index of window N to 1` reorders windows; the
+    /// subsequent `activate` of the application brings Safari to the
+    /// foreground if it isn't already.
+    static func activateWindow(_ n: Int) async throws {
+        try await runAppleScript("""
+            tell application "Safari"
+                set index of window \(n) to 1
+                activate
+            end tell
+            """)
+    }
+
+    /// Focus an existing tab by applying the spatial-interference
+    /// gradient (Layers 1–4). Calls `selectFocusAction` to decide,
+    /// then executes the chosen action:
+    /// - `.noop`: return immediately.
+    /// - `.sameWindowTabSwitch`: `performTabSwitchIfNeeded`.
+    /// - `.sameSpaceRaise`: activate target window, then tab-switch;
+    ///   emits a stderr warning via `warnWriter`.
+    /// - `.crossSpaceNewTab`: open a new tab in the caller's current
+    ///   Space front window; emits a stderr note.
+    ///
+    /// The `url` parameter is used only by the `.crossSpaceNewTab`
+    /// branch to open a new tab with the requested URL. For the other
+    /// three branches it can be the empty string but callers typically
+    /// pass the match URL for consistency.
+    static func focusExistingTab(
+        window: Int,
+        tabInWindow: Int,
+        isCurrent: Bool,
+        url: String = "",
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws {
+        let action = selectFocusAction(
+            targetWindow: window,
+            targetIsCurrent: isCurrent,
+            frontWindowIndex: 1,
+            currentSpace: getCurrentSpace(),
+            targetSpace: detectWindowSpace(windowIndex: window)
+        )
+        switch action {
+        case .noop:
+            return
+        case .sameWindowTabSwitch:
+            try await performTabSwitchIfNeeded(window: window, tab: tabInWindow)
+        case .sameSpaceRaise:
+            warnWriter?("warning: open --focus-existing raised window \(window) to front (the matching tab lives in a background window).\n")
+            try await activateWindow(window)
+            try await performTabSwitchIfNeeded(window: window, tab: tabInWindow)
+        case .crossSpaceNewTab:
+            warnWriter?("note: open --focus-existing found a match in a different macOS Space — leaving that tab undisturbed and opening a new tab in the current Space.\n")
+            try await openURLInNewTab(url, window: nil)
         }
     }
 
@@ -109,6 +360,7 @@ enum SafariBridge {
         case .windowIndex(let n): return "window \(n)"
         case .urlContains(let pattern): return pattern
         case .documentIndex(let n): return "document \(n)"
+        case .windowTab(let w, let t): return "window \(w) tab \(t)"
         }
     }
 
@@ -122,7 +374,7 @@ enum SafariBridge {
         // #9: Use do JavaScript for navigation to avoid race with page's own JS redirects.
         // Fallback to set URL when do JavaScript fails (e.g., about:blank, no open tabs).
         let jsCode = "window.location.href=\(url.jsStringLiteral)"
-        let docRef = resolveDocumentReference(target)
+        let docRef = try await resolveToAppleScript(target)
         // Route through runTargetedAppleScript so `--url typo open ...` also
         // gets the user-friendly documentNotFound error with available docs
         // listed, matching the read-only getter behavior.
@@ -203,7 +455,7 @@ enum SafariBridge {
         _ code: String,
         target: TargetDocument = .frontWindow
     ) async throws -> String {
-        let docRef = resolveDocumentReference(target)
+        let docRef = try await resolveToAppleScript(target)
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
@@ -258,7 +510,7 @@ enum SafariBridge {
     /// bypasses any modal file dialog sheet blocking Safari's front window
     /// (#21).
     static func getCurrentURL(target: TargetDocument = .frontWindow) async throws -> String {
-        let docRef = resolveDocumentReference(target)
+        let docRef = try await resolveToAppleScript(target)
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 get URL of \(docRef)
@@ -268,7 +520,7 @@ enum SafariBridge {
 
     /// Read the title of the target document. Document-scoped for modal bypass (#21).
     static func getCurrentTitle(target: TargetDocument = .frontWindow) async throws -> String {
-        let docRef = resolveDocumentReference(target)
+        let docRef = try await resolveToAppleScript(target)
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 get name of \(docRef)
@@ -278,7 +530,7 @@ enum SafariBridge {
 
     /// Read the plain-text content of the target document. Document-scoped for modal bypass (#21).
     static func getCurrentText(target: TargetDocument = .frontWindow) async throws -> String {
-        let docRef = resolveDocumentReference(target)
+        let docRef = try await resolveToAppleScript(target)
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 get text of \(docRef)
@@ -288,7 +540,7 @@ enum SafariBridge {
 
     /// Read the HTML source of the target document. Document-scoped for modal bypass (#21).
     static func getCurrentSource(target: TargetDocument = .frontWindow) async throws -> String {
-        let docRef = resolveDocumentReference(target)
+        let docRef = try await resolveToAppleScript(target)
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 get source of \(docRef)
@@ -304,53 +556,61 @@ enum SafariBridge {
         let url: String
     }
 
-    /// Metadata for a Safari document, used by `listAllDocuments()` and
+    /// Metadata for a Safari tab, used by `listAllDocuments()` and
     /// `DocumentsCommand` to surface targeting candidates for `--url`,
-    /// `--document`, etc. Index is 1-based and matches the AppleScript
-    /// `document N` order, which is what `TargetDocument.documentIndex`
-    /// expects.
+    /// `--window + --tab-in-window`, and `--document`. Tab-level source
+    /// of truth per the `human-emulation` principle (tab bar is ground
+    /// truth — every tab in every window is individually addressable).
+    ///
+    /// - `index`: 1-based global counter across all windows in (window,
+    ///   tab-in-window) enumeration order. Accepted by `--document N`.
+    /// - `window`: AppleScript `window N` index (1-based).
+    /// - `tabInWindow`: AppleScript `tab T of window N` index (1-based).
+    ///   Accepted by `--window N --tab-in-window M`.
+    /// - `isCurrent`: true when this tab is the current (frontmost) tab
+    ///   of its window.
     struct DocumentInfo: Sendable {
         let index: Int
+        let window: Int
+        let tabInWindow: Int
         let title: String
         let url: String
+        let isCurrent: Bool
     }
 
-    /// List every Safari document across all windows in document-collection
-    /// order. The index each entry carries is the value users pass to
-    /// `--document N` / `TargetDocument.documentIndex(n)` (#17/#18/#21).
-    static func listAllDocuments() async throws -> [DocumentInfo] {
-        let countStr = try await runAppleScript("""
-            tell application "Safari"
-                if (count of documents) = 0 then
-                    return "0"
-                end if
-                count of documents
-            end tell
-            """)
-
-        guard let count = Int(countStr.trimmingCharacters(in: .whitespacesAndNewlines)), count > 0 else {
-            return []
-        }
-
+    /// Flatten a `[WindowInfo]` enumeration into `[DocumentInfo]` with
+    /// stable global indices. Pure function — unit-testable without
+    /// Safari. Respects window-then-tab ordering: window 1's tabs come
+    /// before window 2's tabs. Global `index` is a 1-based counter over
+    /// the flattened sequence.
+    static func flattenWindowsToDocuments(_ windows: [WindowInfo]) -> [DocumentInfo] {
         var docs: [DocumentInfo] = []
-        for i in 1...count {
-            let title = try await runAppleScript("""
-                tell application "Safari"
-                    get name of document \(i)
-                end tell
-                """)
-            let url = try await runAppleScript("""
-                tell application "Safari"
-                    get URL of document \(i)
-                end tell
-                """)
-            docs.append(DocumentInfo(
-                index: i,
-                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                url: url.trimmingCharacters(in: .whitespacesAndNewlines)
-            ))
+        var globalIndex = 1
+        for window in windows {
+            for tab in window.tabs {
+                docs.append(DocumentInfo(
+                    index: globalIndex,
+                    window: window.windowIndex,
+                    tabInWindow: tab.tabIndex,
+                    title: tab.title,
+                    url: tab.url,
+                    isCurrent: tab.isCurrent
+                ))
+                globalIndex += 1
+            }
         }
         return docs
+    }
+
+    /// List every Safari tab across all windows. Ordering is stable:
+    /// windows by ascending index, tabs within a window by ascending
+    /// tab-in-window index. Backed by `listAllWindows` so that
+    /// enumeration is consistent with the native-path resolver (per the
+    /// `human-emulation` ground-truth requirement — `documents`
+    /// subcommand and `upload --native` see the same universe of tabs).
+    static func listAllDocuments() async throws -> [DocumentInfo] {
+        let windows = try await listAllWindows()
+        return flattenWindowsToDocuments(windows)
     }
 
     // MARK: - Native Path Resolver (#26)
@@ -361,6 +621,7 @@ enum SafariBridge {
     struct TabInWindow: Sendable, Equatable {
         let tabIndex: Int
         let url: String
+        let title: String
         let isCurrent: Bool
     }
 
@@ -503,6 +764,38 @@ enum SafariBridge {
                 windowIndex: match.windowIndex,
                 tabIndexInWindow: match.isCurrent ? nil : match.tabIndex
             )
+
+        case .windowTab(let w, let t):
+            // Composite (window, tab-in-window) — same-URL escape hatch
+            // (issue #28 gap #2). TargetOptions.validate() rejects
+            // solo --tab-in-window and non-positive indices at the CLI,
+            // but this pure function is a public entry point so it
+            // still defends against bad inputs.
+            if w < 1 || w > windows.count {
+                let availableSummary = windows.map { win -> String in
+                    let cur = win.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+                    return "window \(win.windowIndex): \(cur)"
+                }
+                throw SafariBrowserError.documentNotFound(
+                    pattern: "window \(w) tab \(t)",
+                    availableDocuments: availableSummary
+                )
+            }
+            let window = windows[w - 1]
+            if t < 1 || t > window.tabs.count {
+                let availableSummary = window.tabs.map { tab in
+                    "window \(window.windowIndex) tab \(tab.tabIndex): \(tab.url)"
+                }
+                throw SafariBrowserError.documentNotFound(
+                    pattern: "window \(w) tab \(t) (window has \(window.tabs.count) tab(s))",
+                    availableDocuments: availableSummary
+                )
+            }
+            let tab = window.tabs[t - 1]
+            return ResolvedWindowTarget(
+                windowIndex: w,
+                tabIndexInWindow: tab.isCurrent ? nil : t
+            )
         }
     }
 
@@ -516,16 +809,80 @@ enum SafariBridge {
     /// between invocations, and the AppleScript enumeration cost is
     /// dominated by roundtrip fixed overhead, not work, so caching
     /// trades very little for a real correctness risk.
-    static func resolveNativeTarget(from target: TargetDocument) async throws -> ResolvedWindowTarget {
+    static func resolveNativeTarget(
+        from target: TargetDocument,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> ResolvedWindowTarget {
         switch target {
         case .frontWindow:
             return ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil)
         case .windowIndex(let n):
             return ResolvedWindowTarget(windowIndex: n, tabIndexInWindow: nil)
-        case .urlContains, .documentIndex:
+        case .urlContains, .documentIndex, .windowTab:
             let windows = try await listAllWindows()
-            return try pickNativeTarget(target, in: windows)
+            do {
+                return try pickNativeTarget(target, in: windows)
+            } catch let error as SafariBrowserError {
+                // --first-match opt-in: recover from ambiguousWindowMatch
+                // on `.urlContains` by selecting the first match in
+                // (window, tab) order, emitting a stderr warning that
+                // lists all candidates. Only urlContains supports this
+                // fallback — documentIndex / windowTab ambiguity is a
+                // structural bug, not user-chosen disambiguation.
+                if firstMatch,
+                   case .urlContains(let pattern) = target,
+                   case .ambiguousWindowMatch = error {
+                    return try pickFirstMatchFallback(
+                        pattern: pattern,
+                        in: windows,
+                        warnWriter: warnWriter
+                    )
+                }
+                throw error
+            }
         }
+    }
+
+    /// First-match opt-in helper. Scans windows in (windowIndex,
+    /// tabIndex) order, returns the first tab whose URL contains
+    /// `pattern`. When more than one match exists, emits a stderr
+    /// warning via `warnWriter` listing every candidate so the user
+    /// can audit which tab was chosen. Pure — the warning emission is
+    /// injected so tests can capture without touching stderr.
+    static func pickFirstMatchFallback(
+        pattern: String,
+        in windows: [WindowInfo],
+        warnWriter: ((String) -> Void)? = nil
+    ) throws -> ResolvedWindowTarget {
+        var matches: [(windowIndex: Int, tab: TabInWindow)] = []
+        for window in windows {
+            for tab in window.tabs where tab.url.contains(pattern) {
+                matches.append((window.windowIndex, tab))
+            }
+        }
+        guard let first = matches.first else {
+            let allUrls = windows.flatMap { w in
+                w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+            }
+            throw SafariBrowserError.documentNotFound(
+                pattern: pattern,
+                availableDocuments: allUrls
+            )
+        }
+        if matches.count > 1 {
+            let summary = matches.map { m in
+                "  window \(m.windowIndex) tab \(m.tab.tabIndex): \(m.tab.url)"
+            }.joined(separator: "\n")
+            let msg = "warning: --first-match resolved '\(pattern)' to "
+                + "window \(first.windowIndex) tab \(first.tab.tabIndex) "
+                + "(of \(matches.count) matches):\n\(summary)\n"
+            warnWriter?(msg)
+        }
+        return ResolvedWindowTarget(
+            windowIndex: first.windowIndex,
+            tabIndexInWindow: first.tab.isCurrent ? nil : first.tab.tabIndex
+        )
     }
 
     /// Enumerate every Safari window with its tabs in a single
@@ -553,12 +910,14 @@ enum SafariBridge {
                     repeat with t from 1 to tabCount
                         set tabUrl to URL of tab t of window w
                         if tabUrl is missing value then set tabUrl to ""
+                        set tabName to name of tab t of window w
+                        if tabName is missing value then set tabName to ""
                         if t = currentIdx then
                             set isCur to "1"
                         else
                             set isCur to "0"
                         end if
-                        set output to output & w & GS & t & GS & isCur & GS & tabUrl & RS
+                        set output to output & w & GS & t & GS & isCur & GS & tabUrl & GS & tabName & RS
                     end repeat
                 end repeat
                 return output
@@ -569,7 +928,13 @@ enum SafariBridge {
     }
 
     /// Parse the `listAllWindows` output format. Exposed for unit
-    /// testing the parser independently of Safari.
+    /// testing the parser independently of Safari. Record layout (5
+    /// fields separated by GS, terminated by RS):
+    /// `window_idx GS tab_idx GS is_current GS url GS title RS`
+    ///
+    /// Backward compatibility: if a record only has 4 fields (legacy
+    /// pre-title format), the title defaults to empty string so tests
+    /// and callers that don't care about title still work.
     static func parseWindowEnumeration(_ raw: String) -> [WindowInfo] {
         let gs = "\u{1D}"
         let rs = "\u{1E}"
@@ -581,16 +946,18 @@ enum SafariBridge {
 
         for record in trimmed.components(separatedBy: rs) where !record.isEmpty {
             let fields = record.components(separatedBy: gs)
-            guard fields.count == 4,
+            guard fields.count >= 4,
                   let winIdx = Int(fields[0]),
                   let tabIdx = Int(fields[1]) else {
                 continue
             }
             let isCurrent = fields[2] == "1"
             let url = fields[3]
+            let title = fields.count >= 5 ? fields[4] : ""
             byWindow[winIdx, default: []].append(TabInWindow(
                 tabIndex: tabIdx,
                 url: url,
+                title: title,
                 isCurrent: isCurrent
             ))
             if isCurrent {

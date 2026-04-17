@@ -46,6 +46,26 @@ Claude Code plugin 位於另一個 repo：
 新增指令前須分類 interference level（Non-interfering / Passively interfering / Actively interfering）。
 完整規範：`openspec/specs/non-interference/spec.md`
 
+## Design Principle: Human Emulation (tab-targeting-v2)
+
+safari-browser 預設行為應貼近人類用 Safari 的心智模型 — 與 Non-Interference 同級 principle，衝突時透過 spatial gradient 調和。四條衍生規則：
+
+- **Tab bar 是 ground truth** — 所有 target-resolution 走 `tabs of windows` 而非 `documents` collection（documents 每 window 只看得到 front tab，不是人類看到的）
+- **歧義時 fail-closed** — `.urlContains` 多 match 預設丟 `ambiguousWindowMatch`，不 silent first-match；想要舊行為加 `--first-match` opt-in（附 stderr warning）
+- **已開的網址 focus 而非重開** — `open <url>` 預設檢查 exact URL match：有就 focus existing（走 spatial gradient），無就 new-tab；想要 navigate front tab 語義加 `--replace-tab`
+- **空間感分級互動**（Spatial Gradient）— `focusExistingTab` 根據目標 tab 位置採不同動作：
+
+  | Layer | 目標位置 | 行為 | Interference |
+  |---|---|---|---|
+  | 1 | Front tab of front window | noop | Non-interfering |
+  | 2 | Background tab of front window | `set current tab` | Passively (no warning) |
+  | 3 | Different window, same Space | `activate window N` + tab-switch | Passively (stderr warning) |
+  | 4 | Different macOS Space | 不跨 Space raise，改開 new tab 在當前 Space | Non-interfering |
+
+  Space detection 透過私 SPI `CGSGetActiveSpace` / `CGSGetWindowWorkspace`；權限不足時 fallback 到 Layer 3（保守）。
+
+完整規範：`openspec/specs/human-emulation/spec.md`（tab-targeting-v2 archive 後生成）
+
 ## Multi-window / Multi-document targeting (#17 #18 #21 #23 #26)
 
 多視窗環境下，**預設 target 是 `document 1`**（單視窗時等價於 `current tab of front window`）。
