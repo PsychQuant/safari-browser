@@ -180,6 +180,56 @@ final class ErrorsTests: XCTestCase {
         )
     }
 
+    // #29: --content-only requires AX and rejects hard when missing.
+    // The error must distinguish itself from the legacy --window N
+    // accessibility error (which uses accessibilityNotGranted) because
+    // the workarounds differ: --window N can fall back by omitting the
+    // flag; --content-only cannot fall back to a JS heuristic by design.
+    func testAccessibilityRequired() {
+        let error = SafariBrowserError.accessibilityRequired(flag: "--content-only")
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(
+            description.contains("--content-only"),
+            "Expected flag name in description, got: \(description)"
+        )
+        // System Settings path must be explicit so users know where to
+        // click — not every user knows the Privacy & Security location.
+        XCTAssertTrue(
+            description.contains("System Settings") && description.contains("Accessibility"),
+            "Expected System Settings → Accessibility path, got: \(description)"
+        )
+        // The alternative (re-run without the flag) is critical so users
+        // aren't blocked if they don't want to grant AX. Without this
+        // hint, the error looks like a hard block.
+        XCTAssertTrue(
+            description.contains("without") && description.contains("--content-only"),
+            "Expected 'run without --content-only' alternative, got: \(description)"
+        )
+    }
+
+    // #29: webAreaNotFound is the second failure mode for --content-only
+    // — AX is granted but the AXWebArea can't be located (private
+    // window, PDF preview, etc.). Different recovery than
+    // accessibilityRequired, so it needs its own error case.
+    func testWebAreaNotFound() {
+        let error = SafariBrowserError.webAreaNotFound(reason: "no AXWebArea within depth 3")
+        let description = error.errorDescription ?? ""
+        // The reason parameter must appear verbatim so the message
+        // explains which specific failure mode triggered.
+        XCTAssertTrue(
+            description.contains("no AXWebArea within depth 3"),
+            "Expected reason string verbatim in description, got: \(description)"
+        )
+        // The recovery must point at the flag-free alternative — this
+        // error usually means the page state is exotic (PDF, private),
+        // and the only realistic recovery is to accept chrome in the
+        // screenshot.
+        XCTAssertTrue(
+            description.contains("without") && description.contains("--content-only"),
+            "Expected 'run without --content-only' recovery, got: \(description)"
+        )
+    }
+
     func testSystemEventsNotResponding() {
         let error = SafariBrowserError.systemEventsNotResponding(underlying: "probe timed out after 2 seconds")
         let description = error.errorDescription ?? ""

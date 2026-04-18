@@ -14,6 +14,9 @@ enum SafariBrowserError: LocalizedError {
     case noSafariWindow
     case elementNotFound(String)
     case accessibilityNotGranted
+    case accessibilityRequired(flag: String)
+    case webAreaNotFound(reason: String)
+    case imageCroppingFailed(reason: String)
     case axOperationFailed(String)
     case windowIdentityAmbiguous(reason: String)
 
@@ -114,6 +117,47 @@ enum SafariBrowserError: LocalizedError {
                   - Use document-scoped commands instead: `snapshot --url`,
                     `get text --url`, `get source --url` — these bypass the
                     CG window-ID boundary entirely
+                """
+        case .accessibilityRequired(let flag):
+            return """
+                Accessibility permission required for `screenshot \(flag)`.
+                The CLI reads the Safari web content area geometry via the
+                Accessibility API (kAXWebAreaRole + kAXPositionAttribute +
+                kAXSizeAttribute) to compute an exact crop rectangle. A
+                JavaScript-based viewport measurement fallback was rejected
+                during design because it silently errs on Reader Mode,
+                sidebar, and zoom states — the `\(flag)` flag is precision-
+                sensitive and only supports the AX path.
+
+                Grant permission:
+                  System Settings → Privacy & Security → Accessibility → enable
+                  Terminal (or your shell) and re-run the command.
+
+                Alternative (no permission needed):
+                  Re-run without `\(flag)` to receive a chrome-included
+                  screenshot that you can crop with an external tool.
+                """
+        case .imageCroppingFailed(let reason):
+            return """
+                Image cropping failed: \(reason)
+                The screenshot was captured but the chrome-cropping step
+                could not complete. The file on disk may be the original
+                un-cropped capture or may not exist — check its presence
+                before re-running.
+                """
+        case .webAreaNotFound(let reason):
+            return """
+                Could not locate the Safari web content area: \(reason)
+                This happens when the AXWebArea element is unreachable within
+                the first 3 levels of the window's AX tree — possible causes:
+                  - Private window with restricted AX tree
+                  - PDF preview, Reader Mode in an unusual state, or a page
+                    that hasn't finished loading
+                  - Extension toolbars or developer tools altering the tree
+
+                Workaround: re-run `safari-browser screenshot` without
+                `--content-only`. The capture will include Safari chrome but
+                will succeed; crop externally if needed.
                 """
         case .accessibilityNotGranted:
             return """

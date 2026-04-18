@@ -1362,6 +1362,89 @@ enum SafariBridge {
         }
     }
 
+    /// Maximum tree depth to search for AXWebArea. Empirically Safari
+    /// 15+ places it at depth 6 from the window root:
+    ///   Window → SplitGroup → TabGroup → Group → Group → ScrollArea → WebArea
+    /// The limit is set to 10 as a buffer for future Safari tree
+    /// shape changes and to avoid scanning the entire tree.
+    private static let axWebAreaSearchDepthLimit = 10
+
+    /// #29: locate the Safari web content area (the `AXWebArea`
+    /// element) inside a window's AX tree and return its bounds in
+    /// screen-coordinate points. Used by `screenshot --content-only`
+    /// to compute the crop rectangle that excludes Safari chrome.
+    ///
+    /// The AXWebArea role is a WebKit convention, not a standard AX
+    /// role constant — the comparison is against the literal string
+    /// `"AXWebArea"` rather than a public `kAX...Role` symbol.
+    ///
+    /// Search strategy: shallowest-first within the first
+    /// `axWebAreaSearchDepthLimit` levels. A depth limit contains
+    /// worst-case recursion (malformed trees, deeply nested iframes)
+    /// and matches observed Safari tree shape.
+    ///
+    /// **Sub-frame guard**: a found `AXWebArea` whose y-origin sits
+    /// below the midpoint of the owning window is rejected. In normal
+    /// Safari layouts chrome occupies <50% of window height; an
+    /// AXWebArea origin below the midpoint almost certainly means we
+    /// grabbed a sub-frame (iframe) rather than the main viewport,
+    /// which would produce a silently wrong crop. Failing closed here
+    /// is safer than emitting a wrong-dimensions PNG.
+    static func getAXWebAreaBounds(_ axWindow: AXUIElement) throws -> CGRect {
+        guard let webArea = findAXWebArea(axWindow, depth: axWebAreaSearchDepthLimit) else {
+            throw SafariBrowserError.webAreaNotFound(
+                reason: "no AXWebArea within depth \(axWebAreaSearchDepthLimit) of window AX tree"
+            )
+        }
+        guard let (x, y) = axPoint(webArea, attribute: kAXPositionAttribute as CFString),
+              let (w, h) = axSize(webArea, attribute: kAXSizeAttribute as CFString) else {
+            throw SafariBrowserError.webAreaNotFound(reason: "AXWebArea located but position/size unreadable")
+        }
+
+        // Sub-frame guard: the AXWebArea must sit in the upper half of
+        // the owning window. If its origin is below the window
+        // midpoint, we almost certainly grabbed an iframe.
+        if let (_, winY) = axPoint(axWindow, attribute: kAXPositionAttribute as CFString),
+           let (_, winH) = axSize(axWindow, attribute: kAXSizeAttribute as CFString) {
+            let offsetFromTop = y - winY
+            if winH > 0, offsetFromTop > winH / 2 {
+                throw SafariBrowserError.webAreaNotFound(
+                    reason: "AXWebArea at \(Int(offsetFromTop))pt from window top (> 50% of \(Int(winH))pt height); likely a sub-frame, not the main viewport"
+                )
+            }
+        }
+
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    /// Depth-limited search for an `AXWebArea` element. Checks direct
+    /// children first (prefer shallowest match), then recurses.
+    /// Returns nil when no match exists within the depth limit.
+    private static func findAXWebArea(_ element: AXUIElement, depth: Int) -> AXUIElement? {
+        if depth <= 0 { return nil }
+        var childrenValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+              let children = childrenValue as? [AXUIElement] else {
+            return nil
+        }
+        // Shallowest-first: scan direct children before recursing so
+        // the main webArea (usually 2–3 levels deep) wins over any
+        // iframe webArea nested deeper.
+        for child in children {
+            var roleValue: CFTypeRef?
+            if AXUIElementCopyAttributeValue(child, kAXRoleAttribute as CFString, &roleValue) == .success,
+               let role = roleValue as? String, role == "AXWebArea" {
+                return child
+            }
+        }
+        for child in children {
+            if let found = findAXWebArea(child, depth: depth - 1) {
+                return found
+            }
+        }
+        return nil
+    }
+
     /// Read the current `kAXPositionAttribute` and `kAXSizeAttribute`
     /// of an AX window element as a single CGRect. Used by
     /// `screenshot --full` to save the original bounds before resizing

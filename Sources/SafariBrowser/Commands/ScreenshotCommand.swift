@@ -1,3 +1,4 @@
+import ApplicationServices
 import ArgumentParser
 import CoreGraphics
 import Foundation
@@ -14,6 +15,14 @@ struct ScreenshotCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Capture full scrollable page")
     var full = false
 
+    /// #29: crop Safari chrome (URL bar, tab bar, toolbar) so the
+    /// output PNG contains only the web content area. Requires
+    /// Accessibility permission — see `SafariBrowserError
+    /// .accessibilityRequired` for why JavaScript fallback is
+    /// intentionally rejected.
+    @Flag(name: .long, help: "Crop Safari chrome, keep only web content area (requires Accessibility)")
+    var contentOnly = false
+
     /// #26: screenshot now accepts the full TargetOptions (`--url`,
     /// `--tab`, `--document`, `--window`). The native-path resolver
     /// maps each targeting flag to a window index. Unlike upload / pdf
@@ -29,6 +38,17 @@ struct ScreenshotCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #29: --content-only hard-fails without Accessibility. Check
+        // BEFORE resolveWindowForCapture so we don't do useless AX
+        // resolution work when the whole command is about to error.
+        // Distinct error case from accessibilityNotGranted because the
+        // workarounds differ (that case can fall back by dropping
+        // --window N; --content-only cannot fall back to a JS heuristic
+        // by design — see design.md §"AX fallback").
+        if contentOnly && !AXIsProcessTrusted() {
+            throw SafariBrowserError.accessibilityRequired(flag: "--content-only")
+        }
+
         // Preserve the #23 legacy fallback: when the user supplies no
         // targeting flag AND Accessibility permission is absent,
         // `resolveWindowForCapture(window: nil)` takes the CG name-
@@ -80,6 +100,19 @@ struct ScreenshotCommand: AsyncParsableCommand {
         if !full {
             // Simple path: capture whatever CG ID resolved. Always silent (-x).
             try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
+            // #29: crop Safari chrome post-capture. axWindow is
+            // guaranteed non-nil because the AX hard-fail at the top
+            // of run() rejects --content-only before we reach here
+            // without Accessibility — every resolveWindowForCapture
+            // path returns non-nil axWindow when AX is granted.
+            if contentOnly {
+                guard let axWindow else {
+                    throw SafariBrowserError.imageCroppingFailed(
+                        reason: "internal: AX window handle missing despite --content-only hard-fail check passing"
+                    )
+                }
+                try applyContentOnlyCrop(axWindow: axWindow, path: path)
+            }
             return
         }
 
@@ -155,11 +188,46 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // the expected size). Still fall through to restore so the
         // save path can undo any partial mutation.
         var captureError: Error?
+        var cropError: Error?
         if resizeError == nil {
             do {
                 try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
             } catch {
                 captureError = error
+            }
+            // #29: --full --content-only crop. Must happen AFTER
+            // capture (so the PNG exists) and BEFORE restore (so the
+            // AXWebArea bounds we read reflect the resized window —
+            // design.md §"--full --content-only combo" requires
+            // post-resize measurement because chrome can collapse on
+            // certain resize dimensions). axWindow is guaranteed
+            // non-nil here — the --full path always takes the AX
+            // resolver branch (see R7 architecture comments above).
+            //
+            // Pre-measured bounds: the post-resize AX query for window
+            // position/size is flaky within ~500ms of `setAXWindowBounds`
+            // (observed intermittent `noSafariWindow` from `axPoint`
+            // returning nil during the resize settle). We already set
+            // the window to (0, 0, targetW, targetH), so pass those
+            // directly instead of re-reading from AX. `getAXWebAreaBounds`
+            // is still called (needed to detect chrome collapse) and
+            // remains the only AX read in this crop step.
+            if contentOnly, captureError == nil, let axWindow, let targetW, let targetH {
+                let postResizeBounds = CGRect(
+                    x: 0,
+                    y: 0,
+                    width: Double(targetW),
+                    height: Double(targetH)
+                )
+                do {
+                    try applyContentOnlyCrop(
+                        axWindow: axWindow,
+                        path: path,
+                        preMeasuredWindowBounds: postResizeBounds
+                    )
+                } catch {
+                    cropError = error
+                }
             }
         }
 
@@ -208,8 +276,68 @@ struct ScreenshotCommand: AsyncParsableCommand {
 
         // R8 F55: propagate resize error first (command never ran the
         // actual capture in that case), then capture error. User sees
-        // the root cause, not a downstream symptom.
+        // the root cause, not a downstream symptom. #29: crop error
+        // propagates last — it only happens when resize+capture both
+        // succeeded, so showing it as the final error is meaningful.
         if let resizeError { throw resizeError }
         if let captureError { throw captureError }
+        if let cropError { throw cropError }
+    }
+
+    /// #29: crop the captured PNG so it contains only the Safari web
+    /// content area (AXWebArea), excluding URL bar, tab bar, and
+    /// toolbar. Called from both the simple path and the --full path;
+    /// the caller is responsible for ordering w.r.t. resize/restore.
+    ///
+    /// **No-op threshold** (design.md §"No-op threshold"): when the
+    /// AXWebArea width matches the window width and the height delta
+    /// is under 4 points, the window has effectively no chrome
+    /// (fullscreen / Reader Mode) and we skip the crop — writing the
+    /// captured PNG unchanged. Tolerance is absolute, not
+    /// percentage, to avoid false positives on near-fullscreen windows
+    /// with small toolbars.
+    /// - Parameters:
+    ///   - axWindow: resolved Safari AX window element
+    ///   - path: PNG file to crop in place
+    ///   - preMeasuredWindowBounds: when the caller already knows the
+    ///     window's bounds (e.g. the --full path just called
+    ///     `setAXWindowBounds` to place the window at a known rect),
+    ///     pass them here to skip a redundant AX query. Avoiding the
+    ///     extra query sidesteps a race where `kAXPositionAttribute`
+    ///     briefly returns `noValue` during the resize settle phase.
+    private func applyContentOnlyCrop(
+        axWindow: AXUIElement,
+        path: String,
+        preMeasuredWindowBounds: CGRect? = nil
+    ) throws {
+        let windowBounds: CGRect
+        if let preMeasuredWindowBounds {
+            windowBounds = preMeasuredWindowBounds
+        } else {
+            windowBounds = try SafariBridge.getAXWindowBounds(axWindow)
+        }
+        let webAreaScreen = try SafariBridge.getAXWebAreaBounds(axWindow)
+
+        // No-op: viewport effectively fills window (fullscreen, Reader
+        // Mode). Threshold logic is in ImageCropping so unit tests can
+        // exercise it without spinning up an AX window.
+        if ImageCropping.isNoOpCrop(windowBounds: windowBounds, webAreaBounds: webAreaScreen) {
+            return
+        }
+
+        // Window-relative rect: AX returns screen-absolute coords; the
+        // captured PNG's image-space origin (0,0) corresponds to the
+        // window's top-left. Subtract to translate.
+        let rectInWindow = CGRect(
+            x: webAreaScreen.origin.x - windowBounds.origin.x,
+            y: webAreaScreen.origin.y - windowBounds.origin.y,
+            width: webAreaScreen.width,
+            height: webAreaScreen.height
+        )
+        try ImageCropping.cropPNG(
+            at: path,
+            rectPoints: rectInWindow,
+            windowWidthPoints: windowBounds.width
+        )
     }
 }
