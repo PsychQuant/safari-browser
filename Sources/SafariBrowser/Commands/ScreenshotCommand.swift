@@ -23,6 +23,32 @@ struct ScreenshotCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Crop Safari chrome, keep only web content area (requires Accessibility)")
     var contentOnly = false
 
+    /// #30: crop to the bounding rectangle of a DOM element matched by
+    /// CSS selector. Uses `querySelectorAll` + `getBoundingClientRect`;
+    /// light DOM only (Shadow DOM / iframe content is out of scope).
+    /// Requires Accessibility permission for the AXWebArea origin
+    /// lookup. Multi-match is fail-closed by default — see
+    /// `--element-index` for deterministic disambiguation.
+    @Option(name: .long, help: "CSS selector for element-scoped crop (requires Accessibility)")
+    var element: String?
+
+    /// #30: 1-indexed disambiguator for multi-match `--element`.
+    /// Requires `--element`. Picks the Nth match in document order
+    /// (the order returned by `querySelectorAll`).
+    @Option(name: .customLong("element-index"), help: "1-indexed match picker for --element (disambiguates multi-match)")
+    var elementIndex: Int?
+
+    func validate() throws {
+        // #30: --element-index requires --element (can't pick Nth of
+        // nothing) and must be positive (document order is 1-indexed).
+        if elementIndex != nil && element == nil {
+            throw ValidationError("--element-index requires --element")
+        }
+        if let idx = elementIndex, idx < 1 {
+            throw ValidationError("--element-index must be >= 1 (got \(idx))")
+        }
+    }
+
     /// #26: screenshot now accepts the full TargetOptions (`--url`,
     /// `--tab`, `--document`, `--window`). The native-path resolver
     /// maps each targeting flag to a window index. Unlike upload / pdf
@@ -38,13 +64,13 @@ struct ScreenshotCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        // #29: --content-only hard-fails without Accessibility. Check
-        // BEFORE resolveWindowForCapture so we don't do useless AX
-        // resolution work when the whole command is about to error.
-        // Distinct error case from accessibilityNotGranted because the
-        // workarounds differ (that case can fall back by dropping
-        // --window N; --content-only cannot fall back to a JS heuristic
-        // by design — see design.md §"AX fallback").
+        // #29 / #30: --content-only and --element both hard-fail
+        // without Accessibility. Check BEFORE resolveWindowForCapture
+        // so useless AX resolution doesn't run. --element flag takes
+        // precedence in the error message (most specific flag first).
+        if element != nil && !AXIsProcessTrusted() {
+            throw SafariBrowserError.accessibilityRequired(flag: "--element")
+        }
         if contentOnly && !AXIsProcessTrusted() {
             throw SafariBrowserError.accessibilityRequired(flag: "--content-only")
         }
@@ -100,12 +126,26 @@ struct ScreenshotCommand: AsyncParsableCommand {
         if !full {
             // Simple path: capture whatever CG ID resolved. Always silent (-x).
             try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
-            // #29: crop Safari chrome post-capture. axWindow is
-            // guaranteed non-nil because the AX hard-fail at the top
-            // of run() rejects --content-only before we reach here
-            // without Accessibility — every resolveWindowForCapture
-            // path returns non-nil axWindow when AX is granted.
-            if contentOnly {
+            // Post-capture crop: --element takes precedence over
+            // --content-only because element coords are already
+            // viewport-relative (chrome-excluded). Combining both is
+            // legal per design; --content-only becomes a no-op here.
+            // axWindow is guaranteed non-nil — AX hard-fail at top
+            // of run() enforces AX for both flags.
+            if let element {
+                guard let axWindow else {
+                    throw SafariBrowserError.imageCroppingFailed(
+                        reason: "internal: AX window handle missing despite --element hard-fail check passing"
+                    )
+                }
+                try await applyElementCrop(
+                    selector: element,
+                    elementIndex: elementIndex,
+                    axWindow: axWindow,
+                    path: path,
+                    docTarget: docTarget
+                )
+            } else if contentOnly {
                 guard let axWindow else {
                     throw SafariBrowserError.imageCroppingFailed(
                         reason: "internal: AX window handle missing despite --content-only hard-fail check passing"
@@ -195,24 +235,42 @@ struct ScreenshotCommand: AsyncParsableCommand {
             } catch {
                 captureError = error
             }
-            // #29: --full --content-only crop. Must happen AFTER
-            // capture (so the PNG exists) and BEFORE restore (so the
-            // AXWebArea bounds we read reflect the resized window —
-            // design.md §"--full --content-only combo" requires
-            // post-resize measurement because chrome can collapse on
-            // certain resize dimensions). axWindow is guaranteed
-            // non-nil here — the --full path always takes the AX
-            // resolver branch (see R7 architecture comments above).
+            // #29 / #30: post-capture crop. Both --element and
+            // --content-only are measured AFTER resize (AXWebArea
+            // origin + element's getBoundingClientRect both change
+            // with viewport size) and BEFORE restore.
             //
-            // Pre-measured bounds: the post-resize AX query for window
-            // position/size is flaky within ~500ms of `setAXWindowBounds`
-            // (observed intermittent `noSafariWindow` from `axPoint`
-            // returning nil during the resize settle). We already set
-            // the window to (0, 0, targetW, targetH), so pass those
-            // directly instead of re-reading from AX. `getAXWebAreaBounds`
-            // is still called (needed to detect chrome collapse) and
-            // remains the only AX read in this crop step.
-            if contentOnly, captureError == nil, let axWindow, let targetW, let targetH {
+            // Pre-measured bounds sidestep the #29 post-resize AX race
+            // (kAXPositionAttribute intermittently returns noValue
+            // within ~500ms of setAXWindowBounds). We just set the
+            // window to (0, 0, targetW, targetH) via AX, so pass those
+            // directly. getAXWebAreaBounds + getElementBoundsInViewport
+            // are still called — those are the post-resize measurements
+            // the design requires.
+            //
+            // --element takes precedence over --content-only in the
+            // combined case per design (element crop is strictly more
+            // specific).
+            if let element, captureError == nil, let axWindow, let targetW, let targetH {
+                let postResizeBounds = CGRect(
+                    x: 0,
+                    y: 0,
+                    width: Double(targetW),
+                    height: Double(targetH)
+                )
+                do {
+                    try await applyElementCrop(
+                        selector: element,
+                        elementIndex: elementIndex,
+                        axWindow: axWindow,
+                        path: path,
+                        docTarget: docTarget,
+                        preMeasuredWindowBounds: postResizeBounds
+                    )
+                } catch {
+                    cropError = error
+                }
+            } else if contentOnly, captureError == nil, let axWindow, let targetW, let targetH {
                 let postResizeBounds = CGRect(
                     x: 0,
                     y: 0,
@@ -339,5 +397,64 @@ struct ScreenshotCommand: AsyncParsableCommand {
             rectPoints: rectInWindow,
             windowWidthPoints: windowBounds.width
         )
+    }
+
+    /// #30: crop the captured PNG to the bounding rectangle of a DOM
+    /// element selected via CSS selector. Called from both the simple
+    /// path and the --full path; the caller supplies pre-measured
+    /// window bounds in --full mode to avoid the post-resize AX race.
+    ///
+    /// Coordinate translation: the JS `getBoundingClientRect` returns
+    /// viewport-relative points. Window-relative coords = viewport
+    /// coords + (AXWebArea.origin − window.origin). Then cropPNG
+    /// applies the HiDPI scale conversion.
+    ///
+    /// **On any error**, the un-cropped captured PNG at `path` is
+    /// removed so the spec's "no file written on element error"
+    /// contract holds. The original error is then re-thrown.
+    private func applyElementCrop(
+        selector: String,
+        elementIndex: Int?,
+        axWindow: AXUIElement,
+        path: String,
+        docTarget: SafariBridge.TargetDocument,
+        preMeasuredWindowBounds: CGRect? = nil
+    ) async throws {
+        do {
+            let windowBounds: CGRect
+            if let preMeasuredWindowBounds {
+                windowBounds = preMeasuredWindowBounds
+            } else {
+                windowBounds = try SafariBridge.getAXWindowBounds(axWindow)
+            }
+            let webAreaScreen = try SafariBridge.getAXWebAreaBounds(axWindow)
+
+            let result = try await SafariBridge.getElementBoundsInViewport(
+                selector: selector,
+                target: docTarget,
+                elementIndex: elementIndex
+            )
+
+            // viewport-relative + (webArea.origin − window.origin) = window-relative
+            let elementRectInWindow = CGRect(
+                x: (webAreaScreen.origin.x - windowBounds.origin.x) + result.rectInViewport.origin.x,
+                y: (webAreaScreen.origin.y - windowBounds.origin.y) + result.rectInViewport.origin.y,
+                width: result.rectInViewport.size.width,
+                height: result.rectInViewport.size.height
+            )
+
+            try ImageCropping.cropPNG(
+                at: path,
+                rectPoints: elementRectInWindow,
+                windowWidthPoints: windowBounds.width
+            )
+        } catch {
+            // Remove the un-cropped capture so the user doesn't see a
+            // misleading chrome-included file on element failure.
+            // Best-effort: ignore removal errors (file may not exist
+            // if capture itself failed upstream).
+            try? FileManager.default.removeItem(atPath: path)
+            throw error
+        }
     }
 }

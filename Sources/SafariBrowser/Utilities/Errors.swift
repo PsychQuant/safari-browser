@@ -1,4 +1,21 @@
+import CoreGraphics
 import Foundation
+
+/// #30: payload for `elementAmbiguous` errors — one entry per match so
+/// the error message can list rect + attrs + text snippet to help the
+/// user pick the right disambiguation strategy (refine selector vs.
+/// `--element-index N`).
+struct ElementMatch: Equatable {
+    /// Match's viewport-relative bounding rect in points (from
+    /// `getBoundingClientRect`).
+    let rect: CGRect
+    /// Compact attribute description: `tag.class#id` form,
+    /// constructed from the DOM element.
+    let attributes: String
+    /// First 60 characters of `textContent`, whitespace-trimmed.
+    /// Nil when the element has no text content.
+    let textSnippet: String?
+}
 
 enum SafariBrowserError: LocalizedError {
     case appleScriptFailed(String)
@@ -17,6 +34,11 @@ enum SafariBrowserError: LocalizedError {
     case accessibilityRequired(flag: String)
     case webAreaNotFound(reason: String)
     case imageCroppingFailed(reason: String)
+    case elementAmbiguous(selector: String, matches: [ElementMatch])
+    case elementIndexOutOfRange(selector: String, index: Int, matchCount: Int)
+    case elementZeroSize(selector: String)
+    case elementOutsideViewport(selector: String, rect: CGRect, viewport: CGSize)
+    case elementSelectorInvalid(selector: String, reason: String)
     case axOperationFailed(String)
     case windowIdentityAmbiguous(reason: String)
 
@@ -93,7 +115,23 @@ enum SafariBrowserError: LocalizedError {
         case .noSafariWindow:
             return "No Safari window found"
         case .elementNotFound(let selector):
-            return "Element not found: \(selector)"
+            // #30 enriched: this case is shared by many commands
+            // (click, fill, screenshot, etc.); the richer message helps
+            // every caller, not just --element. Keeps command-agnostic
+            // recovery hints — no mention of `--element` specifically.
+            return """
+                No element matches selector: \(selector)
+                `document.querySelectorAll("\(selector)")` returned zero
+                elements. Common causes:
+                  - Page not fully loaded — try
+                    `safari-browser wait --js "document.querySelector('...') !== null"`
+                    before the command
+                  - Selector targets Shadow DOM content (not reachable from
+                    the top document's querySelectorAll)
+                  - Element is inside an iframe — switch target to the
+                    iframe's document first
+                  - Selector typo (case-sensitivity, missing dot/hash, etc.)
+                """
         case .axOperationFailed(let message):
             return """
                 Accessibility operation failed: \(message)
@@ -119,6 +157,40 @@ enum SafariBrowserError: LocalizedError {
                     CG window-ID boundary entirely
                 """
         case .accessibilityRequired(let flag):
+            // #30: alternative guidance varies by flag because the
+            // fallback path differs. --content-only can fall back by
+            // dropping the flag (still useful output). --element
+            // cannot — without AX there's no way to know the web
+            // area origin, so we steer users to a different
+            // command shape (capture whole window + external crop).
+            let alternative: String
+            switch flag {
+            case "--element":
+                alternative = """
+                    Alternative (no permission needed):
+                      Re-run with explicit `--window N` or `--url <pattern>`
+                      to capture the whole window, then crop externally to
+                      the element's bounding box using ImageMagick's
+                      `convert ... -crop` or `sips --cropOffset` + sizing.
+                      You can read the element's bounds via
+                      `safari-browser js "document.querySelector('...').getBoundingClientRect()"`
+                      to find the crop coordinates.
+                    """
+            case "--content-only":
+                alternative = """
+                    Alternative (no permission needed):
+                      Re-run without `--content-only` to receive a
+                      chrome-included screenshot that you can crop with an
+                      external tool.
+                    """
+            default:
+                alternative = """
+                    Alternative (no permission needed):
+                      Re-run without `\(flag)` — the resulting screenshot
+                      will skip the \(flag)-specific processing but the
+                      capture itself still works.
+                    """
+            }
             return """
                 Accessibility permission required for `screenshot \(flag)`.
                 The CLI reads the Safari web content area geometry via the
@@ -133,9 +205,70 @@ enum SafariBrowserError: LocalizedError {
                   System Settings → Privacy & Security → Accessibility → enable
                   Terminal (or your shell) and re-run the command.
 
-                Alternative (no permission needed):
-                  Re-run without `\(flag)` to receive a chrome-included
-                  screenshot that you can crop with an external tool.
+                \(alternative)
+                """
+        case .elementAmbiguous(let selector, let matches):
+            let lines = matches.enumerated().map { (i, m) -> String in
+                let text = m.textSnippet.map { "    text=\"\($0)\"" } ?? ""
+                return "  [\(i + 1)] rect={x:\(Int(m.rect.origin.x)), y:\(Int(m.rect.origin.y)), w:\(Int(m.rect.size.width)), h:\(Int(m.rect.size.height))}    \(m.attributes)\(text)"
+            }.joined(separator: "\n")
+            return """
+                Multiple elements match "\(selector)":
+                \(lines)
+                Disambiguate by either:
+                  1. Refine selector: add a class/id (e.g. ".card.featured")
+                     or structural pseudo-class (":nth-of-type(2)")
+                  2. Add `--element-index N` to pick the Nth match above
+                     (1-indexed, document order)
+                """
+        case .elementIndexOutOfRange(let selector, let index, let matchCount):
+            return """
+                --element-index \(index) is out of range for selector "\(selector)"
+                (matches: \(matchCount)).
+                Valid range is 1 to \(matchCount). Re-run without
+                `--element-index` to see the rich ambiguous error listing
+                all matches, or adjust the index to a valid value.
+                """
+        case .elementZeroSize(let selector):
+            return """
+                Element "\(selector)" has zero size (width or height is 0).
+                Likely causes:
+                  - The element has `display: none` or `visibility: hidden`
+                  - Parent container has zero dimensions (collapsed flex
+                    item, un-rendered tab panel, etc.)
+                  - The element hasn't been inserted in the render tree yet
+
+                A zero-size crop produces an empty PNG, so the command
+                fails closed rather than silently emitting broken output.
+                Verify the element is visible:
+                  `safari-browser js "getComputedStyle(document.querySelector('\(selector)')).display"`
+                """
+        case .elementOutsideViewport(let selector, let rect, let viewport):
+            return """
+                Element "\(selector)" is outside the current viewport.
+                Element rect: {x:\(Int(rect.origin.x)), y:\(Int(rect.origin.y)), w:\(Int(rect.size.width)), h:\(Int(rect.size.height))}
+                Viewport:     {w:\(Int(viewport.width)), h:\(Int(viewport.height))}
+
+                `--element` captures pixels from the window's visible
+                region; an off-screen element cannot be rendered into
+                the captured PNG. Options:
+                  - Scroll the element into view first, then re-run
+                    (`safari-browser js "document.querySelector('\(selector)').scrollIntoView()"`)
+                  - Use `--full` to resize the window to the scrollable
+                    page dimensions — if the element fits inside the
+                    post-resize viewport it can be cropped in one shot
+                  - Automatic scroll-into-view is out of scope for this
+                    release; see the follow-up issue for `--scroll-into-view`
+                """
+        case .elementSelectorInvalid(let selector, let reason):
+            return """
+                Invalid CSS selector "\(selector)": \(reason)
+                `querySelectorAll` rejected the selector with a SyntaxError.
+                Common causes:
+                  - Unescaped special characters (use backslash or CSS.escape)
+                  - Unclosed attribute brackets or quotes
+                  - CSS4-only syntax not yet supported by WebKit (e.g. `:is()`
+                    nesting beyond one level, `:has()` in older Safari)
                 """
         case .imageCroppingFailed(let reason):
             return """

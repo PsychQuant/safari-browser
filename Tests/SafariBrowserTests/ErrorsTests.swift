@@ -28,9 +28,25 @@ final class ErrorsTests: XCTestCase {
         XCTAssertEqual(error.errorDescription, "No Safari window found")
     }
 
+    // #30: the error message was enriched from a one-liner to a
+    // multi-hint guide because click/fill/screenshot/etc. all throw
+    // this case and the richer hints help every caller. Assertions
+    // check the selector verbatim appears plus common recovery hints
+    // (wait-for-load, Shadow DOM, iframe) — the caller doesn't need
+    // to know `--element` specifically.
     func testElementNotFound() {
         let error = SafariBrowserError.elementNotFound("#login-btn")
-        XCTAssertEqual(error.errorDescription, "Element not found: #login-btn")
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("#login-btn"),
+                      "Expected selector verbatim, got: \(description)")
+        XCTAssertTrue(description.contains("querySelectorAll"),
+                      "Expected JS API mention for clarity, got: \(description)")
+        XCTAssertTrue(description.contains("Shadow DOM"),
+                      "Expected Shadow DOM hint, got: \(description)")
+        XCTAssertTrue(description.contains("iframe"),
+                      "Expected iframe hint, got: \(description)")
+        XCTAssertTrue(description.contains("wait --js"),
+                      "Expected wait-for-load recovery hint, got: \(description)")
     }
 
     func testProcessTimedOut() {
@@ -180,30 +196,165 @@ final class ErrorsTests: XCTestCase {
         )
     }
 
-    // #29: --content-only requires AX and rejects hard when missing.
-    // The error must distinguish itself from the legacy --window N
-    // accessibility error (which uses accessibilityNotGranted) because
-    // the workarounds differ: --window N can fall back by omitting the
-    // flag; --content-only cannot fall back to a JS heuristic by design.
+    // MARK: - #30 element error cases
+
+    // Rich ambiguous error is the core of #30's disambiguation UX —
+    // users see each match's rect + attrs + text so they can pick the
+    // right selector refinement or --element-index in one shot, rather
+    // than trial-and-error.
+    func testElementAmbiguous() {
+        let matches = [
+            ElementMatch(
+                rect: CGRect(x: 50, y: 100, width: 300, height: 200),
+                attributes: "div.card.featured",
+                textSnippet: "Launch Sale"
+            ),
+            ElementMatch(
+                rect: CGRect(x: 50, y: 320, width: 300, height: 200),
+                attributes: "div.card",
+                textSnippet: "Summer Deal"
+            ),
+            ElementMatch(
+                rect: CGRect(x: 50, y: 540, width: 300, height: 200),
+                attributes: "div.card",
+                textSnippet: nil
+            ),
+        ]
+        let error = SafariBrowserError.elementAmbiguous(selector: ".card", matches: matches)
+        let description = error.errorDescription ?? ""
+        // Selector verbatim
+        XCTAssertTrue(description.contains(".card"),
+                      "Expected selector in description, got: \(description)")
+        // All three matches' attributes must surface so the user can
+        // differentiate and refine.
+        XCTAssertTrue(description.contains("div.card.featured"),
+                      "Expected first match attrs, got: \(description)")
+        // Rect coordinates must appear for spatial context.
+        XCTAssertTrue(description.contains("x:50") && description.contains("y:320"),
+                      "Expected rect coords in description, got: \(description)")
+        // Text snippets present when non-nil, absent or blank when nil.
+        XCTAssertTrue(description.contains("Launch Sale"),
+                      "Expected first match text snippet, got: \(description)")
+        XCTAssertTrue(description.contains("Summer Deal"),
+                      "Expected second match text snippet, got: \(description)")
+        // Recovery hints: both disambiguation paths must be suggested.
+        XCTAssertTrue(description.contains("--element-index"),
+                      "Expected --element-index disambiguation hint, got: \(description)")
+        XCTAssertTrue(description.contains("Refine selector") || description.contains(":nth-of-type"),
+                      "Expected selector-refinement hint, got: \(description)")
+    }
+
+    func testElementIndexOutOfRange() {
+        let error = SafariBrowserError.elementIndexOutOfRange(
+            selector: ".card", index: 5, matchCount: 3
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains(".card"),
+                      "Expected selector in description, got: \(description)")
+        XCTAssertTrue(description.contains("5") && description.contains("3"),
+                      "Expected both index and matchCount in description, got: \(description)")
+        // Valid range must be stated so the user knows what to change to.
+        XCTAssertTrue(description.contains("1 to 3") || description.contains("Valid range"),
+                      "Expected valid-range hint, got: \(description)")
+    }
+
+    func testElementZeroSize() {
+        let error = SafariBrowserError.elementZeroSize(selector: "#hidden")
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("#hidden"),
+                      "Expected selector in description, got: \(description)")
+        XCTAssertTrue(description.contains("display: none") || description.contains("visibility: hidden"),
+                      "Expected display/visibility hint, got: \(description)")
+        // Must give a diagnostic command so users can investigate.
+        XCTAssertTrue(description.contains("getComputedStyle"),
+                      "Expected diagnostic command hint, got: \(description)")
+    }
+
+    func testElementOutsideViewport() {
+        let error = SafariBrowserError.elementOutsideViewport(
+            selector: "#below-fold",
+            rect: CGRect(x: 0, y: 5000, width: 100, height: 100),
+            viewport: CGSize(width: 1920, height: 1080)
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("#below-fold"),
+                      "Expected selector in description, got: \(description)")
+        // Coordinates provide context.
+        XCTAssertTrue(description.contains("5000"),
+                      "Expected element y-coord in description, got: \(description)")
+        XCTAssertTrue(description.contains("1920") || description.contains("1080"),
+                      "Expected viewport dims in description, got: \(description)")
+        // Recovery paths: scrollIntoView, --full, or future --scroll-into-view.
+        XCTAssertTrue(description.contains("scrollIntoView"),
+                      "Expected scrollIntoView hint, got: \(description)")
+        XCTAssertTrue(description.contains("--full"),
+                      "Expected --full alternative, got: \(description)")
+    }
+
+    func testElementSelectorInvalid() {
+        let error = SafariBrowserError.elementSelectorInvalid(
+            selector: "div[unclosed",
+            reason: "SyntaxError: The string did not match the expected pattern."
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("div[unclosed"),
+                      "Expected selector verbatim, got: \(description)")
+        XCTAssertTrue(description.contains("SyntaxError"),
+                      "Expected JS error reason verbatim, got: \(description)")
+    }
+
+    // MARK: - #30 accessibilityRequired flag customization
+
+    // Same error case, different flag → different alternative guidance.
+    // --content-only can fall back by dropping the flag; --element
+    // cannot, so its alternative points to external tooling.
+    func testAccessibilityRequiredForElement() {
+        let error = SafariBrowserError.accessibilityRequired(flag: "--element")
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("--element"),
+                      "Expected flag name in description, got: \(description)")
+        XCTAssertTrue(description.contains("System Settings") && description.contains("Accessibility"),
+                      "Expected System Settings path, got: \(description)")
+        // --element's alternative is external crop, not drop-the-flag.
+        XCTAssertTrue(description.contains("--window") || description.contains("--url"),
+                      "Expected --window/--url capture hint, got: \(description)")
+        XCTAssertTrue(description.contains("ImageMagick") || description.contains("sips"),
+                      "Expected external crop tool mention, got: \(description)")
+    }
+
+    func testAccessibilityRequiredForContentOnlyUnchanged() {
+        let error = SafariBrowserError.accessibilityRequired(flag: "--content-only")
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("--content-only"),
+                      "Expected flag name in description, got: \(description)")
+        // --content-only alternative is drop-the-flag (original #29 behavior).
+        XCTAssertTrue(description.contains("without") && description.contains("--content-only"),
+                      "Expected 'run without --content-only' alternative, got: \(description)")
+        // Must NOT accidentally slip --element-only guidance into the --content-only path.
+        XCTAssertFalse(description.contains("ImageMagick"),
+                       "ImageMagick hint leaked into --content-only path: \(description)")
+    }
+
+    func testAccessibilityRequiredForUnknownFlagFallsBackToGeneric() {
+        let error = SafariBrowserError.accessibilityRequired(flag: "--hypothetical-future-flag")
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("--hypothetical-future-flag"),
+                      "Expected flag name in description, got: \(description)")
+        // Generic fallback: "re-run without --hypothetical-future-flag"
+        XCTAssertTrue(description.contains("without") && description.contains("--hypothetical-future-flag"),
+                      "Expected generic 'run without <flag>' fallback, got: \(description)")
+    }
+
+    // #29 legacy test — superseded by #30's flag-specific tests above
+    // (testAccessibilityRequiredForContentOnlyUnchanged).
+    // Kept to assert the shared invariant: System Settings path must
+    // always be in the message regardless of flag.
     func testAccessibilityRequired() {
         let error = SafariBrowserError.accessibilityRequired(flag: "--content-only")
         let description = error.errorDescription ?? ""
         XCTAssertTrue(
-            description.contains("--content-only"),
-            "Expected flag name in description, got: \(description)"
-        )
-        // System Settings path must be explicit so users know where to
-        // click — not every user knows the Privacy & Security location.
-        XCTAssertTrue(
             description.contains("System Settings") && description.contains("Accessibility"),
             "Expected System Settings → Accessibility path, got: \(description)"
-        )
-        // The alternative (re-run without the flag) is critical so users
-        // aren't blocked if they don't want to grant AX. Without this
-        // hint, the error looks like a hard block.
-        XCTAssertTrue(
-            description.contains("without") && description.contains("--content-only"),
-            "Expected 'run without --content-only' alternative, got: \(description)"
         )
     }
 

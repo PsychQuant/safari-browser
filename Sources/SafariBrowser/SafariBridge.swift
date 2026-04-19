@@ -449,6 +449,229 @@ enum SafariBridge {
         }
     }
 
+    // MARK: - DOM element bounds (#30)
+
+    /// #30: successful return from `getElementBoundsInViewport`.
+    /// The element's viewport-relative bounds are returned alongside
+    /// viewport size and match count so callers have the context
+    /// needed to convert to window-relative coordinates and to emit
+    /// informative logs.
+    struct ElementBoundsResult: Equatable {
+        /// Viewport-relative bounds in points (from `getBoundingClientRect`).
+        let rectInViewport: CGRect
+        /// `window.innerWidth` / `window.innerHeight` at eval time.
+        let viewportSize: CGSize
+        /// How many elements matched the selector (always >= 1 for
+        /// successful return). Exposed for logging / observability.
+        let matchCount: Int
+        /// Chosen element's compact attribute description: `tag.class#id`.
+        let attributes: String
+        /// First 60 chars of textContent, whitespace-trimmed, nil if empty.
+        let textSnippet: String?
+    }
+
+    /// #30: locate a DOM element by CSS selector and return its
+    /// viewport-relative bounding rect and contextual info.
+    ///
+    /// Enforces the fail-closed semantics required by the screenshot
+    /// `--element` spec:
+    ///   - zero matches → `.elementNotFound(selector:)`
+    ///   - multi-match without `elementIndex` → `.elementAmbiguous(selector:, matches:)`
+    ///     (the `matches` array includes every candidate's rect + attrs + text snippet
+    ///     so the caller can present a rich disambiguation error)
+    ///   - `elementIndex` > matchCount or < 1 → `.elementIndexOutOfRange`
+    ///   - chosen element with width or height ≤ 0 → `.elementZeroSize`
+    ///   - chosen element extending beyond `window.innerWidth/Height` →
+    ///     `.elementOutsideViewport` (caller decides whether to scroll or resize)
+    ///   - invalid CSS selector (JS `SyntaxError`) → `.elementSelectorInvalid`
+    ///
+    /// Light DOM only — Shadow DOM and iframe traversal are out of scope
+    /// per the #30 Non-Goals.
+    ///
+    /// - Parameters:
+    ///   - selector: CSS selector; JSON-escaped before injection so
+    ///     users can pass quotes, backslashes, and Unicode safely.
+    ///   - target: document to evaluate against.
+    ///   - elementIndex: 1-indexed position among matches. When nil
+    ///     and the selector matches more than one element, the call
+    ///     throws `.elementAmbiguous` rather than silently picking the
+    ///     first match. A value of 1 on a unique match is accepted as
+    ///     a valid assertion (no error).
+    static func getElementBoundsInViewport(
+        selector: String,
+        target: TargetDocument = .frontWindow,
+        elementIndex: Int? = nil
+    ) async throws -> ElementBoundsResult {
+        // JSON-encode the selector so backslashes/quotes/Unicode survive
+        // injection into the JS source. Wrap in an array because
+        // JSONSerialization requires a container at the root, then
+        // strip the `[ ]` to get just the encoded string literal.
+        let selectorJSON: String
+        guard let data = try? JSONSerialization.data(withJSONObject: [selector]),
+              let s = String(data: data, encoding: .utf8),
+              s.hasPrefix("["), s.hasSuffix("]") else {
+            throw SafariBrowserError.elementSelectorInvalid(
+                selector: selector,
+                reason: "could not JSON-encode selector for injection"
+            )
+        }
+        selectorJSON = String(s.dropFirst().dropLast())
+
+        // 1-indexed public API → 0-indexed internal; nil → null
+        let indexJS: String
+        if let idx = elementIndex {
+            indexJS = String(idx - 1)
+        } else {
+            indexJS = "null"
+        }
+
+        let js = """
+        JSON.stringify((() => {
+          const selector = \(selectorJSON);
+          const targetIndex = \(indexJS);
+          let nodes;
+          try { nodes = document.querySelectorAll(selector); }
+          catch (e) { return { error: 'selector_invalid', reason: (e && e.message) || String(e) }; }
+          if (nodes.length === 0) return { error: 'not_found' };
+          function describe(el) {
+            const r = el.getBoundingClientRect();
+            let attrs = el.tagName.toLowerCase();
+            if (el.id) attrs += '#' + el.id;
+            if (el.className && typeof el.className === 'string') {
+              const classes = el.className.split(/\\s+/).filter(c => c);
+              if (classes.length > 0) attrs += '.' + classes.join('.');
+            }
+            const txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60);
+            return { x: r.x, y: r.y, w: r.width, h: r.height, attrs, text: txt || null };
+          }
+          let chosenIndex;
+          if (nodes.length > 1) {
+            if (targetIndex === null) return { error: 'ambiguous', matches: Array.from(nodes).map(describe) };
+            if (targetIndex < 0 || targetIndex >= nodes.length) return { error: 'index_out_of_range', index: targetIndex + 1, matchCount: nodes.length };
+            chosenIndex = targetIndex;
+          } else {
+            if (targetIndex !== null && targetIndex !== 0) return { error: 'index_out_of_range', index: targetIndex + 1, matchCount: 1 };
+            chosenIndex = 0;
+          }
+          const el = nodes[chosenIndex];
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) return { error: 'zero_size' };
+          const iw = window.innerWidth, ih = window.innerHeight;
+          if (r.x < 0 || r.y < 0 || r.x + r.width > iw || r.y + r.height > ih) {
+            return { error: 'outside_viewport', x: r.x, y: r.y, w: r.width, h: r.height, iw: iw, ih: ih };
+          }
+          const d = describe(el);
+          return { ok: { x: d.x, y: d.y, w: d.w, h: d.h, iw: iw, ih: ih, matchCount: nodes.length, attributes: d.attrs, textSnippet: d.text } };
+        })())
+        """
+
+        let jsonString = try await doJavaScript(js, target: target)
+        return try parseElementBoundsResponse(jsonString, selector: selector)
+    }
+
+    /// Internal helper: parse the JSON response from the element-bounds
+    /// JS into either a success `ElementBoundsResult` or a thrown
+    /// `SafariBrowserError`. Extracted so tests can exercise the
+    /// parse / error-mapping logic without a live Safari window.
+    static func parseElementBoundsResponse(
+        _ jsonString: String,
+        selector: String
+    ) throws -> ElementBoundsResult {
+        guard let data = jsonString.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw SafariBrowserError.elementSelectorInvalid(
+                selector: selector,
+                reason: "could not parse element bounds response as JSON"
+            )
+        }
+
+        if let errorKind = obj["error"] as? String {
+            switch errorKind {
+            case "not_found":
+                throw SafariBrowserError.elementNotFound(selector)
+            case "ambiguous":
+                let rawMatches = (obj["matches"] as? [[String: Any]]) ?? []
+                let matches = rawMatches.map { m in
+                    ElementMatch(
+                        rect: CGRect(
+                            x: doubleValue(m["x"]),
+                            y: doubleValue(m["y"]),
+                            width: doubleValue(m["w"]),
+                            height: doubleValue(m["h"])
+                        ),
+                        attributes: (m["attrs"] as? String) ?? "",
+                        textSnippet: m["text"] as? String
+                    )
+                }
+                throw SafariBrowserError.elementAmbiguous(selector: selector, matches: matches)
+            case "index_out_of_range":
+                throw SafariBrowserError.elementIndexOutOfRange(
+                    selector: selector,
+                    index: (obj["index"] as? Int) ?? 0,
+                    matchCount: (obj["matchCount"] as? Int) ?? 0
+                )
+            case "zero_size":
+                throw SafariBrowserError.elementZeroSize(selector: selector)
+            case "outside_viewport":
+                throw SafariBrowserError.elementOutsideViewport(
+                    selector: selector,
+                    rect: CGRect(
+                        x: doubleValue(obj["x"]),
+                        y: doubleValue(obj["y"]),
+                        width: doubleValue(obj["w"]),
+                        height: doubleValue(obj["h"])
+                    ),
+                    viewport: CGSize(
+                        width: doubleValue(obj["iw"]),
+                        height: doubleValue(obj["ih"])
+                    )
+                )
+            case "selector_invalid":
+                throw SafariBrowserError.elementSelectorInvalid(
+                    selector: selector,
+                    reason: (obj["reason"] as? String) ?? "invalid selector"
+                )
+            default:
+                throw SafariBrowserError.elementSelectorInvalid(
+                    selector: selector,
+                    reason: "unknown error kind from JS bridge: \(errorKind)"
+                )
+            }
+        }
+
+        guard let ok = obj["ok"] as? [String: Any] else {
+            throw SafariBrowserError.elementSelectorInvalid(
+                selector: selector,
+                reason: "element bounds response missing both 'ok' and 'error' keys"
+            )
+        }
+        return ElementBoundsResult(
+            rectInViewport: CGRect(
+                x: doubleValue(ok["x"]),
+                y: doubleValue(ok["y"]),
+                width: doubleValue(ok["w"]),
+                height: doubleValue(ok["h"])
+            ),
+            viewportSize: CGSize(
+                width: doubleValue(ok["iw"]),
+                height: doubleValue(ok["ih"])
+            ),
+            matchCount: (ok["matchCount"] as? Int) ?? 1,
+            attributes: (ok["attributes"] as? String) ?? "",
+            textSnippet: ok["textSnippet"] as? String
+        )
+    }
+
+    /// NSNumber-safe double extraction — JSONSerialization returns
+    /// numeric values as NSNumber which may lose precision if cast
+    /// directly to Double for integer representations.
+    private static func doubleValue(_ any: Any?) -> Double {
+        if let n = any as? NSNumber { return n.doubleValue }
+        if let d = any as? Double { return d }
+        if let i = any as? Int { return Double(i) }
+        return 0
+    }
+
     // MARK: - JavaScript
 
     static func doJavaScript(

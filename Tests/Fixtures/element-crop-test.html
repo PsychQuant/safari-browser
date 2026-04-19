@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<!--
+  #30: deterministic-geometry fixture for screenshot --element crop tests.
+  Elements are absolutely positioned with fixed pixel dimensions so
+  test assertions can compare crop outputs across Safari versions and
+  machines without CSS-reset drift.
+
+  Coverage map (matches spec scenarios):
+    #target        — single match, known rect (50, 100, 200x150)
+    .card × 3      — ambiguous match (document order: y=300, y=520, y=740)
+    #hidden-el     — zero-size (display:none)
+    #below-fold    — outside viewport (y=5000, past any reasonable viewport)
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>element-crop-test</title>
+<style>
+body { margin: 0; padding: 0; font-family: sans-serif; background: #f5f5f5; height: 6000px; }
+#target { position: absolute; left: 50px; top: 100px; width: 200px; height: 150px; background: #4a90e2; color: white; padding: 10px; box-sizing: border-box; }
+.card { position: absolute; left: 50px; width: 300px; height: 200px; background: #fff; border: 2px solid #ccc; padding: 20px; box-sizing: border-box; }
+.card.featured { border-color: #e74c3c; }
+#card-1 { top: 300px; }
+#card-2 { top: 520px; }
+#card-3 { top: 740px; }
+#hidden-el { display: none; }
+#below-fold { position: absolute; left: 50px; top: 5000px; width: 100px; height: 100px; background: #2ecc71; }
+</style>
+</head>
+<body>
+<div id="target">Target</div>
+<div id="card-1" class="card featured">Launch Sale</div>
+<div id="card-2" class="card">Summer Deal</div>
+<div id="card-3" class="card">Free Shipping</div>
+<div id="hidden-el">Hidden</div>
+<div id="below-fold">Far Below</div>
+</body>
+</html>
