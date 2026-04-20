@@ -34,6 +34,16 @@ Claude Code plugin 位於另一個 repo：
 - **SKILL.md**: plugin repo `skills/safari-browser/SKILL.md`
 - **Marketplace**: `psychquant-claude-plugins/.claude-plugin/marketplace.json`
 
+### Playbook skills（site-specific 操作手冊）
+
+每個 site-specific 操作流程是 plugin repo `skills/` 底下的獨立 skill，命名 `safari-<site>-<action>/SKILL.md`，與 main `safari-browser` skill 同層。Claude Code 依 description 自動 surface。
+
+- **Contribution guide**: `psychquant-claude-plugins/plugins/safari-browser/skills/CONTRIBUTING-PLAYBOOKS.md`
+- **Authoritative spec**: `openspec/specs/playbook-skills/spec.md`（本 repo）
+- **Seeds**: `safari-plaud-upload`, `safari-github-star`
+- **User-local override**: 個人 playbook 放 `~/.claude/skills/safari-<site>-<action>/SKILL.md` — Claude 原生 skill loader 直接吃，plugin 不做任何 custom precedence
+- **跨 repo 同步**: 規範住本 repo，實作住 plugin repo —— 改規範時記得同步檢查 plugin 裡的 seeds 和 CONTRIBUTING-PLAYBOOKS.md 沒有 drift
+
 ## Design Principle: Non-Interference
 
 所有指令預設不干擾使用者操作 — 使用者可以同時做其他事情不受影響。
