@@ -13,7 +13,7 @@
 
 ## 4. Request dispatch (Path A)
 
-- [ ] 4.1 Wire daemon request dispatch via a Swift actor that serializes all Safari AppleScript invocations; satisfy `No Safari state cache（Path A，不快取 window / tab / URL 映射）` — re-query Safari per request, no window/tab/URL/index caching ever, satisfying the `No Safari state cache` requirement
+- [x] 4.1 Wire daemon request dispatch via a Swift actor that serializes all Safari AppleScript invocations; satisfy `No Safari state cache（Path A，不快取 window / tab / URL 映射）` — re-query Safari per request, no window/tab/URL/index caching ever, satisfying the `No Safari state cache` requirement — `DaemonDispatch.registerDemoHandlers` wires CompileCache into DaemonServer; Safari-free `cache.arithmetic` proves the end-to-end wiring; Safari-bound handlers defer to task 7.1
 
 ## 5. Opt-in detection and fallback
 
@@ -22,7 +22,7 @@
 
 ## 6. Lifecycle
 
-- [ ] 6.1 Implement Idle auto-shutdown 預設 10 分鐘 — default 600s, read `SAFARI_BROWSER_DAEMON_IDLE_TIMEOUT` env and clamp to `[60, 3600]`, reset timer on request arrival, exit cleanly (remove socket + pid) on timeout; satisfies `Idle auto-shutdown` requirement
+- [x] 6.1 Implement Idle auto-shutdown 預設 10 分鐘 — default 600s, read `SAFARI_BROWSER_DAEMON_IDLE_TIMEOUT` env and clamp to `[60, 3600]`, reset timer on request arrival, exit cleanly (remove socket + pid) on timeout; satisfies `Idle auto-shutdown` requirement — `resolveIdleTimeout(env:)` static parser + `configureIdleTimeout` / `recordActivity` / `isIdle(now:)` actor-isolated API; dispatch path calls `recordActivity()` on every request; watchdog task that consumes `isIdle(now:)` to trigger shutdown lives with task 6.2 lifecycle wiring
 - [ ] 6.2 Implement Daemon subcommand group：`safari-browser daemon {start, stop, status, logs}` — `start` fork-detached and wait for socket, `stop` sends shutdown request and waits for exit, `status` prints pid/uptime/request-count/precompiled-count/last-activity, `logs` tails log file; all idempotent; pid + socket cleanup on abnormal exit
 - [ ] 6.3 Implement 版本相容：Daemon 和 CLI 必須同一 build，不同版 daemon startup 檢查拒絕啟動 — daemon sends build identifier (git commit + semver) on connection accept; client verifies match; mismatch closes connection and triggers fallback per the `Version handshake refuses mismatched client` requirement
 

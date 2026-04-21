@@ -31,11 +31,51 @@ enum DaemonServer {
         private var socketPath: String?
         private var connectionTasks: [Task<Void, Never>] = []
 
+        /// Idle auto-shutdown state (task 6.1). `idleTimeoutSeconds` is the
+        /// clamped value from `resolveIdleTimeout(env:)`; `lastActivity`
+        /// advances on every request dispatch. `isIdle(now:)` is the pure
+        /// decision consumed by the production watchdog.
+        private var idleTimeoutSeconds: TimeInterval = 600
+        private var lastActivity: Date = Date()
+
         init() {}
 
         /// Register a method handler. Overwrites any previous handler for the same method.
         func register(_ method: String, handler: @escaping MethodHandler) {
             handlers[method] = handler
+        }
+
+        // MARK: - Idle auto-shutdown (task 6.1)
+
+        /// Parse `SAFARI_BROWSER_DAEMON_IDLE_TIMEOUT` from an environment
+        /// dict and clamp to the spec-mandated `[60, 3600]` range. Invalid,
+        /// empty, or missing values all fall back to the 600-second default.
+        static func resolveIdleTimeout(env: [String: String]) -> TimeInterval {
+            guard let raw = env["SAFARI_BROWSER_DAEMON_IDLE_TIMEOUT"], !raw.isEmpty,
+                  let seconds = TimeInterval(raw) else {
+                return 600
+            }
+            return min(max(seconds, 60), 3600)
+        }
+
+        /// Override the current idle timeout. Clamps the input to
+        /// `[60, 3600]` so callers can't accidentally bypass the spec bounds.
+        func configureIdleTimeout(_ seconds: TimeInterval) {
+            idleTimeoutSeconds = min(max(seconds, 60), 3600)
+        }
+
+        /// Mark activity at `at` (default now). Called from the dispatch
+        /// path on every incoming request so the idle watchdog sees a
+        /// fresh timestamp between consecutive automation steps.
+        func recordActivity(at: Date = Date()) {
+            lastActivity = at
+        }
+
+        /// Idle decision for the watchdog. Pure: given a `now` timestamp,
+        /// returns whether the idle timeout has elapsed since the last
+        /// recorded activity.
+        func isIdle(now: Date = Date()) -> Bool {
+            now.timeIntervalSince(lastActivity) >= idleTimeoutSeconds
         }
 
         /// Bind the Unix socket, start listening, and kick off the accept loop.
@@ -155,6 +195,10 @@ enum DaemonServer {
         }
 
         private static func dispatchLine(line: Data, instance: Instance) async -> Data {
+            // Record activity at the top of dispatch so an actively-used
+            // daemon never gets idle-killed between consecutive requests.
+            await instance.recordActivity()
+
             // Parse the incoming request envelope.
             let parsed: Any
             do {
