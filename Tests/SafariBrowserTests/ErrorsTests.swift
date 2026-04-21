@@ -381,6 +381,99 @@ final class ErrorsTests: XCTestCase {
         )
     }
 
+    // MARK: - #31 save-image error cases
+
+    func testElementHasNoSrc() {
+        let error = SafariBrowserError.elementHasNoSrc(selector: "#empty", tagName: "img")
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("#empty"),
+                      "Expected selector verbatim, got: \(description)")
+        XCTAssertTrue(description.contains("<img>"),
+                      "Expected tagName in description, got: \(description)")
+        // Must explain which attribute was checked so users know the
+        // element was resolved but its resource URL is missing.
+        XCTAssertTrue(description.contains("currentSrc") || description.contains("src"),
+                      "Expected src-attribute hint, got: \(description)")
+    }
+
+    func testUnsupportedElement() {
+        let error = SafariBrowserError.unsupportedElement(selector: "#card", tagName: "div")
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("#card"),
+                      "Expected selector verbatim, got: \(description)")
+        XCTAssertTrue(description.contains("<div>"),
+                      "Expected tagName in description, got: \(description)")
+        // Supported tags must be enumerated so users know what to try.
+        XCTAssertTrue(description.contains("<img>") && description.contains("<video>") && description.contains("<svg>"),
+                      "Expected supported-tag list, got: \(description)")
+        // Common wrong-element cases need redirect hints.
+        XCTAssertTrue(description.contains("screenshot --element") || description.contains("canvas"),
+                      "Expected canvas redirect hint, got: \(description)")
+    }
+
+    func testDownloadFailedWithStatusCode() {
+        let error = SafariBrowserError.downloadFailed(
+            url: "https://cdn.example.com/img.jpg",
+            statusCode: 404,
+            reason: "Not Found"
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("https://cdn.example.com/img.jpg"),
+                      "Expected URL verbatim, got: \(description)")
+        XCTAssertTrue(description.contains("404"),
+                      "Expected status code, got: \(description)")
+        // 401/403 are the auth-related hint trigger; must mention the
+        // --with-cookies fallback so users know the next step.
+        XCTAssertTrue(description.contains("--with-cookies"),
+                      "Expected --with-cookies hint for auth failures, got: \(description)")
+    }
+
+    func testDownloadFailedNetworkError() {
+        let error = SafariBrowserError.downloadFailed(
+            url: "https://unreachable.example",
+            statusCode: nil,
+            reason: "DNS resolution failed"
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("network error"),
+                      "Expected 'network error' label when statusCode is nil, got: \(description)")
+        XCTAssertTrue(description.contains("DNS resolution failed"),
+                      "Expected reason verbatim, got: \(description)")
+    }
+
+    func testDownloadSizeCapExceeded() {
+        let error = SafariBrowserError.downloadSizeCapExceeded(
+            url: "https://big.example.com/video.mp4",
+            capBytes: 10_485_760,  // 10 MB
+            actualBytes: 15_728_640  // 15 MB
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("https://big.example.com/video.mp4"),
+                      "Expected URL verbatim, got: \(description)")
+        XCTAssertTrue(description.contains("10") && description.contains("MB"),
+                      "Expected cap size in MB, got: \(description)")
+        XCTAssertTrue(description.contains("15"),
+                      "Expected actual size, got: \(description)")
+        // Recovery hint: drop --with-cookies when resource is not authenticated.
+        XCTAssertTrue(description.contains("drop `--with-cookies`") || description.contains("without `--with-cookies`") || description.contains("default URLSession"),
+                      "Expected drop-flag recovery hint, got: \(description)")
+    }
+
+    func testUnsupportedURLScheme() {
+        let error = SafariBrowserError.unsupportedURLScheme(
+            url: "blob:https://example.com/abc-123",
+            scheme: "blob"
+        )
+        let description = error.errorDescription ?? ""
+        XCTAssertTrue(description.contains("blob"),
+                      "Expected scheme verbatim, got: \(description)")
+        XCTAssertTrue(description.contains("blob:https://example.com/abc-123"),
+                      "Expected URL verbatim, got: \(description)")
+        // Supported schemes must be listed so users know the boundary.
+        XCTAssertTrue(description.contains("https://") && description.contains("data:"),
+                      "Expected supported-scheme list, got: \(description)")
+    }
+
     func testSystemEventsNotResponding() {
         let error = SafariBrowserError.systemEventsNotResponding(underlying: "probe timed out after 2 seconds")
         let description = error.errorDescription ?? ""

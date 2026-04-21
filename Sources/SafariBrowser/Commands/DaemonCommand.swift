@@ -1,11 +1,12 @@
 import ArgumentParser
 import Foundation
+import Darwin
 
 /// Subcommand group that manages the opt-in persistent daemon.
 ///
-/// Scaffold only (task 1.1). Subcommand bodies are stubs that will be
-/// filled in across tasks 2.1 – 6.3 of the `persistent-daemon` change.
-/// Full contract lives in `openspec/specs/persistent-daemon/spec.md`.
+/// Wired in task 6.2 to use `DaemonServeLoop` + `DaemonClient` for the
+/// actual lifecycle. Full contract lives in
+/// `openspec/specs/persistent-daemon/spec.md`.
 struct DaemonCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "daemon",
@@ -15,19 +16,18 @@ struct DaemonCommand: AsyncParsableCommand {
             DaemonStopCommand.self,
             DaemonStatusCommand.self,
             DaemonLogsCommand.self,
+            DaemonServeCommand.self,
         ]
     )
 }
 
 /// Resolve the daemon namespace from flag, env, or default.
-///
-/// Precedence matches the `Namespace isolation via NAME` spec requirement:
-/// `--name` flag > `SAFARI_BROWSER_NAME` env > literal `"default"`.
-/// Full resolution logic (with env lookup) arrives in task 2.2.
 struct DaemonNameFlag: ParsableArguments {
     @Option(name: .long, help: "Daemon namespace. Precedence: flag > SAFARI_BROWSER_NAME env > 'default'.")
     var name: String?
 }
+
+// MARK: - daemon start
 
 struct DaemonStartCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -40,11 +40,59 @@ struct DaemonStartCommand: AsyncParsableCommand {
     var name: String? { nameFlag.name }
 
     func run() async throws {
-        // Task 6.2: fork-detached daemon process, wait until socket is accepting.
-        FileHandle.standardError.write(Data("daemon start: not yet implemented (persistent-daemon task 6.2)\n".utf8))
-        throw ExitCode(1)
+        let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
+        let socketPath = DaemonClient.socketPath(name: resolvedName)
+        let pidPath = DaemonClient.pidPath(name: resolvedName)
+        let logPath = DaemonClient.logPath(name: resolvedName)
+
+        if DaemonServeLoop.isDaemonAlive(socketPath: socketPath, pidPath: pidPath) {
+            print("daemon \(resolvedName): already running")
+            return
+        }
+
+        // Clean up stale artefacts from a crashed prior run.
+        unlink(socketPath)
+        unlink(pidPath)
+
+        // Spawn a detached child running `safari-browser daemon __serve`.
+        // Redirect its stdout/stderr to the log file so tailing `logs`
+        // shows whatever the daemon printed.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: currentExecutablePath())
+        process.arguments = ["daemon", "__serve", "--name", resolvedName]
+        process.standardInput = nil
+        let logFd = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+        if logFd >= 0 {
+            let logHandle = FileHandle(fileDescriptor: logFd, closeOnDealloc: true)
+            process.standardOutput = logHandle
+            process.standardError = logHandle
+        } else {
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+        }
+
+        do {
+            try process.run()
+        } catch {
+            throw ValidationError("failed to spawn daemon: \(error)")
+        }
+
+        // Poll for socket readiness up to 5 seconds. If the child dies
+        // before binding (bind error, permission, etc.) we'll time out and
+        // surface a non-zero exit.
+        let deadline = Date().addingTimeInterval(5.0)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: socketPath) {
+                print("daemon \(resolvedName): started (pid \(process.processIdentifier))")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        throw ValidationError("daemon did not bind socket within 5 seconds; check \(logPath)")
     }
 }
+
+// MARK: - daemon stop
 
 struct DaemonStopCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -57,11 +105,41 @@ struct DaemonStopCommand: AsyncParsableCommand {
     var name: String? { nameFlag.name }
 
     func run() async throws {
-        // Task 6.2: send shutdown request to socket, wait for exit.
-        FileHandle.standardError.write(Data("daemon stop: not yet implemented (persistent-daemon task 6.2)\n".utf8))
-        throw ExitCode(1)
+        let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
+        let socketPath = DaemonClient.socketPath(name: resolvedName)
+        let pidPath = DaemonClient.pidPath(name: resolvedName)
+
+        if !DaemonServeLoop.isDaemonAlive(socketPath: socketPath, pidPath: pidPath) {
+            return
+        }
+
+        // Fire-and-forget the shutdown request; the daemon returns the
+        // response BEFORE tearing down its own socket. Any error here
+        // (including remoteError from a handler bug) is swallowed because
+        // `stop` is defined as idempotent.
+        _ = try? await DaemonClient.sendRequest(
+            name: resolvedName,
+            method: "daemon.shutdown",
+            params: Data("{}".utf8),
+            requestId: 1,
+            timeout: 2.0
+        )
+
+        // Poll for the pid file to disappear. Bound to 5 seconds matching
+        // the Non-Interference "terminate within 5s" scenario.
+        let deadline = Date().addingTimeInterval(5.0)
+        while Date() < deadline {
+            if !DaemonServeLoop.isDaemonAlive(socketPath: socketPath, pidPath: pidPath) {
+                print("daemon \(resolvedName): stopped")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        throw ValidationError("daemon did not exit within 5 seconds")
     }
 }
+
+// MARK: - daemon status
 
 struct DaemonStatusCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -74,16 +152,41 @@ struct DaemonStatusCommand: AsyncParsableCommand {
     var name: String? { nameFlag.name }
 
     func run() async throws {
-        // Task 6.2: inspect pid file + query daemon for runtime stats.
-        FileHandle.standardError.write(Data("daemon status: not yet implemented (persistent-daemon task 6.2)\n".utf8))
-        throw ExitCode(1)
+        let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
+        let socketPath = DaemonClient.socketPath(name: resolvedName)
+        let pidPath = DaemonClient.pidPath(name: resolvedName)
+
+        if !DaemonServeLoop.isDaemonAlive(socketPath: socketPath, pidPath: pidPath) {
+            print("daemon \(resolvedName): not running")
+            return
+        }
+
+        let resultData = try await DaemonClient.sendRequest(
+            name: resolvedName,
+            method: "daemon.status",
+            params: Data("{}".utf8),
+            requestId: 1,
+            timeout: 2.0
+        )
+        let obj = (try? JSONSerialization.jsonObject(with: resultData, options: [])) as? [String: Any] ?? [:]
+        let pid = (obj["pid"] as? Int) ?? -1
+        let uptime = (obj["uptimeSeconds"] as? Double) ?? 0
+        let requestCount = (obj["requestCount"] as? Int) ?? 0
+        let preCompiledCount = (obj["preCompiledCount"] as? Int) ?? 0
+        print("daemon \(resolvedName):")
+        print("  pid:                \(pid)")
+        print("  uptime:             \(Int(uptime))s")
+        print("  requests served:    \(requestCount)")
+        print("  pre-compiled scripts: \(preCompiledCount)")
     }
 }
+
+// MARK: - daemon logs
 
 struct DaemonLogsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "logs",
-        abstract: "Tail the daemon log file"
+        abstract: "Print the daemon log file contents"
     )
 
     @OptionGroup var nameFlag: DaemonNameFlag
@@ -91,8 +194,68 @@ struct DaemonLogsCommand: AsyncParsableCommand {
     var name: String? { nameFlag.name }
 
     func run() async throws {
-        // Task 6.2: tail the daemon log file.
-        FileHandle.standardError.write(Data("daemon logs: not yet implemented (persistent-daemon task 6.2)\n".utf8))
-        throw ExitCode(1)
+        let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
+        let logPath = DaemonClient.logPath(name: resolvedName)
+        guard FileManager.default.fileExists(atPath: logPath) else {
+            print("daemon \(resolvedName): no log file at \(logPath)")
+            return
+        }
+        if let contents = try? String(contentsOfFile: logPath, encoding: .utf8) {
+            print(contents, terminator: "")
+        }
+    }
+}
+
+// MARK: - executable path helper
+
+/// Return the absolute path of the currently-running binary via
+/// `_NSGetExecutablePath`. Used by `daemon start` to spawn itself as the
+/// serve child. `CommandLine.arguments[0]` is unreliable because it
+/// carries whatever form the shell resolved, and `URL(fileURLWithPath:)`
+/// reinterprets relative paths against the process cwd rather than PATH.
+private func currentExecutablePath() -> String {
+    var size: UInt32 = 0
+    _ = _NSGetExecutablePath(nil, &size)
+    var buf = [CChar](repeating: 0, count: Int(size))
+    _ = _NSGetExecutablePath(&buf, &size)
+    return String(cString: buf)
+}
+
+// MARK: - daemon __serve (hidden, hosts the actual daemon process)
+
+struct DaemonServeCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "__serve",
+        abstract: "[internal] Run as the daemon process; not invoked directly",
+        shouldDisplay: false
+    )
+
+    @OptionGroup var nameFlag: DaemonNameFlag
+
+    func run() async throws {
+        // Detach from the parent's terminal so closing the shell does not
+        // send SIGHUP to the daemon. `setsid` moves us into a new session
+        // and process group; we also ignore SIGHUP belt-and-braces.
+        signal(SIGHUP, SIG_IGN)
+        _ = setsid()
+
+        let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
+        let socketPath = DaemonClient.socketPath(name: resolvedName)
+        let pidPath = DaemonClient.pidPath(name: resolvedName)
+        let idleTimeout = DaemonServer.Instance.resolveIdleTimeout(
+            env: ProcessInfo.processInfo.environment
+        )
+
+        let loop = DaemonServeLoop.Server()
+        try await loop.start(
+            socketPath: socketPath,
+            pidPath: pidPath,
+            idleTimeout: idleTimeout
+        )
+
+        // Block until either the idle watchdog or an explicit
+        // `daemon.shutdown` method triggers `stop()`. Both paths resume
+        // the continuation in `waitUntilStopped`.
+        await loop.waitUntilStopped()
     }
 }

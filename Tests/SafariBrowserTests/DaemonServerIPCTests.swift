@@ -177,7 +177,11 @@ final class DaemonServerIPCTests: XCTestCase {
                     connect(fd, sa, addrLen)
                 }
             }
-            if rc == 0 { return fd }
+            if rc == 0 {
+                // Consume the server's handshake line (task 6.3).
+                _ = try? Self.readLine(fd: fd)
+                return fd
+            }
             close(fd)
             if attempt < retries - 1 {
                 usleep(20_000) // 20 ms

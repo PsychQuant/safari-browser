@@ -38,6 +38,12 @@ enum DaemonServer {
         private var idleTimeoutSeconds: TimeInterval = 600
         private var lastActivity: Date = Date()
 
+        /// Served-request counter exposed for `daemon status`. Bumped by
+        /// `recordActivity(at:)` on every dispatch — including malformed
+        /// lines and method-not-found cases, because "line received" is
+        /// the activity signal that matters for the idle watchdog.
+        private var requestCount: Int = 0
+
         init() {}
 
         /// Register a method handler. Overwrites any previous handler for the same method.
@@ -67,8 +73,11 @@ enum DaemonServer {
         /// Mark activity at `at` (default now). Called from the dispatch
         /// path on every incoming request so the idle watchdog sees a
         /// fresh timestamp between consecutive automation steps.
+        /// Also increments the served-request counter so `daemon status`
+        /// can surface a meaningful number.
         func recordActivity(at: Date = Date()) {
             lastActivity = at
+            requestCount += 1
         }
 
         /// Idle decision for the watchdog. Pure: given a `now` timestamp,
@@ -77,6 +86,13 @@ enum DaemonServer {
         func isIdle(now: Date = Date()) -> Bool {
             now.timeIntervalSince(lastActivity) >= idleTimeoutSeconds
         }
+
+        /// Snapshot of served-request count for status reporting.
+        var currentRequestCount: Int { requestCount }
+
+        /// Snapshot of the last-activity timestamp as seconds since epoch,
+        /// for status reporting.
+        var currentLastActivityEpoch: TimeInterval { lastActivity.timeIntervalSince1970 }
 
         /// Bind the Unix socket, start listening, and kick off the accept loop.
         /// Throws `DaemonError` on bind/listen failure.
@@ -194,6 +210,10 @@ enum DaemonServer {
 
         private static func serveConnection(clientFd: Int32, instance: Instance) async {
             defer { close(clientFd) }
+            // Send the handshake first line per the `Version handshake refuses
+            // mismatched client` spec. The client reads one line before
+            // sending any request and aborts if the version does not match.
+            if !writeLine(fd: clientFd, line: DaemonProtocol.encodeHandshake()) { return }
             while !Task.isCancelled {
                 guard let line = readLine(fd: clientFd) else { return }
                 let response = await dispatchLine(line: line, instance: instance)

@@ -92,9 +92,23 @@ enum DaemonClient {
 
     /// Build the socket path under `$TMPDIR` (fallback `/tmp`) for a given NAME.
     static func socketPath(name: String) -> String {
+        return pathUnderTmp(prefix: socketPrefix, name: name, suffix: socketSuffix)
+    }
+
+    /// Build the pid file path for a given NAME.
+    static func pidPath(name: String) -> String {
+        return pathUnderTmp(prefix: socketPrefix, name: name, suffix: ".pid")
+    }
+
+    /// Build the log file path for a given NAME.
+    static func logPath(name: String) -> String {
+        return pathUnderTmp(prefix: socketPrefix, name: name, suffix: ".log")
+    }
+
+    private static func pathUnderTmp(prefix: String, name: String, suffix: String) -> String {
         let tmpDir = ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp"
         let normalized = tmpDir.hasSuffix("/") ? tmpDir : tmpDir + "/"
-        return "\(normalized)\(socketPrefix)\(name)\(socketSuffix)"
+        return "\(normalized)\(prefix)\(name)\(suffix)"
     }
 
     /// Default I/O timeout for daemon requests. Matches the
@@ -121,6 +135,22 @@ enum DaemonClient {
         let fd = try connectUnixSocket(path: path)
         defer { close(fd) }
         try applySocketTimeout(fd: fd, seconds: timeout)
+
+        // Consume the server's handshake line and verify the protocol
+        // version. Mismatch surfaces as a remoteError("versionMismatch")
+        // which `Error.fallbackReason` classifies as fallback-worthy.
+        guard let handshakeLine = readLine(fd: fd) else {
+            throw Error.ioError("no handshake from daemon")
+        }
+        guard let serverVersion = DaemonProtocol.decodeHandshakeVersion(handshakeLine) else {
+            throw Error.protocolError("invalid handshake")
+        }
+        if serverVersion != DaemonProtocol.currentVersion {
+            throw Error.remoteError(
+                code: "versionMismatch",
+                message: "daemon v\(serverVersion), client v\(DaemonProtocol.currentVersion)"
+            )
+        }
 
         let paramsValue: Any = (try? JSONSerialization.jsonObject(with: params, options: [.fragmentsAllowed])) ?? [String: Any]()
         let envelope: [String: Any] = [

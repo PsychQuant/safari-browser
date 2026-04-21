@@ -127,7 +127,13 @@ enum TestUnixSocket {
                     Darwin.connect(fd, sa, addrLen)
                 }
             }
-            if rc == 0 { return fd }
+            if rc == 0 {
+                // Consume the server's handshake line (task 6.3) so tests
+                // that follow send-a-request-get-a-response semantics see
+                // only response envelopes, not the protocol version banner.
+                _ = try? readLine(fd: fd)
+                return fd
+            }
             close(fd)
             if attempt < retries - 1 { usleep(20_000) }
         }
