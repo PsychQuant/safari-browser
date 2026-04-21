@@ -178,6 +178,13 @@ enum DaemonServer {
                     // EBADF on stop(), EINTR transient — just exit loop; stop() will have unlinked.
                     return
                 }
+                // Disable SIGPIPE so a client that closed early doesn't take the
+                // whole daemon process down when we try to write the response.
+                var enable: Int32 = 1
+                _ = setsockopt(
+                    clientFd, SOL_SOCKET, SO_NOSIGPIPE,
+                    &enable, socklen_t(MemoryLayout<Int32>.size)
+                )
                 let handlerTask = Task.detached(priority: .userInitiated) {
                     await Self.serveConnection(clientFd: clientFd, instance: instance)
                 }

@@ -17,8 +17,8 @@
 
 ## 5. Opt-in detection and fallback
 
-- [ ] 5.1 Implement `Daemon 為 opt-in，不改變 CLI 預設行為` in `SafariBridge.swift` — three-signal detection (`--daemon` flag / `SAFARI_BROWSER_DAEMON=1` env / live socket present), default still routes stateless, satisfying the `Daemon mode is opt-in` requirement
-- [ ] 5.2 Implement 失敗時 silently fallback 到 stateless — handle the five defined failure modes (socket missing / connection refused / version mismatch / non-domain error / 15s timeout) with a single `[daemon fallback: <reason>]` stderr warning, satisfying `Silent fallback to stateless path on daemon failure`
+- [x] 5.1 Implement `Daemon 為 opt-in，不改變 CLI 預設行為` in `SafariBridge.swift` — three-signal detection (`--daemon` flag / `SAFARI_BROWSER_DAEMON=1` env / live socket present), default still routes stateless, satisfying the `Daemon mode is opt-in` requirement — exposed as `SafariBridge.shouldUseDaemon(flag:env:socketExists:)` in new `DaemonRouter.swift`; wired into commands by task 7.1
+- [x] 5.2 Implement 失敗時 silently fallback 到 stateless — handle the five defined failure modes (socket missing / connection refused / version mismatch / non-domain error / 15s timeout) with a single `[daemon fallback: <reason>]` stderr warning, satisfying `Silent fallback to stateless path on daemon failure` — `SafariBridge.runViaRouter` + `DaemonClient.Error.fallbackReason` classification; domain error allowlist in `DaemonClient.Error.domainErrorCodes`; `SO_RCVTIMEO`/`SO_SNDTIMEO` on client socket yields `ioError("timeout")` at the 15s default; handshake mismatch (case c) still routes through the same fallbackReason classifier once task 6.3 emits the code string
 
 ## 6. Lifecycle
 

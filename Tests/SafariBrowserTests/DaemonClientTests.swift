@@ -110,6 +110,41 @@ final class DaemonClientTests: XCTestCase {
         }
     }
 
+    // MARK: - Timeout (failure mode (e) from Silent fallback spec)
+
+    func testSendRequest_timeout_raisesIoError() async throws {
+        let name = "timeout-\(UUID().uuidString.prefix(8))"
+        let socketPath = DaemonClient.socketPath(name: String(name))
+        let server = DaemonServer.Instance()
+        await server.register("hang") { _ in
+            // Sleep longer than the client's timeout. When the client hits
+            // SO_RCVTIMEO, the socket read errors with EAGAIN — mapped to
+            // ioError — and the task group returns without waiting for us.
+            try await Task.sleep(for: .seconds(30))
+            return Data("{}".utf8)
+        }
+        try await server.start(socketPath: socketPath)
+        defer { Task { await server.stop() } }
+
+        let start = Date()
+        do {
+            _ = try await DaemonClient.sendRequest(
+                name: String(name),
+                method: "hang",
+                params: Data("{}".utf8),
+                requestId: 1,
+                timeout: 0.5
+            )
+            XCTFail("expected ioError timeout")
+        } catch DaemonClient.Error.ioError {
+            // ok
+        } catch {
+            XCTFail("expected ioError, got \(error)")
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertLessThan(elapsed, 2.0, "timeout should fire near 0.5s, not wait full 30s")
+    }
+
     func testSendRequest_failsWhenNoDaemon() async throws {
         let name = "no-daemon-\(UUID().uuidString.prefix(8))"
         do {

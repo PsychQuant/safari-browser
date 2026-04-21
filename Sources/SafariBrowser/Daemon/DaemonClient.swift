@@ -27,6 +27,59 @@ enum DaemonClient {
             case .remoteError(let c, let m): return "daemon remote error [\(c)]: \(m)"
             }
         }
+
+        /// Set of error code strings that represent Safari domain semantics
+        /// rather than daemon transport or infrastructure failures.
+        /// When the daemon returns one of these, falling back to the
+        /// stateless path would produce the same error (Safari itself is
+        /// reporting the condition) so we propagate instead.
+        ///
+        /// Keep this aligned with `SafariBrowserError` cases that represent
+        /// user-facing semantics. Transport-level / daemon-protocol errors
+        /// (`parseError`, `methodNotFound`, `handlerError`) are deliberately
+        /// NOT in this set so they trigger fallback.
+        static let domainErrorCodes: Set<String> = [
+            "ambiguousWindowMatch",
+            "documentNotFound",
+            "elementNotFound",
+            "elementAmbiguous",
+            "elementIndexOutOfRange",
+            "elementZeroSize",
+            "elementOutsideViewport",
+            "elementSelectorInvalid",
+            "elementHasNoSrc",
+            "unsupportedElement",
+            "backgroundTabNotCapturable",
+            "noSafariWindow",
+            "invalidTabIndex",
+            "windowIdentityAmbiguous",
+            "accessibilityRequired",
+            "accessibilityNotGranted",
+            "webAreaNotFound",
+            "imageCroppingFailed",
+            "downloadFailed",
+            "downloadSizeCapExceeded",
+            "unsupportedURLScheme",
+            "systemEventsNotResponding",
+            "fileNotFound",
+        ]
+
+        /// Classification helper for the silent-fallback router.
+        /// Returns the reason to include in the `[daemon fallback: ...]`
+        /// stderr warning when this error should trigger fallback, or `nil`
+        /// when the error should propagate (Safari domain errors).
+        var fallbackReason: String? {
+            switch self {
+            case .connectFailed(let r):  return "connect: \(r)"
+            case .ioError(let r):        return "io: \(r)"
+            case .protocolError(let r):  return "protocol: \(r)"
+            case .remoteError(let code, let message):
+                if Self.domainErrorCodes.contains(code) {
+                    return nil
+                }
+                return message.isEmpty ? "remote \(code)" : "remote \(code): \(message)"
+            }
+        }
     }
 
     /// Resolve the daemon namespace from flag / env / default.
@@ -44,21 +97,30 @@ enum DaemonClient {
         return "\(normalized)\(socketPrefix)\(name)\(socketSuffix)"
     }
 
+    /// Default I/O timeout for daemon requests. Matches the
+    /// `Silent fallback to stateless path on daemon failure` spec which
+    /// lists 15 seconds as the fifth failure mode.
+    static let defaultTimeoutSeconds: TimeInterval = 15.0
+
     /// Send a single JSON-lines request and await the matching response.
     ///
     /// Opens a fresh connection per request (no pooling in Phase 1).
     /// Throws `Error.connectFailed` if the daemon is unreachable,
     /// `Error.remoteError` if the daemon returns an `error` envelope,
-    /// `Error.protocolError` if the response is malformed.
+    /// `Error.protocolError` if the response is malformed,
+    /// `Error.ioError("timeout")` if the daemon does not respond within
+    /// `timeout` seconds.
     static func sendRequest(
         name: String,
         method: String,
         params: Data,
-        requestId: Int
+        requestId: Int,
+        timeout: TimeInterval = defaultTimeoutSeconds
     ) async throws -> Data {
         let path = socketPath(name: name)
         let fd = try connectUnixSocket(path: path)
         defer { close(fd) }
+        try applySocketTimeout(fd: fd, seconds: timeout)
 
         let paramsValue: Any = (try? JSONSerialization.jsonObject(with: params, options: [.fragmentsAllowed])) ?? [String: Any]()
         let envelope: [String: Any] = [
@@ -87,11 +149,38 @@ enum DaemonClient {
 
     // MARK: - POSIX plumbing
 
+    /// Apply `SO_RCVTIMEO` + `SO_SNDTIMEO` to the socket so blocking
+    /// `read()` / `write()` calls return with errno `EAGAIN` after the
+    /// configured timeout. Callers surface this as `ioError("timeout")`
+    /// and the router falls back to the stateless path.
+    private static func applySocketTimeout(fd: Int32, seconds: TimeInterval) throws {
+        let clamped = max(seconds, 0.001)
+        var tv = timeval(
+            tv_sec: __darwin_time_t(clamped),
+            tv_usec: __darwin_suseconds_t((clamped - Double(Int(clamped))) * 1_000_000)
+        )
+        let size = socklen_t(MemoryLayout<timeval>.size)
+        if setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, size) != 0 {
+            throw Error.ioError("SO_RCVTIMEO failed: errno=\(errno)")
+        }
+        if setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, size) != 0 {
+            throw Error.ioError("SO_SNDTIMEO failed: errno=\(errno)")
+        }
+    }
+
     private static func connectUnixSocket(path: String) throws -> Int32 {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else {
             throw Error.connectFailed("socket() failed: errno=\(errno)")
         }
+        // Disable SIGPIPE on this fd — when the peer closes early (e.g., after
+        // a client-side timeout) we want EPIPE from `write()` rather than a
+        // process-wide signal that terminates the test runner.
+        var enable: Int32 = 1
+        _ = setsockopt(
+            fd, SOL_SOCKET, SO_NOSIGPIPE,
+            &enable, socklen_t(MemoryLayout<Int32>.size)
+        )
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathMaxBytes = MemoryLayout.size(ofValue: addr.sun_path) - 1
