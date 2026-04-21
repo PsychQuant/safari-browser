@@ -26,6 +26,7 @@ struct SafariBrowser: AsyncParsableCommand {
             FindCommand.self,
             HighlightCommand.self,
             ScreenshotCommand.self,
+            SaveImageCommand.self,
             PdfCommand.self,
             DragCommand.self,
             SetCommand.self,
@@ -43,6 +44,7 @@ struct SafariBrowser: AsyncParsableCommand {
             ForwardCommand.self,
             ReloadCommand.self,
             CloseCommand.self,
+            DaemonCommand.self,
         ]
     )
 }
