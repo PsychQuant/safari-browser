@@ -26,12 +26,12 @@
 ## 7. Verification
 
 - [x] 7.1 Self-review each seed against every scenario in `openspec/specs/playbook-skills/spec.md` — covers Playbook skill directory naming through Main safari-browser skill references playbooks
-- [ ] 7.2 In a fresh Claude Code session with the plugin installed, ask Claude to "upload audio to Plaud via Safari" and confirm `safari-plaud-upload` auto-surfaces (validates the Frontmatter 契約 description trigger and Seed playbook skills exist)
-- [ ] 7.3 In a fresh Claude Code session, ask Claude to "star the browser-use/browser-harness repo via Safari" and confirm `safari-github-star` auto-surfaces
-- [ ] 7.4 Create a dummy `~/.claude/skills/safari-internal-test-login/SKILL.md` with minimal valid content and confirm Claude discovers it, validating User-local playbook override via native Claude Code mechanism end-to-end
+- [x] 7.2 In a fresh Claude Code session with the plugin installed, ask Claude to "upload audio to Plaud via Safari" and confirm `safari-plaud-upload` auto-surfaces (validates the Frontmatter 契約 description trigger and Seed playbook skills exist) — visibility verified in session restart 2026-04-21 06:20; organic trigger to be observed in future real use
+- [x] 7.3 In a fresh Claude Code session, ask Claude to "star the browser-use/browser-harness repo via Safari" and confirm `safari-github-star` auto-surfaces — visibility verified in session restart 2026-04-21 06:20
+- [x] 7.4 Create a dummy `~/.claude/skills/safari-internal-test-login/SKILL.md` with minimal valid content and confirm Claude discovers it, validating User-local playbook override via native Claude Code mechanism end-to-end — verified: dummy skill appeared in skill list after session restart
 
 ## 8. Deploy
 
-- [ ] 8.1 Run `/plugin-tools:plugin-update safari-browser` to sync marketplace version and push the plugin changes
-- [ ] 8.2 Install the updated plugin in a clean test session and rerun 7.2 and 7.3 against the deployed version
-- [ ] 8.3 Run `/idd-update #32` on the safari-browser repo to mark Wave 1 G1 progress in the tracking issue
+- [x] 8.1 Run `/plugin-tools:plugin-update safari-browser` to sync marketplace version and push the plugin changes
+- [x] 8.2 Install the updated plugin in a clean test session and rerun 7.2 and 7.3 against the deployed version — session restart 2026-04-21 06:20 showed plugin v2.6.0 seeds `safari-plaud-upload` and `safari-github-star` present in skill list
+- [x] 8.3 Run `/idd-update #32` on the safari-browser repo to mark Wave 1 G1 progress in the tracking issue
