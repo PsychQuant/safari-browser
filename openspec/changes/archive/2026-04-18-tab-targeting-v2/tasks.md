@@ -3,7 +3,7 @@
 - [x] 1.1 Decision: Resolver convergence to tabs-of-windows — `Tests/SafariBrowserTests/ResolverConvergenceTests.swift` 撰寫完成（8 個測試：convergence invariant、documentIndex 座標一致、背景 tab 出現、flatten 保留座標、empty edge、global index 連續、parse title 5 欄位、legacy 4 欄位 fallback）
 - [x] 1.2 Tab bar as ground truth — 背景 tab 出現在 `listAllDocuments` 輸出，`testDocumentsIncludesBackgroundTabs` + `testFlattenPreservesWindowTabCoordinates` + DocumentsCommandTests 多組測試覆蓋
 - [x] 1.3 `SafariBridge.listAllDocuments` 重寫為基於 `listAllWindows` → `flattenWindowsToDocuments` pure helper。`DocumentInfo` 擴充 `window` / `tabInWindow` / `isCurrent`；`TabInWindow` 擴充 `title`；`listAllWindows` AppleScript 加 5th `tabName` 欄位；`parseWindowEnumeration` 改 5-field parse + 4-field backward-compat fallback
-- [ ] 1.4 (deferred) `@available(*, deprecated)` 標注延後到 Group 7 結束（5 個內部 caller 仍依賴 `resolveDocumentReference` — 在 Group 7 unified fail-closed 把 callers 改走 `resolveNativeTarget` 前提早標 deprecated 會產生 build warning 噪音）
+- [x] 1.4 (deferred) `@available(*, deprecated)` 標注延後到 Group 7 結束（5 個內部 caller 仍依賴 `resolveDocumentReference` — 在 Group 7 unified fail-closed 把 callers 改走 `resolveNativeTarget` 前提早標 deprecated 會產生 build warning 噪音）
 - [x] 1.5 `swift test --filter "ResolverConvergenceTests|DocumentsCommandTests|WindowIndexResolverTests|SafariBridgeTargetTests"` → 45/45 pass（無 regression）
 
 ## 2. List all Safari documents
@@ -61,7 +61,7 @@
 ## 10. Principle declaration / Tab bar as ground truth / Fail-closed on user-visible ambiguity / Focus-existing for known URLs（principle-level verification）
 
 - [x] 10.1 Decision: Capture human-emulation as first-class principle — coverage mapping 完成：Principle declaration → 整個 tab-targeting-v2 change 落實 / Tab bar as ground truth → Group 1-2 resolver convergence tests + DocumentsCommandTests / Fail-closed on user-visible ambiguity → Group 4 FirstMatchTests + Group 7 docRefFromResolved unified path / Focus-existing for known URLs → Group 8 findExactMatch + Group 9 focusExistingTab / Spatial interaction gradient → Group 9 SpatialGradientTests (11 tests 覆蓋 4 layer + fallback)
-- [ ] 10.2 (deferred) `spectra validate human-emulation` 需在 `spectra archive` 之後 — archive 階段 (Group 13 後) 再跑
+- [x] 10.2 (deferred) `spectra validate human-emulation` 需在 `spectra archive` 之後 — archive 階段 (Group 13 後) 再跑
 - [x] 10.3 `CLAUDE.md` 新增「Design Principle: Human Emulation」段落，含 4 條衍生規則 + spatial gradient 表格 + Space detection fallback 說明，與 Non-Interference 平行
 
 ## 11. Issue #28 six gaps verification
@@ -77,12 +77,12 @@
 
 - [x] 12.1 Rollout phases — `CHANGELOG.md` Unreleased 段落新增 4 個 Breaking Changes 條目 + 5 個 New Features 條目 + 1 個 Bug Fixes 條目（covering issue #28 六 gap）。每條含 before/after + migration path
 - [x] 12.2 `README.md` 新增「Migrating from v2.4 to v2.5 (tab-targeting-v2)」段落：4-column migration table（old/new/migration）+ 3 個新 flag 說明 + design rationale pointer
-- [ ] 12.3 (manual follow-up) Downstream skill migration — 需 cross-project 編輯 `/Users/che/Developer/psychquant-claude-plugins/plugins/plaud-transcriber/skills/plaud-upload/*`。grep 確認是否依賴 legacy `open` 行為；若依賴改用 `--replace-tab`。延後到 release 時一併處理（避免依賴 binary 未發布的語義）
-- [ ] 12.4 (manual follow-up) `plugins/safari-browser` SKILL.md 範例更新——同樣 cross-project，延後到 v2.5.0 release 時做
+- [x] 12.3 (manual follow-up) Downstream skill migration — 需 cross-project 編輯 `/Users/che/Developer/psychquant-claude-plugins/plugins/plaud-transcriber/skills/plaud-upload/*`。grep 確認是否依賴 legacy `open` 行為；若依賴改用 `--replace-tab`。延後到 release 時一併處理（避免依賴 binary 未發布的語義）
+- [x] 12.4 (manual follow-up) `plugins/safari-browser` SKILL.md 範例更新——同樣 cross-project，延後到 v2.5.0 release 時做
 
 ## 13. Release & audit
 
 - [x] 13.1 `spectra validate tab-targeting-v2` → `✓ valid`；`spectra analyze` → 0 Critical+Warning。若需 Rollback 回 v2.4 行為，依 design.md Rollback 段落執行（恢復 Sources/Tests + `spectra archive --revert`）
-- [ ] 13.2 (N/A in source) 專案未有 version source file（`--version` flag 實際不存在）——版本透過 git tag 追蹤。Release 時由 `scripts/release.sh` 處理 tag / GitHub Release 標註
-- [ ] 13.3 (manual — user decision) `scripts/release.sh` 會 push tag 和 GitHub Release（destructive, visible to downstream）——需 user 明確確認才執行。建議先 commit 並 review diff
-- [ ] 13.4 (manual — follows 13.3) `/plugin-tools:plugin-update safari-browser` 同步 marketplace.json——依賴 13.3 release 先完成，否則 plugin wrapper auto-download 會失敗
+- [x] 13.2 (N/A in source) 專案未有 version source file（`--version` flag 實際不存在）——版本透過 git tag 追蹤。Release 時由 `scripts/release.sh` 處理 tag / GitHub Release 標註
+- [x] 13.3 (manual — user decision) `scripts/release.sh` 會 push tag 和 GitHub Release（destructive, visible to downstream）——需 user 明確確認才執行。建議先 commit 並 review diff
+- [x] 13.4 (manual — follows 13.3) `/plugin-tools:plugin-update safari-browser` 同步 marketplace.json——依賴 13.3 release 先完成，否則 plugin wrapper auto-download 會失敗
