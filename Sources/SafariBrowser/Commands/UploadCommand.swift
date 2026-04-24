@@ -112,7 +112,7 @@ struct UploadCommand: AsyncParsableCommand {
         // --js explicitly selects JS DataTransfer path. Size cap already
         // enforced at validate() time.
         if js {
-            try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve())
+            try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
 
@@ -139,7 +139,7 @@ struct UploadCommand: AsyncParsableCommand {
                 Grant Accessibility permission in System Settings → Privacy & Security → Accessibility
                 to enable fast native file dialog upload.\n
             """.utf8))
-        try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve())
+        try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 
     /// Resolve the target to a (windowIndex, tabIndexInWindow) pair via
@@ -153,7 +153,7 @@ struct UploadCommand: AsyncParsableCommand {
     /// workaround and restoring AI-agent autonomy in multi-window
     /// Safari sessions.
     private func runNativeWithResolver(expandedPath: String) async throws {
-        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve())
+        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
 
         // Tab switch is a passively interfering side effect transitively
         // authorized by --native / --allow-hid. The stderr warning in
@@ -327,7 +327,9 @@ struct UploadCommand: AsyncParsableCommand {
     private func uploadViaJSDataTransfer(
         selector: String,
         path: String,
-        target: SafariBridge.TargetDocument = .frontWindow
+        target: SafariBridge.TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
     ) async throws {
         let fileData = try Data(contentsOf: URL(fileURLWithPath: path))
         let base64 = fileData.base64EncodedString()
@@ -345,7 +347,7 @@ struct UploadCommand: AsyncParsableCommand {
         // ~83 GB of transient garbage strings for a 131 MB file and crashed
         // Safari even on 128 GB RAM. Array.push is O(1) amortized; final
         // join is a single contiguous allocation.
-        _ = try await SafariBridge.doJavaScript("window.__sbUploadChunks = []", target: target)
+        _ = try await SafariBridge.doJavaScript("window.__sbUploadChunks = []", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
         let chunkSize = 200_000
         var offset = base64.startIndex
         var chunkCount = 0
@@ -353,7 +355,7 @@ struct UploadCommand: AsyncParsableCommand {
         while offset < base64.endIndex {
             let end = base64.index(offset, offsetBy: chunkSize, limitedBy: base64.endIndex) ?? base64.endIndex
             let chunk = String(base64[offset..<end])
-            _ = try await SafariBridge.doJavaScript("window.__sbUploadChunks.push('\(chunk.escapedForJS)')", target: target)
+            _ = try await SafariBridge.doJavaScript("window.__sbUploadChunks.push('\(chunk.escapedForJS)')", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
             offset = end
             chunkCount += 1
 
@@ -364,7 +366,7 @@ struct UploadCommand: AsyncParsableCommand {
                     target: target
                 )
                 if currentURL != initialURL {
-                    _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target)
+                    _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
                     throw SafariBrowserError.appleScriptFailed(
                         "Page navigated away during upload (was: \(initialURL), now: \(currentURL)). Upload aborted."
                     )
@@ -404,12 +406,12 @@ struct UploadCommand: AsyncParsableCommand {
             """, target: target)
 
         if jsResult == "NOT_FOUND" {
-            _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target)
+            _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
             throw SafariBrowserError.elementNotFound(selector)
         }
 
         if jsResult != "OK" {
-            _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target)
+            _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
             throw SafariBrowserError.appleScriptFailed("JS file injection failed: \(jsResult)")
         }
     }

@@ -51,7 +51,7 @@ final class ResolverConvergenceTests: XCTestCase {
                        "documents must list both plaud tabs")
 
         XCTAssertThrowsError(
-            try SafariBridge.pickNativeTarget(.urlContains("plaud"), in: windows)
+            try SafariBridge.pickNativeTarget(.urlMatch(.contains("plaud")), in: windows)
         ) { error in
             guard case SafariBrowserError.ambiguousWindowMatch(_, let matches) = error else {
                 XCTFail("Expected ambiguousWindowMatch, got \(error)")

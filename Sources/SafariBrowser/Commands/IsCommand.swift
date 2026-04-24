@@ -27,7 +27,7 @@ struct IsVisible: AsyncParsableCommand {
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; var r = el.getBoundingClientRect(); var s = getComputedStyle(el); return (r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden') ? 'true' : 'false'; })()",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
         print(result)
     }
@@ -47,7 +47,7 @@ struct IsExists: AsyncParsableCommand {
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
             "\(selector.resolveRefJS) !== null ? 'true' : 'false'",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
         print(result)
     }
@@ -67,7 +67,7 @@ struct IsEnabled: AsyncParsableCommand {
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return !el.disabled ? 'true' : 'false'; })()",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
         print(result)
     }
@@ -87,7 +87,7 @@ struct IsChecked: AsyncParsableCommand {
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return el.checked ? 'true' : 'false'; })()",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
         print(result)
     }

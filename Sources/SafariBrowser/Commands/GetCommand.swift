@@ -27,7 +27,7 @@ struct GetURL: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        print(try await SafariBridge.getCurrentURL(target: target.resolve()))
+        print(try await SafariBridge.getCurrentURL(target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter))
     }
 }
 
@@ -40,7 +40,7 @@ struct GetTitle: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        print(try await SafariBridge.getCurrentTitle(target: target.resolve()))
+        print(try await SafariBridge.getCurrentTitle(target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter))
     }
 }
 
@@ -56,7 +56,7 @@ struct GetText: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        let documentTarget = target.resolve()
+        let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         if let selector {
             let result = try await SafariBridge.doJavaScript(
                 "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.textContent; })()",
@@ -107,7 +107,7 @@ struct GetSource: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        print(try await SafariBridge.getCurrentSource(target: target.resolve()))
+        print(try await SafariBridge.getCurrentSource(target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter))
     }
 }
 
@@ -123,7 +123,7 @@ struct GetHTML: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        let documentTarget = target.resolve()
+        let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.innerHTML; })()",
             target: documentTarget
@@ -165,7 +165,7 @@ struct GetValue: AsyncParsableCommand {
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.value || ''; })()",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
@@ -191,7 +191,7 @@ struct GetAttr: AsyncParsableCommand {
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.getAttribute('\(name.escapedForJS)') || ''; })()",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
@@ -214,7 +214,7 @@ struct GetCount: AsyncParsableCommand {
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
             "document.querySelectorAll('\(selector.escapedForJS)').length",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
         print(result)
     }
@@ -234,7 +234,7 @@ struct GetBox: AsyncParsableCommand {
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; var r = el.getBoundingClientRect(); return JSON.stringify({x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}); })()",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
         if result == "\0NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)

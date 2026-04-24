@@ -89,7 +89,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
 
         let resolvedWindowIndex: Int?
         if hasExplicitTarget {
-            let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve())
+            let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
 
             // #26 verify P1-2: fail-closed when the resolved target is a
             // background tab. Screenshot captures window-level visible
@@ -121,7 +121,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // TargetOptions resolution so `--full --url plaud` reads
         // plaud's dimensions via doJavaScript even when plaud is in a
         // background tab of its owning window.
-        let docTarget = target.resolve()
+        let (docTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
 
         if !full {
             // Simple path: capture whatever CG ID resolved. Always silent (-x).

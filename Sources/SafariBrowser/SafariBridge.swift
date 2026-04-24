@@ -56,10 +56,16 @@ enum SafariBridge {
     enum TargetDocument: Sendable {
         case frontWindow
         case windowIndex(Int)
-        case urlContains(String)
+        /// Select document by URL via a `UrlMatcher` sum-type. Variance
+        /// in matching mode (substring, exact, endsWith, regex) is
+        /// encapsulated in `UrlMatcher` so downstream switches on
+        /// `TargetDocument` stay flat. All matcher cases resolve through
+        /// the native-path resolver (`resolveNativeTarget` →
+        /// `pickNativeTarget`) for uniform fail-closed semantics.
+        case urlMatch(UrlMatcher)
         case documentIndex(Int)
         /// Composite target: the tab-in-window-th tab of the window-th
-        /// window. Addresses same-URL duplicate tabs that `.urlContains`
+        /// window. Addresses same-URL duplicate tabs that `.urlMatch`
         /// cannot disambiguate (issue #28 gap #2). Always requires both
         /// coordinates — `TargetOptions.validate()` rejects solo
         /// `--tab-in-window` at the CLI boundary, and `pickNativeTarget`
@@ -92,9 +98,17 @@ enum SafariBridge {
             return "document 1"
         case .windowIndex(let n):
             return "document of window \(n)"
-        case .urlContains(let pattern):
-            let escaped = pattern.escapedForAppleScript
-            return "(first document whose URL contains \"\(escaped)\")"
+        case .urlMatch:
+            // Per document-targeting spec delta: .urlMatch resolves through
+            // the native-path resolver (resolveNativeTarget → pickNativeTarget)
+            // so every matcher kind (contains/exact/endsWith/regex) obeys the
+            // unified fail-closed policy uniformly. This branch is unreachable
+            // in production because resolveToAppleScript dispatches .urlMatch
+            // exclusively through resolveNativeTarget; defensive guard below.
+            preconditionFailure(
+                "TargetDocument.urlMatch SHALL be resolved through the native-path "
+                + "resolver (resolveNativeTarget), not resolveDocumentReference"
+            )
         case .documentIndex(let n):
             return "document \(n)"
         case .windowTab(let w, let t):
@@ -125,13 +139,65 @@ enum SafariBridge {
     ///
     /// `.frontWindow` / `.windowIndex` bypass enumeration and use the
     /// sync mapping directly — no resolution needed.
-    static func resolveToAppleScript(_ target: TargetDocument) async throws -> String {
+    /// `firstMatch` / `warnWriter` plumb the CLI's `--first-match` intent
+    /// through to `resolveNativeTarget` so read-path commands (`js`,
+    /// `get`, `snapshot`, `storage`, `wait`, …) honor multi-match
+    /// fallback identically to native-path commands (#33 plumb-through
+    /// fix). Defaults keep the parameter additive for existing callers.
+    static func resolveToAppleScript(
+        _ target: TargetDocument,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> String {
         switch target {
         case .frontWindow, .windowIndex:
             return resolveDocumentReference(target)
-        case .urlContains, .documentIndex, .windowTab:
-            let resolved = try await resolveNativeTarget(from: target)
+        case .urlMatch, .documentIndex, .windowTab:
+            let resolved = try await resolveNativeTarget(
+                from: target,
+                firstMatch: firstMatch,
+                warnWriter: warnWriter
+            )
             return docRefFromResolved(resolved)
+        }
+    }
+
+    /// Resolve a `TargetDocument` to a **concrete** (window, tab) target
+    /// and return it as a `.windowTab` / `.windowIndex` / `.frontWindow`
+    /// that downstream calls can reuse without re-resolving. Intended for
+    /// commands that issue multiple bridge calls per invocation (e.g.
+    /// `JSCommand` which does store / read-length / read-result / delete
+    /// sequentially): resolve once, pass the concrete target to every
+    /// subsequent call so the `--first-match` warning fires **at most
+    /// once per command** and subsequent calls cannot race on tab list
+    /// changes (#33 R1 regression found during manual QA —
+    /// `js --url-endswith /play --first-match` emitted the warning twice
+    /// because every internal `doJavaScript` re-invoked the resolver).
+    ///
+    /// - `.frontWindow` / `.windowIndex` / `.windowTab` return unchanged
+    ///   (already concrete).
+    /// - `.urlMatch` / `.documentIndex` resolve via `resolveNativeTarget`
+    ///   (fires `warnWriter` at most once) and collapse to `.windowTab`
+    ///   when a specific tab-in-window is known, or `.windowIndex` when
+    ///   only the window is known (tab defaults to current-of-window).
+    static func resolveToConcreteTarget(
+        _ target: TargetDocument,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> TargetDocument {
+        switch target {
+        case .frontWindow, .windowIndex, .windowTab:
+            return target
+        case .urlMatch, .documentIndex:
+            let resolved = try await resolveNativeTarget(
+                from: target,
+                firstMatch: firstMatch,
+                warnWriter: warnWriter
+            )
+            if let tab = resolved.tabIndexInWindow {
+                return .windowTab(window: resolved.windowIndex, tabInWindow: tab)
+            }
+            return .windowIndex(resolved.windowIndex)
         }
     }
 
@@ -358,7 +424,7 @@ enum SafariBridge {
         switch target {
         case .frontWindow: return "document 1 (default)"
         case .windowIndex(let n): return "window \(n)"
-        case .urlContains(let pattern): return pattern
+        case .urlMatch(let matcher): return matcher.description
         case .documentIndex(let n): return "document \(n)"
         case .windowTab(let w, let t): return "window \(w) tab \(t)"
         }
@@ -370,11 +436,20 @@ enum SafariBridge {
     /// document-scoped reference (bypasses #21 modal block), falling back to
     /// `set URL of <docRef>` if the script fails. When Safari has no windows,
     /// a new document is always created regardless of target.
-    static func openURL(_ url: String, target: TargetDocument = .frontWindow) async throws {
+    static func openURL(
+        _ url: String,
+        target: TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws {
         // #9: Use do JavaScript for navigation to avoid race with page's own JS redirects.
         // Fallback to set URL when do JavaScript fails (e.g., about:blank, no open tabs).
         let jsCode = "window.location.href=\(url.jsStringLiteral)"
-        let docRef = try await resolveToAppleScript(target)
+        let docRef = try await resolveToAppleScript(
+            target,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
+        )
         // Route through runTargetedAppleScript so `--url typo open ...` also
         // gets the user-friendly documentNotFound error with available docs
         // listed, matching the read-only getter behavior.
@@ -662,6 +737,429 @@ enum SafariBridge {
         )
     }
 
+    // MARK: - DOM element resource (#31)
+
+    /// #31: which resource attribute to read for video/audio/img elements.
+    /// `currentSrc` is the responsive-image actually-loaded URL and is
+    /// the sensible default for most captures. `src` is the raw HTML
+    /// attribute (pre-responsive-resolution), occasionally useful. `poster`
+    /// is specific to `<video>` / `<audio>` and fetches the poster image.
+    enum ResourceTrack: String, Equatable {
+        case currentSrc
+        case src
+        case poster
+    }
+
+    /// #31: successful return from `resolveElementResource`.
+    /// Either the resolved resource URL (for img/source/picture/video/audio)
+    /// or the serialized outerHTML (for inline svg). Caller dispatches
+    /// download based on the case.
+    enum ElementResource: Equatable {
+        /// URL string as resolved by the element (may be `http://`,
+        /// `https://`, `data:`, or any other scheme — caller validates).
+        case url(String)
+        /// Inline SVG `outerHTML` serialized as a UTF-8 string. Caller
+        /// writes directly to the output path; no HTTP request needed.
+        case inlineSVG(String)
+    }
+
+    /// #31: locate a DOM element by CSS selector and return either its
+    /// resource URL or its serialized SVG outerHTML.
+    ///
+    /// Fail-closed semantics (mirrors #30 for multi-match + invalid selector;
+    /// adds resource-specific errors):
+    ///   - zero matches → `.elementNotFound`
+    ///   - multi-match without `elementIndex` → `.elementAmbiguous`
+    ///   - `elementIndex` out of range → `.elementIndexOutOfRange`
+    ///   - invalid CSS selector (JS `SyntaxError`) → `.elementSelectorInvalid`
+    ///   - chosen element has empty src/currentSrc/poster → `.elementHasNoSrc`
+    ///   - chosen element's tagName is not in {img, source, picture, video, audio, svg} → `.unsupportedElement`
+    ///
+    /// Light DOM only — Shadow DOM and iframe traversal are out of scope.
+    /// Uses `doJavaScriptLarge` because inline SVG outerHTML can exceed
+    /// the normal doJavaScript size limit for complex vector content.
+    static func resolveElementResource(
+        selector: String,
+        target: TargetDocument = .frontWindow,
+        track: ResourceTrack = .currentSrc,
+        elementIndex: Int? = nil
+    ) async throws -> ElementResource {
+        // JSON-encode selector to survive injection — same pattern as #30
+        guard let data = try? JSONSerialization.data(withJSONObject: [selector]),
+              let s = String(data: data, encoding: .utf8),
+              s.hasPrefix("["), s.hasSuffix("]") else {
+            throw SafariBrowserError.elementSelectorInvalid(
+                selector: selector,
+                reason: "could not JSON-encode selector for injection"
+            )
+        }
+        let selectorJSON = String(s.dropFirst().dropLast())
+
+        let indexJS: String
+        if let idx = elementIndex {
+            indexJS = String(idx - 1)
+        } else {
+            indexJS = "null"
+        }
+
+        let trackJS = "\"\(track.rawValue)\""
+
+        let js = """
+        JSON.stringify((() => {
+          const selector = \(selectorJSON);
+          const targetIndex = \(indexJS);
+          const track = \(trackJS);
+          let nodes;
+          try { nodes = document.querySelectorAll(selector); }
+          catch (e) { return { error: 'selector_invalid', reason: (e && e.message) || String(e) }; }
+          if (nodes.length === 0) return { error: 'not_found' };
+          function describe(el) {
+            const r = el.getBoundingClientRect();
+            let attrs = el.tagName.toLowerCase();
+            if (el.id) attrs += '#' + el.id;
+            if (el.className && typeof el.className === 'string') {
+              const classes = el.className.split(/\\s+/).filter(c => c);
+              if (classes.length > 0) attrs += '.' + classes.join('.');
+            }
+            const txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60);
+            return { x: r.x, y: r.y, w: r.width, h: r.height, attrs, text: txt || null };
+          }
+          let chosenIndex;
+          if (nodes.length > 1) {
+            if (targetIndex === null) return { error: 'ambiguous', matches: Array.from(nodes).map(describe) };
+            if (targetIndex < 0 || targetIndex >= nodes.length) return { error: 'index_out_of_range', index: targetIndex + 1, matchCount: nodes.length };
+            chosenIndex = targetIndex;
+          } else {
+            if (targetIndex !== null && targetIndex !== 0) return { error: 'index_out_of_range', index: targetIndex + 1, matchCount: 1 };
+            chosenIndex = 0;
+          }
+          const el = nodes[chosenIndex];
+          const tag = el.tagName.toLowerCase();
+          if (tag === 'svg') return { kind: 'inline_svg', data: el.outerHTML };
+          const supported = ['img', 'source', 'picture', 'video', 'audio'];
+          if (!supported.includes(tag)) return { error: 'unsupported_element', tagName: tag };
+          // Empty-attribute detection: el.src / el.currentSrc resolve
+          // against document.baseURI so an empty src attribute returns
+          // the page URL rather than "". Check the raw attribute first;
+          // only fall through to currentSrc/src properties when the
+          // attribute has non-empty content.
+          let src;
+          if (track === 'poster' && (tag === 'video' || tag === 'audio')) {
+            const posterAttr = el.getAttribute('poster') || '';
+            src = posterAttr ? el.poster : '';
+          } else if (track === 'src') {
+            const srcAttr = el.getAttribute('src') || '';
+            src = srcAttr ? el.src : '';
+          } else {
+            // currentSrc (default): prefer the computed currentSrc for
+            // responsive images, but only if the element declares some
+            // form of source (src attribute OR srcset attribute). An
+            // element with neither attribute has no real source.
+            const hasDeclaredSrc = (el.getAttribute('src') || '').length > 0
+              || (el.getAttribute('srcset') || '').length > 0;
+            src = hasDeclaredSrc ? (el.currentSrc || el.src) : '';
+          }
+          if (!src) return { error: 'has_no_src', tagName: tag };
+          return { kind: 'url', src: src };
+        })())
+        """
+
+        // Most responses are small (<1KB for url kind, ~few KB for
+        // typical inline SVG). Use plain doJavaScript which is well-
+        // tested with multi-line JS. For pathologically large inline
+        // SVG (megabyte-plus) the bridge may truncate — if that ever
+        // happens, we can switch that specific code path to
+        // doJavaScriptLarge. Keep the simple path until it breaks.
+        let jsonString = try await doJavaScript(js, target: target)
+        return try parseElementResourceResponse(jsonString, selector: selector)
+    }
+
+    /// Internal: parse the JSON response from `resolveElementResource`
+    /// JS into either a success `ElementResource` or a thrown
+    /// `SafariBrowserError`. Extracted as a pure function so tests can
+    /// exercise the parse / error-mapping logic without a live Safari.
+    static func parseElementResourceResponse(
+        _ jsonString: String,
+        selector: String
+    ) throws -> ElementResource {
+        guard let data = jsonString.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw SafariBrowserError.elementSelectorInvalid(
+                selector: selector,
+                reason: "could not parse element resource response as JSON"
+            )
+        }
+
+        if let errorKind = obj["error"] as? String {
+            switch errorKind {
+            case "not_found":
+                throw SafariBrowserError.elementNotFound(selector)
+            case "ambiguous":
+                let rawMatches = (obj["matches"] as? [[String: Any]]) ?? []
+                let matches = rawMatches.map { m in
+                    ElementMatch(
+                        rect: CGRect(
+                            x: doubleValue(m["x"]),
+                            y: doubleValue(m["y"]),
+                            width: doubleValue(m["w"]),
+                            height: doubleValue(m["h"])
+                        ),
+                        attributes: (m["attrs"] as? String) ?? "",
+                        textSnippet: m["text"] as? String
+                    )
+                }
+                throw SafariBrowserError.elementAmbiguous(selector: selector, matches: matches)
+            case "index_out_of_range":
+                throw SafariBrowserError.elementIndexOutOfRange(
+                    selector: selector,
+                    index: (obj["index"] as? Int) ?? 0,
+                    matchCount: (obj["matchCount"] as? Int) ?? 0
+                )
+            case "selector_invalid":
+                throw SafariBrowserError.elementSelectorInvalid(
+                    selector: selector,
+                    reason: (obj["reason"] as? String) ?? "invalid selector"
+                )
+            case "has_no_src":
+                throw SafariBrowserError.elementHasNoSrc(
+                    selector: selector,
+                    tagName: (obj["tagName"] as? String) ?? "unknown"
+                )
+            case "unsupported_element":
+                throw SafariBrowserError.unsupportedElement(
+                    selector: selector,
+                    tagName: (obj["tagName"] as? String) ?? "unknown"
+                )
+            default:
+                throw SafariBrowserError.elementSelectorInvalid(
+                    selector: selector,
+                    reason: "unknown error kind from JS bridge: \(errorKind)"
+                )
+            }
+        }
+
+        guard let kind = obj["kind"] as? String else {
+            throw SafariBrowserError.elementSelectorInvalid(
+                selector: selector,
+                reason: "element resource response missing both 'kind' and 'error' keys"
+            )
+        }
+
+        switch kind {
+        case "url":
+            guard let src = obj["src"] as? String, !src.isEmpty else {
+                throw SafariBrowserError.elementSelectorInvalid(
+                    selector: selector,
+                    reason: "url kind without valid src"
+                )
+            }
+            return .url(src)
+        case "inline_svg":
+            guard let svgData = obj["data"] as? String else {
+                throw SafariBrowserError.elementSelectorInvalid(
+                    selector: selector,
+                    reason: "inline_svg kind without data"
+                )
+            }
+            return .inlineSVG(svgData)
+        default:
+            throw SafariBrowserError.elementSelectorInvalid(
+                selector: selector,
+                reason: "unknown kind from JS bridge: \(kind)"
+            )
+        }
+    }
+
+    /// #31: fetch a resource URL through Safari's own `fetch()` API so
+    /// the request inherits the document's cookies, credentials, and
+    /// session. Used by `save-image --with-cookies` for authenticated
+    /// resources that URLSession cannot access (no cookie jar).
+    ///
+    /// Pipeline:
+    ///   1. JS start: async fetch → blob → FileReader.readAsDataURL →
+    ///      writes to `window.__sbResource`, sets `__sbResourceDone=true`
+    ///   2. Swift poll: 100ms intervals until `__sbResourceDone` is true
+    ///      (timeout at `timeoutSeconds`)
+    ///   3. Swift size check: `__sbResourceActualBytes` vs hard cap;
+    ///      throw `downloadSizeCapExceeded` if over
+    ///   4. Swift chunked read: 256KB substring slices of `__sbResource`
+    ///      (V8-safe; inverse of `upload --js`'s chunked write from #24)
+    ///   5. Swift parse: split data URL on first comma, base64 decode
+    ///
+    /// Size cap enforced in JS before FileReader runs: `Content-Length`
+    /// header checked first, then `blob.size` as fallback. Avoids
+    /// loading 100 MB into Safari memory just to reject.
+    ///
+    /// - Parameters:
+    ///   - url: resource URL; will be fetched with `credentials: 'include'`
+    ///   - target: document to evaluate fetch from (cookie scope)
+    ///   - sizeHardCapBytes: bytes above which `downloadSizeCapExceeded`
+    ///     throws (default 10 MB, matches `upload --js` #24 safety)
+    ///   - sizeSoftWarnBytes: stderr warning threshold (default 5 MB)
+    ///   - timeoutSeconds: max wait for the async fetch to complete
+    static func fetchResourceWithCookies(
+        url: String,
+        target: TargetDocument = .frontWindow,
+        sizeHardCapBytes: Int = 10 * 1_048_576,
+        sizeSoftWarnBytes: Int = 5 * 1_048_576,
+        timeoutSeconds: Double = 30.0
+    ) async throws -> Data {
+        // JSON-encode URL to survive injection
+        guard let urlJSONData = try? JSONSerialization.data(withJSONObject: [url]),
+              let urlJSONFull = String(data: urlJSONData, encoding: .utf8),
+              urlJSONFull.hasPrefix("["), urlJSONFull.hasSuffix("]") else {
+            throw SafariBrowserError.downloadFailed(
+                url: url, statusCode: nil, reason: "could not JSON-encode URL for JS fetch"
+            )
+        }
+        let urlJS = String(urlJSONFull.dropFirst().dropLast())
+
+        // Kick off async fetch. JS size check happens inside the promise
+        // chain so we never read a >10 MB blob through the bridge.
+        let startJS = """
+        (function(){
+          const HARD_CAP = \(sizeHardCapBytes);
+          window.__sbResource = null;
+          window.__sbResourceLen = 0;
+          window.__sbResourceActualBytes = 0;
+          window.__sbResourceDone = false;
+          window.__sbResourceError = null;
+          fetch(\(urlJS), { credentials: 'include' })
+            .then(r => {
+              if (!r.ok) throw new Error('HTTP:' + r.status);
+              const cl = r.headers.get('content-length');
+              const parsedCL = cl ? parseInt(cl, 10) : NaN;
+              if (!isNaN(parsedCL) && parsedCL > HARD_CAP) {
+                window.__sbResourceActualBytes = parsedCL;
+                throw new Error('SIZE_CAP');
+              }
+              return r.blob();
+            })
+            .then(blob => {
+              window.__sbResourceActualBytes = blob.size;
+              if (blob.size > HARD_CAP) throw new Error('SIZE_CAP');
+              return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result);
+                reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+                reader.readAsDataURL(blob);
+              });
+            })
+            .then(dataURL => {
+              window.__sbResource = dataURL;
+              window.__sbResourceLen = dataURL.length;
+              window.__sbResourceDone = true;
+            })
+            .catch(e => {
+              window.__sbResourceError = (e && e.message) || String(e);
+              window.__sbResourceDone = true;
+            });
+        })()
+        """
+        _ = try await doJavaScript(startJS, target: target)
+
+        // Poll for completion (100ms intervals, bounded by timeoutSeconds)
+        let pollIntervalNs: UInt64 = 100_000_000
+        let maxIterations = max(Int(timeoutSeconds * 10), 1)
+        var iterations = 0
+        while iterations < maxIterations {
+            let doneStr = try await doJavaScript("window.__sbResourceDone", target: target)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if doneStr == "true" { break }
+            try await Task.sleep(nanoseconds: pollIntervalNs)
+            iterations += 1
+        }
+        if iterations >= maxIterations {
+            try? await cleanupResourceState(target: target)
+            throw SafariBrowserError.downloadFailed(
+                url: url, statusCode: nil,
+                reason: "fetch did not complete within \(Int(timeoutSeconds)) seconds"
+            )
+        }
+
+        // Check for JS-side error
+        let errorRaw = try await doJavaScript("window.__sbResourceError", target: target)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let actualBytesStr = try await doJavaScript("window.__sbResourceActualBytes", target: target)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let actualBytes = Int(actualBytesStr) ?? 0
+
+        if errorRaw != "undefined" && errorRaw != "null" && !errorRaw.isEmpty {
+            try? await cleanupResourceState(target: target)
+            // Parse HTTP status from 'HTTP:404' prefix if present
+            if errorRaw == "SIZE_CAP" {
+                throw SafariBrowserError.downloadSizeCapExceeded(
+                    url: url, capBytes: sizeHardCapBytes, actualBytes: actualBytes
+                )
+            }
+            if let range = errorRaw.range(of: "HTTP:"),
+               let code = Int(errorRaw[range.upperBound...].prefix(while: { $0.isNumber })) {
+                throw SafariBrowserError.downloadFailed(url: url, statusCode: code, reason: errorRaw)
+            }
+            throw SafariBrowserError.downloadFailed(url: url, statusCode: nil, reason: errorRaw)
+        }
+
+        // Soft warn if over 5 MB
+        if actualBytes > sizeSoftWarnBytes {
+            let actualMB = Double(actualBytes) / 1_048_576.0
+            FileHandle.standardError.write(Data(
+                "⚠️  Resource \(String(format: "%.1f", actualMB)) MB via --with-cookies; JS bridge overhead may be significant\n".utf8
+            ))
+        }
+
+        // Read the data URL from JS in 256 KB chunks
+        let lenStr = try await doJavaScript("window.__sbResourceLen", target: target)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let dataURLLen = Int(lenStr), dataURLLen > 0 else {
+            try? await cleanupResourceState(target: target)
+            throw SafariBrowserError.downloadFailed(
+                url: url, statusCode: nil, reason: "empty or malformed data URL response"
+            )
+        }
+
+        let chunkSize = 262_144
+        var dataURL = ""
+        dataURL.reserveCapacity(dataURLLen)
+        var offset = 0
+        while offset < dataURLLen {
+            let end = min(offset + chunkSize, dataURLLen)
+            let chunk = try await doJavaScript(
+                "window.__sbResource.substring(\(offset), \(end))",
+                target: target
+            )
+            dataURL += chunk
+            offset = end
+        }
+
+        try? await cleanupResourceState(target: target)
+
+        // Parse data URL: data:<mime>;base64,<payload>
+        guard let commaRange = dataURL.range(of: ",") else {
+            throw SafariBrowserError.downloadFailed(
+                url: url, statusCode: nil,
+                reason: "malformed data URL (no comma separator between prefix and payload)"
+            )
+        }
+        let payload = String(dataURL[commaRange.upperBound...])
+        guard let decoded = Data(base64Encoded: payload) else {
+            throw SafariBrowserError.downloadFailed(
+                url: url, statusCode: nil,
+                reason: "could not base64-decode fetched data URL payload"
+            )
+        }
+        return decoded
+    }
+
+    /// #31: clean up `window.__sbResource*` globals after a
+    /// `fetchResourceWithCookies` completes (success, error, or timeout).
+    /// Best-effort — a failed cleanup does not block the outer call.
+    private static func cleanupResourceState(target: TargetDocument) async throws {
+        _ = try await doJavaScript(
+            "delete window.__sbResource; delete window.__sbResourceLen; delete window.__sbResourceActualBytes; delete window.__sbResourceDone; delete window.__sbResourceError",
+            target: target
+        )
+    }
+
     /// NSNumber-safe double extraction — JSONSerialization returns
     /// numeric values as NSNumber which may lose precision if cast
     /// directly to Double for integer representations.
@@ -676,9 +1174,15 @@ enum SafariBridge {
 
     static func doJavaScript(
         _ code: String,
-        target: TargetDocument = .frontWindow
+        target: TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
     ) async throws -> String {
-        let docRef = try await resolveToAppleScript(target)
+        let docRef = try await resolveToAppleScript(
+            target,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
+        )
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
@@ -692,12 +1196,19 @@ enum SafariBridge {
     /// consistent across multi-document Safari sessions.
     static func doJavaScriptLarge(
         _ code: String,
-        target: TargetDocument = .frontWindow
+        target: TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
     ) async throws -> String {
-        // Store result in window variable
+        // Store result in window variable. Only the first doJavaScript
+        // call forwards the warnWriter — subsequent chunked reads reuse
+        // the already-resolved tab, so re-emitting the multi-match
+        // warning each chunk would spam the caller.
         _ = try await doJavaScript(
             "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()",
-            target: target
+            target: target,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
         )
 
         // Get total length
@@ -732,8 +1243,16 @@ enum SafariBridge {
     /// AppleScript reference (via `resolveDocumentReference`) so the query
     /// bypasses any modal file dialog sheet blocking Safari's front window
     /// (#21).
-    static func getCurrentURL(target: TargetDocument = .frontWindow) async throws -> String {
-        let docRef = try await resolveToAppleScript(target)
+    static func getCurrentURL(
+        target: TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> String {
+        let docRef = try await resolveToAppleScript(
+            target,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
+        )
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 get URL of \(docRef)
@@ -742,8 +1261,16 @@ enum SafariBridge {
     }
 
     /// Read the title of the target document. Document-scoped for modal bypass (#21).
-    static func getCurrentTitle(target: TargetDocument = .frontWindow) async throws -> String {
-        let docRef = try await resolveToAppleScript(target)
+    static func getCurrentTitle(
+        target: TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> String {
+        let docRef = try await resolveToAppleScript(
+            target,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
+        )
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 get name of \(docRef)
@@ -752,8 +1279,16 @@ enum SafariBridge {
     }
 
     /// Read the plain-text content of the target document. Document-scoped for modal bypass (#21).
-    static func getCurrentText(target: TargetDocument = .frontWindow) async throws -> String {
-        let docRef = try await resolveToAppleScript(target)
+    static func getCurrentText(
+        target: TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> String {
+        let docRef = try await resolveToAppleScript(
+            target,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
+        )
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 get text of \(docRef)
@@ -762,8 +1297,16 @@ enum SafariBridge {
     }
 
     /// Read the HTML source of the target document. Document-scoped for modal bypass (#21).
-    static func getCurrentSource(target: TargetDocument = .frontWindow) async throws -> String {
-        let docRef = try await resolveToAppleScript(target)
+    static func getCurrentSource(
+        target: TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> String {
+        let docRef = try await resolveToAppleScript(
+            target,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
+        )
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 get source of \(docRef)
@@ -952,10 +1495,10 @@ enum SafariBridge {
                 availableDocuments: availableSummary
             )
 
-        case .urlContains(let pattern):
+        case .urlMatch(let matcher):
             var matches: [(windowIndex: Int, tabIndex: Int, url: String, isCurrent: Bool)] = []
             for window in windows {
-                for tab in window.tabs where tab.url.contains(pattern) {
+                for tab in window.tabs where matcher.matches(tab.url) {
                     matches.append((
                         windowIndex: window.windowIndex,
                         tabIndex: tab.tabIndex,
@@ -970,14 +1513,14 @@ enum SafariBridge {
                     w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
                 }
                 throw SafariBrowserError.documentNotFound(
-                    pattern: pattern,
+                    pattern: matcher.description,
                     availableDocuments: allUrls
                 )
             }
 
             if matches.count > 1 {
                 throw SafariBrowserError.ambiguousWindowMatch(
-                    pattern: pattern,
+                    pattern: matcher.description,
                     matches: matches.map { (windowIndex: $0.windowIndex, url: $0.url) }
                 )
             }
@@ -1042,45 +1585,65 @@ enum SafariBridge {
             return ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil)
         case .windowIndex(let n):
             return ResolvedWindowTarget(windowIndex: n, tabIndexInWindow: nil)
-        case .urlContains, .documentIndex, .windowTab:
+        case .urlMatch, .documentIndex, .windowTab:
             let windows = try await listAllWindows()
-            do {
-                return try pickNativeTarget(target, in: windows)
-            } catch let error as SafariBrowserError {
-                // --first-match opt-in: recover from ambiguousWindowMatch
-                // on `.urlContains` by selecting the first match in
-                // (window, tab) order, emitting a stderr warning that
-                // lists all candidates. Only urlContains supports this
-                // fallback — documentIndex / windowTab ambiguity is a
-                // structural bug, not user-chosen disambiguation.
-                if firstMatch,
-                   case .urlContains(let pattern) = target,
-                   case .ambiguousWindowMatch = error {
-                    return try pickFirstMatchFallback(
-                        pattern: pattern,
-                        in: windows,
-                        warnWriter: warnWriter
-                    )
-                }
-                throw error
+            return try resolveNativeTargetInWindows(
+                target,
+                windows: windows,
+                firstMatch: firstMatch,
+                warnWriter: warnWriter
+            )
+        }
+    }
+
+    /// Pure extraction of the post-enumeration branch in
+    /// `resolveNativeTarget`. Exposed so tests can exercise the
+    /// `pickNativeTarget` + `pickFirstMatchFallback` dispatch on a
+    /// stubbed `[WindowInfo]` without touching AppleScript. Real code
+    /// should call `resolveNativeTarget`; this helper exists for the
+    /// `url-matching-pipeline` plumbing integration test.
+    static func resolveNativeTargetInWindows(
+        _ target: TargetDocument,
+        windows: [WindowInfo],
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) throws -> ResolvedWindowTarget {
+        do {
+            return try pickNativeTarget(target, in: windows)
+        } catch let error as SafariBrowserError {
+            // --first-match opt-in: recover from ambiguousWindowMatch
+            // on `.urlMatch` by selecting the first match in
+            // (window, tab) order, emitting a stderr warning that
+            // lists all candidates. Only urlMatch supports this
+            // fallback — documentIndex / windowTab ambiguity is a
+            // structural bug, not user-chosen disambiguation.
+            if firstMatch,
+               case .urlMatch(let matcher) = target,
+               case .ambiguousWindowMatch = error {
+                return try pickFirstMatchFallback(
+                    matcher: matcher,
+                    in: windows,
+                    warnWriter: warnWriter
+                )
             }
+            throw error
         }
     }
 
     /// First-match opt-in helper. Scans windows in (windowIndex,
-    /// tabIndex) order, returns the first tab whose URL contains
-    /// `pattern`. When more than one match exists, emits a stderr
+    /// tabIndex) order, returns the first tab whose URL satisfies
+    /// `matcher`. When more than one match exists, emits a stderr
     /// warning via `warnWriter` listing every candidate so the user
     /// can audit which tab was chosen. Pure — the warning emission is
     /// injected so tests can capture without touching stderr.
     static func pickFirstMatchFallback(
-        pattern: String,
+        matcher: UrlMatcher,
         in windows: [WindowInfo],
         warnWriter: ((String) -> Void)? = nil
     ) throws -> ResolvedWindowTarget {
         var matches: [(windowIndex: Int, tab: TabInWindow)] = []
         for window in windows {
-            for tab in window.tabs where tab.url.contains(pattern) {
+            for tab in window.tabs where matcher.matches(tab.url) {
                 matches.append((window.windowIndex, tab))
             }
         }
@@ -1089,7 +1652,7 @@ enum SafariBridge {
                 w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
             }
             throw SafariBrowserError.documentNotFound(
-                pattern: pattern,
+                pattern: matcher.description,
                 availableDocuments: allUrls
             )
         }
@@ -1097,7 +1660,7 @@ enum SafariBridge {
             let summary = matches.map { m in
                 "  window \(m.windowIndex) tab \(m.tab.tabIndex): \(m.tab.url)"
             }.joined(separator: "\n")
-            let msg = "warning: --first-match resolved '\(pattern)' to "
+            let msg = "warning: --first-match resolved '\(matcher.description)' to "
                 + "window \(first.windowIndex) tab \(first.tab.tabIndex) "
                 + "(of \(matches.count) matches):\n\(summary)\n"
             warnWriter?(msg)
@@ -2083,7 +2646,29 @@ enum SafariBridge {
         _ script: String,
         timeout: TimeInterval = SafariBridge.defaultProcessTimeout
     ) async throws -> String {
-        try await runProcessWithTimeout("/usr/bin/osascript", ["-e", script], timeout: timeout)
+        // Task 7.1 routing: if daemon mode is opted in AND the daemon is
+        // reachable, send the AppleScript source through the
+        // `applescript.execute` method so a warm pre-compiled handle
+        // serves the request. Any daemon-transport failure falls back
+        // silently to the stateless `osascript` subprocess path with a
+        // single `[daemon fallback: <reason>]` stderr line.
+        try await runViaRouter(
+            source: script,
+            daemonOptIn: SafariBridge.shouldUseDaemonAuto(),
+            daemonFn: { src in
+                try await SafariBridge.executeAppleScriptViaDaemon(
+                    source: src, timeout: timeout
+                )
+            },
+            statelessFn: { src in
+                try await runProcessWithTimeout(
+                    "/usr/bin/osascript", ["-e", src], timeout: timeout
+                )
+            },
+            warnWriter: { msg in
+                FileHandle.standardError.write(Data(msg.utf8))
+            }
+        )
     }
 }
 

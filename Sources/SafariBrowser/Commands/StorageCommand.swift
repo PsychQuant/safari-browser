@@ -46,7 +46,7 @@ struct StorageLocalGet: AsyncParsableCommand {
     func run() async throws {
         print(try await SafariBridge.doJavaScript(
             "localStorage.getItem('\(key.escapedForJS)') || ''",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         ))
     }
 }
@@ -59,7 +59,7 @@ struct StorageLocalSet: AsyncParsableCommand {
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
             "localStorage.setItem('\(key.escapedForJS)', '\(value.escapedForJS)')",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
     }
 }
@@ -71,7 +71,7 @@ struct StorageLocalRemove: AsyncParsableCommand {
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
             "localStorage.removeItem('\(key.escapedForJS)')",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
     }
 }
@@ -80,7 +80,7 @@ struct StorageLocalClear: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "clear", abstract: "Clear all localStorage")
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        _ = try await SafariBridge.doJavaScript("localStorage.clear()", target: target.resolve())
+        _ = try await SafariBridge.doJavaScript("localStorage.clear()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 }
 
@@ -93,7 +93,7 @@ struct StorageSessionGet: AsyncParsableCommand {
     func run() async throws {
         print(try await SafariBridge.doJavaScript(
             "sessionStorage.getItem('\(key.escapedForJS)') || ''",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         ))
     }
 }
@@ -106,7 +106,7 @@ struct StorageSessionSet: AsyncParsableCommand {
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
             "sessionStorage.setItem('\(key.escapedForJS)', '\(value.escapedForJS)')",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
     }
 }
@@ -118,7 +118,7 @@ struct StorageSessionRemove: AsyncParsableCommand {
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
             "sessionStorage.removeItem('\(key.escapedForJS)')",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
     }
 }
@@ -127,6 +127,6 @@ struct StorageSessionClear: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "clear", abstract: "Clear all sessionStorage")
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        _ = try await SafariBridge.doJavaScript("sessionStorage.clear()", target: target.resolve())
+        _ = try await SafariBridge.doJavaScript("sessionStorage.clear()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 }

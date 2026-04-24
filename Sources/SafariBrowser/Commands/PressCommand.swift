@@ -67,6 +67,6 @@ struct PressCommand: AsyncParsableCommand {
                 return 'OK';
             })()
             """
-        _ = try await SafariBridge.doJavaScript(js, target: target.resolve())
+        _ = try await SafariBridge.doJavaScript(js, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 }

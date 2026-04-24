@@ -51,7 +51,7 @@ final class CommandParsingTests: XCTestCase {
         // to wait for.
         let command = try WaitCommand.parse(["--for-url", "dashboard", "--url", "plaud"])
         XCTAssertEqual(command.forUrl, "dashboard")
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testWaitCommand_oldUrlFlagRejectedWithRenameHint() {
@@ -175,6 +175,59 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertFalse(command.js)
     }
 
+    // MARK: - First-match plumbing (#33 url-matching-pipeline)
+
+    func testJSCommandParsesFirstMatch() throws {
+        // Integration test: verify `--first-match` is wired through
+        // JSCommand's @OptionGroup to TargetOptions.firstMatch. Removing
+        // the plumbing in TargetOptions would fail this test even before
+        // the runtime path executes.
+        let command = try JSCommand.parse([
+            "document.title",
+            "--url", "plaud",
+            "--first-match",
+        ])
+        XCTAssertTrue(command.target.firstMatch,
+                      "--first-match must be reachable via command.target.firstMatch")
+        XCTAssertEqual(command.target.url, "plaud")
+        let bundle = command.target.resolveWithFirstMatch()
+        XCTAssertTrue(bundle.firstMatch,
+                      "resolveWithFirstMatch() must carry firstMatch through")
+        if case .urlMatch(.contains(let p)) = bundle.target {
+            XCTAssertEqual(p, "plaud")
+        } else {
+            XCTFail("Expected .urlMatch(.contains('plaud'))")
+        }
+    }
+
+    func testGetURLParsesUrlEndswith() throws {
+        // Integration test for `--url-endswith`: exercises the new
+        // precise-matching CLI flag through GetURL (GetCommand subcommand).
+        let command = try GetURL.parse(["--url-endswith", "/play"])
+        XCTAssertEqual(command.target.urlEndswith, "/play")
+        if case .urlMatch(.endsWith(let s)) = command.target.resolve() {
+            XCTAssertEqual(s, "/play")
+        } else {
+            XCTFail("Expected .urlMatch(.endsWith('/play'))")
+        }
+    }
+
+    func testJSCommandRejectsConflictingUrlFlags() {
+        // --url plaud + --url-endswith /play must fail validate() before
+        // reaching run(). Locks the mutual-exclusion contract.
+        XCTAssertThrowsError(
+            try JSCommand.parse([
+                "document.title",
+                "--url", "plaud",
+                "--url-endswith", "/play",
+            ]).validate()
+        ) { error in
+            let msg = "\(error)"
+            XCTAssertTrue(msg.contains("mutually exclusive"),
+                          "Error must identify the mutual exclusion: \(msg)")
+        }
+    }
+
     // MARK: - TargetOptions (#17/#18/#21)
 
     func testTargetOptions_defaultIsFrontWindow() throws {
@@ -189,7 +242,7 @@ final class CommandParsingTests: XCTestCase {
     func testTargetOptions_urlFlag() throws {
         let options = try TargetOptions.parse(["--url", "plaud"])
         XCTAssertEqual(options.url, "plaud")
-        XCTAssertEqual(options.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(options.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testTargetOptions_windowFlag() throws {
@@ -380,7 +433,7 @@ final class CommandParsingTests: XCTestCase {
     func testUploadCommand_jsModeAcceptsUrlTarget() throws {
         let command = try UploadCommand.parse(["--js", "input", "/tmp/test.txt", "--url", "plaud"])
         XCTAssertTrue(command.js)
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testUploadCommand_jsModeAcceptsDocumentTarget() throws {
@@ -407,7 +460,7 @@ final class CommandParsingTests: XCTestCase {
         // removes that reject so the resolver can run at runtime.
         let command = try UploadCommand.parse(["--native", "input", "/tmp/test.txt", "--url", "plaud"])
         XCTAssertTrue(command.native)
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testUploadCommand_nativeModeAcceptsTabTarget() throws {
@@ -426,7 +479,7 @@ final class CommandParsingTests: XCTestCase {
         // --allow-hid is a legacy alias for --native; same #26 relaxation applies.
         let command = try UploadCommand.parse(["--allow-hid", "input", "/tmp/test.txt", "--url", "plaud"])
         XCTAssertTrue(command.allowHid)
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testUploadCommand_nativeRejectsMutuallyExclusiveTargets() {
@@ -444,7 +497,7 @@ final class CommandParsingTests: XCTestCase {
         // picks at runtime. Parse-time validation cannot know the mode
         // in advance, so --url is accepted and the runtime path decides.
         let command = try UploadCommand.parse(["input", "/tmp/test.txt", "--url", "plaud"])
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     // MARK: - TargetDocument.forWindow regression guard (#23 verify R2)
@@ -554,7 +607,7 @@ final class CommandParsingTests: XCTestCase {
 
     func testCloseCommand_acceptsUrlFlag() throws {
         let command = try CloseCommand.parse(["--url", "plaud"])
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testCloseCommand_acceptsDocumentFlag() throws {
@@ -594,7 +647,7 @@ final class CommandParsingTests: XCTestCase {
 
     func testScreenshotCommand_acceptsUrlFlag() throws {
         let command = try ScreenshotCommand.parse(["--url", "plaud", "out.png"])
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testScreenshotCommand_acceptsDocumentFlag() throws {
@@ -613,7 +666,7 @@ final class CommandParsingTests: XCTestCase {
         // window index.
         let command = try ScreenshotCommand.parse(["--full", "--url", "plaud", "out.png"])
         XCTAssertTrue(command.full)
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testScreenshotCommand_rejectsMutuallyExclusiveTargets() {
@@ -656,7 +709,7 @@ final class CommandParsingTests: XCTestCase {
 
     func testPdfCommand_acceptsUrlFlag() throws {
         let command = try PdfCommand.parse(["--url", "docs", "--allow-hid", "out.pdf"])
-        XCTAssertEqual(command.target.resolve(), .urlContains("docs"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("docs")))
     }
 
     func testPdfCommand_acceptsDocumentFlag() throws {
@@ -680,7 +733,7 @@ final class CommandParsingTests: XCTestCase {
     func testStorageLocalGet_acceptsUrlTarget() throws {
         let command = try StorageLocalGet.parse(["token", "--url", "plaud"])
         XCTAssertEqual(command.key, "token")
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testStorageLocalSet_acceptsDocumentTarget() throws {
@@ -697,12 +750,12 @@ final class CommandParsingTests: XCTestCase {
 
     func testStorageLocalClear_acceptsTarget() throws {
         let command = try StorageLocalClear.parse(["--url", "oauth"])
-        XCTAssertEqual(command.target.resolve(), .urlContains("oauth"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("oauth")))
     }
 
     func testStorageSessionGet_acceptsUrlTarget() throws {
         let command = try StorageSessionGet.parse(["sid", "--url", "plaud"])
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testStorageSessionSet_acceptsTarget() throws {
@@ -729,7 +782,7 @@ final class CommandParsingTests: XCTestCase {
 
     func testSnapshotCommand_acceptsUrlTarget() throws {
         let command = try SnapshotCommand.parse(["--url", "plaud"])
-        XCTAssertEqual(command.target.resolve(), .urlContains("plaud"))
+        XCTAssertEqual(command.target.resolve(), .urlMatch(.contains("plaud")))
     }
 
     func testSnapshotCommand_pageWithTarget() throws {
@@ -753,8 +806,10 @@ extension SafariBridge.TargetDocument: Equatable {
             return true
         case (.windowIndex(let l), .windowIndex(let r)):
             return l == r
-        case (.urlContains(let l), .urlContains(let r)):
+        case (.urlMatch(let l), .urlMatch(let r)):
             return l == r
+        case (.windowTab(let lw, let lt), .windowTab(let rw, let rt)):
+            return lw == rw && lt == rt
         case (.documentIndex(let l), .documentIndex(let r)):
             return l == r
         default:

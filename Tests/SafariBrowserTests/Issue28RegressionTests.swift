@@ -58,7 +58,7 @@ final class Issue28RegressionTests: XCTestCase {
         XCTAssertEqual(plaudDocs.count, 2, "`documents` lists both plaud tabs")
 
         XCTAssertThrowsError(
-            try SafariBridge.pickNativeTarget(.urlContains("plaud"), in: windows)
+            try SafariBridge.pickNativeTarget(.urlMatch(.contains("plaud")), in: windows)
         ) { error in
             guard case SafariBrowserError.ambiguousWindowMatch(_, let matches) = error else {
                 return XCTFail("Expected ambiguousWindowMatch, got \(error)")
@@ -113,7 +113,7 @@ final class Issue28RegressionTests: XCTestCase {
         ]
         XCTAssertThrowsError(
             try SafariBridge.pickNativeTarget(
-                .urlContains("categoryId=unorganized"),
+                .urlMatch(.contains("categoryId=unorganized")),
                 in: windows
             )
         ) { error in
@@ -168,7 +168,7 @@ final class Issue28RegressionTests: XCTestCase {
         // `(first document whose URL contains ...)` silent-first-match
         // expression.)
         XCTAssertThrowsError(
-            try SafariBridge.pickNativeTarget(.urlContains("plaud"), in: windows)
+            try SafariBridge.pickNativeTarget(.urlMatch(.contains("plaud")), in: windows)
         ) { error in
             guard case SafariBrowserError.ambiguousWindowMatch = error else {
                 return XCTFail("Unified policy must fail-closed on multi-match, got \(error)")
@@ -190,7 +190,7 @@ final class Issue28RegressionTests: XCTestCase {
             ]),
         ]
         let result = try SafariBridge.pickFirstMatchFallback(
-            pattern: "plaud",
+            matcher: .contains("plaud"),
             in: windows
         )
         XCTAssertEqual(result.windowIndex, 1,
