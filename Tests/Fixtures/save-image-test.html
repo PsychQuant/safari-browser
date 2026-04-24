@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<!--
+  #31: deterministic fixture for save-image tests.
+  All image/video/svg elements use inline data: URLs so tests can run
+  offline and produce byte-identical outputs across environments.
+
+  Coverage map:
+    #target           — img with data: URL (basic happy path)
+    #big-pic          — picture with source + fallback img
+    #clip             — video with poster data URL
+    #logo             — inline SVG (outerHTML serialization)
+    #no-src           — img with empty src (elementHasNoSrc test)
+    #not-img          — div (unsupportedElement test)
+    #clone1, #clone2  — duplicate class for ambiguous-match test
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>save-image-test</title>
+<style>
+body { margin: 0; padding: 20px; font-family: sans-serif; }
+.card { display: inline-block; margin: 10px; padding: 10px; border: 1px solid #ccc; }
+</style>
+</head>
+<body>
+<h1>save-image test fixture</h1>
+
+<!-- 10x10 red PNG data URL — exactly 70 bytes decoded -->
+<img id="target" class="photo"
+     src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8BQz0AEYBxVSF+FABJssz/VJ1Y+AAAAAElFTkSuQmCC"
+     alt="10x10 red">
+
+<!-- Picture element with multiple sources -->
+<picture id="big-pic">
+  <source srcset="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8BQz0AEYBxVSF+FABJssz/VJ1Y+AAAAAElFTkSuQmCC"
+          media="(min-width: 100px)">
+  <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8BQz0AEYBxVSF+FABJssz/VJ1Y+AAAAAElFTkSuQmCC"
+       alt="fallback">
+</picture>
+
+<!-- Video with poster data URL (10x10 red PNG) — poster fetchable via --track poster -->
+<video id="clip"
+       poster="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8BQz0AEYBxVSF+FABJssz/VJ1Y+AAAAAElFTkSuQmCC"
+       width="100" height="100"></video>
+
+<!-- Inline SVG: outerHTML serialization target -->
+<svg id="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <circle cx="50" cy="50" r="40" fill="blue"/>
+</svg>
+
+<!-- Element with empty src — elementHasNoSrc path -->
+<img id="no-src" src="" alt="no src">
+
+<!-- Unsupported tag — unsupportedElement path -->
+<div id="not-img">This is a div, not an image</div>
+
+<!-- Duplicate class for ambiguous-match test -->
+<img id="clone1" class="clone" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8BQz0AEYBxVSF+FABJssz/VJ1Y+AAAAAElFTkSuQmCC" alt="clone 1">
+<img id="clone2" class="clone" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mP8z8BQz0AEYBxVSF+FABJssz/VJ1Y+AAAAAElFTkSuQmCC" alt="clone 2">
+
+</body>
+</html>

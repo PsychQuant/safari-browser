@@ -39,6 +39,11 @@ enum SafariBrowserError: LocalizedError {
     case elementZeroSize(selector: String)
     case elementOutsideViewport(selector: String, rect: CGRect, viewport: CGSize)
     case elementSelectorInvalid(selector: String, reason: String)
+    case elementHasNoSrc(selector: String, tagName: String)
+    case unsupportedElement(selector: String, tagName: String)
+    case downloadFailed(url: String, statusCode: Int?, reason: String)
+    case downloadSizeCapExceeded(url: String, capBytes: Int, actualBytes: Int)
+    case unsupportedURLScheme(url: String, scheme: String)
     case axOperationFailed(String)
     case windowIdentityAmbiguous(reason: String)
 
@@ -259,6 +264,92 @@ enum SafariBrowserError: LocalizedError {
                     post-resize viewport it can be cropped in one shot
                   - Automatic scroll-into-view is out of scope for this
                     release; see the follow-up issue for `--scroll-into-view`
+                """
+        case .elementHasNoSrc(let selector, let tagName):
+            return """
+                Element "\(selector)" (<\(tagName)>) has no resource URL.
+                For `<img>` / `<source>` / `<picture>` the command reads
+                `element.currentSrc || element.src`; for `<video>` /
+                `<audio>` it reads `element.currentSrc` (or
+                `element.poster` with `--track poster`). The chosen
+                attribute returned an empty string.
+                Common causes:
+                  - The element's src attribute is empty (placeholder slot)
+                  - Media hasn't started loading yet (video currentSrc
+                    populates only after the resource is requested)
+                  - A `<source>` element has `srcset` only (no `src`);
+                    consider selecting the parent `<picture>` or `<img>`
+                """
+        case .unsupportedElement(let selector, let tagName):
+            return """
+                Element "\(selector)" has tagName "<\(tagName)>" which is
+                not supported by `save-image`.
+                Supported tags:
+                  - `<img>` / `<source>` / `<picture>` — reads currentSrc or src
+                  - `<video>` / `<audio>` — reads currentSrc or poster (with --track)
+                  - `<svg>` — serializes outerHTML as UTF-8 text
+
+                For `<canvas>` use `screenshot --element` instead (canvas
+                pixels aren't a resource URL). For `<iframe>` / `<object>`
+                / `<embed>` the embedded resource is not directly
+                reachable from the top document; consider navigating to
+                the embedded URL and re-running save-image against its
+                element.
+                """
+        case .downloadFailed(let url, let statusCode, let reason):
+            let statusText: String
+            if let code = statusCode {
+                statusText = "HTTP \(code)"
+            } else {
+                statusText = "network error"
+            }
+            return """
+                Download failed for \(url): \(statusText)
+                Reason: \(reason)
+                Common fixes:
+                  - If HTTP 403 / 401, the server may gate on authentication
+                    — retry with `--with-cookies` to inherit Safari's
+                    session and cookies for the page
+                  - If HTTP 404, the element's currentSrc may be stale;
+                    reload the page and retry
+                  - If network error, check connectivity or the server's
+                    availability; for intermittent failures, retry
+                """
+        case .downloadSizeCapExceeded(let url, let capBytes, let actualBytes):
+            let capMB = Double(capBytes) / 1_048_576.0
+            let actualMB = Double(actualBytes) / 1_048_576.0
+            return """
+                Download size \(String(format: "%.2f", actualMB)) MB exceeds \
+                the \(String(format: "%.0f", capMB)) MB hard cap for \
+                `--with-cookies` on \(url).
+                The `--with-cookies` path transfers bytes as base64 through
+                Safari's JS bridge; the cap prevents V8 memory pressure
+                (see `upload --js` safety history).
+                Alternatives:
+                  - If the resource does not require authentication, drop
+                    `--with-cookies` to use the default URLSession path
+                    which has no size cap
+                  - For auth-gated large media, download via a separate
+                    tool that supports cookie injection (curl --cookie,
+                    wget --load-cookies, etc.)
+                """
+        case .unsupportedURLScheme(let url, let scheme):
+            return """
+                URL scheme "\(scheme):" is not supported: \(url)
+                `save-image` supports:
+                  - `https://` / `http://` — downloaded via URLSession
+                    (http:// emits a stderr warning about cleartext)
+                  - `data:` — decoded via Foundation, no network request
+
+                The scheme "\(scheme):" is rejected fail-closed rather
+                than attempted:
+                  - `blob:` URLs are JS-internal references that cannot
+                    be fetched from outside the browser
+                  - `ftp:`, `file:` are out of scope for a web-resource
+                    download command
+                  - Unknown schemes may reveal intent mismatches (e.g.
+                    `javascript:` in an element src usually signals a
+                    tracker; refusing to fetch is safer)
                 """
         case .elementSelectorInvalid(let selector, let reason):
             return """
