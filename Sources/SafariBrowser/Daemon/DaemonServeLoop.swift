@@ -80,8 +80,9 @@ enum DaemonServeLoop {
             self.pidPath = pidPath
             self.startedAt = Date()
 
-            // Built-in methods — the demo handlers (task 4.1) plus lifecycle.
-            await DaemonDispatch.registerDemoHandlers(on: underlying, cache: cache)
+            // Built-in methods — Phase 1 production handlers (task 7.1)
+            // plus the built-in lifecycle methods registered below.
+            await DaemonDispatch.registerPhase1Handlers(on: underlying, cache: cache)
             let myself = self
             await underlying.register("daemon.shutdown") { [myself] _ in
                 // Schedule actual teardown after we return the response so
