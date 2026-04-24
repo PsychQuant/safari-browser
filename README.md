@@ -359,6 +359,35 @@ safari-browser mouse move <x> <y>     # mouse events
 safari-browser mouse down / up / wheel <dy>
 ```
 
+### Daemon (opt-in, Phase 1)
+
+Long-running daemon that keeps AppleScript handles pre-compiled in memory, shaving `osascript`'s ~3s spawn cost off each repeat invocation. **Opt-in** — default CLI stays stateless.
+
+```bash
+safari-browser daemon start            # fork detached, listen on Unix socket
+safari-browser daemon status           # pid, uptime, request count, last activity
+safari-browser daemon logs             # tail daemon log
+safari-browser daemon stop             # shut down + clean socket/pid
+
+# Route a single command through the daemon
+safari-browser documents --daemon
+
+# Or set once, every future command auto-routes if socket is live
+export SAFARI_BROWSER_DAEMON=1
+
+# Namespace (two agents can run independent daemons)
+SAFARI_BROWSER_NAME=alpha safari-browser daemon start
+SAFARI_BROWSER_NAME=beta  safari-browser daemon start
+```
+
+**Phase 1 command coverage** (routed through daemon when enabled):
+`snapshot`, `click`, `fill`, `type`, `press`, `js`, `documents`, `get url`, `get title`, `wait`, `storage`.
+
+**NOT covered** (fall through to stateless path even with daemon on):
+`screenshot`, `pdf`, `upload --native`, `upload --allow-hid`.
+
+If the daemon is missing, crashed, version-mismatched, or unresponsive (15s), commands **silently fall back** to the stateless path with a single `[daemon fallback: <reason>]` stderr line. Idle >10 minutes → daemon auto-exits. See `openspec/specs/persistent-daemon/spec.md` for full semantics.
+
 ## Comparison with agent-browser
 
 | Feature | agent-browser | safari-browser |

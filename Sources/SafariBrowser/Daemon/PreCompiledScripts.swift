@@ -114,6 +114,44 @@ enum PreCompiledScripts {
                 end tell
                 """
         ),
+        // #37 Batch 2 (task 7.1) — read-path templates for Phase 1
+        // `get url` / `get title` / `get text` / `get source` commands.
+        // `{{DOC_REF}}` is pre-rendered by the caller via
+        // `SafariBridge.resolveDocumentReference` / `resolveToAppleScript`;
+        // it already passes through `escapedForAppleScript` for any user
+        // substring content, so substitution is safe.
+        "getDocumentURL": Template.parse(
+            name: "getDocumentURL",
+            source: """
+                tell application "Safari"
+                    get URL of {{DOC_REF}}
+                end tell
+                """
+        ),
+        "getDocumentTitle": Template.parse(
+            name: "getDocumentTitle",
+            source: """
+                tell application "Safari"
+                    get name of {{DOC_REF}}
+                end tell
+                """
+        ),
+        "getDocumentText": Template.parse(
+            name: "getDocumentText",
+            source: """
+                tell application "Safari"
+                    get text of {{DOC_REF}}
+                end tell
+                """
+        ),
+        "getDocumentSource": Template.parse(
+            name: "getDocumentSource",
+            source: """
+                tell application "Safari"
+                    get source of {{DOC_REF}}
+                end tell
+                """
+        ),
     ]
 
     /// Substitute every `{{NAME}}` token in `template.source` with the matching
