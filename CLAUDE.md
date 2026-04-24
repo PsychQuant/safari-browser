@@ -44,6 +44,12 @@ Claude Code plugin 位於另一個 repo：
 - **User-local override**: 個人 playbook 放 `~/.claude/skills/safari-<site>-<action>/SKILL.md` — Claude 原生 skill loader 直接吃，plugin 不做任何 custom precedence
 - **跨 repo 同步**: 規範住本 repo，實作住 plugin repo —— 改規範時記得同步檢查 plugin 裡的 seeds 和 CONTRIBUTING-PLAYBOOKS.md 沒有 drift
 
+## References
+
+`references/` is gitignored local-only space for external-project clones. See [`REFERENCES.md`](REFERENCES.md) for the tracked map of expected local bundles (`agent-browser`, `mas`) plus the rationale for intentional omissions.
+
+Key decision: **`browser-harness` is cited by URL, not bundled locally** (#36). Three in-flight specs (`playbook-skills`, `persistent-daemon` design + proposal) already cite browser-harness concepts via https://github.com/browser-use/browser-harness URLs; local clones under `references/` don't participate in PR diffs / history (dir is gitignored), so bundling offers no reviewer or reader benefit over URL citations.
+
 ## Design Principle: Non-Interference
 
 所有指令預設不干擾使用者操作 — 使用者可以同時做其他事情不受影響。
