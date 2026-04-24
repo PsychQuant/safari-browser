@@ -37,12 +37,12 @@
 
 ## 9. Docs and cross-repo coordination
 
-- [ ] 9.1 [P] Update `CLAUDE.md` with a daemon section (how to enable / disable / principle interactions) and `README.md` Quickstart mention; in both, call out 與 `save-image-subcommand` 的順序 (that change lands first) and enumerate the commands NOT covered in Phase 1 (screenshot, pdf, upload --native, upload --allow-hid)
+- [x] 9.1 [P] Update `CLAUDE.md` with a daemon section (how to enable / disable / principle interactions) and `README.md` Quickstart mention; in both, call out 與 `save-image-subcommand` 的順序 (that change lands first) and enumerate the commands NOT covered in Phase 1 (screenshot, pdf, upload --native, upload --allow-hid) — README `### Daemon (opt-in, Phase 1)` subsection + CLAUDE.md `## Persistent daemon` section cover opt-in signals, NAME precedence, Phase 1 coverage list, excluded commands, five failure modes, idle timeout, and version handshake semantics
 
 ## 10. Tests
 
-- [ ] 10.1 Unit tests covering IPC serialize/deserialize, NAME resolution precedence, idle timer clamp at min/max/default, handshake mismatch path, and actor serialization of concurrent requests
-- [ ] 10.2 Integration test asserting daemon mode and stateless mode produce identical stdout + exit code for `documents`, `get url`, and a `--url` query that matches multiple windows (simulated `ambiguousWindowMatch`); run both modes in same test suite
+- [x] 10.1 Unit tests covering IPC serialize/deserialize, NAME resolution precedence, idle timer clamp at min/max/default, handshake mismatch path, and actor serialization of concurrent requests — IPC/NAME/idle/handshake covered by existing `DaemonServerIPCTests`, `DaemonClientTests`, `DaemonIdleTimeoutTests`, `DaemonProtocolTests`; new `DaemonConcurrencyTests.swift` closes the actor-serialization gap with 2 cases (N distinct concurrent requests correctly routed by requestId + cache count == N, and N identical concurrent requests compile exactly once)
+- [x] 10.2 Integration test asserting daemon mode and stateless mode produce identical stdout + exit code for `documents`, `get url`, and a `--url` query that matches multiple windows (simulated `ambiguousWindowMatch`); run both modes in same test suite — `Tests/e2e-daemon-parity.sh` + `make test-daemon-parity` runs 5 parity cases (documents / get url / get title / --url hit / ambiguous --url fail-closed) comparing stdout byte-identical and exit-code match between stateless and `--daemon` modes; auto-skips with exit 77 when Safari isn't running
 
 ## 11. Security hardening (#37 Batch 1 — spec gaps from #32 verify)
 
