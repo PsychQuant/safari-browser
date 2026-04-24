@@ -37,11 +37,6 @@ The subcommand SHALL resolve the element via `document.querySelectorAll(selector
 source: save-image-subcommand
 updated: 2026-04-24
 code:
-  - .remember/logs/autonomous/save-071446.log
-  - .remember/logs/autonomous/save-073920.log
-  - .remember/logs/autonomous/save-071013.log
-  - .remember/tmp/save-session.pid
-  - .remember/logs/autonomous/save-073132.log
 -->
 
 ---
@@ -83,11 +78,6 @@ The subcommand SHALL NOT offer a silent first-match fallback (no `--first-match`
 source: save-image-subcommand
 updated: 2026-04-24
 code:
-  - .remember/logs/autonomous/save-071446.log
-  - .remember/logs/autonomous/save-073920.log
-  - .remember/logs/autonomous/save-071013.log
-  - .remember/tmp/save-session.pid
-  - .remember/logs/autonomous/save-073132.log
 -->
 
 ---
@@ -116,11 +106,6 @@ The subcommand SHALL follow HTTP redirects by default. When a redirect is cross-
 source: save-image-subcommand
 updated: 2026-04-24
 code:
-  - .remember/logs/autonomous/save-071446.log
-  - .remember/logs/autonomous/save-073920.log
-  - .remember/logs/autonomous/save-071013.log
-  - .remember/tmp/save-session.pid
-  - .remember/logs/autonomous/save-073132.log
 -->
 
 ---
@@ -161,11 +146,6 @@ The base64 payload transfer from Safari to Swift SHALL reuse the existing `Safar
 source: save-image-subcommand
 updated: 2026-04-24
 code:
-  - .remember/logs/autonomous/save-071446.log
-  - .remember/logs/autonomous/save-073920.log
-  - .remember/logs/autonomous/save-071013.log
-  - .remember/tmp/save-session.pid
-  - .remember/logs/autonomous/save-073132.log
 -->
 
 ---
@@ -204,11 +184,6 @@ If the output path already exists, the subcommand SHALL overwrite it silently, m
 source: save-image-subcommand
 updated: 2026-04-24
 code:
-  - .remember/logs/autonomous/save-071446.log
-  - .remember/logs/autonomous/save-073920.log
-  - .remember/logs/autonomous/save-071013.log
-  - .remember/tmp/save-session.pid
-  - .remember/logs/autonomous/save-073132.log
 -->
 
 ---
@@ -256,11 +231,6 @@ For any other URL scheme (`blob:`, `ftp:`, `javascript:`, `file:`, or unknown sc
 source: save-image-subcommand
 updated: 2026-04-24
 code:
-  - .remember/logs/autonomous/save-071446.log
-  - .remember/logs/autonomous/save-073920.log
-  - .remember/logs/autonomous/save-071013.log
-  - .remember/tmp/save-session.pid
-  - .remember/logs/autonomous/save-073132.log
 -->
 
 ---
@@ -300,9 +270,4 @@ Each of these errors SHALL NOT leave a partial file at the output path.
 source: save-image-subcommand
 updated: 2026-04-24
 code:
-  - .remember/logs/autonomous/save-071446.log
-  - .remember/logs/autonomous/save-073920.log
-  - .remember/logs/autonomous/save-071013.log
-  - .remember/tmp/save-session.pid
-  - .remember/logs/autonomous/save-073132.log
 -->
