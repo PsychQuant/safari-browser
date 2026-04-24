@@ -26,6 +26,21 @@ Changes can be parked（暫存）— temporarily moved out of `openspec/changes/
 
 <!-- SPECTRA:END -->
 
+## Post-archive maintenance
+
+`spectra archive` appends `<!-- @trace ... -->` HTML comments that list every file the archiving session wrote — including transient `.remember/logs/autonomous/save-*.log` and `.remember/tmp/*` paths. Without pruning, specs like `screenshot/spec.md` balloon to 35 000+ lines, 98% of which is log-file noise invisible in any rendered view.
+
+After any `spectra archive` run that touches `openspec/specs/**`, run:
+
+```bash
+./scripts/prune-spec-traces.sh --dry-run   # preview line deltas
+./scripts/prune-spec-traces.sh --apply     # strip transient refs, backup to /tmp/spec-prune-backup/<ts>/
+```
+
+The script is idempotent — re-running is a no-op once specs are clean. Real code refs (`Sources/`, `Tests/`, docs) are preserved; only `.remember/logs/` + `.remember/tmp/` lines are removed. Provenance headers (`source:` / `updated:`) always survive.
+
+See `#41` for the bloat incident that motivated this.
+
 ## Plugin
 
 Claude Code plugin 位於另一個 repo：
