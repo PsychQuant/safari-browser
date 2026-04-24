@@ -199,7 +199,7 @@ final class WindowIndexResolverTests: XCTestCase {
             makeWindow(index: 1, tabs: [(url: "https://github.com", isCurrent: true)]),
             makeWindow(index: 2, tabs: [(url: "https://web.plaud.ai/file/a", isCurrent: true)]),
         ]
-        let result = try SafariBridge.pickNativeTarget(.urlContains("plaud"), in: windows)
+        let result = try SafariBridge.pickNativeTarget(.urlMatch(.contains("plaud")), in: windows)
         XCTAssertEqual(result.windowIndex, 2)
         XCTAssertNil(result.tabIndexInWindow,
                      "Match is already the current tab, no switch needed")
@@ -212,7 +212,7 @@ final class WindowIndexResolverTests: XCTestCase {
                 (url: "https://web.plaud.ai/file/a", isCurrent: false),
             ]),
         ]
-        let result = try SafariBridge.pickNativeTarget(.urlContains("plaud"), in: windows)
+        let result = try SafariBridge.pickNativeTarget(.urlMatch(.contains("plaud")), in: windows)
         XCTAssertEqual(result.windowIndex, 1)
         XCTAssertEqual(result.tabIndexInWindow, 2,
                        "Match is a background tab — tabIndexInWindow signals switch needed")
@@ -225,7 +225,7 @@ final class WindowIndexResolverTests: XCTestCase {
             makeWindow(index: 1, tabs: [(url: "https://github.com", isCurrent: true)]),
         ]
         XCTAssertThrowsError(
-            try SafariBridge.pickNativeTarget(.urlContains("xyz"), in: windows)
+            try SafariBridge.pickNativeTarget(.urlMatch(.contains("xyz")), in: windows)
         ) { error in
             guard case let SafariBrowserError.documentNotFound(pattern, availableDocuments) = error else {
                 XCTFail("Expected documentNotFound, got \(error)")
@@ -246,7 +246,7 @@ final class WindowIndexResolverTests: XCTestCase {
             makeWindow(index: 3, tabs: [(url: "https://web.plaud.ai/file/b", isCurrent: true)]),
         ]
         XCTAssertThrowsError(
-            try SafariBridge.pickNativeTarget(.urlContains("plaud"), in: windows)
+            try SafariBridge.pickNativeTarget(.urlMatch(.contains("plaud")), in: windows)
         ) { error in
             guard case let SafariBrowserError.ambiguousWindowMatch(pattern, matches) = error else {
                 XCTFail("Expected ambiguousWindowMatch, got \(error)")
@@ -266,7 +266,7 @@ final class WindowIndexResolverTests: XCTestCase {
             makeWindow(index: 1, tabs: [(url: "https://web.plaud.ai/file/a", isCurrent: true)]),
             makeWindow(index: 3, tabs: [(url: "https://web.plaud.ai/file/b", isCurrent: true)]),
         ]
-        let result = try SafariBridge.pickNativeTarget(.urlContains("file/b"), in: windows)
+        let result = try SafariBridge.pickNativeTarget(.urlMatch(.contains("file/b")), in: windows)
         XCTAssertEqual(result.windowIndex, 3)
     }
 
@@ -281,7 +281,7 @@ final class WindowIndexResolverTests: XCTestCase {
             ]),
         ]
         XCTAssertThrowsError(
-            try SafariBridge.pickNativeTarget(.urlContains("plaud"), in: windows)
+            try SafariBridge.pickNativeTarget(.urlMatch(.contains("plaud")), in: windows)
         ) { error in
             guard case let SafariBrowserError.ambiguousWindowMatch(_, matches) = error else {
                 XCTFail("Expected ambiguousWindowMatch, got \(error)")

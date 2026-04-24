@@ -37,6 +37,6 @@ struct SetMedia: AsyncParsableCommand {
                 document.head.appendChild(style);
                 document.documentElement.style.colorScheme = '\(scheme)';
             })()
-            """, target: target.resolve())
+            """, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 }

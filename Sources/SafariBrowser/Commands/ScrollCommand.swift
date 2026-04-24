@@ -23,6 +23,6 @@ struct ScrollCommand: AsyncParsableCommand {
         default:
             throw ValidationError("Direction must be up, down, left, or right")
         }
-        _ = try await SafariBridge.doJavaScript("window.scrollBy(\(x), \(y))", target: target.resolve())
+        _ = try await SafariBridge.doJavaScript("window.scrollBy(\(x), \(y))", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 }

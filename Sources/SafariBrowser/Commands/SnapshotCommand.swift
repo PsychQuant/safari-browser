@@ -107,7 +107,7 @@ struct SnapshotCommand: AsyncParsableCommand {
             })()
             """
 
-        let resolvedTarget = target.resolve()
+        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         var result = try await SafariBridge.doJavaScript(js, target: resolvedTarget)
 
         // If result is empty or not valid JSON, it may be truncated — retry with chunked read
@@ -350,7 +350,7 @@ struct SnapshotCommand: AsyncParsableCommand {
             })()
             """
 
-        let resolvedTarget = target.resolve()
+        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         var result = try await SafariBridge.doJavaScript(js, target: resolvedTarget)
 
         if result.isEmpty || result.data(using: .utf8).flatMap({ try? JSONSerialization.jsonObject(with: $0) }) == nil {

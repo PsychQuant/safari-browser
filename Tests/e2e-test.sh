@@ -107,6 +107,70 @@ else
     fail "fill + get value" "got: $VAL"
 fi
 
+# 8. URL matching pipeline (#33 + #34)
+echo "## URL Matching Pipeline"
+
+# Open the test page in a second tab (deliberate duplicate) to create
+# a multi-match scenario for --first-match and --url-endswith.
+$SB open "$TEST_PAGE" --new-tab 2>/dev/null
+sleep 1
+
+# 8a. --first-match recovers from multi-match (#33 plumb-through)
+if $SB js "document.title" --url "test-page" --first-match > /tmp/sb-fm-out 2> /tmp/sb-fm-err; then
+    if grep -q "warning: --first-match" /tmp/sb-fm-err; then
+        pass "--first-match recovers multi-match + emits stderr warning"
+    else
+        fail "--first-match recovers multi-match" "no stderr warning: $(cat /tmp/sb-fm-err)"
+    fi
+else
+    fail "--first-match recovers multi-match" "command failed: $(cat /tmp/sb-fm-err)"
+fi
+
+# 8b. --url alone (no --first-match) still fails closed on multi-match
+if ! $SB js "document.title" --url "test-page" > /tmp/sb-fc-out 2> /tmp/sb-fc-err; then
+    if grep -q "ambiguousWindowMatch\|Multiple Safari windows match" /tmp/sb-fc-err; then
+        pass "multi-match fails closed without --first-match"
+    else
+        fail "multi-match fails closed without --first-match" "unexpected stderr: $(cat /tmp/sb-fc-err)"
+    fi
+else
+    fail "multi-match fails closed without --first-match" "expected non-zero exit"
+fi
+
+# 8c. --url-endswith + --first-match (#34 precise matching for all matcher kinds)
+if $SB js "document.title" --url-endswith "test-page.html" --first-match > /dev/null 2>&1; then
+    pass "--url-endswith + --first-match works across matcher kinds"
+else
+    fail "--url-endswith + --first-match" "command failed"
+fi
+
+# 8d. Invalid regex rejected at validate time
+if ! $SB js "1" --url-regex "[" > /dev/null 2> /tmp/sb-regex-err; then
+    if grep -q "url-regex" /tmp/sb-regex-err; then
+        pass "--url-regex invalid pattern rejected at validate time"
+    else
+        fail "--url-regex invalid pattern rejected" "error doesn't mention --url-regex: $(cat /tmp/sb-regex-err)"
+    fi
+else
+    fail "--url-regex invalid pattern rejected" "expected non-zero exit"
+fi
+
+# 8e. Conflicting URL flags rejected
+if ! $SB js "1" --url "x" --url-endswith "/y" > /dev/null 2> /tmp/sb-conflict-err; then
+    if grep -q "mutually exclusive" /tmp/sb-conflict-err; then
+        pass "conflicting URL flags rejected with 'mutually exclusive' error"
+    else
+        fail "conflicting URL flags rejected" "error doesn't say 'mutually exclusive': $(cat /tmp/sb-conflict-err)"
+    fi
+else
+    fail "conflicting URL flags rejected" "expected non-zero exit"
+fi
+
+# Cleanup: close the duplicate tab to keep test state idempotent.
+$SB close --url-endswith "test-page.html" --first-match 2>/dev/null || true
+
+rm -f /tmp/sb-fm-out /tmp/sb-fm-err /tmp/sb-fc-out /tmp/sb-fc-err /tmp/sb-regex-err /tmp/sb-conflict-err
+
 # Summary
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

@@ -39,11 +39,23 @@ struct JSCommand: AsyncParsableCommand {
             jsCode = code!
         }
 
-        let documentTarget = target.resolve()
+        // Resolve once at the command boundary so (a) `--first-match`
+        // multi-match fires its stderr warning at most once and (b)
+        // downstream internal `doJavaScript` calls (store/read-length/
+        // read-result/delete) cannot race on Safari tab-list changes
+        // between chunked reads. The concrete target is a `.windowTab`
+        // or `.windowIndex` that resolveToAppleScript passes through
+        // unchanged.
+        let (initialTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let documentTarget = try await SafariBridge.resolveToConcreteTarget(
+            initialTarget,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
+        )
         let result: String
         if large || output != nil {
             // Intentional code evaluation — this CLI runs user-provided JS by design.
-            result = try await SafariBridge.doJavaScriptLarge("eval(\(jsCode.jsStringLiteral))", target: documentTarget)
+            result = try await SafariBridge.doJavaScriptLarge("eval(\(jsCode.jsStringLiteral))", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
         } else {
             // Wrap user code so both single expressions and multi-line scripts work.
             // eval() is intentional here — this is a browser automation CLI that executes
@@ -51,28 +63,30 @@ struct JSCommand: AsyncParsableCommand {
             // Intentional code evaluation — this CLI runs user-provided JS by design.
             _ = try await SafariBridge.doJavaScript(
                 "(function(){ try { var r = '' + eval(\(jsCode.jsStringLiteral)); window.__sbLen = r.length; window.__sbResult = r; } catch(e) { window.__sbLen = -1; window.__sbResult = e.message; } })()",
-                target: documentTarget
+                target: documentTarget,
+                firstMatch: firstMatch,
+                warnWriter: warnWriter
             )
-            let lenStr = try await SafariBridge.doJavaScript("window.__sbLen", target: documentTarget)
+            let lenStr = try await SafariBridge.doJavaScript("window.__sbLen", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
             // AppleScript returns numbers as "9.0" — parse via Double then truncate
             let len = Int(Double(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
 
             if len == -1 {
-                let errMsg = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget)
-                _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget)
+                let errMsg = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
+                _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
                 throw SafariBrowserError.appleScriptFailed("JavaScript error: \(errMsg)")
             } else if len == 0 {
                 result = ""
             } else {
-                let stored = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget)
+                let stored = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
                 if stored.isEmpty && len > 0 {
-                    result = try await SafariBridge.doJavaScriptLarge("window.__sbResult", target: documentTarget)
+                    result = try await SafariBridge.doJavaScriptLarge("window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
                     FileHandle.standardError.write(Data("warning: output was large, used chunked read. Use --large to skip this.\n".utf8))
                 } else {
                     result = stored
                 }
             }
-            _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget)
+            _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
         }
 
         if let output {

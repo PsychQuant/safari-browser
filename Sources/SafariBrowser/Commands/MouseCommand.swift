@@ -27,7 +27,7 @@ struct MouseMove: AsyncParsableCommand {
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
             "document.elementFromPoint(\(x),\(y)).dispatchEvent(new MouseEvent('mousemove',{clientX:\(x),clientY:\(y),bubbles:true}))",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
     }
 }
@@ -43,7 +43,7 @@ struct MouseDown: AsyncParsableCommand {
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
             "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
     }
 }
@@ -59,7 +59,7 @@ struct MouseUp: AsyncParsableCommand {
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
             "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mouseup',{bubbles:true}))",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
     }
 }
@@ -77,7 +77,7 @@ struct MouseWheel: AsyncParsableCommand {
     func run() async throws {
         _ = try await SafariBridge.doJavaScript(
             "document.dispatchEvent(new WheelEvent('wheel',{deltaY:\(deltaY),bubbles:true}))",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
     }
 }

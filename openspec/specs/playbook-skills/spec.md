@@ -2,7 +2,11 @@
 
 ## Purpose
 
-TBD - created by archiving change 'playbook-skills-convention'. Update Purpose after archive.
+Define the naming convention, frontmatter schema, and discovery contract for **site-specific playbook skills** that extend the main `safari-browser` skill with domain knowledge (e.g., "how to upload audio to Plaud via Safari", "how to star a GitHub repo when logged in vs logged out").
+
+Playbook skills are siblings of the main `safari-browser` skill inside the same plugin (or `~/.claude/skills/` for user-local overrides) and follow the `safari-<site>-<action>` naming pattern so Claude Code's native skill loader auto-surfaces them on organic natural-language intent. This capability codifies the convention as normative requirements; the main `safari-browser` skill serves as the default playbook-free fallback, and each playbook skill narrows scope to a single site + flow.
+
+Design context: originally proposed as `domain-skills-structure` (inspired by `browser-use/browser-harness`'s `domain-skills/<site>/*.md` layout) under tracking issue #32 Wave 1 G1; renamed during propose phase to `playbook-skills-convention` to emphasize the convention nature rather than a directory structure. During apply, the `description` constraint was relaxed from "single sentence" to "≤200 chars with optional trigger/use-case phrases" to match Claude Code community conventions — see Requirement: Frontmatter contract below for the normative statement.
 
 ## Requirements
 

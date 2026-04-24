@@ -21,7 +21,7 @@ struct FindCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        let documentTarget = target.resolve()
+        let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let findJS: String = switch locator.lowercased() {
         case "text":
             """

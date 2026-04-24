@@ -39,7 +39,7 @@ final class FirstMatchTests: XCTestCase {
             makeWindow(index: 2, tabs: [(url: "https://web.plaud.ai/b", isCurrent: true)]),
         ]
         let result = try SafariBridge.pickFirstMatchFallback(
-            pattern: "plaud",
+            matcher: .contains("plaud"),
             in: windows
         )
         XCTAssertEqual(result.windowIndex, 1)
@@ -54,7 +54,7 @@ final class FirstMatchTests: XCTestCase {
             ]),
         ]
         let result = try SafariBridge.pickFirstMatchFallback(
-            pattern: "plaud",
+            matcher: .contains("plaud"),
             in: windows
         )
         XCTAssertEqual(result.windowIndex, 1)
@@ -75,7 +75,7 @@ final class FirstMatchTests: XCTestCase {
             ]),
         ]
         _ = try SafariBridge.pickFirstMatchFallback(
-            pattern: "plaud",
+            matcher: .contains("plaud"),
             in: windows,
             warnWriter: warnWriter
         )
@@ -103,7 +103,7 @@ final class FirstMatchTests: XCTestCase {
             ]),
         ]
         let result = try SafariBridge.pickFirstMatchFallback(
-            pattern: "plaud",
+            matcher: .contains("plaud"),
             in: windows,
             warnWriter: warnWriter
         )
@@ -120,7 +120,7 @@ final class FirstMatchTests: XCTestCase {
             makeWindow(index: 1, tabs: [(url: "https://example.com/", isCurrent: true)]),
         ]
         XCTAssertThrowsError(
-            try SafariBridge.pickFirstMatchFallback(pattern: "missing", in: windows)
+            try SafariBridge.pickFirstMatchFallback(matcher: .contains("missing"), in: windows)
         ) { error in
             guard case SafariBrowserError.documentNotFound = error else {
                 XCTFail("Expected documentNotFound, got \(error)")
@@ -136,7 +136,7 @@ final class FirstMatchTests: XCTestCase {
             ]),
         ]
         let result = try SafariBridge.pickFirstMatchFallback(
-            pattern: "plaud",
+            matcher: .contains("plaud"),
             in: windows
         )
         XCTAssertEqual(result.windowIndex, 1)
@@ -152,7 +152,7 @@ final class FirstMatchTests: XCTestCase {
             ]),
         ]
         let result = try SafariBridge.pickFirstMatchFallback(
-            pattern: "plaud",
+            matcher: .contains("plaud"),
             in: windows
         )
         XCTAssertEqual(result.windowIndex, 1)

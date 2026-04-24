@@ -29,6 +29,33 @@ struct TargetOptions: ParsableArguments {
 
     @Option(
         name: .long,
+        help: ArgumentHelp(
+            "Target the Safari document whose URL equals this string exactly (no normalization).",
+            discussion: "Exact-match avoids the hierarchical-URL prefix ambiguity of --url. Trailing slash, query string, and host case are all significant — use --url-endswith or --url-regex when normalization is desired."
+        )
+    )
+    var urlExact: String?
+
+    @Option(
+        name: .long,
+        help: ArgumentHelp(
+            "Target the Safari document whose URL ends with this suffix (case-sensitive).",
+            discussion: "Primary escape from prefix-substring ambiguity — a unique suffix differentiates parent from child URLs. Example: --url-endswith /play uniquely locks the deepest tab when parent tabs share a prefix."
+        )
+    )
+    var urlEndswith: String?
+
+    @Option(
+        name: .long,
+        help: ArgumentHelp(
+            "Target the Safari document whose URL matches this NSRegularExpression pattern.",
+            discussion: "Unanchored by default (add ^...$ for exact match). Case-sensitive. Compiled once at validate() — invalid patterns fail fast with a clear error. No timeout; Safari URLs are bounded so ReDoS risk is negligible."
+        )
+    )
+    var urlRegex: String?
+
+    @Option(
+        name: .long,
         help: "Target the document of the Nth Safari window (1-indexed). Pair with --tab-in-window to select a specific tab."
     )
     var window: Int?
@@ -93,8 +120,44 @@ struct TargetOptions: ParsableArguments {
             )
         }
 
-        let standaloneFlags: [String] = [
+        // Collect URL-matching flags first for targeted cross-checks.
+        let urlMatchingFlags: [String] = [
             url.map { _ in "--url" },
+            urlExact.map { _ in "--url-exact" },
+            urlEndswith.map { _ in "--url-endswith" },
+            urlRegex.map { _ in "--url-regex" },
+        ].compactMap { $0 }
+
+        // Rule 2a: the four URL-matching flags are mutually exclusive —
+        // pick one matching strategy per invocation (#34 requirement).
+        if urlMatchingFlags.count > 1 {
+            throw ValidationError(
+                "The URL-matching flags \(urlMatchingFlags.joined(separator: ", ")) are mutually exclusive — pick one."
+            )
+        }
+
+        // Rule 2b: empty --url-endswith expresses no intent; reject
+        // early rather than silently matching every tab.
+        if let s = urlEndswith, s.isEmpty {
+            throw ValidationError(
+                "--url-endswith requires a non-empty suffix (an empty suffix would match every tab)."
+            )
+        }
+
+        // Rule 2c: compile --url-regex at parse time so users see a
+        // clear pattern-compile error instead of a cryptic failure
+        // later in the resolver.
+        if let pattern = urlRegex {
+            do {
+                _ = try NSRegularExpression(pattern: pattern, options: [])
+            } catch {
+                throw ValidationError(
+                    "--url-regex pattern failed to compile: \(error.localizedDescription)"
+                )
+            }
+        }
+
+        let standaloneFlags: [String] = urlMatchingFlags + [
             tab.map { _ in "--tab" },
             document.map { _ in "--document" },
         ].compactMap { $0 }
@@ -141,8 +204,22 @@ struct TargetOptions: ParsableArguments {
         if let w = window, let m = tabInWindow {
             return .windowTab(window: w, tabInWindow: m)
         }
+        // URL-matching flags in priority order (exactly one is set, per validate()).
         if let url = url {
-            return .urlContains(url)
+            return .urlMatch(.contains(url))
+        }
+        if let exact = urlExact {
+            return .urlMatch(.exact(exact))
+        }
+        if let suffix = urlEndswith {
+            return .urlMatch(.endsWith(suffix))
+        }
+        if let pattern = urlRegex {
+            // validate() ensured the pattern compiles; force-try mirrors
+            // that contract (no user reaches here with an invalid pattern).
+            // swiftlint:disable:next force_try
+            let regex = try! NSRegularExpression(pattern: pattern, options: [])
+            return .urlMatch(.regex(regex))
         }
         if let window = window {
             return .windowIndex(window)
@@ -154,5 +231,38 @@ struct TargetOptions: ParsableArguments {
             return .documentIndex(document)
         }
         return .frontWindow
+    }
+
+    /// Default warn-writer shared by every command that wires
+    /// `--first-match` plumb-through. Writes UTF-8 encoded messages to
+    /// stderr so users see which tab was chosen from a multi-match
+    /// fallback. Exposed as a static property so inline command call
+    /// sites can reference it without constructing a closure each time.
+    static let stderrWarnWriter: @Sendable (String) -> Void = { msg in
+        FileHandle.standardError.write(Data(msg.utf8))
+    }
+
+    /// Convenience wrapper that bundles the resolved `TargetDocument`
+    /// with the `firstMatch` opt-in flag and a stderr-backed
+    /// `warnWriter`. Commands should prefer this over `resolve()` when
+    /// calling bridge APIs that accept `firstMatch` / `warnWriter`
+    /// parameters (read-path entry points such as `doJavaScript`,
+    /// `getCurrentURL`, `getCurrentTitle`, …), so the `--first-match`
+    /// CLI intent propagates through every target-resolving call site
+    /// without per-command boilerplate.
+    ///
+    /// The default warnWriter writes a single UTF-8 encoded message to
+    /// stderr per invocation, which matches the contract tested in
+    /// `FirstMatchTests` and `ResolveNativeTargetPlumbingTests`.
+    func resolveWithFirstMatch() -> (
+        target: SafariBridge.TargetDocument,
+        firstMatch: Bool,
+        warnWriter: (String) -> Void
+    ) {
+        (
+            resolve(),
+            firstMatch,
+            { msg in FileHandle.standardError.write(Data(msg.utf8)) }
+        )
     }
 }

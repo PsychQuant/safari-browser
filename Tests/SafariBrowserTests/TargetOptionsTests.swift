@@ -16,17 +16,25 @@ final class TargetOptionsTests: XCTestCase {
     /// for direct property mutation in tests.
     private func makeOptions(
         url: String? = nil,
+        urlExact: String? = nil,
+        urlEndswith: String? = nil,
+        urlRegex: String? = nil,
         window: Int? = nil,
         tab: Int? = nil,
         document: Int? = nil,
-        tabInWindow: Int? = nil
+        tabInWindow: Int? = nil,
+        firstMatch: Bool = false
     ) -> TargetOptions {
         var opts = TargetOptions()
         opts.url = url
+        opts.urlExact = urlExact
+        opts.urlEndswith = urlEndswith
+        opts.urlRegex = urlRegex
         opts.window = window
         opts.tab = tab
         opts.document = document
         opts.tabInWindow = tabInWindow
+        opts.firstMatch = firstMatch
         return opts
     }
 
@@ -107,10 +115,10 @@ final class TargetOptionsTests: XCTestCase {
 
     func testResolveUrl() {
         let opts = makeOptions(url: "plaud")
-        if case .urlContains(let p) = opts.resolve() {
+        if case .urlMatch(.contains(let p)) = opts.resolve() {
             XCTAssertEqual(p, "plaud")
         } else {
-            XCTFail("Expected .urlContains")
+            XCTFail("Expected .urlMatch(.contains)")
         }
     }
 
@@ -148,6 +156,105 @@ final class TargetOptionsTests: XCTestCase {
         } else {
             XCTFail("Expected .frontWindow")
         }
+    }
+
+    // MARK: - Precise URL matching (#34)
+
+    func testResolveUrlExactMapsToExactMatcher() {
+        let opts = makeOptions(urlExact: "https://web.plaud.ai/")
+        guard case .urlMatch(.exact(let u)) = opts.resolve() else {
+            return XCTFail("Expected .urlMatch(.exact)")
+        }
+        XCTAssertEqual(u, "https://web.plaud.ai/")
+    }
+
+    func testResolveUrlEndswithMapsToEndsWithMatcher() {
+        let opts = makeOptions(urlEndswith: "/play")
+        guard case .urlMatch(.endsWith(let s)) = opts.resolve() else {
+            return XCTFail("Expected .urlMatch(.endsWith)")
+        }
+        XCTAssertEqual(s, "/play")
+    }
+
+    func testResolveUrlRegexMapsToRegexMatcher() {
+        let opts = makeOptions(urlRegex: "lesson/[a-f0-9-]+$")
+        guard case .urlMatch(.regex(let r)) = opts.resolve() else {
+            return XCTFail("Expected .urlMatch(.regex)")
+        }
+        XCTAssertEqual(r.pattern, "lesson/[a-f0-9-]+$")
+    }
+
+    // MARK: - URL-matching flag mutual exclusion (#34)
+
+    func testMultipleUrlFlagsMutuallyExclusive() {
+        let opts = makeOptions(url: "plaud", urlEndswith: "/play")
+        XCTAssertThrowsError(try opts.validate()) { error in
+            let msg = "\(error)"
+            XCTAssertTrue(msg.contains("--url"))
+            XCTAssertTrue(msg.contains("--url-endswith"))
+            XCTAssertTrue(msg.contains("mutually exclusive"),
+                          "Error must identify the conflicting flags as mutually exclusive")
+        }
+    }
+
+    func testUrlExactConflictsWithUrlRegex() {
+        let opts = makeOptions(urlExact: "https://x/", urlRegex: "^.*$")
+        XCTAssertThrowsError(try opts.validate())
+    }
+
+    func testUrlFlagConflictsWithWindow() {
+        let opts = makeOptions(urlEndswith: "/play", window: 2)
+        XCTAssertThrowsError(try opts.validate()) { error in
+            let msg = "\(error)"
+            XCTAssertTrue(msg.contains("--window"))
+        }
+    }
+
+    // MARK: - Validation edge cases (#34)
+
+    func testEmptyUrlEndswithRejected() {
+        let opts = makeOptions(urlEndswith: "")
+        XCTAssertThrowsError(try opts.validate()) { error in
+            let msg = "\(error)"
+            XCTAssertTrue(msg.contains("--url-endswith"))
+            XCTAssertTrue(msg.contains("non-empty"),
+                          "Error must explain that empty suffix is rejected")
+        }
+    }
+
+    func testInvalidUrlRegexRejectedAtValidateTime() {
+        let opts = makeOptions(urlRegex: "[")
+        XCTAssertThrowsError(try opts.validate()) { error in
+            let msg = "\(error)"
+            XCTAssertTrue(msg.contains("--url-regex"),
+                          "Error must identify which flag failed to compile")
+        }
+    }
+
+    func testValidUrlRegexCompiles() throws {
+        let opts = makeOptions(urlRegex: "^https://x/[a-z]+$")
+        try opts.validate()  // expect no throw
+    }
+
+    // MARK: - resolveWithFirstMatch helper (#33)
+
+    func testResolveWithFirstMatchBundlesTargetFirstMatchAndWriter() {
+        let opts = makeOptions(url: "plaud", firstMatch: true)
+        let bundle = opts.resolveWithFirstMatch()
+        if case .urlMatch(.contains(let p)) = bundle.target {
+            XCTAssertEqual(p, "plaud")
+        } else {
+            XCTFail("Expected .urlMatch(.contains)")
+        }
+        XCTAssertTrue(bundle.firstMatch)
+        // warnWriter is non-nil and callable — concrete stderr behavior
+        // is outside the unit boundary (would couple test to FileHandle).
+        bundle.warnWriter("test message\n")  // should not crash
+    }
+
+    func testResolveWithFirstMatchDefaultsFirstMatchFalse() {
+        let opts = makeOptions(url: "plaud")
+        XCTAssertFalse(opts.resolveWithFirstMatch().firstMatch)
     }
 
     // MARK: - Parse-level integration via OpenCommand (hosts TargetOptions via @OptionGroup)

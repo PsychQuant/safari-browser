@@ -9,6 +9,6 @@ struct ReloadCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        _ = try await SafariBridge.doJavaScript("location.reload()", target: target.resolve())
+        _ = try await SafariBridge.doJavaScript("location.reload()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 }

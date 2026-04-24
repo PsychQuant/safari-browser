@@ -27,24 +27,15 @@ final class SafariBridgeTargetTests: XCTestCase {
         )
     }
 
-    // MARK: - TargetDocument.urlContains
-
-    func testUrlContainsResolvesWithQuotedPattern() {
-        let reference = SafariBridge.resolveDocumentReference(.urlContains("plaud"))
-        XCTAssertEqual(reference, #"(first document whose URL contains "plaud")"#)
-    }
-
-    func testUrlContainsEscapesDoubleQuotes() {
-        // If the pattern contains a double quote, it must be AppleScript-escaped
-        // (\" inside an AppleScript string literal) to avoid breaking the tell block.
-        let reference = SafariBridge.resolveDocumentReference(.urlContains(#"example"dquote"#))
-        XCTAssertEqual(reference, #"(first document whose URL contains "example\"dquote")"#)
-    }
-
-    func testUrlContainsEscapesBackslashes() {
-        let reference = SafariBridge.resolveDocumentReference(.urlContains(#"path\subdir"#))
-        XCTAssertEqual(reference, #"(first document whose URL contains "path\\subdir")"#)
-    }
+    // MARK: - TargetDocument.urlMatch
+    //
+    // Per the `url-matching-pipeline` change, `.urlMatch(UrlMatcher)` is
+    // no longer resolved by `resolveDocumentReference` — it goes through
+    // the native-path resolver (`resolveNativeTarget` → `pickNativeTarget`)
+    // for uniform fail-closed semantics across all matcher variants.
+    // `resolveDocumentReference` now preconditionFailures on `.urlMatch`,
+    // so there is nothing to assert here. URL matching behavior is
+    // covered by `UrlMatcherTests` and `WindowIndexResolverTests`.
 
     // MARK: - TargetDocument.documentIndex
 
@@ -98,24 +89,13 @@ final class SafariBridgeTargetTests: XCTestCase {
         // the future, this test forces an explicit decision.
         let _: any Sendable = SafariBridge.TargetDocument.frontWindow
         let _: any Sendable = SafariBridge.TargetDocument.windowIndex(1)
-        let _: any Sendable = SafariBridge.TargetDocument.urlContains("x")
+        let _: any Sendable = SafariBridge.TargetDocument.urlMatch(.contains("x"))
         let _: any Sendable = SafariBridge.TargetDocument.documentIndex(1)
     }
 
-    // MARK: - URL pattern with special characters (#17/#18)
-
-    func testUrlContainsWithEmptyPattern() {
-        let reference = SafariBridge.resolveDocumentReference(.urlContains(""))
-        XCTAssertEqual(reference, #"(first document whose URL contains "")"#)
-    }
-
-    func testUrlContainsWithUnicodePattern() {
-        let reference = SafariBridge.resolveDocumentReference(.urlContains("日本語"))
-        XCTAssertEqual(reference, #"(first document whose URL contains "日本語")"#)
-    }
-
-    func testUrlContainsWithMultipleSpecialChars() {
-        let reference = SafariBridge.resolveDocumentReference(.urlContains(#"a\b"c"#))
-        XCTAssertEqual(reference, #"(first document whose URL contains "a\\b\"c")"#)
-    }
+    // URL pattern escaping tests are obsolete: `.urlMatch` no longer
+    // interpolates user URL input into AppleScript (it uses `tab N of
+    // window M` after native-path enumeration). Empty/Unicode/quote
+    // pattern handling is now the `UrlMatcher` type's concern and is
+    // covered by `UrlMatcherTests`.
 }

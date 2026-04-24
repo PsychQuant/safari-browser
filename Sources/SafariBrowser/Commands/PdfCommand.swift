@@ -45,7 +45,7 @@ struct PdfCommand: AsyncParsableCommand {
         // warning, so users with a typo never see the misleading
         // "Controlling keyboard..." message for a run that fails
         // immediately without touching the keyboard.
-        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve())
+        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
 
         // Tab switch is a passively interfering side effect transitively
         // authorized by --allow-hid. Emit the addendum before the

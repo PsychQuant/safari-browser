@@ -66,7 +66,7 @@ struct OpenCommand: AsyncParsableCommand {
         if replaceTab {
             // Opt-out of focus-existing: legacy behavior — navigate the
             // target document via `do JavaScript window.location.href`.
-            try await SafariBridge.openURL(url, target: target.resolve())
+            try await SafariBridge.openURL(url, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
 
@@ -82,7 +82,7 @@ struct OpenCommand: AsyncParsableCommand {
             || target.tabInWindow != nil
 
         if hasExplicitTarget {
-            try await SafariBridge.openURL(url, target: target.resolve())
+            try await SafariBridge.openURL(url, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
 

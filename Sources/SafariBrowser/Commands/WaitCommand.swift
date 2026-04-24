@@ -55,7 +55,7 @@ struct WaitCommand: AsyncParsableCommand {
     }
 
     private func waitForURL(pattern: String) async throws {
-        let resolvedTarget = target.resolve()
+        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
         while Date() < deadline {
             let currentURL = try await SafariBridge.getCurrentURL(target: resolvedTarget)
@@ -68,7 +68,7 @@ struct WaitCommand: AsyncParsableCommand {
     }
 
     private func waitForJS(expression: String) async throws {
-        let resolvedTarget = target.resolve()
+        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
         while Date() < deadline {
             let result = try await SafariBridge.doJavaScript(

@@ -17,7 +17,7 @@ struct SelectCommand: AsyncParsableCommand {
     func run() async throws {
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; var prev = el.value; el.value = '\(value.escapedForJS)'; if (el.value !== '\(value.escapedForJS)') return 'INVALID_OPTION'; el.dispatchEvent(new Event('change', {bubbles: true})); return 'OK'; })()",
-            target: target.resolve()
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
         )
         if result == "NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
