@@ -83,7 +83,10 @@ compare_parity() {
     stateless_out=$(SAFARI_BROWSER_NAME="no-such-$$" "$SB" "$@" 2>/dev/null)
     stateless_exit=$?
 
-    daemon_out=$(SAFARI_BROWSER_NAME="$NAME" "$SB" "$@" --daemon 2>/dev/null)
+    # Daemon mode opts in via the SAFARI_BROWSER_DAEMON=1 env var (the
+    # supported signal — `--daemon` was never declared as an
+    # ArgumentParser flag and would error at parse time).
+    daemon_out=$(SAFARI_BROWSER_DAEMON=1 SAFARI_BROWSER_NAME="$NAME" "$SB" "$@" 2>/dev/null)
     daemon_exit=$?
 
     if [[ "$stateless_exit" != "$daemon_exit" ]]; then
@@ -118,17 +121,17 @@ compare_parity "get url --url test-page" get url --url test-page
 sleep 1
 ambiguous_stateless_err=$(SAFARI_BROWSER_NAME="no-such-$$" "$SB" get url --url test-page 2>&1 >/dev/null)
 ambiguous_stateless_exit=$?
-ambiguous_daemon_err=$(SAFARI_BROWSER_NAME="$NAME" "$SB" get url --url test-page --daemon 2>&1 >/dev/null)
+ambiguous_daemon_err=$(SAFARI_BROWSER_DAEMON=1 SAFARI_BROWSER_NAME="$NAME" "$SB" get url --url test-page 2>&1 >/dev/null)
 ambiguous_daemon_exit=$?
 
 if [[ "$ambiguous_stateless_exit" == "0" || "$ambiguous_daemon_exit" == "0" ]]; then
     fail "ambiguousWindowMatch" "expected non-zero exit, got stateless=$ambiguous_stateless_exit daemon=$ambiguous_daemon_exit"
 elif [[ "$ambiguous_stateless_exit" != "$ambiguous_daemon_exit" ]]; then
     fail "ambiguousWindowMatch exit codes match" "stateless=$ambiguous_stateless_exit daemon=$ambiguous_daemon_exit"
-elif echo "$ambiguous_stateless_err" | grep -qi "ambiguous" && echo "$ambiguous_daemon_err" | grep -qi "ambiguous"; then
-    pass "ambiguousWindowMatch  (both modes fail-closed with 'ambiguous' in stderr)"
+elif echo "$ambiguous_stateless_err" | grep -qiE "ambiguous|multiple.*match" && echo "$ambiguous_daemon_err" | grep -qiE "ambiguous|multiple.*match"; then
+    pass "ambiguousWindowMatch  (both modes fail-closed with multi-match stderr)"
 else
-    fail "ambiguousWindowMatch" "stderr missing 'ambiguous' keyword"
+    fail "ambiguousWindowMatch" "stderr missing multi-match indicator"
     echo "      stateless stderr: ${ambiguous_stateless_err:0:200}"
     echo "      daemon stderr: ${ambiguous_daemon_err:0:200}"
 fi
