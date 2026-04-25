@@ -33,9 +33,81 @@ struct ExecCommand: AsyncParsableCommand {
             source = readStdinAsString()
         }
 
+        // Section 10 v2 of `script-exec-command`: when daemon is opt-in
+        // active AND every step in the script uses an in-process-supported
+        // command, send the entire script as a single `exec.runScript`
+        // request. This eliminates per-step subprocess + socket-handshake
+        // overhead from the client path. Otherwise (daemon off, or any
+        // step uses an unsupported command) fall through to the local
+        // interpreter which uses the SubprocessStepDispatcher.
+        if SafariBridge.shouldUseDaemonAuto(),
+           let parsed = try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps),
+           Self.allStepsSupported(parsed),
+           let results = try await runViaDaemon(steps: parsed) {
+            print(results)
+            return
+        }
+
         let interpreter = ScriptInterpreter(maxSteps: maxSteps)
         let results = try await interpreter.run(source: source, target: target)
         printResults(results)
+    }
+
+    /// Returns true when every step's `cmd` is in
+    /// `InProcessStepDispatcher.supportedCommands`. Used as a pre-flight
+    /// gate so the client doesn't send a script that would partially fail
+    /// in the daemon path.
+    private static func allStepsSupported(_ steps: [ScriptStep]) -> Bool {
+        for step in steps {
+            if !InProcessStepDispatcher.isSupported(step.cmd) {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Send the script to the daemon's `exec.runScript` handler. Returns
+    /// the encoded result-array string on success, nil if any transport
+    /// or handler-side error occurs (caller falls through to local path).
+    private func runViaDaemon(steps: [ScriptStep]) async throws -> String? {
+        // Re-encode steps + target as the envelope the handler expects.
+        let stepsJSON = steps.map { step in step.toDictionary() }
+        let envelope: [String: Any] = [
+            "steps": stepsJSON,
+            "targetArgs": ScriptInterpreter.encodeTargetArgs(target),
+            "maxSteps": maxSteps,
+        ]
+        let envelopeData: Data
+        do {
+            envelopeData = try JSONSerialization.data(withJSONObject: envelope, options: [])
+        } catch {
+            return nil
+        }
+
+        let name = DaemonClient.resolveName(flag: nil)
+        do {
+            let resultData = try await DaemonClient.sendRequest(
+                name: name,
+                method: "exec.runScript",
+                params: envelopeData,
+                requestId: Int.random(in: 1...Int.max),
+                timeout: 60.0
+            )
+            // Handler returns `{"results": "<json string of result array>"}`.
+            guard let dict = try JSONSerialization.jsonObject(with: resultData, options: []) as? [String: Any],
+                  let results = dict["results"] as? String else {
+                return nil
+            }
+            return results
+        } catch let err as DaemonClient.Error {
+            // Domain errors (e.g. ambiguousWindowMatch) propagate; transport
+            // errors fall through to the local subprocess path silently.
+            if err.fallbackReason == nil {
+                throw err
+            }
+            FileHandle.standardError.write(Data("[daemon fallback: \(err.fallbackReason ?? "")]\n".utf8))
+            return nil
+        }
     }
 
     private func readStdinAsString() -> String {

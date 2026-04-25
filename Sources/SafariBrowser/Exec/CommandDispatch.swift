@@ -1,17 +1,16 @@
 import Foundation
 
-/// V1 dispatch implementation: shell out to the same `safari-browser`
-/// binary as a subprocess per step. The design originally called for
-/// direct `SafariBridge` calls within one daemon connection, but the
-/// subprocess path produces identical user-visible behavior and is far
-/// less code to maintain. The connection-sharing optimization is
-/// deferred to a future change — see design.md "Decisions / Command
-/// dispatch" for the v1 trade-off note.
+/// Subprocess-based step dispatcher (v1 default). Spawns the same
+/// `safari-browser` binary as a subprocess per step. Subprocess routing
+/// inherits the daemon opt-in automatically (the child binary calls
+/// `runViaRouter` at the bridge layer), so when the caller is in daemon
+/// mode each step still rides the warm daemon at ~50ms per call.
 ///
-/// Subprocess routing inherits the daemon opt-in automatically (the
-/// child binary calls `runViaRouter` at the bridge layer), so when the
-/// caller is in daemon mode each step still rides the warm daemon at
-/// ~50ms per call.
+/// Section 10 v2 of `script-exec-command` introduces `InProcessStepDispatcher`
+/// that runs INSIDE the daemon, eliminating per-step subprocess spawn cost
+/// for the supported commands. This enum keeps the v1 path available for
+/// stateless invocations and as a fallback when the daemon path is
+/// unavailable.
 enum CommandDispatch {
     /// Phase 1 commands per Requirement: Phase 1 command coverage.
     static let phase1Commands: Set<String> = [
@@ -88,6 +87,23 @@ enum CommandDispatch {
         // resolution by the shell; fall back to /proc-style introspection
         // on macOS via _NSGetExecutablePath if needed (kept simple here).
         return CommandLine.arguments.first ?? "safari-browser"
+    }
+}
+
+/// Adapter that wraps the subprocess `CommandDispatch` enum as a
+/// `StepDispatcher` so `ScriptInterpreter` can be parameterized over
+/// dispatch strategies.
+struct SubprocessStepDispatcher: StepDispatcher {
+    func dispatch(
+        cmd: String,
+        args: [String],
+        sharedTargetArgs: [String]
+    ) async throws -> String {
+        return try await CommandDispatch.dispatch(
+            cmd: cmd,
+            args: args,
+            sharedTargetArgs: sharedTargetArgs
+        )
     }
 }
 

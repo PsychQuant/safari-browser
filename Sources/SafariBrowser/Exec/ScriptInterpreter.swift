@@ -7,9 +7,14 @@ struct ScriptInterpreter {
     static let defaultMaxSteps: Int = 1000
 
     let maxSteps: Int
+    let dispatcher: any StepDispatcher
 
-    init(maxSteps: Int = ScriptInterpreter.defaultMaxSteps) {
+    init(
+        maxSteps: Int = ScriptInterpreter.defaultMaxSteps,
+        dispatcher: any StepDispatcher = SubprocessStepDispatcher()
+    ) {
         self.maxSteps = maxSteps
+        self.dispatcher = dispatcher
     }
 
     /// Parses and executes a script document. Returns the result array
@@ -18,6 +23,13 @@ struct ScriptInterpreter {
     /// in the returned result array per `onError` semantics.
     func run(source: String, target: TargetOptions) async throws -> [StepResult] {
         let steps = try Self.parseScript(source: source, maxSteps: maxSteps)
+        return try await runSteps(steps, target: target)
+    }
+
+    /// Run an already-parsed step list. Used by the daemon
+    /// `exec.runScript` handler which receives steps as JSON objects
+    /// already validated against `ScriptStep`.
+    func runSteps(_ steps: [ScriptStep], target: TargetOptions) async throws -> [StepResult] {
         let sharedTargetArgs = Self.encodeTargetArgs(target)
         let store = VariableStore()
 
@@ -57,7 +69,7 @@ struct ScriptInterpreter {
 
             // Dispatch and bind the result.
             do {
-                let value = try await CommandDispatch.dispatch(
+                let value = try await dispatcher.dispatch(
                     cmd: step.cmd,
                     args: substitutedArgs,
                     sharedTargetArgs: sharedTargetArgs

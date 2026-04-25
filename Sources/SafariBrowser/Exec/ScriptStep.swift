@@ -31,6 +31,22 @@ struct ScriptStep: Equatable {
     }
 }
 
+extension ScriptStep {
+    /// Serialize back to a JSON-compatible dictionary using the same
+    /// key shape the Decodable path consumes. Used by the daemon
+    /// `exec.runScript` envelope to ship parsed steps to the daemon.
+    func toDictionary() -> [String: Any] {
+        var dict: [String: Any] = [
+            "cmd": cmd,
+            "args": args,
+            "onError": onError.rawValue,
+        ]
+        if let varName = varName { dict["var"] = varName }
+        if let ifExpression = ifExpression { dict["if"] = ifExpression }
+        return dict
+    }
+}
+
 extension ScriptStep: Decodable {
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case cmd
