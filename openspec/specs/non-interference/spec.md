@@ -44,6 +44,7 @@ The following opt-in flags are defined:
 |---|---|
 | `--allow-hid` | Keyboard/mouse control via System Events |
 | `--native` | Native file dialog interaction via System Events |
+| `--mark-tab` / `--mark-tab-persist` | Wraps target tab title with the zero-width ownership marker — passively interfering when opted in. See `tab-ownership-marker` capability. |
 
 Future commands that introduce new categories of interference MUST define a new opt-in flag or reuse an existing one if the interference category matches.
 

@@ -408,6 +408,23 @@ safari-browser exec --script /tmp/login.json --url plaud
 
 Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). v1 dispatches via subprocess to the same binary, so daemon opt-in still amortizes per-step cost. `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
 
+### Tab ownership marker (opt-in)
+
+`--mark-tab` wraps the target tab's title with an invisible zero-width marker so sibling `safari-browser` invocations can detect "I'm working here" via `tab is-marked`. **Advisory, not a lock.**
+
+```bash
+# Persist marker across invocations
+safari-browser click button.upload --url plaud --mark-tab-persist
+
+# Sibling process probes ownership (exit 0 = marked, 1 = unmarked, 2 = error)
+safari-browser tab is-marked --url plaud && echo "tab is busy"
+
+# Explicit cleanup if needed
+safari-browser tab unmark --url plaud
+```
+
+Marker is hardcoded zero-width characters (no caller-supplied content — security side-channel concern). Default OFF; opt-in only. Page-driven title changes during the operation surface as a stderr warning, no force-restore. v1 wires `ClickCommand` as the reference integration; broader command rollout is v2. See `openspec/specs/tab-ownership-marker/spec.md`.
+
 ## Comparison with agent-browser
 
 | Feature | agent-browser | safari-browser |

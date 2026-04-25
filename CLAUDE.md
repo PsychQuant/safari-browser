@@ -261,3 +261,44 @@ V1 dispatch 透過 subprocess 跑同個 binary（不是 design 原本的 daemon-
 
 - `openspec/specs/script-exec/spec.md`（archive 後生成）
 - `openspec/changes/script-exec-command/`（while in-flight）
+
+## Tab ownership marker (`--mark-tab`)
+
+讓多個 agent / process 在同台機器上互相偵測「這個 tab 現在被別人操作」的 advisory probe。**不是 lock**，只是 hint — 兩個 agent 都可以 wrap 而第三個 query 看到 marker 後決定是否 yield 屬於 caller-policy。
+
+### Opt-in signals（三選一）
+
+| Signal | Mode |
+|---|---|
+| `--mark-tab` flag | Ephemeral — wrap before, unwrap after this command |
+| `--mark-tab-persist` flag | Persist — wrap before, leave marker until `tab unmark` |
+| `SAFARI_BROWSER_MARK_TAB=1` env | Ephemeral session-wide (env value `2` or `persist` → persist mode) |
+
+兩個 flag 互斥；flag 永遠贏 env。預設完全 OFF — `safari-browser click ...` 不加 flag 永遠不 mutate title。
+
+### Marker format（不可配置）
+
+兩個 zero-width-space (`U+200B`) 包住原 title。**對使用者不可見**，AX / Spotlight / Stage Manager / screenshot 都讀不到任何 visible 變化。Hardcoded — 沒有 `--mark-tab "[my-agent]"` API（spec 層級禁止以避免 cross-process side-channel for agent identity）。
+
+### Probe 與 cleanup
+
+```bash
+# 在 PR pipeline / 多 agent 場景：先 query，再決定動作
+safari-browser tab is-marked --url plaud   # exit 0 = marked, 1 = unmarked, 2 = error
+
+# 從 crash 過的 --mark-tab-persist 殘留 marker 救援
+safari-browser tab unmark --url plaud
+```
+
+### Title race
+
+如果 page 在 operation 中途 navigate 或 JS 改寫 `document.title`，cleanup 偵測到 expected wrapped title 不見就印一行 `[mark-tab: title changed during operation; original not restored]\n` to stderr 然後 no-op。**不重試、不強制 force-set**（避免 Layer 3 oscillation）。
+
+### v1 scope
+
+V1 wires marker 到 `ClickCommand` 作為 reference integration。其他 30+ commands 的批量 wiring + daemon-protocol-level 整合是 v2。`tab is-marked` / `tab unmark` 已可用，可作為 manual probe 起點。
+
+### 相關 specs
+
+- `openspec/specs/tab-ownership-marker/spec.md`（archive 後生成）
+- `openspec/changes/tab-ownership-marker/`（while in-flight）

@@ -90,6 +90,65 @@ struct TargetOptions: ParsableArguments {
     )
     var firstMatch = false
 
+    @Flag(
+        name: .long,
+        help: ArgumentHelp(
+            "Opt-in: wrap the target tab title with a zero-width ownership marker for the duration of this command (ephemeral mode).",
+            discussion: "Default OFF. Mutually exclusive with --mark-tab-persist. See `tab-ownership-marker` capability for full semantics."
+        )
+    )
+    var markTab = false
+
+    @Flag(
+        name: .long,
+        help: ArgumentHelp(
+            "Opt-in: wrap the target tab title with a zero-width ownership marker AND keep it after the command exits (persist mode).",
+            discussion: "Use `safari-browser tab unmark` to remove. Mutually exclusive with --mark-tab."
+        )
+    )
+    var markTabPersist = false
+
+    /// Tri-state result of resolving the `--mark-tab` flags + env variable.
+    /// `.off` → no title mutation; `.ephemeral` → wrap then unwrap;
+    /// `.persist` → wrap and leave for `tab unmark` cleanup.
+    enum MarkTabMode: String, Equatable {
+        case off
+        case ephemeral
+        case persist
+    }
+
+    /// Resolves the marker mode from flags first, then env var.
+    /// Flags always win; env is a session-wide opt-in fallback per
+    /// Requirement: Marker is opt-in via `--mark-tab` flag, default OFF.
+    /// Pure function — env is injected for testability.
+    func markTabResolved(env: [String: String]) -> MarkTabMode {
+        if markTabPersist { return .persist }
+        if markTab { return .ephemeral }
+        let raw = env["SAFARI_BROWSER_MARK_TAB"] ?? ""
+        switch raw {
+        case "1": return .ephemeral
+        case "2", "persist": return .persist
+        default: return .off
+        }
+    }
+
+    /// Convenience that reads the process environment.
+    func markTabResolved() -> MarkTabMode {
+        markTabResolved(env: ProcessInfo.processInfo.environment)
+    }
+
+    /// Validates that `--mark-tab` and `--mark-tab-persist` are not both
+    /// supplied. Called from `validate()`. Kept as a separate method so
+    /// tests can exercise the rule directly without invoking the full
+    /// validate() body.
+    func validateMarkTabFlags() throws {
+        if markTab && markTabPersist {
+            throw ValidationError(
+                "--mark-tab and --mark-tab-persist are mutually exclusive — pick one."
+            )
+        }
+    }
+
     /// Pure helper: produce a deprecation warning message when the
     /// caller used the `--tab` alias. Returns nil when `--tab` was not
     /// supplied. Kept pure so tests do not need to capture stderr.
@@ -112,6 +171,8 @@ struct TargetOptions: ParsableArguments {
         if let msg = TargetOptions.deprecationMessage(tab: tab) {
             FileHandle.standardError.write(Data(msg.utf8))
         }
+
+        try validateMarkTabFlags()
 
         // Rule 1: --tab-in-window requires --window
         if tabInWindow != nil && window == nil {

@@ -1296,6 +1296,113 @@ enum SafariBridge {
             """, target: target)
     }
 
+    /// Set the target document's title via injected JavaScript
+    /// (`document.title = ...`). Used by `tab-ownership-marker` to wrap /
+    /// unwrap the title with a zero-width marker pair. Returns the title
+    /// that was written so callers can compare against later reads to
+    /// detect title-race per Requirement: Best-effort title-restore on
+    /// race.
+    @discardableResult
+    static func setTabTitle(
+        _ newTitle: String,
+        target: TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> String {
+        // Use JS path because `set name of <docRef>` in AppleScript is
+        // unreliable across Safari versions and gets immediately
+        // overwritten when the page's own <title> updates. Setting
+        // `document.title` is the canonical web-standard mechanism.
+        _ = try await doJavaScript(
+            "document.title = \(newTitle.jsStringLiteral)",
+            target: target,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
+        )
+        return newTitle
+    }
+
+    /// Wrapper that orchestrates the marker wrap/run/unwrap lifecycle for
+    /// `--mark-tab` opt-in commands per Requirement: Ephemeral marker
+    /// default. Honors three modes:
+    /// - `.off`: runs `operation` directly, no title mutation
+    /// - `.ephemeral`: wraps before, unwraps after (with title-race
+    ///   detection on cleanup); cleanup runs on both success and error
+    /// - `.persist`: wraps before, leaves marker in place at exit
+    static func markTabIfRequested<T>(
+        target: TargetDocument,
+        mode: TargetOptions.MarkTabMode,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil,
+        operation: () async throws -> T
+    ) async throws -> T {
+        switch mode {
+        case .off:
+            return try await operation()
+
+        case .persist:
+            let original = try await getCurrentTitle(
+                target: target, firstMatch: firstMatch, warnWriter: warnWriter
+            )
+            let wrapped = MarkerConstants.wrap(title: original)
+            try await setTabTitle(
+                wrapped, target: target, firstMatch: firstMatch, warnWriter: warnWriter
+            )
+            return try await operation()
+
+        case .ephemeral:
+            let original = try await getCurrentTitle(
+                target: target, firstMatch: firstMatch, warnWriter: warnWriter
+            )
+            let wrapped = MarkerConstants.wrap(title: original)
+            try await setTabTitle(
+                wrapped, target: target, firstMatch: firstMatch, warnWriter: warnWriter
+            )
+            do {
+                let result = try await operation()
+                try await unwrapEphemeral(
+                    expectedWrapped: wrapped, original: original,
+                    target: target, firstMatch: firstMatch, warnWriter: warnWriter
+                )
+                return result
+            } catch {
+                // Cleanup runs even when the operation throws — preserve
+                // the original error after best-effort restore.
+                try? await unwrapEphemeral(
+                    expectedWrapped: wrapped, original: original,
+                    target: target, firstMatch: firstMatch, warnWriter: warnWriter
+                )
+                throw error
+            }
+        }
+    }
+
+    /// Cleanup helper for ephemeral markers. Reads the current title and
+    /// only restores when it matches the expected wrapped value — this
+    /// is the title-race guard from Requirement: Best-effort title-restore
+    /// on race. On divergence, emits one stderr warning and no-ops.
+    private static func unwrapEphemeral(
+        expectedWrapped: String,
+        original: String,
+        target: TargetDocument,
+        firstMatch: Bool,
+        warnWriter: ((String) -> Void)?
+    ) async throws {
+        let currentTitle = try await getCurrentTitle(
+            target: target, firstMatch: firstMatch, warnWriter: warnWriter
+        )
+        if currentTitle == expectedWrapped {
+            try await setTabTitle(
+                original, target: target, firstMatch: firstMatch, warnWriter: warnWriter
+            )
+            return
+        }
+        // Title raced — page navigated or JS rewrote it. Best-effort:
+        // emit one warning and skip restore. Do not retry.
+        let msg = "[mark-tab: title changed during operation; original not restored]\n"
+        FileHandle.standardError.write(Data(msg.utf8))
+    }
+
     /// Read the HTML source of the target document. Document-scoped for modal bypass (#21).
     static func getCurrentSource(
         target: TargetDocument = .frontWindow,

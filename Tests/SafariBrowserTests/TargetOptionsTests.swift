@@ -23,7 +23,9 @@ final class TargetOptionsTests: XCTestCase {
         tab: Int? = nil,
         document: Int? = nil,
         tabInWindow: Int? = nil,
-        firstMatch: Bool = false
+        firstMatch: Bool = false,
+        markTab: Bool = false,
+        markTabPersist: Bool = false
     ) -> TargetOptions {
         var opts = TargetOptions()
         opts.url = url
@@ -35,6 +37,8 @@ final class TargetOptionsTests: XCTestCase {
         opts.document = document
         opts.tabInWindow = tabInWindow
         opts.firstMatch = firstMatch
+        opts.markTab = markTab
+        opts.markTabPersist = markTabPersist
         return opts
     }
 
