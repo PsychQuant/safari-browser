@@ -30,7 +30,6 @@ The system SHALL NOT start a long-running daemon process as part of default CLI 
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -53,7 +52,6 @@ The daemon SHALL pre-compile a fixed set of AppleScript source blocks into `NSAp
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -76,7 +74,6 @@ The daemon SHALL listen on a Unix domain socket at the path `${TMPDIR:-/tmp}/saf
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -94,7 +91,6 @@ The daemon MUST namespace its socket, pid file, and log file by a `<NAME>` ident
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -117,7 +113,6 @@ The daemon MUST NOT cache any Safari-side state between requests, including but 
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -140,7 +135,6 @@ When the client attempts to route a command through the daemon and the attempt f
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -168,7 +162,6 @@ The daemon SHALL track the wall-clock timestamp of the most recent request arriv
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -186,7 +179,6 @@ Upon each new client connection, the daemon SHALL send a handshake message conta
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -214,7 +206,6 @@ The CLI SHALL expose a `daemon` subcommand group with exactly four operations: `
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -237,7 +228,6 @@ The initial daemon implementation SHALL serve at least the following commands th
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -275,7 +265,6 @@ The daemon SHALL constrain filesystem permissions on its socket file and pid fil
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -302,7 +291,6 @@ The daemon SHALL rely on filesystem permissions as its sole authentication mecha
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -335,7 +323,6 @@ The daemon SHALL redact or truncate sensitive payloads in its log file at `${TMP
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -371,7 +358,6 @@ The `daemon start` command SHALL use more than a `kill(-0, pid)` probe to determ
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -401,7 +387,6 @@ When a binary is built without git metadata (tarball install, Homebrew bottle, `
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -432,5 +417,4 @@ The daemon SHALL serve `daemon.status` and `daemon.shutdown` method requests on 
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->

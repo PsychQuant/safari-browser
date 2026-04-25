@@ -222,7 +222,6 @@ When the user opts into daemon mode, the resulting long-running `safari-browser`
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
 
 ---
@@ -239,5 +238,4 @@ Enabling daemon mode MUST NOT cause any individual command to perform a more int
 source: persistent-daemon
 updated: 2026-04-25
 code:
-  - .remember/tmp/save-session.pid
 -->
