@@ -54,6 +54,8 @@ enum DaemonServeLoop {
         private let cache = PreCompiledScripts.CompileCache()
         private var socketPath: String?
         private var pidPath: String?
+        private var logPath: String?
+        private var logFileHandle: FileHandle?
         private var startedAt: Date?
         private var requestCount: Int = 0
         private var watchdogTask: Task<Void, Never>?
@@ -63,8 +65,20 @@ enum DaemonServeLoop {
 
         /// Idempotent start. If already running, returns without error.
         /// Writes `pidPath`, binds `socketPath`, registers built-in methods,
-        /// kicks off the idle watchdog.
-        func start(socketPath: String, pidPath: String, idleTimeout: TimeInterval) async throws {
+        /// kicks off the idle watchdog. Optionally opens the redacted log
+        /// at `logPath`; if `logPath` is nil, no log is written. The
+        /// `env` dict is consulted for `SAFARI_BROWSER_DAEMON_LOG_FULL=1`
+        /// so callers can drive the redaction toggle from CI / shell.
+        func start(
+            socketPath: String,
+            pidPath: String,
+            idleTimeout: TimeInterval,
+            logPath: String? = nil,
+            env: [String: String] = ProcessInfo.processInfo.environment,
+            stderrWriter: @escaping @Sendable (String) -> Void = { msg in
+                FileHandle.standardError.write(Data(msg.utf8))
+            }
+        ) async throws {
             if isRunning { return }
 
             // Write pid file before binding socket so a racing observer never
@@ -85,6 +99,28 @@ enum DaemonServeLoop {
             self.socketPath = socketPath
             self.pidPath = pidPath
             self.startedAt = Date()
+
+            // Section 3: open the redacted log file (append-mode) and
+            // install the writer on the underlying instance. When
+            // `SAFARI_BROWSER_DAEMON_LOG_FULL=1`, emit a single stderr
+            // warning so the operator knows raw payloads are landing in
+            // the log. The warning is inert when the env var is unset.
+            let logFull = DaemonLog.isFullLoggingEnabled(env: env)
+            DaemonLog.emitFullLogWarningIfNeeded(env: env, writer: stderrWriter)
+            if let logPath = logPath {
+                self.logPath = logPath
+                if !FileManager.default.fileExists(atPath: logPath) {
+                    FileManager.default.createFile(atPath: logPath, contents: nil, attributes: [.posixPermissions: 0o600])
+                }
+                if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath)) {
+                    try? handle.seekToEnd()
+                    self.logFileHandle = handle
+                    let writer: @Sendable (String) -> Void = { entry in
+                        try? handle.write(contentsOf: Data(entry.utf8))
+                    }
+                    await underlying.setLogWriter(writer, logFull: logFull)
+                }
+            }
 
             // Built-in methods — Phase 1 production handlers (task 7.1)
             // plus the built-in lifecycle methods registered below.
@@ -122,6 +158,9 @@ enum DaemonServeLoop {
             await underlying.stop()
             if let p = pidPath { unlink(p) }
             if let s = socketPath { unlink(s) }
+            try? logFileHandle?.close()
+            logFileHandle = nil
+            logPath = nil
             pidPath = nil
             socketPath = nil
             if let cont = stopContinuation {

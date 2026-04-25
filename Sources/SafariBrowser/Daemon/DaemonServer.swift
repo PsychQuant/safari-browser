@@ -31,6 +31,15 @@ enum DaemonServer {
         private var socketPath: String?
         private var connectionTasks: [Task<Void, Never>] = []
 
+        /// Section 3 of `daemon-security-hardening` — optional log writer
+        /// fed one redacted/truncated JSON-line per request. When `nil`
+        /// (default) the daemon emits no log; production wiring sets this
+        /// at start-up via `setLogWriter(_:)`. The `logFull` flag flips
+        /// off redaction entirely for `SAFARI_BROWSER_DAEMON_LOG_FULL=1`
+        /// local-debugging sessions.
+        private var logWriter: (@Sendable (String) -> Void)?
+        private var logFull: Bool = false
+
         /// Idle auto-shutdown state (task 6.1). `idleTimeoutSeconds` is the
         /// clamped value from `resolveIdleTimeout(env:)`; `lastActivity`
         /// advances on every request dispatch. `isIdle(now:)` is the pure
@@ -50,6 +59,19 @@ enum DaemonServer {
         func register(_ method: String, handler: @escaping MethodHandler) {
             handlers[method] = handler
         }
+
+        /// Install a log writer that receives one redacted JSON-line per
+        /// dispatched request. Pass `nil` to disable. The `logFull` flag
+        /// disables redaction for `SAFARI_BROWSER_DAEMON_LOG_FULL=1`
+        /// local-debugging sessions; default is `false` so no contributor
+        /// can accidentally turn on raw logging without setting the env.
+        func setLogWriter(_ writer: (@Sendable (String) -> Void)?, logFull: Bool = false) {
+            self.logWriter = writer
+            self.logFull = logFull
+        }
+
+        fileprivate func currentLogWriter() -> (@Sendable (String) -> Void)? { logWriter }
+        fileprivate func currentLogFull() -> Bool { logFull }
 
         // MARK: - Idle auto-shutdown (task 6.1)
 
@@ -242,39 +264,89 @@ enum DaemonServer {
             // Record activity at the top of dispatch so an actively-used
             // daemon never gets idle-killed between consecutive requests.
             await instance.recordActivity()
+            let started = Date()
 
             // Parse the incoming request envelope.
             let parsed: Any
             do {
                 parsed = try JSONSerialization.jsonObject(with: line, options: [])
             } catch {
-                return encodeError(requestId: nil, code: .parseError, message: "invalid JSON: \(error)")
+                let resp = encodeError(requestId: nil, code: .parseError, message: "invalid JSON: \(error)")
+                await emitLog(instance: instance, started: started, method: "<parse-error>", requestId: nil, paramsData: line, resultData: nil, errorMessage: "parseError")
+                return resp
             }
             guard let obj = parsed as? [String: Any] else {
-                return encodeError(requestId: nil, code: .parseError, message: "request must be JSON object")
+                let resp = encodeError(requestId: nil, code: .parseError, message: "request must be JSON object")
+                await emitLog(instance: instance, started: started, method: "<parse-error>", requestId: nil, paramsData: line, resultData: nil, errorMessage: "parseError")
+                return resp
             }
             let requestId = obj["requestId"]
             guard let method = obj["method"] as? String else {
-                return encodeError(requestId: requestId, code: .parseError, message: "missing 'method'")
+                let resp = encodeError(requestId: requestId, code: .parseError, message: "missing 'method'")
+                await emitLog(instance: instance, started: started, method: "<missing>", requestId: requestId, paramsData: Data("{}".utf8), resultData: nil, errorMessage: "parseError")
+                return resp
             }
             let paramsValue: Any = obj["params"] ?? [:]
             let paramsData: Data
             do {
                 paramsData = try JSONSerialization.data(withJSONObject: paramsValue, options: [])
             } catch {
-                return encodeError(requestId: requestId, code: .parseError, message: "unserialisable params")
+                let resp = encodeError(requestId: requestId, code: .parseError, message: "unserialisable params")
+                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: Data("{}".utf8), resultData: nil, errorMessage: "parseError")
+                return resp
             }
 
             guard let handler = await instance.lookupHandler(method) else {
-                return encodeError(requestId: requestId, code: .methodNotFound, message: "no handler: \(method)")
+                let resp = encodeError(requestId: requestId, code: .methodNotFound, message: "no handler: \(method)")
+                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: nil, errorMessage: "methodNotFound")
+                return resp
             }
 
             do {
                 let resultData = try await handler(paramsData)
-                return encodeResult(requestId: requestId, resultData: resultData)
+                let resp = encodeResult(requestId: requestId, resultData: resultData)
+                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: resultData, errorMessage: nil)
+                return resp
             } catch {
-                return encodeError(requestId: requestId, code: .handlerError, message: "\(error)")
+                let resp = encodeError(requestId: requestId, code: .handlerError, message: "\(error)")
+                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: nil, errorMessage: "\(error)")
+                return resp
             }
+        }
+
+        /// Emit a single redacted/truncated log entry for the dispatched
+        /// request via the instance's installed `logWriter`. No-op when no
+        /// writer is configured. All payload routing through `DaemonLog`
+        /// honors the `logFull` flag so the contract is centralized.
+        private static func emitLog(
+            instance: Instance,
+            started: Date,
+            method: String,
+            requestId: Any?,
+            paramsData: Data,
+            resultData: Data?,
+            errorMessage: String?
+        ) async {
+            guard let writer = await instance.currentLogWriter() else { return }
+            let logFull = await instance.currentLogFull()
+            let durationMs = Int(Date().timeIntervalSince(started) * 1000)
+            let paramsLog = String(
+                data: DaemonLog.redactParams(method: method, paramsJSON: paramsData, logFull: logFull),
+                encoding: .utf8
+            ) ?? "{}"
+            let resultLog: String? = resultData.flatMap { rd in
+                String(data: DaemonLog.truncateResult(resultJSON: rd, logFull: logFull), encoding: .utf8)
+            }
+            let entry = DaemonLog.formatEntry(
+                timestamp: started,
+                method: method,
+                requestId: requestId,
+                durationMs: durationMs,
+                paramsLog: paramsLog,
+                resultLog: resultLog,
+                errorLog: errorMessage
+            )
+            writer(entry)
         }
 
         // MARK: - Response encoding
