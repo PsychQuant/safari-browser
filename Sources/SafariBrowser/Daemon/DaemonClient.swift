@@ -39,6 +39,12 @@ enum DaemonClient {
         /// (`parseError`, `methodNotFound`, `handlerError`) are deliberately
         /// NOT in this set so they trigger fallback.
         static let domainErrorCodes: Set<String> = [
+            // Section 6 of daemon-security-hardening: a request cancelled by
+            // `daemon.shutdown` SHALL surface as `cancelled` to the caller
+            // — the request was interrupted intentionally, retrying via the
+            // stateless path would race with the dying daemon and produce
+            // no useful result. Caller propagates the cancellation.
+            "cancelled",
             "ambiguousWindowMatch",
             "documentNotFound",
             "elementNotFound",

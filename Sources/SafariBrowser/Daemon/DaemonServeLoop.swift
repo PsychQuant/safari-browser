@@ -136,22 +136,22 @@ enum DaemonServeLoop {
                 }
             }
 
-            // Built-in methods — Phase 1 production handlers (task 7.1)
-            // plus the built-in lifecycle methods registered below.
+            // Built-in methods — Phase 1 production handlers (task 7.1).
+            // Lifecycle commands (`daemon.status`, `daemon.shutdown`) no
+            // longer go through `register(_:)`; Section 6 of the
+            // security-hardening change routes them via the bypass path
+            // in `DaemonServer` so a long-running AppleScript request
+            // cannot block them. We install the shutdown hook here so
+            // that path can call back into Server.stop() for the pid +
+            // log file cleanup the wrapper actor owns.
             await DaemonDispatch.registerPhase1Handlers(on: underlying, cache: cache)
             let myself = self
-            await underlying.register("daemon.shutdown") { [myself] _ in
-                // Schedule actual teardown after we return the response so
-                // the client sees a clean `{"result":{}}` before the socket
-                // dies.
-                Task.detached { await myself.stop() }
-                return Data("{}".utf8)
-            }
-            await underlying.register("daemon.status") { [myself] _ in
-                try await myself.statusPayload()
+            await underlying.setShutdownHook { [myself] in
+                await myself.stop()
             }
 
             await underlying.configureIdleTimeout(idleTimeout)
+            await underlying.recordStartTimestamp()
             try await underlying.start(socketPath: socketPath)
 
             isRunning = true

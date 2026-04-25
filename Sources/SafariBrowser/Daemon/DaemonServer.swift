@@ -12,11 +12,29 @@ import Darwin
 ///
 /// Method handlers that speak to Safari arrive in later tasks (3.1 / 4.1 / 7.1).
 enum DaemonServer {
+    /// Sendable carrier for the in-flight pair so the actor's
+    /// `snapshotInFlight()` method can return cleanly across the actor
+    /// boundary. `requestIdJSON` is the already-encoded JSON snippet
+    /// for the requestId field (e.g. `42` or `"abc"`); writing it
+    /// verbatim into the cancelled envelope avoids re-serialization
+    /// and dodges the non-Sendable `Any` problem.
+    struct InFlightSlot: Sendable {
+        let fd: Int32
+        let requestIdJSON: Data
+    }
+
     /// Error codes surfaced in JSON-lines responses.
     enum ErrorCode: String {
         case parseError
         case methodNotFound
         case handlerError
+        /// Section 6 of daemon-security-hardening: emitted to in-flight
+        /// connections when `daemon.shutdown` cancels their request.
+        /// Domain-classified by `DaemonClient.Error.fallbackReason`
+        /// (returns nil) so clients propagate the cancellation rather
+        /// than silently retry via the stateless path against a daemon
+        /// that is in the process of dying.
+        case cancelled
     }
 
     /// Running daemon instance. Construct with `init()`, register handlers
@@ -52,6 +70,36 @@ enum DaemonServer {
         /// lines and method-not-found cases, because "line received" is
         /// the activity signal that matters for the idle watchdog.
         private var requestCount: Int = 0
+
+        /// Section 6 of `daemon-security-hardening`. In-flight request
+        /// tracking lets `daemon.shutdown` send a `cancelled` error to
+        /// every active client connection before the daemon dies, so
+        /// callers don't sit blocked on a forever-pending response.
+        /// Map: client fd → JSON-encoded requestId snippet so the
+        /// cancelled envelope correlates with the request the client
+        /// is awaiting. Storing the requestId as `Data` keeps the
+        /// actor fully Sendable (raw `Any?` would not be).
+        private var inFlightRequestIds: [Int32: Data] = [:]
+
+        /// Section 6 of `daemon-security-hardening`. When the lifecycle
+        /// snapshot fields below are read by the bypass path, they must
+        /// not require the cache actor — otherwise `daemon.status`
+        /// queues behind a long-running AppleScript and the bypass is
+        /// defeated. We capture `startedAt` directly on Instance and
+        /// expose it via a synchronous actor property; pre-compiled
+        /// count in the bypass path is read from a separate snapshot
+        /// updated by handlers AFTER they return from cache.execute.
+        private var startedAt: Date = Date()
+        private var preCompiledCountSnapshot: Int = 0
+
+        /// Section 6 of `daemon-security-hardening`. Optional callback
+        /// fired by the lifecycle bypass when `daemon.shutdown` arrives.
+        /// Wraps `Server.stop()` (or equivalent teardown) so the
+        /// outer wrapper actor — which owns the pid file path and the
+        /// idle-watchdog task — can clean up properly. The bypass path
+        /// invokes this from a detached Task so the response to the
+        /// shutdown caller lands first.
+        private var shutdownHook: (@Sendable () async -> Void)?
 
         init() {}
 
@@ -111,6 +159,64 @@ enum DaemonServer {
 
         /// Snapshot of served-request count for status reporting.
         var currentRequestCount: Int { requestCount }
+
+        // MARK: - Section 6: lifecycle bypass + in-flight tracking
+
+        /// Snapshot uptime — read by the bypass status path. No cache
+        /// awaits because we deliberately store `startedAt` here rather
+        /// than on the Server wrapper actor.
+        var currentUptimeSeconds: TimeInterval { Date().timeIntervalSince(startedAt) }
+
+        /// Snapshot of pre-compiled cache size, refreshed by handlers
+        /// after they complete `cache.execute(...)`. May lag the real
+        /// cache count by one update; that staleness is acceptable for
+        /// a status read because the cache count is informational only.
+        var currentPreCompiledCountSnapshot: Int { preCompiledCountSnapshot }
+
+        /// Update the pre-compiled count snapshot. Handlers SHOULD call
+        /// this with the latest value from the cache after each
+        /// successful execute, so the bypass status path can answer
+        /// without entering the cache actor.
+        func recordPreCompiledCountSnapshot(_ n: Int) {
+            preCompiledCountSnapshot = n
+        }
+
+        /// Set the recorded daemon-start timestamp. Called once at
+        /// `start(socketPath:)` by `Server` so uptime is measured from
+        /// listener bind, not actor allocation.
+        func recordStartTimestamp(_ at: Date = Date()) {
+            startedAt = at
+        }
+
+        /// Install the shutdown hook invoked by the lifecycle bypass on
+        /// `daemon.shutdown`. Production wiring sets this to
+        /// `Server.stop()` so the wrapper actor's pid-file cleanup
+        /// runs. Pass nil to clear.
+        func setShutdownHook(_ hook: (@Sendable () async -> Void)?) {
+            shutdownHook = hook
+        }
+
+        fileprivate func currentShutdownHook() -> (@Sendable () async -> Void)? { shutdownHook }
+
+        /// Mark a client connection as having an in-flight request whose
+        /// requestId is `requestIdJSON` (already JSON-encoded). Called
+        /// from the dispatch path before invoking the handler.
+        func markInFlight(fd: Int32, requestIdJSON: Data) {
+            inFlightRequestIds[fd] = requestIdJSON
+        }
+
+        /// Clear the in-flight slot for `fd`. Called from the dispatch
+        /// path after handler completes (success or error).
+        func clearInFlight(fd: Int32) {
+            inFlightRequestIds.removeValue(forKey: fd)
+        }
+
+        /// Snapshot of in-flight (fd, requestIdJSON) pairs. Consumed by
+        /// `daemon.shutdown` to send a `cancelled` envelope to every
+        /// active client before tearing down the socket.
+        func snapshotInFlight() -> [InFlightSlot] {
+            inFlightRequestIds.map { InFlightSlot(fd: $0.key, requestIdJSON: $0.value) }
+        }
 
         /// Snapshot of the last-activity timestamp as seconds since epoch,
         /// for status reporting.
@@ -255,12 +361,122 @@ enum DaemonServer {
             if !writeLine(fd: clientFd, line: DaemonProtocol.encodeHandshake()) { return }
             while !Task.isCancelled {
                 guard let line = readLine(fd: clientFd) else { return }
-                let response = await dispatchLine(line: line, instance: instance)
+                // Section 6 — lifecycle bypass. Peek at the method
+                // before entering the regular dispatch path. Lifecycle
+                // commands (`daemon.status`, `daemon.shutdown`) take a
+                // separate fast path that does NOT touch the cache
+                // actor, so a long-running AppleScript request cannot
+                // block them.
+                let response: Data
+                if let lifecycle = peekLifecycleMethod(line: line) {
+                    response = await dispatchLifecycle(lifecycle: lifecycle, line: line, instance: instance, fd: clientFd)
+                } else {
+                    response = await dispatchLine(line: line, fd: clientFd, instance: instance)
+                }
                 if !writeLine(fd: clientFd, line: response) { return }
             }
         }
 
-        private static func dispatchLine(line: Data, instance: Instance) async -> Data {
+        // MARK: - Section 6: lifecycle bypass
+
+        /// Lifecycle method routing. Recognized values bypass the regular
+        /// handler dispatch and read directly from `Instance`'s snapshot
+        /// fields, never the cache actor.
+        enum LifecycleMethod: String {
+            case status = "daemon.status"
+            case shutdown = "daemon.shutdown"
+        }
+
+        /// Cheap pre-dispatch parse: extract just the `method` field from
+        /// a JSON-line if it matches a `LifecycleMethod` case. Returns nil
+        /// for non-lifecycle requests so the caller routes through the
+        /// regular dispatch path.
+        static func peekLifecycleMethod(line: Data) -> LifecycleMethod? {
+            guard let obj = try? JSONSerialization.jsonObject(with: line, options: []) as? [String: Any],
+                  let method = obj["method"] as? String,
+                  let lifecycle = LifecycleMethod(rawValue: method) else {
+                return nil
+            }
+            return lifecycle
+        }
+
+        /// Dispatch a lifecycle command without touching the cache actor.
+        /// `daemon.status` reads from Instance's snapshot fields and
+        /// returns immediately. `daemon.shutdown` sends a `cancelled`
+        /// envelope to every in-flight client, replies `{}` to its own
+        /// caller, and schedules an asynchronous teardown + 5s
+        /// watchdog so the process exits within the spec deadline even
+        /// if `Server.stop()` stalls.
+        private static func dispatchLifecycle(
+            lifecycle: LifecycleMethod,
+            line: Data,
+            instance: Instance,
+            fd: Int32
+        ) async -> Data {
+            await instance.recordActivity()
+            let started = Date()
+            let obj = (try? JSONSerialization.jsonObject(with: line, options: []) as? [String: Any]) ?? [:]
+            let requestId = obj["requestId"]
+
+            let response: Data
+            switch lifecycle {
+            case .status:
+                let pid = Int(getpid())
+                let uptime = await instance.currentUptimeSeconds
+                let requestCount = await instance.currentRequestCount
+                let preCount = await instance.currentPreCompiledCountSnapshot
+                let lastActivity = await instance.currentLastActivityEpoch
+                let payload: [String: Any] = [
+                    "pid": pid,
+                    "uptimeSeconds": uptime,
+                    "requestCount": requestCount,
+                    "preCompiledCount": preCount,
+                    "lastActivityEpoch": lastActivity,
+                ]
+                let resultData = (try? JSONSerialization.data(withJSONObject: payload, options: []))
+                    ?? Data("{}".utf8)
+                response = encodeResult(requestId: requestId, resultData: resultData)
+                await emitLog(instance: instance, started: started, method: lifecycle.rawValue, requestId: requestId, paramsData: Data("{}".utf8), resultData: resultData, errorMessage: nil)
+            case .shutdown:
+                // Snapshot in-flight clients BEFORE replying so the
+                // teardown can cancel them deterministically.
+                let inFlight = await instance.snapshotInFlight()
+                response = encodeResult(requestId: requestId, resultData: Data("{}".utf8))
+                await emitLog(instance: instance, started: started, method: lifecycle.rawValue, requestId: requestId, paramsData: Data("{}".utf8), resultData: Data("{}".utf8), errorMessage: nil)
+
+                // Async teardown — runs after we return so the shutdown
+                // caller's `{}` reply lands on the wire. Cancellation
+                // envelopes go to each in-flight fd; the daemon then
+                // closes them and stops the listener. 5s watchdog
+                // guarantees the process exits even if graceful path
+                // stalls (e.g., NSAppleScript still running).
+                let hook = await instance.currentShutdownHook()
+                Task.detached {
+                    for slot in inFlight where slot.fd != fd {
+                        let envelope = encodeErrorRaw(
+                            requestIdJSON: slot.requestIdJSON,
+                            code: .cancelled,
+                            message: "cancelled by daemon shutdown"
+                        )
+                        _ = writeLine(fd: slot.fd, line: envelope)
+                    }
+                    if let hook = hook {
+                        await hook()
+                    } else {
+                        await instance.stop()
+                    }
+                }
+                Task.detached(priority: .userInitiated) {
+                    try? await Task.sleep(for: .seconds(5))
+                    // Force-exit if process still alive 5s after shutdown
+                    // request. Per Section 6.3 of the spec.
+                    Darwin._exit(0)
+                }
+            }
+            return response
+        }
+
+        private static func dispatchLine(line: Data, fd: Int32, instance: Instance) async -> Data {
             // Record activity at the top of dispatch so an actively-used
             // daemon never gets idle-killed between consecutive requests.
             await instance.recordActivity()
@@ -302,12 +518,21 @@ enum DaemonServer {
                 return resp
             }
 
+            // Section 6: register the in-flight request so a concurrent
+            // `daemon.shutdown` can find this connection and emit a
+            // `cancelled` envelope to it. The slot is cleared after the
+            // handler completes (success OR error). Encode requestId
+            // here so the actor never holds a non-Sendable `Any`.
+            let requestIdJSON = encodeRequestId(requestId)
+            await instance.markInFlight(fd: fd, requestIdJSON: requestIdJSON)
             do {
                 let resultData = try await handler(paramsData)
+                await instance.clearInFlight(fd: fd)
                 let resp = encodeResult(requestId: requestId, resultData: resultData)
                 await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: resultData, errorMessage: nil)
                 return resp
             } catch {
+                await instance.clearInFlight(fd: fd)
                 let resp = encodeError(requestId: requestId, code: .handlerError, message: "\(error)")
                 await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: nil, errorMessage: "\(error)")
                 return resp
@@ -363,6 +588,32 @@ enum DaemonServer {
         private static func encodeError(requestId: Any?, code: ErrorCode, message: String) -> Data {
             let envelope: [String: Any] = [
                 "requestId": requestId ?? NSNull(),
+                "error": ["code": code.rawValue, "message": message] as [String: Any],
+            ]
+            return (try? JSONSerialization.data(withJSONObject: envelope, options: [])) ?? Data("{}".utf8)
+        }
+
+        /// Section 6: encode a `requestId` value (which may be Int, String,
+        /// or NSNull) into its JSON snippet so it can cross actor
+        /// boundaries as Sendable `Data`. Used by `markInFlight` to store
+        /// the encoded form before handler dispatch.
+        static func encodeRequestId(_ requestId: Any?) -> Data {
+            let value: Any = requestId ?? NSNull()
+            return (try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]))
+                ?? Data("null".utf8)
+        }
+
+        /// Section 6: build a cancelled-error envelope from a pre-encoded
+        /// requestId snippet. Re-decodes the requestId snippet so it can
+        /// re-enter the JSON object construction; this keeps shape
+        /// fidelity (Int stays Int, String stays String) without
+        /// re-implementing JSON escaping.
+        static func encodeErrorRaw(requestIdJSON: Data, code: ErrorCode, message: String) -> Data {
+            let requestIdValue: Any = (try? JSONSerialization.jsonObject(
+                with: requestIdJSON, options: [.fragmentsAllowed]
+            )) ?? NSNull()
+            let envelope: [String: Any] = [
+                "requestId": requestIdValue,
                 "error": ["code": code.rawValue, "message": message] as [String: Any],
             ]
             return (try? JSONSerialization.data(withJSONObject: envelope, options: [])) ?? Data("{}".utf8)
