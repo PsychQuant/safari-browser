@@ -19,15 +19,15 @@ final class ExecDaemonRouterTests: XCTestCase {
     }
 
     func testInProcessDispatcher_doesNotSupportV2DeferredCommands() {
-        // v2.0 ships only the most common subset — these stay subprocess
-        // until v2.1 expands the in-process dispatcher.
+        // v2.1 added pure-read `get text` / `get source`; the mutating
+        // and stateful commands below stay subprocess until a future
+        // iteration covers them.
         XCTAssertFalse(InProcessStepDispatcher.isSupported("click"))
         XCTAssertFalse(InProcessStepDispatcher.isSupported("fill"))
         XCTAssertFalse(InProcessStepDispatcher.isSupported("type"))
         XCTAssertFalse(InProcessStepDispatcher.isSupported("press"))
         XCTAssertFalse(InProcessStepDispatcher.isSupported("wait"))
         XCTAssertFalse(InProcessStepDispatcher.isSupported("snapshot"))
-        XCTAssertFalse(InProcessStepDispatcher.isSupported("get text"))
         XCTAssertFalse(InProcessStepDispatcher.isSupported("storage local get"))
     }
 

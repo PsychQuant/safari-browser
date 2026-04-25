@@ -119,10 +119,11 @@ enum DaemonDispatch {
         /// envelope, undecodable target, maxSteps overflow) raise as
         /// thrown errors that the dispatcher maps to `handlerError`.
         static func execRunScript(paramsData: Data) async throws -> Data {
-            // Decode envelope: steps, target (TargetOptions JSON), maxSteps.
-            // We re-encode the steps array back into a JSON string and feed
-            // it through `ScriptInterpreter.parseScript` to reuse the same
-            // strict-decode path that the stateless command uses.
+            // Decode envelope: steps, target (TargetOptions JSON), maxSteps,
+            // optional markTab (Section 7 of tab-ownership-marker v2 — when
+            // non-off, wrap the entire script execution with a marker so
+            // multi-step daemon requests carry one request-spanning lock
+            // instead of N per-step toggles).
             guard let envelope = try? JSONSerialization.jsonObject(with: paramsData, options: []) as? [String: Any] else {
                 throw ExecRunScriptError.malformedEnvelope("not a JSON object")
             }
@@ -131,6 +132,12 @@ enum DaemonDispatch {
             }
             let targetArgs = (envelope["targetArgs"] as? [String]) ?? []
             let maxSteps = (envelope["maxSteps"] as? Int) ?? ScriptInterpreter.defaultMaxSteps
+            let markTabRaw = (envelope["markTab"] as? String) ?? "off"
+            guard let markTabMode = TargetOptions.MarkTabMode(rawValue: markTabRaw) else {
+                throw ExecRunScriptError.malformedEnvelope(
+                    "invalid markTab value '\(markTabRaw)' (expected 'off' / 'ephemeral' / 'persist')"
+                )
+            }
 
             let target: TargetOptions
             do {
@@ -158,7 +165,23 @@ enum DaemonDispatch {
                 maxSteps: maxSteps,
                 dispatcher: InProcessStepDispatcher()
             )
-            let results = try await interpreter.runSteps(parsedSteps, target: target)
+
+            // Section 7 of tab-ownership-marker v2: wrap the ENTIRE script
+            // execution in `SafariBridge.markTabIfRequested` when the
+            // request opts in. The wrapper takes care of wrap-before /
+            // unwrap-after / title-race-on-cleanup; it does NOT toggle per
+            // step (Requirement 7.3 — marker is owned by the request-actor
+            // wrapper, not by individual steps). For `.off` the closure
+            // body runs directly, so the daemon path stays zero-overhead
+            // when no marker is requested.
+            let resolved = try target.resolve()
+            let results: [StepResult] = try await SafariBridge.markTabIfRequested(
+                target: resolved,
+                mode: markTabMode,
+                firstMatch: target.firstMatch
+            ) {
+                try await interpreter.runSteps(parsedSteps, target: target)
+            }
 
             // Encode the results array back as JSON. `StepResult.encodeArray`
             // produces the same format as the stateless command's stdout.

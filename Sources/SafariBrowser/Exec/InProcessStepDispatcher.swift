@@ -12,13 +12,16 @@ import Foundation
 /// back to the subprocess path. Future iterations expand coverage.
 struct InProcessStepDispatcher: StepDispatcher {
 
-    /// Phase 1 commands this dispatcher handles directly. Aligned with
-    /// v2.0 scope; expand here when adding new direct routes.
+    /// Phase 1 commands this dispatcher handles directly. v2.0 ships the
+    /// most-common read commands; v2.1 adds `get text` and `get source`
+    /// which are also pure-read (no Safari state mutation).
     static let supportedCommands: Set<String> = [
         "js",
         "documents",
         "get url",
         "get title",
+        "get text",
+        "get source",
     ]
 
     /// Returns true when `cmd` is in `supportedCommands` so callers can
@@ -68,6 +71,20 @@ struct InProcessStepDispatcher: StepDispatcher {
 
         case "get title":
             return try await SafariBridge.getCurrentTitle(
+                target: resolved,
+                firstMatch: target.firstMatch,
+                warnWriter: nil
+            )
+
+        case "get text":
+            return try await SafariBridge.getCurrentText(
+                target: resolved,
+                firstMatch: target.firstMatch,
+                warnWriter: nil
+            )
+
+        case "get source":
+            return try await SafariBridge.getCurrentSource(
                 target: resolved,
                 firstMatch: target.firstMatch,
                 warnWriter: nil

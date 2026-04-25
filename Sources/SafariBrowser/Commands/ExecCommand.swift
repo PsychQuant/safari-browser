@@ -71,11 +71,15 @@ struct ExecCommand: AsyncParsableCommand {
     /// or handler-side error occurs (caller falls through to local path).
     private func runViaDaemon(steps: [ScriptStep]) async throws -> String? {
         // Re-encode steps + target as the envelope the handler expects.
+        // Section 7 of tab-ownership-marker v2: forward the resolved
+        // markTab mode so the daemon wraps the entire execution in one
+        // marker (saves 2 round-trips for wrap+unwrap vs per-step).
         let stepsJSON = steps.map { step in step.toDictionary() }
         let envelope: [String: Any] = [
             "steps": stepsJSON,
             "targetArgs": ScriptInterpreter.encodeTargetArgs(target),
             "maxSteps": maxSteps,
+            "markTab": target.markTabResolved().rawValue,
         ]
         let envelopeData: Data
         do {

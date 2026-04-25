@@ -1322,6 +1322,25 @@ enum SafariBridge {
         return newTitle
     }
 
+    /// Read `document.title` via JS so the value is symmetric with
+    /// `setTabTitle`. The user-facing `getCurrentTitle` returns Safari's
+    /// window title (which prepends the macOS username), so it's NOT
+    /// suitable for marker round-trip equality checks. This helper is
+    /// the read-side counterpart used by `markTabIfRequested` /
+    /// `tab is-marked` / unwrap-cleanup so wrap/unwrap match exactly.
+    static func getDocumentTitle(
+        target: TargetDocument = .frontWindow,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> String {
+        return try await doJavaScript(
+            "document.title",
+            target: target,
+            firstMatch: firstMatch,
+            warnWriter: warnWriter
+        )
+    }
+
     /// Wrapper that orchestrates the marker wrap/run/unwrap lifecycle for
     /// `--mark-tab` opt-in commands per Requirement: Ephemeral marker
     /// default. Honors three modes:
@@ -1341,7 +1360,11 @@ enum SafariBridge {
             return try await operation()
 
         case .persist:
-            let original = try await getCurrentTitle(
+            // Read via document.title (NOT window title) so the value
+            // round-trips symmetrically with setTabTitle. Safari's
+            // window title prepends the macOS username, which would
+            // break marker equality on next read.
+            let original = try await getDocumentTitle(
                 target: target, firstMatch: firstMatch, warnWriter: warnWriter
             )
             let wrapped = MarkerConstants.wrap(title: original)
@@ -1351,7 +1374,7 @@ enum SafariBridge {
             return try await operation()
 
         case .ephemeral:
-            let original = try await getCurrentTitle(
+            let original = try await getDocumentTitle(
                 target: target, firstMatch: firstMatch, warnWriter: warnWriter
             )
             let wrapped = MarkerConstants.wrap(title: original)
@@ -1388,7 +1411,10 @@ enum SafariBridge {
         firstMatch: Bool,
         warnWriter: ((String) -> Void)?
     ) async throws {
-        let currentTitle = try await getCurrentTitle(
+        // Read via document.title (NOT window title) so this round-trips
+        // symmetrically with setTabTitle / wrap. Safari prepends the
+        // macOS username to window titles, breaking marker equality.
+        let currentTitle = try await getDocumentTitle(
             target: target, firstMatch: firstMatch, warnWriter: warnWriter
         )
         if currentTitle == expectedWrapped {

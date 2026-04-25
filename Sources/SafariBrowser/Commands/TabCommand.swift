@@ -67,7 +67,11 @@ struct TabIsMarkedCommand: AsyncParsableCommand {
     func run() async throws {
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         do {
-            let title = try await SafariBridge.getCurrentTitle(
+            // Read document.title (NOT window title) so the marker
+            // detection matches what setTabTitle wrote. Safari's window
+            // title prepends the macOS username, which would mask the
+            // zero-width-space marker.
+            let title = try await SafariBridge.getDocumentTitle(
                 target: resolvedTarget,
                 firstMatch: firstMatch,
                 warnWriter: warnWriter
@@ -102,7 +106,8 @@ struct TabUnmarkCommand: AsyncParsableCommand {
     func run() async throws {
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         do {
-            let title = try await SafariBridge.getCurrentTitle(
+            // Read via document.title to match how setTabTitle wrote it.
+            let title = try await SafariBridge.getDocumentTitle(
                 target: resolvedTarget,
                 firstMatch: firstMatch,
                 warnWriter: warnWriter
