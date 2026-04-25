@@ -30,20 +30,29 @@ enum DaemonServeLoop {
 
     /// Process-level check consumed by `daemon start` to short-circuit the
     /// fork when a daemon is already running under the same NAME. Returns
-    /// true iff: the pid file exists, contains a valid pid, that pid is
-    /// alive (kill(pid, 0) succeeds), AND the socket file exists.
-    /// Stale pid files (pointing at dead processes) return false so the
-    /// caller can clean them up before spawning a new daemon.
+    /// true iff ALL of:
+    ///
+    /// 1. The socket file exists.
+    /// 2. The pid file contains a JSON `PidRecord` (legacy single-integer
+    ///    format → stale, overwritten on next start).
+    /// 3. `DaemonPaths.isProcessAlive` passes the 3-check probe (kill +
+    ///    binary path + boot time within ±2s).
+    ///
+    /// A failure on any check means "stale" — the caller can clean up
+    /// and spawn a new daemon. Per Requirement: Stale-pid file liveness
+    /// detection (security-hardening Section 4): a recycled pid running
+    /// an unrelated binary is correctly identified as stale, eliminating
+    /// the prior false-positive that blocked `daemon start` against
+    /// CI runners or unrelated tools that happened to land at the
+    /// recorded pid.
     static func isDaemonAlive(socketPath: String, pidPath: String) -> Bool {
         guard FileManager.default.fileExists(atPath: socketPath) else { return false }
-        guard let pidString = try? String(contentsOfFile: pidPath, encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines),
-              let pid = pid_t(pidString), pid > 0 else {
+        switch DaemonPaths.readPidFile(at: pidPath) {
+        case .ok(let record):
+            return DaemonPaths.isProcessAlive(record: record, probe: .real)
+        case .stale, .absent:
             return false
         }
-        // kill(pid, 0) probes existence without sending a signal.
-        if kill(pid, 0) == 0 { return true }
-        return errno == EPERM // alive but owned by another uid
     }
 
     /// In-process daemon serve loop. Own lifecycle via `start(...)` / `stop()`.
@@ -82,16 +91,21 @@ enum DaemonServeLoop {
             if isRunning { return }
 
             // Write pid file before binding socket so a racing observer never
-            // sees a socket without a corresponding pid. `open(2)` with
-            // `O_CREAT|O_WRONLY|O_EXCL` + mode 0o600 prevents a race
-            // between create-and-chmod from leaking the pid via a
-            // world-readable inode (security-hardening Requirement 1.4).
-            // `unlink` first so a stale pid file from a crashed prior run
-            // doesn't fail O_EXCL — `isDaemonAlive` already gated this
-            // path so any pre-existing file is known-stale.
+            // sees a socket without a corresponding pid. The format is now
+            // a JSON `PidRecord` carrying `(pid, binary path, boot time)`
+            // so the 3-check liveness probe in `isDaemonAlive` can rule
+            // out recycled-pid false positives (security-hardening Section
+            // 4). `open(2)` with `O_CREAT|O_WRONLY|O_EXCL` + mode 0o600
+            // still applies. `unlink` first so a stale pid file from a
+            // crashed prior run doesn't fail O_EXCL — `isDaemonAlive`
+            // already gated this path so any pre-existing file is
+            // known-stale.
             unlink(pidPath)
+            guard let record = DaemonPaths.currentPidRecord() else {
+                throw LoopError.pidWriteFailed("could not capture self pid record")
+            }
             do {
-                try DaemonPaths.writePidFile(at: pidPath, pid: getpid())
+                try DaemonPaths.writePidFile(record: record, at: pidPath)
             } catch {
                 throw LoopError.pidWriteFailed("\(error)")
             }

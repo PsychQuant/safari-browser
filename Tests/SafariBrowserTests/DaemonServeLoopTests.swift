@@ -36,9 +36,15 @@ final class DaemonServeLoopTests: XCTestCase {
         defer { Task { await loop.stop() } }
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: pidPath))
-        let pidString = try String(contentsOfFile: pidPath, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        XCTAssertEqual(Int(pidString), Int(getpid()))
+        // Section 4: pid file is JSON `PidRecord` with (pid, exec, boot)
+        // — readPidFile decodes and verifies the recorded pid matches us.
+        switch DaemonPaths.readPidFile(at: pidPath) {
+        case .ok(let record):
+            XCTAssertEqual(record.pid, getpid())
+            XCTAssertFalse(record.exec.isEmpty)
+        case .stale, .absent:
+            XCTFail("pid file should be readable as JSON PidRecord")
+        }
     }
 
     func testStop_removesPidAndSocket() async throws {
