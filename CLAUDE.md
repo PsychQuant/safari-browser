@@ -214,3 +214,50 @@ Daemon 連線時送 `{"protocol":"safari-browser-daemon","version":"<semver>+<gi
 
 - `openspec/specs/persistent-daemon/spec.md`（archive 後生成）
 - `openspec/changes/persistent-daemon/`（while in-flight）
+
+## Exec scripts (`safari-browser exec`)
+
+Multi-step automation in single invocation。Agents 用 JSON 描述 step sequence，binary 處理 variable capture / conditional flow / shared target resolution，避免 shell pipelining 的 plumbing。
+
+### Script format
+
+```json
+[
+  {"cmd": "get url", "var": "u"},
+  {"cmd": "js", "args": ["1+1"], "if": "$u contains \"plaud\""},
+  {"cmd": "click", "args": ["button.upload"], "onError": "continue"}
+]
+```
+
+| Key | Required | Meaning |
+|---|---|---|
+| `cmd` | yes | Subcommand name（`get url`, `click`, `js`, `wait`, `storage local get`, ...） |
+| `args` | no | Positional args（default `[]`） |
+| `var` | no | Bind result to `$name` for later steps |
+| `if` | no | Skip step when expression is false |
+| `onError` | no | `"abort"`（default）or `"continue"` |
+
+### `if:` expression mini-language
+
+| Form | Example |
+|---|---|
+| `$var contains "<literal>"` | `$url contains "plaud"` |
+| `$var equals "<literal>"` | `$title equals "Dashboard"` |
+| `$var exists` | `$token exists` |
+
+無 `and` / `or` / `not` / parens — 複雜邏輯讓 host language（Python / shell）生 JSON。
+
+### Error codes
+
+`invalidScriptFormat` `invalidStepSchema` `undefinedVariable` `invalidCondition` `maxStepsExceeded` `unsupportedInExec` — 加上每 step 自己 dispatch 出來的標準 error codes（`elementNotFound`, `documentNotFound`, `ambiguousWindowMatch`, ...）。
+
+### v1 implementation note
+
+V1 dispatch 透過 subprocess 跑同個 binary（不是 design 原本的 daemon-shared-connection）。當 daemon mode opt-in 時每個 step 還是 ~50ms 透過 warm daemon。Connection-sharing 是 v2 enhancement。
+
+`screenshot` / `pdf` / `upload` 觸發 `unsupportedInExec`（keystroke / CG / AX path 不適合 exec script）。
+
+### 相關 specs
+
+- `openspec/specs/script-exec/spec.md`（archive 後生成）
+- `openspec/changes/script-exec-command/`（while in-flight）

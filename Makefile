@@ -1,7 +1,7 @@
 INSTALL_DIR = $(HOME)/bin
 BINARY_NAME = safari-browser
 
-.PHONY: build install clean test test-unit test-e2e test-daemon-parity
+.PHONY: build install clean test test-unit test-e2e test-daemon-parity test-exec-script
 
 build:
 	swift build -c release
@@ -23,6 +23,9 @@ test-e2e:
 
 test-daemon-parity:
 	./Tests/e2e-daemon-parity.sh
+
+test-exec-script:
+	./Tests/e2e-exec-script.sh
 
 clean:
 	rm -rf .build

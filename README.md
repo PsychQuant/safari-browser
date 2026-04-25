@@ -388,6 +388,26 @@ SAFARI_BROWSER_NAME=beta  safari-browser daemon start
 
 If the daemon is missing, crashed, version-mismatched, or unresponsive (15s), commands **silently fall back** to the stateless path with a single `[daemon fallback: <reason>]` stderr line. Idle >10 minutes → daemon auto-exits. See `openspec/specs/persistent-daemon/spec.md` for full semantics.
 
+### Exec scripts (multi-step automation)
+
+`safari-browser exec` runs a JSON array of step objects in one invocation with shared target resolution, variable capture (`$name`), and minimal conditional flow (`if:` with `contains` / `equals` / `exists`). Designed for agents and CI that need deterministic multi-step automation without bash plumbing.
+
+```bash
+# Heredoc style
+safari-browser exec --url plaud <<'JSON'
+[
+  {"cmd": "get url", "var": "u"},
+  {"cmd": "js", "args": ["1+1"], "if": "$u contains \"plaud\""},
+  {"cmd": "click", "args": ["button.upload"]}
+]
+JSON
+
+# From file
+safari-browser exec --script /tmp/login.json --url plaud
+```
+
+Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). v1 dispatches via subprocess to the same binary, so daemon opt-in still amortizes per-step cost. `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
+
 ## Comparison with agent-browser
 
 | Feature | agent-browser | safari-browser |
