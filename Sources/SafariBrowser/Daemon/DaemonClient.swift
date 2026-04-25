@@ -145,10 +145,14 @@ enum DaemonClient {
         guard let serverVersion = DaemonProtocol.decodeHandshakeVersion(handshakeLine) else {
             throw Error.protocolError("invalid handshake")
         }
-        if serverVersion != DaemonProtocol.currentVersion {
+        // Section 5 of daemon-security-hardening: comparison consults
+        // dirty + vendor in addition to semver+commit. Any side dirty
+        // or vendor mismatch surfaces as `versionMismatch` so the
+        // router falls back to the stateless path.
+        if !DaemonProtocol.versionsMatch(server: serverVersion, client: DaemonProtocol.currentVersion) {
             throw Error.remoteError(
                 code: "versionMismatch",
-                message: "daemon v\(serverVersion), client v\(DaemonProtocol.currentVersion)"
+                message: "daemon \(serverVersion.description), client \(DaemonProtocol.currentVersion.description)"
             )
         }
 

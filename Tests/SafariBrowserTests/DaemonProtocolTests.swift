@@ -14,7 +14,10 @@ final class DaemonProtocolTests: XCTestCase {
         let data = DaemonProtocol.encodeHandshake()
         let obj = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
         let proto = obj?["protocol"] as? [String: Any]
-        XCTAssertEqual(proto?["version"] as? String, DaemonProtocol.currentVersion)
+        // Section 5: version is now a structured dict with semver/commit/dirty/vendor.
+        let versionDict = proto?["version"] as? [String: Any]
+        XCTAssertEqual(versionDict?["semver"] as? String, DaemonProtocol.currentVersion.semver)
+        XCTAssertEqual(versionDict?["commit"] as? String, DaemonProtocol.currentVersion.commit)
     }
 
     func testEncodeHandshake_containsProtocolName() throws {
@@ -25,8 +28,9 @@ final class DaemonProtocolTests: XCTestCase {
     }
 
     func testDecodeHandshake_validLine_returnsVersion() {
-        let data = DaemonProtocol.encodeHandshake(version: "2.1.3")
-        XCTAssertEqual(DaemonProtocol.decodeHandshakeVersion(data), "2.1.3")
+        let v = DaemonProtocol.Version(semver: "2.1.3", commit: "abcdef12", dirty: false, vendor: .git)
+        let data = DaemonProtocol.encodeHandshake(version: v)
+        XCTAssertEqual(DaemonProtocol.decodeHandshakeVersion(data), v)
     }
 
     func testDecodeHandshake_missingProtocolKey_returnsNil() {
@@ -94,7 +98,13 @@ final class DaemonProtocolTests: XCTestCase {
             guard clientFd >= 0 else { return }
             var enableC: Int32 = 1
             _ = setsockopt(clientFd, SOL_SOCKET, SO_NOSIGPIPE, &enableC, socklen_t(MemoryLayout<Int32>.size))
-            let bogus = DaemonProtocol.encodeHandshake(version: "99.99.99")
+            let bogusVersion = DaemonProtocol.Version(
+                semver: "99.99.99",
+                commit: "deadbeef",
+                dirty: false,
+                vendor: .git
+            )
+            let bogus = DaemonProtocol.encodeHandshake(version: bogusVersion)
             var payload = Data(bogus)
             payload.append(0x0A)
             _ = payload.withUnsafeBytes { rawBuf -> Int in
