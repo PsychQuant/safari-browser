@@ -68,10 +68,16 @@ enum DaemonServeLoop {
             if isRunning { return }
 
             // Write pid file before binding socket so a racing observer never
-            // sees a socket without a corresponding pid.
-            let pidString = String(Int(getpid())) + "\n"
+            // sees a socket without a corresponding pid. `open(2)` with
+            // `O_CREAT|O_WRONLY|O_EXCL` + mode 0o600 prevents a race
+            // between create-and-chmod from leaking the pid via a
+            // world-readable inode (security-hardening Requirement 1.4).
+            // `unlink` first so a stale pid file from a crashed prior run
+            // doesn't fail O_EXCL — `isDaemonAlive` already gated this
+            // path so any pre-existing file is known-stale.
+            unlink(pidPath)
             do {
-                try pidString.write(toFile: pidPath, atomically: true, encoding: .utf8)
+                try DaemonPaths.writePidFile(at: pidPath, pid: getpid())
             } catch {
                 throw LoopError.pidWriteFailed("\(error)")
             }

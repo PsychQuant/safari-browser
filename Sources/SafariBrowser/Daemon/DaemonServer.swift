@@ -123,6 +123,17 @@ enum DaemonServer {
             }
 
             let addrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+
+            // Restrict the inode mode of the socket file to 0o600 so only
+            // this UID can connect via filesystem permissions per
+            // Requirement: Socket and pid file permissions. macOS honors
+            // the process umask when creating Unix-domain socket inodes
+            // — saving + restoring around bind isolates the daemon's
+            // permission policy from whatever shell/launchd umask we
+            // inherited.
+            let savedUmask = umask(0o077)
+            defer { umask(savedUmask) }
+
             let bindRC = withUnsafePointer(to: &addr) { p -> Int32 in
                 p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                     Darwin.bind(fd, sa, addrLen)
@@ -132,6 +143,12 @@ enum DaemonServer {
                 close(fd)
                 throw DaemonError.bindFailed("bind() failed: errno=\(errno)")
             }
+
+            // Belt-and-suspenders: explicitly chmod the socket inode after
+            // bind. Some macOS versions ignore umask for AF_UNIX sockets;
+            // calling chmod(2) on the path makes the 0o600 contract
+            // explicit and verifiable via stat(2).
+            chmod(socketPath, 0o600)
             if listen(fd, 16) != 0 {
                 close(fd)
                 unlink(socketPath)
