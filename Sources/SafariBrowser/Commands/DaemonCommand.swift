@@ -27,6 +27,43 @@ struct DaemonNameFlag: ParsableArguments {
     var name: String?
 }
 
+/// Section 1 follow-up of `daemon-security-hardening`: explicit override
+/// for the directory that holds socket / pid / log files, plus an opt-in
+/// to bypass the world-writable parent directory check. The pure
+/// resolver `DaemonPaths.resolveSocketDir` enforces the safety contract;
+/// these flags expose it on the CLI surface.
+struct DaemonSocketDirFlags: ParsableArguments {
+    @Option(
+        name: .long,
+        help: "Override the directory holding the daemon's socket / pid / log files. Defaults to $TMPDIR (refuses to start when TMPDIR is unset)."
+    )
+    var socketDir: String?
+
+    @Flag(
+        name: .long,
+        help: "Allow the daemon to bind in a world-writable directory. NOT RECOMMENDED — exists to unblock CI runners or constrained environments where the parent dir cannot be tightened."
+    )
+    var allowUnsafeSocketDir: Bool = false
+}
+
+/// Resolve the directory the daemon should use, applying the security
+/// rules (TMPDIR rejection, world-writable parent rejection unless
+/// `allowUnsafe`). Called by every daemon subcommand before composing
+/// concrete socket / pid / log paths.
+func resolveDaemonSocketDir(flags: DaemonSocketDirFlags) throws -> String {
+    let result = DaemonPaths.resolveSocketDir(
+        socketDir: flags.socketDir,
+        env: ProcessInfo.processInfo.environment,
+        allowUnsafe: flags.allowUnsafeSocketDir
+    )
+    switch result {
+    case .ok(let dir):
+        return dir
+    case .rejected(_, let message):
+        throw ValidationError(message)
+    }
+}
+
 // MARK: - daemon start
 
 struct DaemonStartCommand: AsyncParsableCommand {
@@ -36,14 +73,16 @@ struct DaemonStartCommand: AsyncParsableCommand {
     )
 
     @OptionGroup var nameFlag: DaemonNameFlag
+    @OptionGroup var socketDirFlags: DaemonSocketDirFlags
 
     var name: String? { nameFlag.name }
 
     func run() async throws {
         let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
-        let socketPath = DaemonClient.socketPath(name: resolvedName)
-        let pidPath = DaemonClient.pidPath(name: resolvedName)
-        let logPath = DaemonClient.logPath(name: resolvedName)
+        let dir = try resolveDaemonSocketDir(flags: socketDirFlags)
+        let socketPath = DaemonClient.socketPath(dir: dir, name: resolvedName)
+        let pidPath = DaemonClient.pidPath(dir: dir, name: resolvedName)
+        let logPath = DaemonClient.logPath(dir: dir, name: resolvedName)
 
         if DaemonServeLoop.isDaemonAlive(socketPath: socketPath, pidPath: pidPath) {
             print("daemon \(resolvedName): already running")
@@ -59,7 +98,14 @@ struct DaemonStartCommand: AsyncParsableCommand {
         // shows whatever the daemon printed.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: currentExecutablePath())
-        process.arguments = ["daemon", "__serve", "--name", resolvedName]
+        var serveArgs = ["daemon", "__serve", "--name", resolvedName]
+        if let explicit = socketDirFlags.socketDir, !explicit.isEmpty {
+            serveArgs.append(contentsOf: ["--socket-dir", explicit])
+        }
+        if socketDirFlags.allowUnsafeSocketDir {
+            serveArgs.append("--allow-unsafe-socket-dir")
+        }
+        process.arguments = serveArgs
         process.standardInput = nil
         let logFd = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0o644)
         if logFd >= 0 {
@@ -101,13 +147,15 @@ struct DaemonStopCommand: AsyncParsableCommand {
     )
 
     @OptionGroup var nameFlag: DaemonNameFlag
+    @OptionGroup var socketDirFlags: DaemonSocketDirFlags
 
     var name: String? { nameFlag.name }
 
     func run() async throws {
         let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
-        let socketPath = DaemonClient.socketPath(name: resolvedName)
-        let pidPath = DaemonClient.pidPath(name: resolvedName)
+        let dir = try resolveDaemonSocketDir(flags: socketDirFlags)
+        let socketPath = DaemonClient.socketPath(dir: dir, name: resolvedName)
+        let pidPath = DaemonClient.pidPath(dir: dir, name: resolvedName)
 
         if !DaemonServeLoop.isDaemonAlive(socketPath: socketPath, pidPath: pidPath) {
             return
@@ -122,7 +170,8 @@ struct DaemonStopCommand: AsyncParsableCommand {
             method: "daemon.shutdown",
             params: Data("{}".utf8),
             requestId: 1,
-            timeout: 2.0
+            timeout: 2.0,
+            socketDir: socketDirFlags.socketDir
         )
 
         // Poll for the pid file to disappear. Bound to 5 seconds matching
@@ -148,13 +197,15 @@ struct DaemonStatusCommand: AsyncParsableCommand {
     )
 
     @OptionGroup var nameFlag: DaemonNameFlag
+    @OptionGroup var socketDirFlags: DaemonSocketDirFlags
 
     var name: String? { nameFlag.name }
 
     func run() async throws {
         let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
-        let socketPath = DaemonClient.socketPath(name: resolvedName)
-        let pidPath = DaemonClient.pidPath(name: resolvedName)
+        let dir = try resolveDaemonSocketDir(flags: socketDirFlags)
+        let socketPath = DaemonClient.socketPath(dir: dir, name: resolvedName)
+        let pidPath = DaemonClient.pidPath(dir: dir, name: resolvedName)
 
         if !DaemonServeLoop.isDaemonAlive(socketPath: socketPath, pidPath: pidPath) {
             print("daemon \(resolvedName): not running")
@@ -166,7 +217,8 @@ struct DaemonStatusCommand: AsyncParsableCommand {
             method: "daemon.status",
             params: Data("{}".utf8),
             requestId: 1,
-            timeout: 2.0
+            timeout: 2.0,
+            socketDir: socketDirFlags.socketDir
         )
         let obj = (try? JSONSerialization.jsonObject(with: resultData, options: [])) as? [String: Any] ?? [:]
         let pid = (obj["pid"] as? Int) ?? -1
@@ -190,12 +242,14 @@ struct DaemonLogsCommand: AsyncParsableCommand {
     )
 
     @OptionGroup var nameFlag: DaemonNameFlag
+    @OptionGroup var socketDirFlags: DaemonSocketDirFlags
 
     var name: String? { nameFlag.name }
 
     func run() async throws {
         let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
-        let logPath = DaemonClient.logPath(name: resolvedName)
+        let dir = try resolveDaemonSocketDir(flags: socketDirFlags)
+        let logPath = DaemonClient.logPath(dir: dir, name: resolvedName)
         guard FileManager.default.fileExists(atPath: logPath) else {
             print("daemon \(resolvedName): no log file at \(logPath)")
             return
@@ -231,6 +285,7 @@ struct DaemonServeCommand: AsyncParsableCommand {
     )
 
     @OptionGroup var nameFlag: DaemonNameFlag
+    @OptionGroup var socketDirFlags: DaemonSocketDirFlags
 
     func run() async throws {
         // Detach from the parent's terminal so closing the shell does not
@@ -240,8 +295,10 @@ struct DaemonServeCommand: AsyncParsableCommand {
         _ = setsid()
 
         let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
-        let socketPath = DaemonClient.socketPath(name: resolvedName)
-        let pidPath = DaemonClient.pidPath(name: resolvedName)
+        let dir = try resolveDaemonSocketDir(flags: socketDirFlags)
+        let socketPath = DaemonClient.socketPath(dir: dir, name: resolvedName)
+        let pidPath = DaemonClient.pidPath(dir: dir, name: resolvedName)
+        let logPath = DaemonClient.logPath(dir: dir, name: resolvedName)
         let idleTimeout = DaemonServer.Instance.resolveIdleTimeout(
             env: ProcessInfo.processInfo.environment
         )
@@ -250,7 +307,8 @@ struct DaemonServeCommand: AsyncParsableCommand {
         try await loop.start(
             socketPath: socketPath,
             pidPath: pidPath,
-            idleTimeout: idleTimeout
+            idleTimeout: idleTimeout,
+            logPath: logPath
         )
 
         // Block until either the idle watchdog or an explicit

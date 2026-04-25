@@ -111,6 +111,23 @@ enum DaemonClient {
         return pathUnderTmp(prefix: socketPrefix, name: name, suffix: ".log")
     }
 
+    /// Build the socket path under an explicit directory. Used when the
+    /// caller has an `--socket-dir` override and has already resolved
+    /// (or chosen to bypass) the world-writable safety check.
+    static func socketPath(dir: String, name: String) -> String {
+        return DaemonPaths.composeSocketPath(dir: dir, prefix: socketPrefix, name: name, suffix: socketSuffix)
+    }
+
+    /// Build the pid file path under an explicit directory.
+    static func pidPath(dir: String, name: String) -> String {
+        return DaemonPaths.composeSocketPath(dir: dir, prefix: socketPrefix, name: name, suffix: ".pid")
+    }
+
+    /// Build the log file path under an explicit directory.
+    static func logPath(dir: String, name: String) -> String {
+        return DaemonPaths.composeSocketPath(dir: dir, prefix: socketPrefix, name: name, suffix: ".log")
+    }
+
     private static func pathUnderTmp(prefix: String, name: String, suffix: String) -> String {
         let tmpDir = ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp"
         let normalized = tmpDir.hasSuffix("/") ? tmpDir : tmpDir + "/"
@@ -135,9 +152,15 @@ enum DaemonClient {
         method: String,
         params: Data,
         requestId: Int,
-        timeout: TimeInterval = defaultTimeoutSeconds
+        timeout: TimeInterval = defaultTimeoutSeconds,
+        socketDir: String? = nil
     ) async throws -> Data {
-        let path = socketPath(name: name)
+        let path: String
+        if let dir = socketDir, !dir.isEmpty {
+            path = socketPath(dir: dir, name: name)
+        } else {
+            path = socketPath(name: name)
+        }
         let fd = try connectUnixSocket(path: path)
         defer { close(fd) }
         try applySocketTimeout(fd: fd, seconds: timeout)
