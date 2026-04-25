@@ -1,0 +1,1431 @@
+# tab-ownership-marker Specification
+
+## Purpose
+
+TBD - created by archiving change 'tab-ownership-marker'. Update Purpose after archive.
+
+## Requirements
+
+### Requirement: Marker is opt-in via `--mark-tab` flag, default OFF
+
+The CLI SHALL NOT mutate any Safari tab title unless the caller explicitly opts in via the `--mark-tab` flag, the `SAFARI_BROWSER_MARK_TAB=1` environment variable, or one of the dedicated `safari-browser tab unmark` / `tab is-marked` subcommands. Default behavior across every existing subcommand SHALL remain byte-identical to pre-change behavior — no observable title mutation.
+
+#### Scenario: default invocation does not mutate title
+
+- **WHEN** a user runs `safari-browser click button.upload --url plaud` with no `--mark-tab` flag
+- **AND** the env variable `SAFARI_BROWSER_MARK_TAB` is unset or `0`
+- **THEN** the target tab's title before and after the operation SHALL be byte-identical
+- **AND** no AppleScript `set name of tab` SHALL be issued
+
+#### Scenario: --mark-tab flag opts into title mutation
+
+- **WHEN** a user runs `safari-browser click button.upload --url plaud --mark-tab`
+- **THEN** the tab title SHALL be wrapped with the marker before the click runs
+- **AND** SHALL be unwrapped after the click completes (per Requirement: Ephemeral marker default)
+
+#### Scenario: env var equivalent to flag
+
+- **WHEN** a user sets `SAFARI_BROWSER_MARK_TAB=1` and runs any command without explicit `--mark-tab`
+- **THEN** the command SHALL behave as if `--mark-tab` was passed
+
+
+<!-- @trace
+source: tab-ownership-marker
+updated: 2026-04-25
+code:
+  - .remember/logs/autonomous/save-091858.log
+  - .remember/logs/autonomous/save-071607.log
+  - .remember/logs/autonomous/save-070251.log
+  - .remember/logs/autonomous/save-090951.log
+  - .remember/logs/autonomous/save-085737.log
+  - .remember/logs/autonomous/save-073607.log
+  - .remember/logs/autonomous/save-072400.log
+  - .remember/logs/autonomous/save-063153.log
+  - .remember/logs/autonomous/save-091951.log
+  - .remember/logs/autonomous/save-070528.log
+  - .remember/logs/autonomous/save-070754.log
+  - .remember/logs/autonomous/save-062435.log
+  - .remember/logs/autonomous/save-071143.log
+  - .remember/logs/autonomous/save-073621.log
+  - .remember/logs/autonomous/save-073708.log
+  - .remember/logs/autonomous/save-091045.log
+  - .remember/logs/autonomous/save-071615.log
+  - .remember/logs/autonomous/save-091128.log
+  - .remember/logs/autonomous/save-091036.log
+  - .remember/logs/autonomous/save-074138.log
+  - .remember/logs/autonomous/save-091859.log
+  - .remember/logs/autonomous/save-091115.log
+  - .remember/logs/autonomous/save-072406.log
+  - .remember/logs/autonomous/save-072253.log
+  - .remember/logs/autonomous/save-092010.log
+  - .remember/logs/autonomous/save-072606.log
+  - .remember/logs/autonomous/save-071937.log
+  - .remember/logs/autonomous/save-072506.log
+  - .remember/logs/autonomous/save-091057.log
+  - .remember/logs/autonomous/save-073557.log
+  - .remember/logs/autonomous/save-073540.log
+  - .remember/logs/autonomous/save-070515.log
+  - .remember/logs/autonomous/save-072558.log
+  - .remember/logs/autonomous/save-073614.log
+  - .remember/logs/autonomous/save-071559.log
+  - .remember/logs/autonomous/save-070243.log
+  - .remember/logs/autonomous/save-070840.log
+  - .remember/logs/autonomous/save-085954.log
+  - .remember/logs/autonomous/save-090911.log
+  - .remember/logs/autonomous/save-070849.log
+  - .remember/logs/autonomous/save-085727.log
+  - .remember/logs/autonomous/save-070526.log
+  - .remember/logs/autonomous/save-070426.log
+  - .remember/logs/autonomous/save-091912.log
+  - .remember/logs/autonomous/save-062127.log
+  - .remember/logs/autonomous/save-070419.log
+  - .remember/logs/autonomous/save-071013.log
+  - .remember/logs/autonomous/save-085747.log
+  - .remember/logs/autonomous/save-072221.log
+  - .remember/logs/autonomous/save-073628.log
+  - .remember/logs/autonomous/save-074018.log
+  - .remember/logs/autonomous/save-073929.log
+  - .remember/logs/autonomous/save-091103.log
+  - .remember/logs/autonomous/save-062442.log
+  - .remember/logs/autonomous/save-071328.log
+  - .remember/logs/autonomous/save-091922.log
+  - .remember/logs/autonomous/save-072146.log
+  - .remember/logs/autonomous/save-072354.log
+  - .remember/logs/autonomous/save-070508.log
+  - .remember/logs/autonomous/save-071344.log
+  - .remember/logs/autonomous/save-071205.log
+  - .remember/logs/autonomous/save-070407.log
+  - .remember/logs/autonomous/save-070746.log
+  - .remember/logs/autonomous/save-070536.log
+  - .remember/logs/autonomous/save-073902.log
+  - .remember/logs/autonomous/save-073935.log
+  - .remember/logs/autonomous/save-074106.log
+  - .remember/logs/autonomous/save-070436.log
+  - .remember/logs/autonomous/save-071320.log
+  - .remember/logs/autonomous/save-071544.log
+  - .remember/logs/autonomous/save-071832.log
+  - .remember/logs/autonomous/save-074003.log
+  - .remember/logs/autonomous/save-091048.log
+  - .remember/logs/autonomous/save-085756.log
+  - .remember/logs/autonomous/save-063213.log
+  - .remember/logs/autonomous/save-074009.log
+  - .remember/logs/autonomous/save-091004.log
+  - .remember/logs/autonomous/save-072438.log
+  - .remember/logs/autonomous/save-091107.log
+  - .remember/logs/autonomous/save-073634.log
+  - .remember/logs/autonomous/save-073843.log
+  - .remember/logs/autonomous/save-071850.log
+  - .remember/logs/autonomous/save-072201.log
+  - .remember/logs/autonomous/save-073643.log
+  - .remember/logs/autonomous/save-091831.log
+  - .remember/logs/autonomous/save-071708.log
+  - .remember/logs/autonomous/save-085631.log
+  - .remember/logs/autonomous/save-072422.log
+  - .remember/logs/autonomous/save-085748.log
+  - .remember/logs/autonomous/save-071823.log
+  - .remember/logs/autonomous/save-090856.log
+  - .remember/logs/autonomous/save-073947.log
+  - .remember/logs/autonomous/save-062133.log
+  - .remember/logs/autonomous/save-071815.log
+  - .remember/logs/autonomous/save-072521.log
+  - .remember/logs/autonomous/save-073836.log
+  - .remember/logs/autonomous/save-062818.log
+  - .remember/logs/autonomous/save-062429.log
+  - .remember/logs/autonomous/save-090003.log
+  - .remember/logs/autonomous/save-091857.log
+  - .remember/logs/autonomous/save-071133.log
+  - .remember/logs/autonomous/save-071535.log
+  - .remember/logs/autonomous/save-091020.log
+  - .remember/logs/autonomous/save-070524.log
+  - .remember/logs/autonomous/save-071552.log
+  - .remember/logs/autonomous/save-071455.log
+  - .remember/logs/autonomous/save-072430.log
+  - .remember/logs/autonomous/save-073519.log
+  - .remember/logs/autonomous/save-085745.log
+  - .remember/logs/autonomous/save-072520.log
+  - .remember/logs/autonomous/save-085818.log
+  - .remember/logs/autonomous/save-072153.log
+  - .remember/logs/autonomous/save-071924.log
+  - .remember/logs/autonomous/save-091054.log
+  - .remember/logs/autonomous/save-074114.log
+  - .remember/logs/autonomous/save-070821.log
+  - .remember/logs/autonomous/save-062128.log
+  - .remember/tmp/save-session.pid
+  - .remember/logs/autonomous/save-072512.log
+  - .remember/logs/autonomous/save-072232.log
+  - .remember/logs/autonomous/save-073808.log
+  - .remember/logs/autonomous/save-085709.log
+  - .remember/logs/autonomous/save-070906.log
+  - .remember/logs/autonomous/save-091051.log
+  - .remember/logs/autonomous/save-071641.log
+  - .remember/logs/autonomous/save-071122.log
+  - .remember/logs/autonomous/save-071338.log
+  - .remember/logs/autonomous/save-092009.log
+  - .remember/logs/autonomous/save-070459.log
+  - .remember/logs/autonomous/save-072449.log
+  - .remember/logs/autonomous/save-073549.log
+  - .remember/logs/autonomous/save-071624.log
+  - .remember/logs/autonomous/save-072021.log
+  - .remember/logs/autonomous/save-072110.log
+  - .remember/logs/autonomous/save-071806.log
+  - .remember/logs/autonomous/save-070257.log
+  - .remember/logs/autonomous/save-070359.log
+  - .remember/logs/autonomous/save-071931.log
+  - .remember/logs/autonomous/save-071110.log
+  - .remember/logs/autonomous/save-072638.log
+  - .remember/logs/autonomous/save-074059.log
+  - .remember/logs/autonomous/save-085717.log
+  - .remember/logs/autonomous/save-071515.log
+  - .remember/logs/autonomous/save-085638.log
+  - .remember/logs/autonomous/save-090201.log
+  - .remember/logs/autonomous/save-073909.log
+  - .remember/logs/autonomous/save-070549.log
+  - .remember/logs/autonomous/save-071633.log
+  - .remember/logs/autonomous/save-090309.log
+  - .remember/logs/autonomous/save-062139.log
+  - .remember/logs/autonomous/save-072615.log
+  - .remember/logs/autonomous/save-072245.log
+  - .remember/logs/autonomous/save-091030.log
+  - .remember/logs/autonomous/save-091033.log
+  - .remember/logs/autonomous/save-090149.log
+  - .remember/logs/autonomous/save-070527.log
+  - .remember/logs/autonomous/save-091840.log
+  - .remember/logs/autonomous/save-091942.log
+  - .remember/logs/autonomous/save-071030.log
+  - .remember/logs/autonomous/save-072528.log
+  - .remember/logs/autonomous/save-072630.log
+  - .remember/logs/autonomous/save-073725.log
+  - .remember/logs/autonomous/save-073956.log
+  - .remember/logs/autonomous/save-085625.log
+  - .remember/logs/autonomous/save-091952.log
+  - .remember/logs/autonomous/save-071523.log
+  - .remember/logs/autonomous/save-070431.log
+  - .remember/logs/autonomous/save-085649.log
+  - .remember/logs/autonomous/save-073655.log
+  - .remember/logs/autonomous/save-062742.log
+  - .remember/logs/autonomous/save-071002.log
+  - .remember/logs/autonomous/save-071253.log
+  - .remember/logs/autonomous/save-073801.log
+  - .remember/logs/autonomous/save-091822.log
+  - .remember/logs/autonomous/save-072059.log
+  - .remember/logs/autonomous/save-091100.log
+-->
+
+---
+### Requirement: Marker content is hardcoded, no caller input
+
+The marker SHALL consist of exactly two zero-width-space code points (`U+200B`) — one prefix, one suffix — bracketing the original tab title. The marker content SHALL NOT be configurable via flag, env variable, config file, or any other runtime input. The implementation SHALL define the marker as a single Swift constant in `Sources/SafariBrowser/Marker/MarkerConstants.swift` and reference it from every wrap / unwrap / detection site.
+
+#### Scenario: marker constant is the same everywhere
+
+- **WHEN** any code path constructs, detects, or removes a marker
+- **THEN** it SHALL reference the constant from `MarkerConstants` (e.g., `MarkerConstants.prefix`, `MarkerConstants.suffix`)
+- **AND** SHALL NOT use a literal `\u{200B}` or any other zero-width character inline
+
+#### Scenario: no flag accepts caller-supplied marker content
+
+- **WHEN** a future contributor proposes a `--mark-tab "[my-agent]"` API or any variant accepting caller content
+- **THEN** the proposal SHALL be rejected without a corresponding spec amendment to this requirement
+- **AND** any code path that reads marker content from caller input SHALL fail spec review
+
+
+<!-- @trace
+source: tab-ownership-marker
+updated: 2026-04-25
+code:
+  - .remember/logs/autonomous/save-091858.log
+  - .remember/logs/autonomous/save-071607.log
+  - .remember/logs/autonomous/save-070251.log
+  - .remember/logs/autonomous/save-090951.log
+  - .remember/logs/autonomous/save-085737.log
+  - .remember/logs/autonomous/save-073607.log
+  - .remember/logs/autonomous/save-072400.log
+  - .remember/logs/autonomous/save-063153.log
+  - .remember/logs/autonomous/save-091951.log
+  - .remember/logs/autonomous/save-070528.log
+  - .remember/logs/autonomous/save-070754.log
+  - .remember/logs/autonomous/save-062435.log
+  - .remember/logs/autonomous/save-071143.log
+  - .remember/logs/autonomous/save-073621.log
+  - .remember/logs/autonomous/save-073708.log
+  - .remember/logs/autonomous/save-091045.log
+  - .remember/logs/autonomous/save-071615.log
+  - .remember/logs/autonomous/save-091128.log
+  - .remember/logs/autonomous/save-091036.log
+  - .remember/logs/autonomous/save-074138.log
+  - .remember/logs/autonomous/save-091859.log
+  - .remember/logs/autonomous/save-091115.log
+  - .remember/logs/autonomous/save-072406.log
+  - .remember/logs/autonomous/save-072253.log
+  - .remember/logs/autonomous/save-092010.log
+  - .remember/logs/autonomous/save-072606.log
+  - .remember/logs/autonomous/save-071937.log
+  - .remember/logs/autonomous/save-072506.log
+  - .remember/logs/autonomous/save-091057.log
+  - .remember/logs/autonomous/save-073557.log
+  - .remember/logs/autonomous/save-073540.log
+  - .remember/logs/autonomous/save-070515.log
+  - .remember/logs/autonomous/save-072558.log
+  - .remember/logs/autonomous/save-073614.log
+  - .remember/logs/autonomous/save-071559.log
+  - .remember/logs/autonomous/save-070243.log
+  - .remember/logs/autonomous/save-070840.log
+  - .remember/logs/autonomous/save-085954.log
+  - .remember/logs/autonomous/save-090911.log
+  - .remember/logs/autonomous/save-070849.log
+  - .remember/logs/autonomous/save-085727.log
+  - .remember/logs/autonomous/save-070526.log
+  - .remember/logs/autonomous/save-070426.log
+  - .remember/logs/autonomous/save-091912.log
+  - .remember/logs/autonomous/save-062127.log
+  - .remember/logs/autonomous/save-070419.log
+  - .remember/logs/autonomous/save-071013.log
+  - .remember/logs/autonomous/save-085747.log
+  - .remember/logs/autonomous/save-072221.log
+  - .remember/logs/autonomous/save-073628.log
+  - .remember/logs/autonomous/save-074018.log
+  - .remember/logs/autonomous/save-073929.log
+  - .remember/logs/autonomous/save-091103.log
+  - .remember/logs/autonomous/save-062442.log
+  - .remember/logs/autonomous/save-071328.log
+  - .remember/logs/autonomous/save-091922.log
+  - .remember/logs/autonomous/save-072146.log
+  - .remember/logs/autonomous/save-072354.log
+  - .remember/logs/autonomous/save-070508.log
+  - .remember/logs/autonomous/save-071344.log
+  - .remember/logs/autonomous/save-071205.log
+  - .remember/logs/autonomous/save-070407.log
+  - .remember/logs/autonomous/save-070746.log
+  - .remember/logs/autonomous/save-070536.log
+  - .remember/logs/autonomous/save-073902.log
+  - .remember/logs/autonomous/save-073935.log
+  - .remember/logs/autonomous/save-074106.log
+  - .remember/logs/autonomous/save-070436.log
+  - .remember/logs/autonomous/save-071320.log
+  - .remember/logs/autonomous/save-071544.log
+  - .remember/logs/autonomous/save-071832.log
+  - .remember/logs/autonomous/save-074003.log
+  - .remember/logs/autonomous/save-091048.log
+  - .remember/logs/autonomous/save-085756.log
+  - .remember/logs/autonomous/save-063213.log
+  - .remember/logs/autonomous/save-074009.log
+  - .remember/logs/autonomous/save-091004.log
+  - .remember/logs/autonomous/save-072438.log
+  - .remember/logs/autonomous/save-091107.log
+  - .remember/logs/autonomous/save-073634.log
+  - .remember/logs/autonomous/save-073843.log
+  - .remember/logs/autonomous/save-071850.log
+  - .remember/logs/autonomous/save-072201.log
+  - .remember/logs/autonomous/save-073643.log
+  - .remember/logs/autonomous/save-091831.log
+  - .remember/logs/autonomous/save-071708.log
+  - .remember/logs/autonomous/save-085631.log
+  - .remember/logs/autonomous/save-072422.log
+  - .remember/logs/autonomous/save-085748.log
+  - .remember/logs/autonomous/save-071823.log
+  - .remember/logs/autonomous/save-090856.log
+  - .remember/logs/autonomous/save-073947.log
+  - .remember/logs/autonomous/save-062133.log
+  - .remember/logs/autonomous/save-071815.log
+  - .remember/logs/autonomous/save-072521.log
+  - .remember/logs/autonomous/save-073836.log
+  - .remember/logs/autonomous/save-062818.log
+  - .remember/logs/autonomous/save-062429.log
+  - .remember/logs/autonomous/save-090003.log
+  - .remember/logs/autonomous/save-091857.log
+  - .remember/logs/autonomous/save-071133.log
+  - .remember/logs/autonomous/save-071535.log
+  - .remember/logs/autonomous/save-091020.log
+  - .remember/logs/autonomous/save-070524.log
+  - .remember/logs/autonomous/save-071552.log
+  - .remember/logs/autonomous/save-071455.log
+  - .remember/logs/autonomous/save-072430.log
+  - .remember/logs/autonomous/save-073519.log
+  - .remember/logs/autonomous/save-085745.log
+  - .remember/logs/autonomous/save-072520.log
+  - .remember/logs/autonomous/save-085818.log
+  - .remember/logs/autonomous/save-072153.log
+  - .remember/logs/autonomous/save-071924.log
+  - .remember/logs/autonomous/save-091054.log
+  - .remember/logs/autonomous/save-074114.log
+  - .remember/logs/autonomous/save-070821.log
+  - .remember/logs/autonomous/save-062128.log
+  - .remember/tmp/save-session.pid
+  - .remember/logs/autonomous/save-072512.log
+  - .remember/logs/autonomous/save-072232.log
+  - .remember/logs/autonomous/save-073808.log
+  - .remember/logs/autonomous/save-085709.log
+  - .remember/logs/autonomous/save-070906.log
+  - .remember/logs/autonomous/save-091051.log
+  - .remember/logs/autonomous/save-071641.log
+  - .remember/logs/autonomous/save-071122.log
+  - .remember/logs/autonomous/save-071338.log
+  - .remember/logs/autonomous/save-092009.log
+  - .remember/logs/autonomous/save-070459.log
+  - .remember/logs/autonomous/save-072449.log
+  - .remember/logs/autonomous/save-073549.log
+  - .remember/logs/autonomous/save-071624.log
+  - .remember/logs/autonomous/save-072021.log
+  - .remember/logs/autonomous/save-072110.log
+  - .remember/logs/autonomous/save-071806.log
+  - .remember/logs/autonomous/save-070257.log
+  - .remember/logs/autonomous/save-070359.log
+  - .remember/logs/autonomous/save-071931.log
+  - .remember/logs/autonomous/save-071110.log
+  - .remember/logs/autonomous/save-072638.log
+  - .remember/logs/autonomous/save-074059.log
+  - .remember/logs/autonomous/save-085717.log
+  - .remember/logs/autonomous/save-071515.log
+  - .remember/logs/autonomous/save-085638.log
+  - .remember/logs/autonomous/save-090201.log
+  - .remember/logs/autonomous/save-073909.log
+  - .remember/logs/autonomous/save-070549.log
+  - .remember/logs/autonomous/save-071633.log
+  - .remember/logs/autonomous/save-090309.log
+  - .remember/logs/autonomous/save-062139.log
+  - .remember/logs/autonomous/save-072615.log
+  - .remember/logs/autonomous/save-072245.log
+  - .remember/logs/autonomous/save-091030.log
+  - .remember/logs/autonomous/save-091033.log
+  - .remember/logs/autonomous/save-090149.log
+  - .remember/logs/autonomous/save-070527.log
+  - .remember/logs/autonomous/save-091840.log
+  - .remember/logs/autonomous/save-091942.log
+  - .remember/logs/autonomous/save-071030.log
+  - .remember/logs/autonomous/save-072528.log
+  - .remember/logs/autonomous/save-072630.log
+  - .remember/logs/autonomous/save-073725.log
+  - .remember/logs/autonomous/save-073956.log
+  - .remember/logs/autonomous/save-085625.log
+  - .remember/logs/autonomous/save-091952.log
+  - .remember/logs/autonomous/save-071523.log
+  - .remember/logs/autonomous/save-070431.log
+  - .remember/logs/autonomous/save-085649.log
+  - .remember/logs/autonomous/save-073655.log
+  - .remember/logs/autonomous/save-062742.log
+  - .remember/logs/autonomous/save-071002.log
+  - .remember/logs/autonomous/save-071253.log
+  - .remember/logs/autonomous/save-073801.log
+  - .remember/logs/autonomous/save-091822.log
+  - .remember/logs/autonomous/save-072059.log
+  - .remember/logs/autonomous/save-091100.log
+-->
+
+---
+### Requirement: Ephemeral marker default
+
+When `--mark-tab` is opted in (without `--mark-tab-persist`), the system SHALL apply the marker to the target tab's title before the operation begins and SHALL remove the marker after the operation completes (success, failure, or partial failure). The two flags SHALL be mutually exclusive: `--mark-tab` selects ephemeral mode (the default opt-in), `--mark-tab-persist` selects persist mode. In persist mode, the marker SHALL remain on the title after the invocation exits and SHALL be removed only by an explicit `safari-browser tab unmark` invocation or by Safari closing the tab.
+
+#### Scenario: ephemeral mode wraps then restores
+
+- **WHEN** `--mark-tab` is invoked (ephemeral implicit)
+- **AND** the operation succeeds
+- **THEN** the title SHALL be byte-identical before and after the invocation
+
+#### Scenario: ephemeral cleanup runs even on operation failure
+
+- **WHEN** `--mark-tab` is invoked
+- **AND** the operation throws (e.g., `elementNotFound`)
+- **THEN** the marker SHALL still be removed before the CLI exits
+- **AND** the original error SHALL still be surfaced to the caller
+
+#### Scenario: persist mode survives invocation boundary
+
+- **WHEN** `safari-browser click button --url plaud --mark-tab persist` runs and exits 0
+- **THEN** the tab title SHALL still contain the marker after exit
+- **AND** a subsequent `safari-browser tab is-marked --url plaud` SHALL exit 0
+
+#### Scenario: tab unmark removes a stuck marker
+
+- **WHEN** a previous `--mark-tab-persist` invocation crashed before its restore step ran
+- **AND** the user runs `safari-browser tab unmark --url plaud`
+- **THEN** the marker SHALL be removed from the title
+- **AND** the command SHALL exit 0
+
+
+<!-- @trace
+source: tab-ownership-marker
+updated: 2026-04-25
+code:
+  - .remember/logs/autonomous/save-091858.log
+  - .remember/logs/autonomous/save-071607.log
+  - .remember/logs/autonomous/save-070251.log
+  - .remember/logs/autonomous/save-090951.log
+  - .remember/logs/autonomous/save-085737.log
+  - .remember/logs/autonomous/save-073607.log
+  - .remember/logs/autonomous/save-072400.log
+  - .remember/logs/autonomous/save-063153.log
+  - .remember/logs/autonomous/save-091951.log
+  - .remember/logs/autonomous/save-070528.log
+  - .remember/logs/autonomous/save-070754.log
+  - .remember/logs/autonomous/save-062435.log
+  - .remember/logs/autonomous/save-071143.log
+  - .remember/logs/autonomous/save-073621.log
+  - .remember/logs/autonomous/save-073708.log
+  - .remember/logs/autonomous/save-091045.log
+  - .remember/logs/autonomous/save-071615.log
+  - .remember/logs/autonomous/save-091128.log
+  - .remember/logs/autonomous/save-091036.log
+  - .remember/logs/autonomous/save-074138.log
+  - .remember/logs/autonomous/save-091859.log
+  - .remember/logs/autonomous/save-091115.log
+  - .remember/logs/autonomous/save-072406.log
+  - .remember/logs/autonomous/save-072253.log
+  - .remember/logs/autonomous/save-092010.log
+  - .remember/logs/autonomous/save-072606.log
+  - .remember/logs/autonomous/save-071937.log
+  - .remember/logs/autonomous/save-072506.log
+  - .remember/logs/autonomous/save-091057.log
+  - .remember/logs/autonomous/save-073557.log
+  - .remember/logs/autonomous/save-073540.log
+  - .remember/logs/autonomous/save-070515.log
+  - .remember/logs/autonomous/save-072558.log
+  - .remember/logs/autonomous/save-073614.log
+  - .remember/logs/autonomous/save-071559.log
+  - .remember/logs/autonomous/save-070243.log
+  - .remember/logs/autonomous/save-070840.log
+  - .remember/logs/autonomous/save-085954.log
+  - .remember/logs/autonomous/save-090911.log
+  - .remember/logs/autonomous/save-070849.log
+  - .remember/logs/autonomous/save-085727.log
+  - .remember/logs/autonomous/save-070526.log
+  - .remember/logs/autonomous/save-070426.log
+  - .remember/logs/autonomous/save-091912.log
+  - .remember/logs/autonomous/save-062127.log
+  - .remember/logs/autonomous/save-070419.log
+  - .remember/logs/autonomous/save-071013.log
+  - .remember/logs/autonomous/save-085747.log
+  - .remember/logs/autonomous/save-072221.log
+  - .remember/logs/autonomous/save-073628.log
+  - .remember/logs/autonomous/save-074018.log
+  - .remember/logs/autonomous/save-073929.log
+  - .remember/logs/autonomous/save-091103.log
+  - .remember/logs/autonomous/save-062442.log
+  - .remember/logs/autonomous/save-071328.log
+  - .remember/logs/autonomous/save-091922.log
+  - .remember/logs/autonomous/save-072146.log
+  - .remember/logs/autonomous/save-072354.log
+  - .remember/logs/autonomous/save-070508.log
+  - .remember/logs/autonomous/save-071344.log
+  - .remember/logs/autonomous/save-071205.log
+  - .remember/logs/autonomous/save-070407.log
+  - .remember/logs/autonomous/save-070746.log
+  - .remember/logs/autonomous/save-070536.log
+  - .remember/logs/autonomous/save-073902.log
+  - .remember/logs/autonomous/save-073935.log
+  - .remember/logs/autonomous/save-074106.log
+  - .remember/logs/autonomous/save-070436.log
+  - .remember/logs/autonomous/save-071320.log
+  - .remember/logs/autonomous/save-071544.log
+  - .remember/logs/autonomous/save-071832.log
+  - .remember/logs/autonomous/save-074003.log
+  - .remember/logs/autonomous/save-091048.log
+  - .remember/logs/autonomous/save-085756.log
+  - .remember/logs/autonomous/save-063213.log
+  - .remember/logs/autonomous/save-074009.log
+  - .remember/logs/autonomous/save-091004.log
+  - .remember/logs/autonomous/save-072438.log
+  - .remember/logs/autonomous/save-091107.log
+  - .remember/logs/autonomous/save-073634.log
+  - .remember/logs/autonomous/save-073843.log
+  - .remember/logs/autonomous/save-071850.log
+  - .remember/logs/autonomous/save-072201.log
+  - .remember/logs/autonomous/save-073643.log
+  - .remember/logs/autonomous/save-091831.log
+  - .remember/logs/autonomous/save-071708.log
+  - .remember/logs/autonomous/save-085631.log
+  - .remember/logs/autonomous/save-072422.log
+  - .remember/logs/autonomous/save-085748.log
+  - .remember/logs/autonomous/save-071823.log
+  - .remember/logs/autonomous/save-090856.log
+  - .remember/logs/autonomous/save-073947.log
+  - .remember/logs/autonomous/save-062133.log
+  - .remember/logs/autonomous/save-071815.log
+  - .remember/logs/autonomous/save-072521.log
+  - .remember/logs/autonomous/save-073836.log
+  - .remember/logs/autonomous/save-062818.log
+  - .remember/logs/autonomous/save-062429.log
+  - .remember/logs/autonomous/save-090003.log
+  - .remember/logs/autonomous/save-091857.log
+  - .remember/logs/autonomous/save-071133.log
+  - .remember/logs/autonomous/save-071535.log
+  - .remember/logs/autonomous/save-091020.log
+  - .remember/logs/autonomous/save-070524.log
+  - .remember/logs/autonomous/save-071552.log
+  - .remember/logs/autonomous/save-071455.log
+  - .remember/logs/autonomous/save-072430.log
+  - .remember/logs/autonomous/save-073519.log
+  - .remember/logs/autonomous/save-085745.log
+  - .remember/logs/autonomous/save-072520.log
+  - .remember/logs/autonomous/save-085818.log
+  - .remember/logs/autonomous/save-072153.log
+  - .remember/logs/autonomous/save-071924.log
+  - .remember/logs/autonomous/save-091054.log
+  - .remember/logs/autonomous/save-074114.log
+  - .remember/logs/autonomous/save-070821.log
+  - .remember/logs/autonomous/save-062128.log
+  - .remember/tmp/save-session.pid
+  - .remember/logs/autonomous/save-072512.log
+  - .remember/logs/autonomous/save-072232.log
+  - .remember/logs/autonomous/save-073808.log
+  - .remember/logs/autonomous/save-085709.log
+  - .remember/logs/autonomous/save-070906.log
+  - .remember/logs/autonomous/save-091051.log
+  - .remember/logs/autonomous/save-071641.log
+  - .remember/logs/autonomous/save-071122.log
+  - .remember/logs/autonomous/save-071338.log
+  - .remember/logs/autonomous/save-092009.log
+  - .remember/logs/autonomous/save-070459.log
+  - .remember/logs/autonomous/save-072449.log
+  - .remember/logs/autonomous/save-073549.log
+  - .remember/logs/autonomous/save-071624.log
+  - .remember/logs/autonomous/save-072021.log
+  - .remember/logs/autonomous/save-072110.log
+  - .remember/logs/autonomous/save-071806.log
+  - .remember/logs/autonomous/save-070257.log
+  - .remember/logs/autonomous/save-070359.log
+  - .remember/logs/autonomous/save-071931.log
+  - .remember/logs/autonomous/save-071110.log
+  - .remember/logs/autonomous/save-072638.log
+  - .remember/logs/autonomous/save-074059.log
+  - .remember/logs/autonomous/save-085717.log
+  - .remember/logs/autonomous/save-071515.log
+  - .remember/logs/autonomous/save-085638.log
+  - .remember/logs/autonomous/save-090201.log
+  - .remember/logs/autonomous/save-073909.log
+  - .remember/logs/autonomous/save-070549.log
+  - .remember/logs/autonomous/save-071633.log
+  - .remember/logs/autonomous/save-090309.log
+  - .remember/logs/autonomous/save-062139.log
+  - .remember/logs/autonomous/save-072615.log
+  - .remember/logs/autonomous/save-072245.log
+  - .remember/logs/autonomous/save-091030.log
+  - .remember/logs/autonomous/save-091033.log
+  - .remember/logs/autonomous/save-090149.log
+  - .remember/logs/autonomous/save-070527.log
+  - .remember/logs/autonomous/save-091840.log
+  - .remember/logs/autonomous/save-091942.log
+  - .remember/logs/autonomous/save-071030.log
+  - .remember/logs/autonomous/save-072528.log
+  - .remember/logs/autonomous/save-072630.log
+  - .remember/logs/autonomous/save-073725.log
+  - .remember/logs/autonomous/save-073956.log
+  - .remember/logs/autonomous/save-085625.log
+  - .remember/logs/autonomous/save-091952.log
+  - .remember/logs/autonomous/save-071523.log
+  - .remember/logs/autonomous/save-070431.log
+  - .remember/logs/autonomous/save-085649.log
+  - .remember/logs/autonomous/save-073655.log
+  - .remember/logs/autonomous/save-062742.log
+  - .remember/logs/autonomous/save-071002.log
+  - .remember/logs/autonomous/save-071253.log
+  - .remember/logs/autonomous/save-073801.log
+  - .remember/logs/autonomous/save-091822.log
+  - .remember/logs/autonomous/save-072059.log
+  - .remember/logs/autonomous/save-091100.log
+-->
+
+---
+### Requirement: Best-effort title-restore on race
+
+If the target tab's title changes during the operation in a way that prevents safe unwrap (page navigation, JS rewriting `document.title`, Safari rebranding), cleanup SHALL detect the divergence by comparing the in-memory expected title against the current Safari title. On detection, cleanup SHALL emit a single warning to stderr — `[mark-tab: title changed during operation; original not restored]` — and exit without further title mutation. Cleanup SHALL NOT attempt to force the original title back, retry, or enter a polling loop.
+
+#### Scenario: navigation mid-operation triggers warning
+
+- **WHEN** `--mark-tab` is invoked against a tab
+- **AND** during the operation Safari navigates to a different URL (changing `document.title` as a side effect)
+- **THEN** cleanup SHALL emit exactly one stderr line containing `mark-tab: title changed during operation`
+- **AND** SHALL NOT issue any further `set name of tab` calls
+- **AND** the CLI exit code SHALL reflect the original operation's outcome (success or failure), not the cleanup's race
+
+#### Scenario: idempotent unwrap when title still matches
+
+- **WHEN** the title at cleanup time still contains the marker pair around the same original content
+- **THEN** unwrap SHALL succeed
+- **AND** SHALL NOT emit a warning
+
+
+<!-- @trace
+source: tab-ownership-marker
+updated: 2026-04-25
+code:
+  - .remember/logs/autonomous/save-091858.log
+  - .remember/logs/autonomous/save-071607.log
+  - .remember/logs/autonomous/save-070251.log
+  - .remember/logs/autonomous/save-090951.log
+  - .remember/logs/autonomous/save-085737.log
+  - .remember/logs/autonomous/save-073607.log
+  - .remember/logs/autonomous/save-072400.log
+  - .remember/logs/autonomous/save-063153.log
+  - .remember/logs/autonomous/save-091951.log
+  - .remember/logs/autonomous/save-070528.log
+  - .remember/logs/autonomous/save-070754.log
+  - .remember/logs/autonomous/save-062435.log
+  - .remember/logs/autonomous/save-071143.log
+  - .remember/logs/autonomous/save-073621.log
+  - .remember/logs/autonomous/save-073708.log
+  - .remember/logs/autonomous/save-091045.log
+  - .remember/logs/autonomous/save-071615.log
+  - .remember/logs/autonomous/save-091128.log
+  - .remember/logs/autonomous/save-091036.log
+  - .remember/logs/autonomous/save-074138.log
+  - .remember/logs/autonomous/save-091859.log
+  - .remember/logs/autonomous/save-091115.log
+  - .remember/logs/autonomous/save-072406.log
+  - .remember/logs/autonomous/save-072253.log
+  - .remember/logs/autonomous/save-092010.log
+  - .remember/logs/autonomous/save-072606.log
+  - .remember/logs/autonomous/save-071937.log
+  - .remember/logs/autonomous/save-072506.log
+  - .remember/logs/autonomous/save-091057.log
+  - .remember/logs/autonomous/save-073557.log
+  - .remember/logs/autonomous/save-073540.log
+  - .remember/logs/autonomous/save-070515.log
+  - .remember/logs/autonomous/save-072558.log
+  - .remember/logs/autonomous/save-073614.log
+  - .remember/logs/autonomous/save-071559.log
+  - .remember/logs/autonomous/save-070243.log
+  - .remember/logs/autonomous/save-070840.log
+  - .remember/logs/autonomous/save-085954.log
+  - .remember/logs/autonomous/save-090911.log
+  - .remember/logs/autonomous/save-070849.log
+  - .remember/logs/autonomous/save-085727.log
+  - .remember/logs/autonomous/save-070526.log
+  - .remember/logs/autonomous/save-070426.log
+  - .remember/logs/autonomous/save-091912.log
+  - .remember/logs/autonomous/save-062127.log
+  - .remember/logs/autonomous/save-070419.log
+  - .remember/logs/autonomous/save-071013.log
+  - .remember/logs/autonomous/save-085747.log
+  - .remember/logs/autonomous/save-072221.log
+  - .remember/logs/autonomous/save-073628.log
+  - .remember/logs/autonomous/save-074018.log
+  - .remember/logs/autonomous/save-073929.log
+  - .remember/logs/autonomous/save-091103.log
+  - .remember/logs/autonomous/save-062442.log
+  - .remember/logs/autonomous/save-071328.log
+  - .remember/logs/autonomous/save-091922.log
+  - .remember/logs/autonomous/save-072146.log
+  - .remember/logs/autonomous/save-072354.log
+  - .remember/logs/autonomous/save-070508.log
+  - .remember/logs/autonomous/save-071344.log
+  - .remember/logs/autonomous/save-071205.log
+  - .remember/logs/autonomous/save-070407.log
+  - .remember/logs/autonomous/save-070746.log
+  - .remember/logs/autonomous/save-070536.log
+  - .remember/logs/autonomous/save-073902.log
+  - .remember/logs/autonomous/save-073935.log
+  - .remember/logs/autonomous/save-074106.log
+  - .remember/logs/autonomous/save-070436.log
+  - .remember/logs/autonomous/save-071320.log
+  - .remember/logs/autonomous/save-071544.log
+  - .remember/logs/autonomous/save-071832.log
+  - .remember/logs/autonomous/save-074003.log
+  - .remember/logs/autonomous/save-091048.log
+  - .remember/logs/autonomous/save-085756.log
+  - .remember/logs/autonomous/save-063213.log
+  - .remember/logs/autonomous/save-074009.log
+  - .remember/logs/autonomous/save-091004.log
+  - .remember/logs/autonomous/save-072438.log
+  - .remember/logs/autonomous/save-091107.log
+  - .remember/logs/autonomous/save-073634.log
+  - .remember/logs/autonomous/save-073843.log
+  - .remember/logs/autonomous/save-071850.log
+  - .remember/logs/autonomous/save-072201.log
+  - .remember/logs/autonomous/save-073643.log
+  - .remember/logs/autonomous/save-091831.log
+  - .remember/logs/autonomous/save-071708.log
+  - .remember/logs/autonomous/save-085631.log
+  - .remember/logs/autonomous/save-072422.log
+  - .remember/logs/autonomous/save-085748.log
+  - .remember/logs/autonomous/save-071823.log
+  - .remember/logs/autonomous/save-090856.log
+  - .remember/logs/autonomous/save-073947.log
+  - .remember/logs/autonomous/save-062133.log
+  - .remember/logs/autonomous/save-071815.log
+  - .remember/logs/autonomous/save-072521.log
+  - .remember/logs/autonomous/save-073836.log
+  - .remember/logs/autonomous/save-062818.log
+  - .remember/logs/autonomous/save-062429.log
+  - .remember/logs/autonomous/save-090003.log
+  - .remember/logs/autonomous/save-091857.log
+  - .remember/logs/autonomous/save-071133.log
+  - .remember/logs/autonomous/save-071535.log
+  - .remember/logs/autonomous/save-091020.log
+  - .remember/logs/autonomous/save-070524.log
+  - .remember/logs/autonomous/save-071552.log
+  - .remember/logs/autonomous/save-071455.log
+  - .remember/logs/autonomous/save-072430.log
+  - .remember/logs/autonomous/save-073519.log
+  - .remember/logs/autonomous/save-085745.log
+  - .remember/logs/autonomous/save-072520.log
+  - .remember/logs/autonomous/save-085818.log
+  - .remember/logs/autonomous/save-072153.log
+  - .remember/logs/autonomous/save-071924.log
+  - .remember/logs/autonomous/save-091054.log
+  - .remember/logs/autonomous/save-074114.log
+  - .remember/logs/autonomous/save-070821.log
+  - .remember/logs/autonomous/save-062128.log
+  - .remember/tmp/save-session.pid
+  - .remember/logs/autonomous/save-072512.log
+  - .remember/logs/autonomous/save-072232.log
+  - .remember/logs/autonomous/save-073808.log
+  - .remember/logs/autonomous/save-085709.log
+  - .remember/logs/autonomous/save-070906.log
+  - .remember/logs/autonomous/save-091051.log
+  - .remember/logs/autonomous/save-071641.log
+  - .remember/logs/autonomous/save-071122.log
+  - .remember/logs/autonomous/save-071338.log
+  - .remember/logs/autonomous/save-092009.log
+  - .remember/logs/autonomous/save-070459.log
+  - .remember/logs/autonomous/save-072449.log
+  - .remember/logs/autonomous/save-073549.log
+  - .remember/logs/autonomous/save-071624.log
+  - .remember/logs/autonomous/save-072021.log
+  - .remember/logs/autonomous/save-072110.log
+  - .remember/logs/autonomous/save-071806.log
+  - .remember/logs/autonomous/save-070257.log
+  - .remember/logs/autonomous/save-070359.log
+  - .remember/logs/autonomous/save-071931.log
+  - .remember/logs/autonomous/save-071110.log
+  - .remember/logs/autonomous/save-072638.log
+  - .remember/logs/autonomous/save-074059.log
+  - .remember/logs/autonomous/save-085717.log
+  - .remember/logs/autonomous/save-071515.log
+  - .remember/logs/autonomous/save-085638.log
+  - .remember/logs/autonomous/save-090201.log
+  - .remember/logs/autonomous/save-073909.log
+  - .remember/logs/autonomous/save-070549.log
+  - .remember/logs/autonomous/save-071633.log
+  - .remember/logs/autonomous/save-090309.log
+  - .remember/logs/autonomous/save-062139.log
+  - .remember/logs/autonomous/save-072615.log
+  - .remember/logs/autonomous/save-072245.log
+  - .remember/logs/autonomous/save-091030.log
+  - .remember/logs/autonomous/save-091033.log
+  - .remember/logs/autonomous/save-090149.log
+  - .remember/logs/autonomous/save-070527.log
+  - .remember/logs/autonomous/save-091840.log
+  - .remember/logs/autonomous/save-091942.log
+  - .remember/logs/autonomous/save-071030.log
+  - .remember/logs/autonomous/save-072528.log
+  - .remember/logs/autonomous/save-072630.log
+  - .remember/logs/autonomous/save-073725.log
+  - .remember/logs/autonomous/save-073956.log
+  - .remember/logs/autonomous/save-085625.log
+  - .remember/logs/autonomous/save-091952.log
+  - .remember/logs/autonomous/save-071523.log
+  - .remember/logs/autonomous/save-070431.log
+  - .remember/logs/autonomous/save-085649.log
+  - .remember/logs/autonomous/save-073655.log
+  - .remember/logs/autonomous/save-062742.log
+  - .remember/logs/autonomous/save-071002.log
+  - .remember/logs/autonomous/save-071253.log
+  - .remember/logs/autonomous/save-073801.log
+  - .remember/logs/autonomous/save-091822.log
+  - .remember/logs/autonomous/save-072059.log
+  - .remember/logs/autonomous/save-091100.log
+-->
+
+---
+### Requirement: `tab is-marked` query subcommand
+
+The CLI SHALL expose `safari-browser tab is-marked` accepting standard `TargetOptions` and emitting no stdout output. Exit code SHALL be `0` when the resolved target tab's title currently contains the marker pair, `1` when it does not, and `2` on any other error (target not found, AppleScript failure, etc.). This is the **only** machine-readable ownership probe; no JSON output, no side effects, no marker mutation.
+
+#### Scenario: marked tab returns exit 0
+
+- **WHEN** a tab's title is currently wrapped by the marker
+- **AND** the user runs `safari-browser tab is-marked --url plaud`
+- **THEN** the command SHALL exit 0
+- **AND** SHALL emit nothing on stdout
+
+#### Scenario: unmarked tab returns exit 1
+
+- **WHEN** a tab's title does not contain the marker
+- **AND** the user runs `safari-browser tab is-marked --url plaud`
+- **THEN** the command SHALL exit 1
+- **AND** SHALL emit nothing on stdout
+
+#### Scenario: target resolution failure returns exit 2
+
+- **WHEN** `safari-browser tab is-marked --url no-such-pattern` runs
+- **AND** no Safari tab matches
+- **THEN** the command SHALL exit 2
+- **AND** SHALL emit a `documentNotFound` error on stderr (standard error shape)
+
+
+<!-- @trace
+source: tab-ownership-marker
+updated: 2026-04-25
+code:
+  - .remember/logs/autonomous/save-091858.log
+  - .remember/logs/autonomous/save-071607.log
+  - .remember/logs/autonomous/save-070251.log
+  - .remember/logs/autonomous/save-090951.log
+  - .remember/logs/autonomous/save-085737.log
+  - .remember/logs/autonomous/save-073607.log
+  - .remember/logs/autonomous/save-072400.log
+  - .remember/logs/autonomous/save-063153.log
+  - .remember/logs/autonomous/save-091951.log
+  - .remember/logs/autonomous/save-070528.log
+  - .remember/logs/autonomous/save-070754.log
+  - .remember/logs/autonomous/save-062435.log
+  - .remember/logs/autonomous/save-071143.log
+  - .remember/logs/autonomous/save-073621.log
+  - .remember/logs/autonomous/save-073708.log
+  - .remember/logs/autonomous/save-091045.log
+  - .remember/logs/autonomous/save-071615.log
+  - .remember/logs/autonomous/save-091128.log
+  - .remember/logs/autonomous/save-091036.log
+  - .remember/logs/autonomous/save-074138.log
+  - .remember/logs/autonomous/save-091859.log
+  - .remember/logs/autonomous/save-091115.log
+  - .remember/logs/autonomous/save-072406.log
+  - .remember/logs/autonomous/save-072253.log
+  - .remember/logs/autonomous/save-092010.log
+  - .remember/logs/autonomous/save-072606.log
+  - .remember/logs/autonomous/save-071937.log
+  - .remember/logs/autonomous/save-072506.log
+  - .remember/logs/autonomous/save-091057.log
+  - .remember/logs/autonomous/save-073557.log
+  - .remember/logs/autonomous/save-073540.log
+  - .remember/logs/autonomous/save-070515.log
+  - .remember/logs/autonomous/save-072558.log
+  - .remember/logs/autonomous/save-073614.log
+  - .remember/logs/autonomous/save-071559.log
+  - .remember/logs/autonomous/save-070243.log
+  - .remember/logs/autonomous/save-070840.log
+  - .remember/logs/autonomous/save-085954.log
+  - .remember/logs/autonomous/save-090911.log
+  - .remember/logs/autonomous/save-070849.log
+  - .remember/logs/autonomous/save-085727.log
+  - .remember/logs/autonomous/save-070526.log
+  - .remember/logs/autonomous/save-070426.log
+  - .remember/logs/autonomous/save-091912.log
+  - .remember/logs/autonomous/save-062127.log
+  - .remember/logs/autonomous/save-070419.log
+  - .remember/logs/autonomous/save-071013.log
+  - .remember/logs/autonomous/save-085747.log
+  - .remember/logs/autonomous/save-072221.log
+  - .remember/logs/autonomous/save-073628.log
+  - .remember/logs/autonomous/save-074018.log
+  - .remember/logs/autonomous/save-073929.log
+  - .remember/logs/autonomous/save-091103.log
+  - .remember/logs/autonomous/save-062442.log
+  - .remember/logs/autonomous/save-071328.log
+  - .remember/logs/autonomous/save-091922.log
+  - .remember/logs/autonomous/save-072146.log
+  - .remember/logs/autonomous/save-072354.log
+  - .remember/logs/autonomous/save-070508.log
+  - .remember/logs/autonomous/save-071344.log
+  - .remember/logs/autonomous/save-071205.log
+  - .remember/logs/autonomous/save-070407.log
+  - .remember/logs/autonomous/save-070746.log
+  - .remember/logs/autonomous/save-070536.log
+  - .remember/logs/autonomous/save-073902.log
+  - .remember/logs/autonomous/save-073935.log
+  - .remember/logs/autonomous/save-074106.log
+  - .remember/logs/autonomous/save-070436.log
+  - .remember/logs/autonomous/save-071320.log
+  - .remember/logs/autonomous/save-071544.log
+  - .remember/logs/autonomous/save-071832.log
+  - .remember/logs/autonomous/save-074003.log
+  - .remember/logs/autonomous/save-091048.log
+  - .remember/logs/autonomous/save-085756.log
+  - .remember/logs/autonomous/save-063213.log
+  - .remember/logs/autonomous/save-074009.log
+  - .remember/logs/autonomous/save-091004.log
+  - .remember/logs/autonomous/save-072438.log
+  - .remember/logs/autonomous/save-091107.log
+  - .remember/logs/autonomous/save-073634.log
+  - .remember/logs/autonomous/save-073843.log
+  - .remember/logs/autonomous/save-071850.log
+  - .remember/logs/autonomous/save-072201.log
+  - .remember/logs/autonomous/save-073643.log
+  - .remember/logs/autonomous/save-091831.log
+  - .remember/logs/autonomous/save-071708.log
+  - .remember/logs/autonomous/save-085631.log
+  - .remember/logs/autonomous/save-072422.log
+  - .remember/logs/autonomous/save-085748.log
+  - .remember/logs/autonomous/save-071823.log
+  - .remember/logs/autonomous/save-090856.log
+  - .remember/logs/autonomous/save-073947.log
+  - .remember/logs/autonomous/save-062133.log
+  - .remember/logs/autonomous/save-071815.log
+  - .remember/logs/autonomous/save-072521.log
+  - .remember/logs/autonomous/save-073836.log
+  - .remember/logs/autonomous/save-062818.log
+  - .remember/logs/autonomous/save-062429.log
+  - .remember/logs/autonomous/save-090003.log
+  - .remember/logs/autonomous/save-091857.log
+  - .remember/logs/autonomous/save-071133.log
+  - .remember/logs/autonomous/save-071535.log
+  - .remember/logs/autonomous/save-091020.log
+  - .remember/logs/autonomous/save-070524.log
+  - .remember/logs/autonomous/save-071552.log
+  - .remember/logs/autonomous/save-071455.log
+  - .remember/logs/autonomous/save-072430.log
+  - .remember/logs/autonomous/save-073519.log
+  - .remember/logs/autonomous/save-085745.log
+  - .remember/logs/autonomous/save-072520.log
+  - .remember/logs/autonomous/save-085818.log
+  - .remember/logs/autonomous/save-072153.log
+  - .remember/logs/autonomous/save-071924.log
+  - .remember/logs/autonomous/save-091054.log
+  - .remember/logs/autonomous/save-074114.log
+  - .remember/logs/autonomous/save-070821.log
+  - .remember/logs/autonomous/save-062128.log
+  - .remember/tmp/save-session.pid
+  - .remember/logs/autonomous/save-072512.log
+  - .remember/logs/autonomous/save-072232.log
+  - .remember/logs/autonomous/save-073808.log
+  - .remember/logs/autonomous/save-085709.log
+  - .remember/logs/autonomous/save-070906.log
+  - .remember/logs/autonomous/save-091051.log
+  - .remember/logs/autonomous/save-071641.log
+  - .remember/logs/autonomous/save-071122.log
+  - .remember/logs/autonomous/save-071338.log
+  - .remember/logs/autonomous/save-092009.log
+  - .remember/logs/autonomous/save-070459.log
+  - .remember/logs/autonomous/save-072449.log
+  - .remember/logs/autonomous/save-073549.log
+  - .remember/logs/autonomous/save-071624.log
+  - .remember/logs/autonomous/save-072021.log
+  - .remember/logs/autonomous/save-072110.log
+  - .remember/logs/autonomous/save-071806.log
+  - .remember/logs/autonomous/save-070257.log
+  - .remember/logs/autonomous/save-070359.log
+  - .remember/logs/autonomous/save-071931.log
+  - .remember/logs/autonomous/save-071110.log
+  - .remember/logs/autonomous/save-072638.log
+  - .remember/logs/autonomous/save-074059.log
+  - .remember/logs/autonomous/save-085717.log
+  - .remember/logs/autonomous/save-071515.log
+  - .remember/logs/autonomous/save-085638.log
+  - .remember/logs/autonomous/save-090201.log
+  - .remember/logs/autonomous/save-073909.log
+  - .remember/logs/autonomous/save-070549.log
+  - .remember/logs/autonomous/save-071633.log
+  - .remember/logs/autonomous/save-090309.log
+  - .remember/logs/autonomous/save-062139.log
+  - .remember/logs/autonomous/save-072615.log
+  - .remember/logs/autonomous/save-072245.log
+  - .remember/logs/autonomous/save-091030.log
+  - .remember/logs/autonomous/save-091033.log
+  - .remember/logs/autonomous/save-090149.log
+  - .remember/logs/autonomous/save-070527.log
+  - .remember/logs/autonomous/save-091840.log
+  - .remember/logs/autonomous/save-091942.log
+  - .remember/logs/autonomous/save-071030.log
+  - .remember/logs/autonomous/save-072528.log
+  - .remember/logs/autonomous/save-072630.log
+  - .remember/logs/autonomous/save-073725.log
+  - .remember/logs/autonomous/save-073956.log
+  - .remember/logs/autonomous/save-085625.log
+  - .remember/logs/autonomous/save-091952.log
+  - .remember/logs/autonomous/save-071523.log
+  - .remember/logs/autonomous/save-070431.log
+  - .remember/logs/autonomous/save-085649.log
+  - .remember/logs/autonomous/save-073655.log
+  - .remember/logs/autonomous/save-062742.log
+  - .remember/logs/autonomous/save-071002.log
+  - .remember/logs/autonomous/save-071253.log
+  - .remember/logs/autonomous/save-073801.log
+  - .remember/logs/autonomous/save-091822.log
+  - .remember/logs/autonomous/save-072059.log
+  - .remember/logs/autonomous/save-091100.log
+-->
+
+---
+### Requirement: Daemon-spanning marker for multi-step requests
+
+When a request is routed through `persistent-daemon` and the request carries `markTab: true`, the daemon SHALL own the wrap-and-unwrap pair across the entire request lifetime — including all internal AppleScript calls that a single command issues (e.g., `js --large` chunked reads). The marker SHALL NOT be wrapped per AppleScript call; it SHALL be wrapped once at request start and unwrapped once at request end (or on the request actor's error path).
+
+#### Scenario: daemon marker spans chunked-read sequence
+
+- **WHEN** an exec script issues a `js` step that triggers chunked-read (`doJavaScriptLarge`) under `--mark-tab`
+- **AND** the daemon is opt-in active
+- **THEN** the marker SHALL be applied exactly once before the first AppleScript call
+- **AND** SHALL be removed exactly once after the last AppleScript call
+- **AND** SHALL NOT toggle on every internal chunk read
+
+
+<!-- @trace
+source: tab-ownership-marker
+updated: 2026-04-25
+code:
+  - .remember/logs/autonomous/save-091858.log
+  - .remember/logs/autonomous/save-071607.log
+  - .remember/logs/autonomous/save-070251.log
+  - .remember/logs/autonomous/save-090951.log
+  - .remember/logs/autonomous/save-085737.log
+  - .remember/logs/autonomous/save-073607.log
+  - .remember/logs/autonomous/save-072400.log
+  - .remember/logs/autonomous/save-063153.log
+  - .remember/logs/autonomous/save-091951.log
+  - .remember/logs/autonomous/save-070528.log
+  - .remember/logs/autonomous/save-070754.log
+  - .remember/logs/autonomous/save-062435.log
+  - .remember/logs/autonomous/save-071143.log
+  - .remember/logs/autonomous/save-073621.log
+  - .remember/logs/autonomous/save-073708.log
+  - .remember/logs/autonomous/save-091045.log
+  - .remember/logs/autonomous/save-071615.log
+  - .remember/logs/autonomous/save-091128.log
+  - .remember/logs/autonomous/save-091036.log
+  - .remember/logs/autonomous/save-074138.log
+  - .remember/logs/autonomous/save-091859.log
+  - .remember/logs/autonomous/save-091115.log
+  - .remember/logs/autonomous/save-072406.log
+  - .remember/logs/autonomous/save-072253.log
+  - .remember/logs/autonomous/save-092010.log
+  - .remember/logs/autonomous/save-072606.log
+  - .remember/logs/autonomous/save-071937.log
+  - .remember/logs/autonomous/save-072506.log
+  - .remember/logs/autonomous/save-091057.log
+  - .remember/logs/autonomous/save-073557.log
+  - .remember/logs/autonomous/save-073540.log
+  - .remember/logs/autonomous/save-070515.log
+  - .remember/logs/autonomous/save-072558.log
+  - .remember/logs/autonomous/save-073614.log
+  - .remember/logs/autonomous/save-071559.log
+  - .remember/logs/autonomous/save-070243.log
+  - .remember/logs/autonomous/save-070840.log
+  - .remember/logs/autonomous/save-085954.log
+  - .remember/logs/autonomous/save-090911.log
+  - .remember/logs/autonomous/save-070849.log
+  - .remember/logs/autonomous/save-085727.log
+  - .remember/logs/autonomous/save-070526.log
+  - .remember/logs/autonomous/save-070426.log
+  - .remember/logs/autonomous/save-091912.log
+  - .remember/logs/autonomous/save-062127.log
+  - .remember/logs/autonomous/save-070419.log
+  - .remember/logs/autonomous/save-071013.log
+  - .remember/logs/autonomous/save-085747.log
+  - .remember/logs/autonomous/save-072221.log
+  - .remember/logs/autonomous/save-073628.log
+  - .remember/logs/autonomous/save-074018.log
+  - .remember/logs/autonomous/save-073929.log
+  - .remember/logs/autonomous/save-091103.log
+  - .remember/logs/autonomous/save-062442.log
+  - .remember/logs/autonomous/save-071328.log
+  - .remember/logs/autonomous/save-091922.log
+  - .remember/logs/autonomous/save-072146.log
+  - .remember/logs/autonomous/save-072354.log
+  - .remember/logs/autonomous/save-070508.log
+  - .remember/logs/autonomous/save-071344.log
+  - .remember/logs/autonomous/save-071205.log
+  - .remember/logs/autonomous/save-070407.log
+  - .remember/logs/autonomous/save-070746.log
+  - .remember/logs/autonomous/save-070536.log
+  - .remember/logs/autonomous/save-073902.log
+  - .remember/logs/autonomous/save-073935.log
+  - .remember/logs/autonomous/save-074106.log
+  - .remember/logs/autonomous/save-070436.log
+  - .remember/logs/autonomous/save-071320.log
+  - .remember/logs/autonomous/save-071544.log
+  - .remember/logs/autonomous/save-071832.log
+  - .remember/logs/autonomous/save-074003.log
+  - .remember/logs/autonomous/save-091048.log
+  - .remember/logs/autonomous/save-085756.log
+  - .remember/logs/autonomous/save-063213.log
+  - .remember/logs/autonomous/save-074009.log
+  - .remember/logs/autonomous/save-091004.log
+  - .remember/logs/autonomous/save-072438.log
+  - .remember/logs/autonomous/save-091107.log
+  - .remember/logs/autonomous/save-073634.log
+  - .remember/logs/autonomous/save-073843.log
+  - .remember/logs/autonomous/save-071850.log
+  - .remember/logs/autonomous/save-072201.log
+  - .remember/logs/autonomous/save-073643.log
+  - .remember/logs/autonomous/save-091831.log
+  - .remember/logs/autonomous/save-071708.log
+  - .remember/logs/autonomous/save-085631.log
+  - .remember/logs/autonomous/save-072422.log
+  - .remember/logs/autonomous/save-085748.log
+  - .remember/logs/autonomous/save-071823.log
+  - .remember/logs/autonomous/save-090856.log
+  - .remember/logs/autonomous/save-073947.log
+  - .remember/logs/autonomous/save-062133.log
+  - .remember/logs/autonomous/save-071815.log
+  - .remember/logs/autonomous/save-072521.log
+  - .remember/logs/autonomous/save-073836.log
+  - .remember/logs/autonomous/save-062818.log
+  - .remember/logs/autonomous/save-062429.log
+  - .remember/logs/autonomous/save-090003.log
+  - .remember/logs/autonomous/save-091857.log
+  - .remember/logs/autonomous/save-071133.log
+  - .remember/logs/autonomous/save-071535.log
+  - .remember/logs/autonomous/save-091020.log
+  - .remember/logs/autonomous/save-070524.log
+  - .remember/logs/autonomous/save-071552.log
+  - .remember/logs/autonomous/save-071455.log
+  - .remember/logs/autonomous/save-072430.log
+  - .remember/logs/autonomous/save-073519.log
+  - .remember/logs/autonomous/save-085745.log
+  - .remember/logs/autonomous/save-072520.log
+  - .remember/logs/autonomous/save-085818.log
+  - .remember/logs/autonomous/save-072153.log
+  - .remember/logs/autonomous/save-071924.log
+  - .remember/logs/autonomous/save-091054.log
+  - .remember/logs/autonomous/save-074114.log
+  - .remember/logs/autonomous/save-070821.log
+  - .remember/logs/autonomous/save-062128.log
+  - .remember/tmp/save-session.pid
+  - .remember/logs/autonomous/save-072512.log
+  - .remember/logs/autonomous/save-072232.log
+  - .remember/logs/autonomous/save-073808.log
+  - .remember/logs/autonomous/save-085709.log
+  - .remember/logs/autonomous/save-070906.log
+  - .remember/logs/autonomous/save-091051.log
+  - .remember/logs/autonomous/save-071641.log
+  - .remember/logs/autonomous/save-071122.log
+  - .remember/logs/autonomous/save-071338.log
+  - .remember/logs/autonomous/save-092009.log
+  - .remember/logs/autonomous/save-070459.log
+  - .remember/logs/autonomous/save-072449.log
+  - .remember/logs/autonomous/save-073549.log
+  - .remember/logs/autonomous/save-071624.log
+  - .remember/logs/autonomous/save-072021.log
+  - .remember/logs/autonomous/save-072110.log
+  - .remember/logs/autonomous/save-071806.log
+  - .remember/logs/autonomous/save-070257.log
+  - .remember/logs/autonomous/save-070359.log
+  - .remember/logs/autonomous/save-071931.log
+  - .remember/logs/autonomous/save-071110.log
+  - .remember/logs/autonomous/save-072638.log
+  - .remember/logs/autonomous/save-074059.log
+  - .remember/logs/autonomous/save-085717.log
+  - .remember/logs/autonomous/save-071515.log
+  - .remember/logs/autonomous/save-085638.log
+  - .remember/logs/autonomous/save-090201.log
+  - .remember/logs/autonomous/save-073909.log
+  - .remember/logs/autonomous/save-070549.log
+  - .remember/logs/autonomous/save-071633.log
+  - .remember/logs/autonomous/save-090309.log
+  - .remember/logs/autonomous/save-062139.log
+  - .remember/logs/autonomous/save-072615.log
+  - .remember/logs/autonomous/save-072245.log
+  - .remember/logs/autonomous/save-091030.log
+  - .remember/logs/autonomous/save-091033.log
+  - .remember/logs/autonomous/save-090149.log
+  - .remember/logs/autonomous/save-070527.log
+  - .remember/logs/autonomous/save-091840.log
+  - .remember/logs/autonomous/save-091942.log
+  - .remember/logs/autonomous/save-071030.log
+  - .remember/logs/autonomous/save-072528.log
+  - .remember/logs/autonomous/save-072630.log
+  - .remember/logs/autonomous/save-073725.log
+  - .remember/logs/autonomous/save-073956.log
+  - .remember/logs/autonomous/save-085625.log
+  - .remember/logs/autonomous/save-091952.log
+  - .remember/logs/autonomous/save-071523.log
+  - .remember/logs/autonomous/save-070431.log
+  - .remember/logs/autonomous/save-085649.log
+  - .remember/logs/autonomous/save-073655.log
+  - .remember/logs/autonomous/save-062742.log
+  - .remember/logs/autonomous/save-071002.log
+  - .remember/logs/autonomous/save-071253.log
+  - .remember/logs/autonomous/save-073801.log
+  - .remember/logs/autonomous/save-091822.log
+  - .remember/logs/autonomous/save-072059.log
+  - .remember/logs/autonomous/save-091100.log
+-->
+
+---
+### Requirement: Non-interference classification
+
+The `--mark-tab` opt-in operation is classified as **passively interfering** per `non-interference` capability semantics: it mutates target-tab user-visible state (even if the visible diff is zero-width). The default OFF behavior SHALL remain **non-interfering**. Documentation in `non-interference/spec.md` SHALL be updated to reference this requirement and add `--mark-tab` to the explicit opt-in list alongside `--allow-hid` and `--native`.
+
+#### Scenario: opt-in mutation is logged, default is silent
+
+- **WHEN** any subcommand runs without `--mark-tab` and without `SAFARI_BROWSER_MARK_TAB=1`
+- **THEN** no AppleScript `set name of tab` SHALL appear in the daemon log or any stderr trace
+
+#### Scenario: opt-in mutation appears in daemon log
+
+- **WHEN** a daemon-routed request carries `markTab: true`
+- **AND** daemon logging is at default verbosity
+- **THEN** the daemon log SHALL include a line indicating marker wrap and unwrap timestamps for the request
+
+<!-- @trace
+source: tab-ownership-marker
+updated: 2026-04-25
+code:
+  - .remember/logs/autonomous/save-091858.log
+  - .remember/logs/autonomous/save-071607.log
+  - .remember/logs/autonomous/save-070251.log
+  - .remember/logs/autonomous/save-090951.log
+  - .remember/logs/autonomous/save-085737.log
+  - .remember/logs/autonomous/save-073607.log
+  - .remember/logs/autonomous/save-072400.log
+  - .remember/logs/autonomous/save-063153.log
+  - .remember/logs/autonomous/save-091951.log
+  - .remember/logs/autonomous/save-070528.log
+  - .remember/logs/autonomous/save-070754.log
+  - .remember/logs/autonomous/save-062435.log
+  - .remember/logs/autonomous/save-071143.log
+  - .remember/logs/autonomous/save-073621.log
+  - .remember/logs/autonomous/save-073708.log
+  - .remember/logs/autonomous/save-091045.log
+  - .remember/logs/autonomous/save-071615.log
+  - .remember/logs/autonomous/save-091128.log
+  - .remember/logs/autonomous/save-091036.log
+  - .remember/logs/autonomous/save-074138.log
+  - .remember/logs/autonomous/save-091859.log
+  - .remember/logs/autonomous/save-091115.log
+  - .remember/logs/autonomous/save-072406.log
+  - .remember/logs/autonomous/save-072253.log
+  - .remember/logs/autonomous/save-092010.log
+  - .remember/logs/autonomous/save-072606.log
+  - .remember/logs/autonomous/save-071937.log
+  - .remember/logs/autonomous/save-072506.log
+  - .remember/logs/autonomous/save-091057.log
+  - .remember/logs/autonomous/save-073557.log
+  - .remember/logs/autonomous/save-073540.log
+  - .remember/logs/autonomous/save-070515.log
+  - .remember/logs/autonomous/save-072558.log
+  - .remember/logs/autonomous/save-073614.log
+  - .remember/logs/autonomous/save-071559.log
+  - .remember/logs/autonomous/save-070243.log
+  - .remember/logs/autonomous/save-070840.log
+  - .remember/logs/autonomous/save-085954.log
+  - .remember/logs/autonomous/save-090911.log
+  - .remember/logs/autonomous/save-070849.log
+  - .remember/logs/autonomous/save-085727.log
+  - .remember/logs/autonomous/save-070526.log
+  - .remember/logs/autonomous/save-070426.log
+  - .remember/logs/autonomous/save-091912.log
+  - .remember/logs/autonomous/save-062127.log
+  - .remember/logs/autonomous/save-070419.log
+  - .remember/logs/autonomous/save-071013.log
+  - .remember/logs/autonomous/save-085747.log
+  - .remember/logs/autonomous/save-072221.log
+  - .remember/logs/autonomous/save-073628.log
+  - .remember/logs/autonomous/save-074018.log
+  - .remember/logs/autonomous/save-073929.log
+  - .remember/logs/autonomous/save-091103.log
+  - .remember/logs/autonomous/save-062442.log
+  - .remember/logs/autonomous/save-071328.log
+  - .remember/logs/autonomous/save-091922.log
+  - .remember/logs/autonomous/save-072146.log
+  - .remember/logs/autonomous/save-072354.log
+  - .remember/logs/autonomous/save-070508.log
+  - .remember/logs/autonomous/save-071344.log
+  - .remember/logs/autonomous/save-071205.log
+  - .remember/logs/autonomous/save-070407.log
+  - .remember/logs/autonomous/save-070746.log
+  - .remember/logs/autonomous/save-070536.log
+  - .remember/logs/autonomous/save-073902.log
+  - .remember/logs/autonomous/save-073935.log
+  - .remember/logs/autonomous/save-074106.log
+  - .remember/logs/autonomous/save-070436.log
+  - .remember/logs/autonomous/save-071320.log
+  - .remember/logs/autonomous/save-071544.log
+  - .remember/logs/autonomous/save-071832.log
+  - .remember/logs/autonomous/save-074003.log
+  - .remember/logs/autonomous/save-091048.log
+  - .remember/logs/autonomous/save-085756.log
+  - .remember/logs/autonomous/save-063213.log
+  - .remember/logs/autonomous/save-074009.log
+  - .remember/logs/autonomous/save-091004.log
+  - .remember/logs/autonomous/save-072438.log
+  - .remember/logs/autonomous/save-091107.log
+  - .remember/logs/autonomous/save-073634.log
+  - .remember/logs/autonomous/save-073843.log
+  - .remember/logs/autonomous/save-071850.log
+  - .remember/logs/autonomous/save-072201.log
+  - .remember/logs/autonomous/save-073643.log
+  - .remember/logs/autonomous/save-091831.log
+  - .remember/logs/autonomous/save-071708.log
+  - .remember/logs/autonomous/save-085631.log
+  - .remember/logs/autonomous/save-072422.log
+  - .remember/logs/autonomous/save-085748.log
+  - .remember/logs/autonomous/save-071823.log
+  - .remember/logs/autonomous/save-090856.log
+  - .remember/logs/autonomous/save-073947.log
+  - .remember/logs/autonomous/save-062133.log
+  - .remember/logs/autonomous/save-071815.log
+  - .remember/logs/autonomous/save-072521.log
+  - .remember/logs/autonomous/save-073836.log
+  - .remember/logs/autonomous/save-062818.log
+  - .remember/logs/autonomous/save-062429.log
+  - .remember/logs/autonomous/save-090003.log
+  - .remember/logs/autonomous/save-091857.log
+  - .remember/logs/autonomous/save-071133.log
+  - .remember/logs/autonomous/save-071535.log
+  - .remember/logs/autonomous/save-091020.log
+  - .remember/logs/autonomous/save-070524.log
+  - .remember/logs/autonomous/save-071552.log
+  - .remember/logs/autonomous/save-071455.log
+  - .remember/logs/autonomous/save-072430.log
+  - .remember/logs/autonomous/save-073519.log
+  - .remember/logs/autonomous/save-085745.log
+  - .remember/logs/autonomous/save-072520.log
+  - .remember/logs/autonomous/save-085818.log
+  - .remember/logs/autonomous/save-072153.log
+  - .remember/logs/autonomous/save-071924.log
+  - .remember/logs/autonomous/save-091054.log
+  - .remember/logs/autonomous/save-074114.log
+  - .remember/logs/autonomous/save-070821.log
+  - .remember/logs/autonomous/save-062128.log
+  - .remember/tmp/save-session.pid
+  - .remember/logs/autonomous/save-072512.log
+  - .remember/logs/autonomous/save-072232.log
+  - .remember/logs/autonomous/save-073808.log
+  - .remember/logs/autonomous/save-085709.log
+  - .remember/logs/autonomous/save-070906.log
+  - .remember/logs/autonomous/save-091051.log
+  - .remember/logs/autonomous/save-071641.log
+  - .remember/logs/autonomous/save-071122.log
+  - .remember/logs/autonomous/save-071338.log
+  - .remember/logs/autonomous/save-092009.log
+  - .remember/logs/autonomous/save-070459.log
+  - .remember/logs/autonomous/save-072449.log
+  - .remember/logs/autonomous/save-073549.log
+  - .remember/logs/autonomous/save-071624.log
+  - .remember/logs/autonomous/save-072021.log
+  - .remember/logs/autonomous/save-072110.log
+  - .remember/logs/autonomous/save-071806.log
+  - .remember/logs/autonomous/save-070257.log
+  - .remember/logs/autonomous/save-070359.log
+  - .remember/logs/autonomous/save-071931.log
+  - .remember/logs/autonomous/save-071110.log
+  - .remember/logs/autonomous/save-072638.log
+  - .remember/logs/autonomous/save-074059.log
+  - .remember/logs/autonomous/save-085717.log
+  - .remember/logs/autonomous/save-071515.log
+  - .remember/logs/autonomous/save-085638.log
+  - .remember/logs/autonomous/save-090201.log
+  - .remember/logs/autonomous/save-073909.log
+  - .remember/logs/autonomous/save-070549.log
+  - .remember/logs/autonomous/save-071633.log
+  - .remember/logs/autonomous/save-090309.log
+  - .remember/logs/autonomous/save-062139.log
+  - .remember/logs/autonomous/save-072615.log
+  - .remember/logs/autonomous/save-072245.log
+  - .remember/logs/autonomous/save-091030.log
+  - .remember/logs/autonomous/save-091033.log
+  - .remember/logs/autonomous/save-090149.log
+  - .remember/logs/autonomous/save-070527.log
+  - .remember/logs/autonomous/save-091840.log
+  - .remember/logs/autonomous/save-091942.log
+  - .remember/logs/autonomous/save-071030.log
+  - .remember/logs/autonomous/save-072528.log
+  - .remember/logs/autonomous/save-072630.log
+  - .remember/logs/autonomous/save-073725.log
+  - .remember/logs/autonomous/save-073956.log
+  - .remember/logs/autonomous/save-085625.log
+  - .remember/logs/autonomous/save-091952.log
+  - .remember/logs/autonomous/save-071523.log
+  - .remember/logs/autonomous/save-070431.log
+  - .remember/logs/autonomous/save-085649.log
+  - .remember/logs/autonomous/save-073655.log
+  - .remember/logs/autonomous/save-062742.log
+  - .remember/logs/autonomous/save-071002.log
+  - .remember/logs/autonomous/save-071253.log
+  - .remember/logs/autonomous/save-073801.log
+  - .remember/logs/autonomous/save-091822.log
+  - .remember/logs/autonomous/save-072059.log
+  - .remember/logs/autonomous/save-091100.log
+-->
