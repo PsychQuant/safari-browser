@@ -286,4 +286,52 @@ final class TargetOptionsTests: XCTestCase {
                           "Error must mention the offending flag, got: \(msg)")
         }
     }
+
+    // MARK: - --profile flag (Issue #47)
+
+    func testProfileFlagParsesValue() throws {
+        let cmd = try OpenCommand.parse([
+            "https://example.com",
+            "--profile", "個人",
+        ])
+        XCTAssertEqual(cmd.target.profile, "個人")
+        XCTAssertEqual(cmd.target.resolveProfile(), "個人")
+    }
+
+    func testProfileFlagDefaultIsNil() throws {
+        let cmd = try OpenCommand.parse(["https://example.com"])
+        XCTAssertNil(cmd.target.profile)
+        XCTAssertNil(cmd.target.resolveProfile())
+    }
+
+    func testProfileFlagCombinesWithUrl() throws {
+        // --profile is orthogonal to the URL-matching flags;
+        // combining them is the primary use case.
+        let cmd = try OpenCommand.parse([
+            "https://example.com",
+            "--profile", "工作",
+            "--url", "plaud",
+        ])
+        XCTAssertEqual(cmd.target.profile, "工作")
+        XCTAssertEqual(cmd.target.url, "plaud")
+        XCTAssertEqual(cmd.target.resolveProfile(), "工作")
+        switch cmd.target.resolve() {
+        case .urlMatch(.contains(let s)):
+            XCTAssertEqual(s, "plaud")
+        default:
+            XCTFail("Expected urlMatch(.contains)")
+        }
+    }
+
+    func testProfileFlagSoloIsValid() throws {
+        // --profile alone (no URL match, no --window) is allowed:
+        // filtering happens at SafariBridge.pickNativeTarget;resolution
+        // falls back to .frontWindow within that profile.
+        let cmd = try OpenCommand.parse([
+            "https://example.com",
+            "--profile", "X",
+        ])
+        XCTAssertNoThrow(try cmd.target.validate())
+        XCTAssertEqual(cmd.target.resolveProfile(), "X")
+    }
 }
