@@ -524,4 +524,84 @@ final class WindowIndexResolverTests: XCTestCase {
         let docs = SafariBridge.flattenWindowsToDocuments([win])
         XCTAssertNil(docs[0].profile)
     }
+
+    // MARK: - pickNativeTarget profile filter (Issue #47)
+
+    /// Helper builds a multi-window fixture across two profiles.
+    private func makeProfileFixture() -> [SafariBridge.WindowInfo] {
+        return [
+            SafariBridge.WindowInfo(
+                windowIndex: 1,
+                currentTabIndex: 1,
+                tabs: [SafariBridge.TabInWindow(tabIndex: 1, url: "https://a.com", title: "A", isCurrent: true)],
+                profile: "個人"
+            ),
+            SafariBridge.WindowInfo(
+                windowIndex: 2,
+                currentTabIndex: 1,
+                tabs: [SafariBridge.TabInWindow(tabIndex: 1, url: "https://a.com", title: "A", isCurrent: true)],
+                profile: "工作"
+            ),
+            SafariBridge.WindowInfo(
+                windowIndex: 3,
+                currentTabIndex: 1,
+                tabs: [SafariBridge.TabInWindow(tabIndex: 1, url: "https://b.com", title: "B", isCurrent: true)],
+                profile: nil
+            ),
+        ]
+    }
+
+    func testProfileFilterDropsNonMatchingWindows() throws {
+        // Same URL exists in 2 profiles. With profile=工作 we expect
+        // only window 2 to be a candidate, so the URL match becomes
+        // unambiguous and resolves to that window.
+        let windows = makeProfileFixture()
+        let target = SafariBridge.TargetDocument.urlMatch(.contains("a.com"))
+        let result = try SafariBridge.pickNativeTarget(target, in: windows, profile: "工作")
+        XCTAssertEqual(result.windowIndex, 2)
+    }
+
+    func testProfileFilterEmptyMatchThrowsHelpfulError() {
+        let windows = makeProfileFixture()
+        let target = SafariBridge.TargetDocument.urlMatch(.contains("a.com"))
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(target, in: windows, profile: "Nonexistent")
+        ) { error in
+            guard case SafariBrowserError.documentNotFound(let pattern, _) = error else {
+                XCTFail("Expected documentNotFound, got \(error)")
+                return
+            }
+            XCTAssertTrue(pattern.contains("Nonexistent"),
+                          "Error pattern should mention the filter value")
+            XCTAssertTrue(pattern.contains("profile"),
+                          "Error pattern should mention 'profile' for clarity")
+        }
+    }
+
+    func testProfileFilterNilEqualsLegacyBehavior() throws {
+        // profile=nil is the default and must reproduce pre-#47 behavior:
+        // multi-window URL match goes ambiguous, single-window resolves.
+        let windows = [
+            SafariBridge.WindowInfo(
+                windowIndex: 1,
+                currentTabIndex: 1,
+                tabs: [SafariBridge.TabInWindow(tabIndex: 1, url: "https://a.com", title: "A", isCurrent: true)],
+                profile: "X"
+            ),
+        ]
+        let result = try SafariBridge.pickNativeTarget(.windowIndex(1), in: windows)
+        XCTAssertEqual(result.windowIndex, 1)
+    }
+
+    func testProfileFilterMatchesWindowsWithNilProfile() {
+        // profile filter is exact-match: filter="個人" must NOT match a
+        // window with profile=nil. This is the correct semantics —
+        // "individual default" and "no profile detected" are different.
+        let windows = makeProfileFixture()
+        // Targeting window 3 (profile: nil) with filter "個人" → empty
+        // candidate set → throws documentNotFound.
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(.windowIndex(1), in: [windows[2]], profile: "個人")
+        )
+    }
 }

@@ -1611,10 +1611,51 @@ enum SafariBridge {
     /// error — deterministic behavior is worth more to automation than
     /// convenience of first-match).
     ///
+    /// `profile` (Issue #47) is an optional pre-filter applied **before**
+    /// the switch on `TargetDocument`. When set, only windows whose
+    /// `WindowInfo.profile` equals the argument are considered candidates;
+    /// the rest are dropped from the local `candidates` array. `nil` (the
+    /// default) preserves legacy behavior — every window is a candidate.
+    /// Filtering at this single chokepoint keeps `TargetDocument` enum
+    /// shape unchanged (5+ existing switch sites are unaffected).
+    ///
     /// - Throws: `SafariBrowserError.documentNotFound` for zero matches
-    ///   or out-of-range index. `SafariBrowserError.ambiguousWindowMatch`
-    ///   for multi-match URL patterns.
+    ///   or out-of-range index. Error pattern includes `(profile: "X")`
+    ///   suffix when a profile filter is active so the user sees which
+    ///   filter dropped the match. `SafariBrowserError.ambiguousWindowMatch`
+    ///   for multi-match URL patterns (filtered candidate set).
     static func pickNativeTarget(
+        _ target: TargetDocument,
+        in windows: [WindowInfo],
+        profile: String? = nil
+    ) throws -> ResolvedWindowTarget {
+        // Apply profile filter at the entry, before the case-by-case
+        // resolution logic. nil = legacy behavior (all windows count).
+        let candidates: [WindowInfo]
+        if let profile = profile {
+            candidates = windows.filter { $0.profile == profile }
+            if candidates.isEmpty {
+                let available = windows.map { w -> String in
+                    let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+                    let p = w.profile ?? "(no profile)"
+                    return "window \(w.windowIndex) [\(p)]: \(cur)"
+                }
+                throw SafariBrowserError.documentNotFound(
+                    pattern: "(profile: \"\(profile)\")",
+                    availableDocuments: available
+                )
+            }
+        } else {
+            candidates = windows
+        }
+        return try pickNativeTargetCore(target, in: candidates)
+    }
+
+    /// Inner core (private) — unchanged switch logic operating on the
+    /// already-filtered candidate list. Extracted so the entry point's
+    /// profile-filter responsibility stays separate from per-case
+    /// resolution details. Issue #47.
+    private static func pickNativeTargetCore(
         _ target: TargetDocument,
         in windows: [WindowInfo]
     ) throws -> ResolvedWindowTarget {
