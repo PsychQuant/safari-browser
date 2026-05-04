@@ -13,6 +13,58 @@ import XCTest
 /// `url-matching-pipeline` change.
 final class UrlMatcherTests: XCTestCase {
 
+    // MARK: - parseProfile (Issue #47)
+    //
+    // Safari prepends the active profile name to each window's title with
+    // an em-dash separator (U+2014 surrounded by spaces): `<profile> — <title>`.
+    // `parseProfile(fromWindowName:)` extracts the profile prefix so
+    // `--profile <name>` can filter windows without invoking AppleScript
+    // (the `current profile of window` property does not exist as of
+    // Safari 18 — verified during diagnose).
+    //
+    // First-occurrence split is required: page titles legitimately contain
+    // em-dashes (e.g. `"Project — Q1"`), so anything past the first
+    // separator stays in the title part.
+
+    func testParseProfilePrefixOnly() {
+        let result = SafariBridge.UrlMatcher.parseProfile(fromWindowName: "個人 — Plaud")
+        XCTAssertEqual(result.profile, "個人")
+        XCTAssertEqual(result.title, "Plaud")
+    }
+
+    func testParseProfileTitleHasEmDash() {
+        // Page title with its own em-dash must NOT confuse the parser —
+        // only the first " — " counts as the profile separator.
+        let result = SafariBridge.UrlMatcher.parseProfile(fromWindowName: "個人 — Project — Q1")
+        XCTAssertEqual(result.profile, "個人")
+        XCTAssertEqual(result.title, "Project — Q1")
+    }
+
+    func testParseProfileNoPrefix() {
+        // Default profile (or pre-Safari 17 / multi-profile disabled) →
+        // window name has no separator, profile is nil, title is the
+        // entire input.
+        let result = SafariBridge.UrlMatcher.parseProfile(fromWindowName: "Just A Title")
+        XCTAssertNil(result.profile)
+        XCTAssertEqual(result.title, "Just A Title")
+    }
+
+    func testParseProfileEmptyAfterSeparator() {
+        let result = SafariBridge.UrlMatcher.parseProfile(fromWindowName: "個人 — ")
+        XCTAssertEqual(result.profile, "個人")
+        XCTAssertEqual(result.title, "")
+    }
+
+    func testParseProfileHyphenNotEmDash() {
+        // Regular hyphen-minus (U+002D) is NOT the profile separator —
+        // Safari uses em-dash (U+2014) specifically. Guards against
+        // copy-paste regressions where someone replaces `\u{2014}` with
+        // a plain `-`.
+        let result = SafariBridge.UrlMatcher.parseProfile(fromWindowName: "個人 - Plaud")
+        XCTAssertNil(result.profile)
+        XCTAssertEqual(result.title, "個人 - Plaud")
+    }
+
     // MARK: - contains
 
     func testContainsMatchesSubstring() {
