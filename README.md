@@ -201,6 +201,23 @@ Currently honored by `js`, `get url / title`, `screenshot`, `documents`;
 other commands accept the flag but the filter is a no-op (broader rollout
 tracked).
 
+**Stderr warning for unhonored commands (#54)**: when `--profile` is passed
+to a command that doesn't yet enforce the filter, `safari-browser` emits a
+single stderr line before execution to prevent silent wrong-profile
+dispatch:
+
+```
+$ safari-browser click --profile work "#delete"
+warning: --profile 'work' is parsed but not yet enforced for 'click'. Tracked in #51.
+  → Falling back: all profiles considered.
+```
+
+The warning goes to stderr only — stdout (e.g. `get text` body content) is
+unaffected. To filter from a pipeline, redirect stderr: `safari-browser
+click --profile work "#x" 2>/dev/null`. Per `#51` plumb-rollout, individual
+commands graduate to honored over time;the warning helper exists only for
+the transitional period.
+
 Without any flag, commands default to `document 1` — equivalent to
 `current tab of front window` in single-window usage, so existing scripts
 keep working unchanged. Read-only queries (`get url`, `get title`,
