@@ -189,7 +189,17 @@ safari-browser <cmd> --url <pattern>   # first document whose URL contains patte
 safari-browser <cmd> --window <n>      # current document of the Nth window (1-indexed)
 safari-browser <cmd> --tab <n>         # document N (alias for --document)
 safari-browser <cmd> --document <n>    # document N in Safari's document collection
+safari-browser <cmd> --profile <name>  # restrict to windows of named Safari profile (#47)
 ```
+
+`--profile` (#47) is orthogonal — combine with any other lock flag to
+disambiguate same-URL tabs across Safari profiles. **Detection mechanism**:
+Safari prepends the active profile name to each window title with em-dash
+separator (`<profile> — <page-title>`). AppleScript has no `current profile`
+property (verified Safari 18), so this is the only reliable mechanism.
+Currently honored by `js`, `get url / title`, `screenshot`, `documents`;
+other commands accept the flag but the filter is a no-op (broader rollout
+tracked).
 
 Without any flag, commands default to `document 1` — equivalent to
 `current tab of front window` in single-window usage, so existing scripts
