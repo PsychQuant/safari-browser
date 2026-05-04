@@ -604,4 +604,88 @@ final class WindowIndexResolverTests: XCTestCase {
             try SafariBridge.pickNativeTarget(.windowIndex(1), in: [windows[2]], profile: "個人")
         )
     }
+
+    // MARK: - Profile filter index-redirect (Issue #47, verify-found P1)
+    //
+    // Bug surfaced by /idd-verify #47 on PR #50: when --profile shrinks
+    // the candidate window list, --window N / .frontWindow / .windowTab
+    // were returning user-supplied indices LITERALLY instead of the
+    // filtered candidate's actual Safari windowIndex. Result: the
+    // resolved target points at Safari's actual window N (likely WRONG
+    // profile), not at profile X's first/Nth window.
+    //
+    // These tests ensure the resolved windowIndex matches the filtered
+    // candidate's `WindowInfo.windowIndex`, not the user-supplied index.
+
+    func testProfileFilterRedirectsWindowIndexToFilteredCandidate() throws {
+        // 3 windows;只有 windows[1] (Safari W2) profile=工作
+        // --window 1 --profile 工作 應 resolve 到 Safari W2,
+        // 不該誤回 Safari W1
+        let windows = makeProfileFixture()  // [W1=個人, W2=工作, W3=nil]
+        let result = try SafariBridge.pickNativeTarget(
+            .windowIndex(1),
+            in: windows,
+            profile: "工作"
+        )
+        XCTAssertEqual(
+            result.windowIndex, 2,
+            "Filter shrunk to 1 candidate (Safari W2). --window 1 must resolve to Safari W2, not W1."
+        )
+    }
+
+    func testProfileFilterRedirectsFrontWindowToFilteredCandidate() throws {
+        // .frontWindow 在沒 profile 時 = windowIndex 1 (Safari front)
+        // 但 profile 過濾後應指向 candidate 中的第一個
+        let windows = makeProfileFixture()  // [W1=個人, W2=工作, W3=nil]
+        let result = try SafariBridge.pickNativeTarget(
+            .frontWindow,
+            in: windows,
+            profile: "工作"
+        )
+        XCTAssertEqual(
+            result.windowIndex, 2,
+            ".frontWindow under filter must point at filtered candidate's actual Safari index"
+        )
+    }
+
+    func testProfileFilterRedirectsWindowTabToFilteredCandidate() throws {
+        // 加 multi-tab 的 window 進去做 .windowTab 測試
+        let multiTabWindows = [
+            SafariBridge.WindowInfo(
+                windowIndex: 5,  // Safari W5 (not 1!)
+                currentTabIndex: 1,
+                tabs: [
+                    SafariBridge.TabInWindow(tabIndex: 7, url: "https://a", title: "A", isCurrent: true),
+                    SafariBridge.TabInWindow(tabIndex: 9, url: "https://b", title: "B", isCurrent: false),
+                ],
+                profile: "工作"
+            ),
+            SafariBridge.WindowInfo(
+                windowIndex: 1,  // Safari W1 = different profile
+                currentTabIndex: 1,
+                tabs: [SafariBridge.TabInWindow(tabIndex: 1, url: "https://c", title: "C", isCurrent: true)],
+                profile: "個人"
+            ),
+        ]
+        // --window 1 --tab-in-window 2 --profile 工作 → 應落在
+        //   Safari window 5(filtered candidate 0)的 tab 9(該 window
+        //   的第 2 個 tab,實際 tabIndex 是 9 不是 2)
+        let result = try SafariBridge.pickNativeTarget(
+            .windowTab(window: 1, tabInWindow: 2),
+            in: multiTabWindows,
+            profile: "工作"
+        )
+        XCTAssertEqual(result.windowIndex, 5, "filtered candidate's actual windowIndex, not user-supplied 1")
+        XCTAssertEqual(result.tabIndexInWindow, 9, "the 2nd tab of the filtered window has actual tabIndex 9")
+    }
+
+    func testProfileFilterNilLegacyWindowIndexBitExact() throws {
+        // 沒 profile 過濾時行為要跟 pre-#47 完全一致 ——
+        // .windowIndex(2) 應回 windowIndex: 2(因為 windows[1].windowIndex == 2,
+        // 在 fixture 裡剛好相等,但這個測試要確保 nil-profile 路徑沒被
+        // 上面的 fix 不小心改到)
+        let windows = makeProfileFixture()
+        let result = try SafariBridge.pickNativeTarget(.windowIndex(2), in: windows)
+        XCTAssertEqual(result.windowIndex, 2, "nil-profile must preserve legacy bit-exact behavior")
+    }
 }

@@ -1709,7 +1709,20 @@ enum SafariBridge {
             // Trivial case — skipped by the async orchestrator anyway,
             // but covered here so the pure function is total over all
             // TargetDocument cases.
-            return ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil)
+            //
+            // Issue #47 fix: when called via pickNativeTarget(profile:),
+            // `windows` here is the post-filter candidate list, not all
+            // Safari windows. Returning a hardcoded `windowIndex: 1`
+            // would refer to Safari's actual W1 — which may not even
+            // belong to the requested profile. Use the first candidate's
+            // own AppleScript index instead. Empty windows is impossible
+            // when called from pickNativeTarget (the caller throws
+            // documentNotFound on empty filter result), but defend with
+            // a fallback to preserve totality of this pure function.
+            guard let first = windows.first else {
+                return ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil)
+            }
+            return ResolvedWindowTarget(windowIndex: first.windowIndex, tabIndexInWindow: nil)
 
         case .windowIndex(let n):
             if n < 1 || n > windows.count {
@@ -1722,7 +1735,15 @@ enum SafariBridge {
                     availableDocuments: availableSummary
                 )
             }
-            return ResolvedWindowTarget(windowIndex: n, tabIndexInWindow: nil)
+            // Issue #47 fix: `n` is 1-based into the (possibly filtered)
+            // candidate list, NOT into Safari's full window collection.
+            // Map back to the candidate's actual AppleScript window
+            // index so `--window 1 --profile X` lands on profile X's
+            // first window even if it's Safari's W3.
+            return ResolvedWindowTarget(
+                windowIndex: windows[n - 1].windowIndex,
+                tabIndexInWindow: nil
+            )
 
         case .documentIndex(let n):
             // Guard against .documentIndex(0) / negative — would land on
@@ -1832,9 +1853,16 @@ enum SafariBridge {
                 )
             }
             let tab = window.tabs[t - 1]
+            // Issue #47 fix: `w` is 1-based into the (possibly filtered)
+            // candidate list, `t` is 1-based into the candidate window's
+            // own tabs array. Map back to the candidate's actual
+            // AppleScript window + tab index so `--window 1
+            // --tab-in-window 2 --profile X` resolves correctly even
+            // when the filter shrunk a 5-window Safari to a single
+            // candidate at original index 3.
             return ResolvedWindowTarget(
-                windowIndex: w,
-                tabIndexInWindow: tab.isCurrent ? nil : t
+                windowIndex: window.windowIndex,
+                tabIndexInWindow: tab.isCurrent ? nil : tab.tabIndex
             )
         }
     }
