@@ -28,6 +28,7 @@ struct SnapshotCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "snapshot")
         if page {
             try await runPageScan()
             return

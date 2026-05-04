@@ -24,6 +24,7 @@ struct TabsCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "tabs")
         let tabs = try await SafariBridge.listTabs(window: target.window)
         if json {
             let arr = tabs.map { ["index": $0.index, "title": $0.title, "url": $0.url] as [String: Any] }

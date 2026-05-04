@@ -12,6 +12,7 @@ struct ClickCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "click")
         let resolved = target.resolve()
         let mode = target.markTabResolved()
         try await SafariBridge.markTabIfRequested(

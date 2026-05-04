@@ -18,6 +18,7 @@ struct DragCommand: AsyncParsableCommand {
     @OptionGroup var documentTarget: TargetOptions
 
     func run() async throws {
+        documentTarget.warnIfProfileUnsupported(commandName: "drag")
         let result = try await SafariBridge.doJavaScript("""
             (function(){
                 var src = \(source.resolveRefJS);

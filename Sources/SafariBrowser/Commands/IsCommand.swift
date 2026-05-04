@@ -25,6 +25,7 @@ struct IsVisible: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "is visible")
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; var r = el.getBoundingClientRect(); var s = getComputedStyle(el); return (r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden') ? 'true' : 'false'; })()",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
@@ -45,6 +46,7 @@ struct IsExists: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "is exists")
         let result = try await SafariBridge.doJavaScript(
             "\(selector.resolveRefJS) !== null ? 'true' : 'false'",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
@@ -65,6 +67,7 @@ struct IsEnabled: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "is enabled")
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return !el.disabled ? 'true' : 'false'; })()",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
@@ -85,6 +88,7 @@ struct IsChecked: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "is checked")
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'false'; return el.checked ? 'true' : 'false'; })()",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter

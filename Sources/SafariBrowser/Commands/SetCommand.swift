@@ -22,6 +22,7 @@ struct SetMedia: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "set media")
         guard scheme == "dark" || scheme == "light" else {
             throw ValidationError("Scheme must be 'dark' or 'light'")
         }

@@ -9,6 +9,7 @@ struct ForwardCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "forward")
         _ = try await SafariBridge.doJavaScript("history.forward()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 }

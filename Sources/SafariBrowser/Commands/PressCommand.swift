@@ -12,6 +12,7 @@ struct PressCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "press")
         let parts = key.split(separator: "+").map(String.init)
         let keyName: String
         var ctrlKey = false

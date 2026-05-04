@@ -104,6 +104,7 @@ struct UploadCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "upload")
         let expandedPath = (filePath as NSString).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: expandedPath) else {
             throw SafariBrowserError.fileNotFound(filePath)

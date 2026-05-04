@@ -334,4 +334,82 @@ final class TargetOptionsTests: XCTestCase {
         XCTAssertNoThrow(try cmd.target.validate())
         XCTAssertEqual(cmd.target.resolveProfile(), "X")
     }
+
+    // MARK: - warnIfProfileUnsupported (Issue #54)
+    //
+    // Most commands accept `--profile` via the shared @OptionGroup but
+    // do NOT plumb the filter to SafariBridge — the flag is parsed and
+    // silently dropped. Issue #51 tracks the per-command plumb rollout;
+    // until then, Issue #54 adds a stderr warning so users aren't lied
+    // to when they pass `--profile work` to `click "#delete"` and the
+    // flag is ignored. Tests use an injected writer so they don't
+    // depend on FileHandle plumbing.
+
+    func testWarnIfProfileUnsupportedEmitsWhenProfileSet() {
+        var captured: [String] = []
+        var opts = makeOptions()
+        opts.profile = "work"
+        opts.warnIfProfileUnsupported(commandName: "click") { captured.append($0) }
+        XCTAssertEqual(captured.count, 1, "Helper should emit exactly one warning when profile is set")
+        XCTAssertTrue(captured[0].hasPrefix("warning: --profile"),
+                      "Warning should start with 'warning: --profile', got: \(captured[0])")
+    }
+
+    func testWarnIfProfileUnsupportedSilentWhenProfileNil() {
+        // makeOptions() does not initialize the profile field — that
+        // helper predates Issue #47. Set profile = nil explicitly so
+        // ArgumentParser's storage is allocated and the read is legal.
+        var captured: [String] = []
+        var opts = makeOptions()
+        opts.profile = nil
+        opts.warnIfProfileUnsupported(commandName: "click") { captured.append($0) }
+        XCTAssertTrue(captured.isEmpty,
+                      "Helper must stay silent when --profile is not passed")
+    }
+
+    func testWarnIfProfileUnsupportedMessageStructure() {
+        // The warning text is part of the user-visible CLI contract per
+        // Issue #54 D1 — commandName + profile value + #51 issue
+        // reference + an explicit fallback statement so users know what
+        // happens next.
+        var captured: [String] = []
+        var opts = makeOptions()
+        opts.profile = "work"
+        opts.warnIfProfileUnsupported(commandName: "click") { captured.append($0) }
+        let msg = captured.joined()
+        XCTAssertTrue(msg.contains("'work'"),
+                      "Warning must surface the actual profile value the user passed")
+        XCTAssertTrue(msg.contains("'click'"),
+                      "Warning must name the command being invoked")
+        XCTAssertTrue(msg.contains("#51"),
+                      "Warning must reference Issue #51 (plumb tracker) so users can follow up")
+        XCTAssertTrue(msg.contains("Falling back"),
+                      "Warning must state the fallback action explicitly")
+    }
+
+    func testWarnIfProfileUnsupportedRespectsCustomCommandName() {
+        // Get subcommands like `get text` exist as nested commands —
+        // `Self.configuration.commandName` returns only the leaf
+        // ("text"), so callers must pass the user-facing two-word name
+        // ("get text") explicitly. Verify that arbitrary commandName
+        // strings flow through to the message verbatim.
+        var captured: [String] = []
+        var opts = makeOptions()
+        opts.profile = "X"
+        opts.warnIfProfileUnsupported(commandName: "get text") { captured.append($0) }
+        XCTAssertTrue(captured.joined().contains("'get text'"),
+                      "Helper should pass commandName through to the warning verbatim")
+    }
+
+    func testHonoredProfileCommandsHelpStringStable() {
+        // The help text constant feeds into `--profile` discussion. If
+        // someone renames a honored command, this test forces the
+        // rename to surface in `--profile --help` discussion at the
+        // same time. Acts as a typo-regression guard.
+        let help = TargetOptions.honoredProfileCommandsHelp
+        for token in ["js", "get url", "get title", "screenshot", "documents"] {
+            XCTAssertTrue(help.contains(token),
+                          "honoredProfileCommandsHelp should advertise '\(token)' as honored, got: \(help)")
+        }
+    }
 }

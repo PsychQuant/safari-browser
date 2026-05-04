@@ -58,7 +58,7 @@ struct TargetOptions: ParsableArguments {
         name: .long,
         help: ArgumentHelp(
             "Restrict target resolution to windows of the given Safari profile (e.g. \"個人\", \"Work\").",
-            discussion: "Detection is by window-name parsing: Safari 17+ prepends the active profile to each window's title with em-dash separator (`<profile> — <title>`). AppleScript has no `current profile` property, so window-name parsing is the only reliable mechanism — verified against Safari 18 in Issue #47. Combine with --url / --window / etc. to disambiguate same-URL tabs across profiles. Profile = nil windows (default profile or pre-multi-profile Safari) never match — exact-match semantics. Case-sensitive."
+            discussion: "Detection is by window-name parsing: Safari 17+ prepends the active profile to each window's title with em-dash separator (`<profile> — <title>`). AppleScript has no `current profile` property, so window-name parsing is the only reliable mechanism — verified against Safari 18 in Issue #47. Combine with --url / --window / etc. to disambiguate same-URL tabs across profiles. Profile = nil windows (default profile or pre-multi-profile Safari) never match — exact-match semantics. Case-sensitive.\n\nHonored by: \(TargetOptions.honoredProfileCommandsHelp). Other commands parse but currently ignore this flag (Issue #51 tracks rollout). When --profile is passed to an unhonored command, a stderr warning is emitted before execution to prevent silent wrong-profile dispatch."
         )
     )
     var profile: String?
@@ -345,5 +345,52 @@ struct TargetOptions: ParsableArguments {
     /// the existing tuple call.
     func resolveProfile() -> String? {
         profile
+    }
+
+    /// Documentation-only listing of commands whose `--profile` flag
+    /// is fully honored at the SafariBridge boundary (Issue #54).
+    /// Substituted into the `--profile` `@Option` discussion so users
+    /// reading `--help` see explicitly which commands enforce the
+    /// filter and which ones are still pending rollout via #51.
+    ///
+    /// **Maintenance contract**: when a new command plumbs `--profile`
+    /// through (closing part of #51), add it to this string AND drop
+    /// the matching `target.warnIfProfileUnsupported(...)` call from
+    /// that command's `run()`. The two are mirrored — the warning
+    /// helper exists for commands NOT in this list.
+    static let honoredProfileCommandsHelp = "js, get url, get title, screenshot, documents"
+
+    /// Emit a stderr warning when `--profile` was passed but the
+    /// invoking command does not yet honor the filter at the
+    /// SafariBridge boundary (Issue #54). Silent no-op when
+    /// `--profile` was not supplied — the warning is purely
+    /// informational about the parse-vs-enforce gap, not a validation
+    /// failure.
+    ///
+    /// Pure dispatch through `warnWriter` so the call site in
+    /// `<Command>.run()` doesn't need to know about FileHandle
+    /// plumbing, and so unit tests can capture the message without
+    /// touching stderr.
+    ///
+    /// `commandName` is supplied by the caller as a string literal
+    /// (not auto-derived from `Self.configuration.commandName`) so
+    /// nested subcommands like `get text` can pass the user-facing
+    /// two-word name — `Self.configuration.commandName` would only
+    /// return the leaf "text" and produce a confusing warning.
+    ///
+    /// - Parameters:
+    ///   - commandName: User-facing command name (e.g. "click",
+    ///     "get text") embedded into the warning text.
+    ///   - warnWriter: Stderr-bound writer; defaults to
+    ///     `Self.stderrWarnWriter`. Tests inject a capturing closure.
+    func warnIfProfileUnsupported(
+        commandName: String,
+        warnWriter: ((String) -> Void)? = nil
+    ) {
+        guard let profile = profile else { return }
+        let writer = warnWriter ?? Self.stderrWarnWriter
+        let msg = "warning: --profile '\(profile)' is parsed but not yet enforced for '\(commandName)'. Tracked in #51.\n"
+            + "  → Falling back: all profiles considered.\n"
+        writer(msg)
     }
 }
