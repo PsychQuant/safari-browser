@@ -453,4 +453,75 @@ final class WindowIndexResolverTests: XCTestCase {
         XCTAssertEqual(result.count, 1)
         XCTAssertEqual(result[0].tabs.count, 1)
     }
+
+    // MARK: - Profile parsing (Issue #47)
+    //
+    // Records emitted by `listAllWindows` gained a 6th field for
+    // window-level title (which Safari prepends with the active profile
+    // name as `<profile> — <title>`). Each tab record in the same window
+    // carries the same window-name field — redundant on the wire but
+    // simplifies the parser (which groups records by windowIndex anyway).
+    //
+    // Older 4-field and 5-field records remain valid (backward compat).
+
+    func testParseSixFieldRecordExtractsProfile() {
+        let gs = "\u{1D}"
+        let rs = "\u{1E}"
+        // window 1 = "個人" profile; window-name field = "個人 — Plaud Web"
+        let raw = "1\(gs)1\(gs)1\(gs)https://web.plaud.ai/\(gs)Plaud Web\(gs)個人 — Plaud Web\(rs)"
+        let result = SafariBridge.parseWindowEnumeration(raw)
+        XCTAssertEqual(result.count, 1)
+        XCTAssertEqual(result[0].profile, "個人")
+        XCTAssertEqual(result[0].tabs[0].title, "Plaud Web")
+    }
+
+    func testParseSixFieldRecordWithoutProfileSeparator() {
+        let gs = "\u{1D}"
+        let rs = "\u{1E}"
+        // window-name has no em-dash → profile = nil, no error
+        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(gs)A Title\(gs)A Title\(rs)"
+        let result = SafariBridge.parseWindowEnumeration(raw)
+        XCTAssertEqual(result.count, 1)
+        XCTAssertNil(result[0].profile)
+    }
+
+    func testParseFiveFieldRecordHasNilProfile() {
+        // Pre-#47 5-field record (no window-name field) → profile = nil
+        // (no breakage; field count tolerance preserved).
+        let gs = "\u{1D}"
+        let rs = "\u{1E}"
+        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(gs)A Title\(rs)"
+        let result = SafariBridge.parseWindowEnumeration(raw)
+        XCTAssertEqual(result.count, 1)
+        XCTAssertNil(result[0].profile)
+    }
+
+    func testFlattenPropagatesProfileToDocumentInfo() {
+        let win = SafariBridge.WindowInfo(
+            windowIndex: 1,
+            currentTabIndex: 1,
+            tabs: [
+                SafariBridge.TabInWindow(tabIndex: 1, url: "https://a.com", title: "A", isCurrent: true),
+                SafariBridge.TabInWindow(tabIndex: 2, url: "https://b.com", title: "B", isCurrent: false),
+            ],
+            profile: "工作"
+        )
+        let docs = SafariBridge.flattenWindowsToDocuments([win])
+        XCTAssertEqual(docs.count, 2)
+        XCTAssertEqual(docs[0].profile, "工作")
+        XCTAssertEqual(docs[1].profile, "工作")
+    }
+
+    func testFlattenWindowWithoutProfileGivesNilDocumentProfile() {
+        let win = SafariBridge.WindowInfo(
+            windowIndex: 1,
+            currentTabIndex: 1,
+            tabs: [
+                SafariBridge.TabInWindow(tabIndex: 1, url: "https://a.com", title: "A", isCurrent: true),
+            ],
+            profile: nil
+        )
+        let docs = SafariBridge.flattenWindowsToDocuments([win])
+        XCTAssertNil(docs[0].profile)
+    }
 }

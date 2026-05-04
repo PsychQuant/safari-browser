@@ -1475,6 +1475,39 @@ enum SafariBridge {
         let title: String
         let url: String
         let isCurrent: Bool
+        /// Active Safari profile name for this tab's window, parsed from
+        /// the window's title prefix `<profile> — <title>` (em-dash
+        /// U+2014). `nil` when:
+        /// - default profile has no prefix
+        /// - pre-Safari 17 (no multi-profile feature)
+        /// - window title transiently empty during page load
+        ///
+        /// Per-window value (every tab in the same window shares the
+        /// same profile);propagated by `flattenWindowsToDocuments` from
+        /// `WindowInfo.profile`. Issue #47.
+        let profile: String?
+
+        /// Backwards-compatible initializer with `profile` defaulting
+        /// to `nil`. Existing test fixtures and external callers that
+        /// don't care about profile keep working without explicit
+        /// `profile:` arg. Issue #47.
+        init(
+            index: Int,
+            window: Int,
+            tabInWindow: Int,
+            title: String,
+            url: String,
+            isCurrent: Bool,
+            profile: String? = nil
+        ) {
+            self.index = index
+            self.window = window
+            self.tabInWindow = tabInWindow
+            self.title = title
+            self.url = url
+            self.isCurrent = isCurrent
+            self.profile = profile
+        }
     }
 
     /// Flatten a `[WindowInfo]` enumeration into `[DocumentInfo]` with
@@ -1493,7 +1526,8 @@ enum SafariBridge {
                     tabInWindow: tab.tabIndex,
                     title: tab.title,
                     url: tab.url,
-                    isCurrent: tab.isCurrent
+                    isCurrent: tab.isCurrent,
+                    profile: window.profile
                 ))
                 globalIndex += 1
             }
@@ -1531,6 +1565,27 @@ enum SafariBridge {
         let windowIndex: Int
         let currentTabIndex: Int
         let tabs: [TabInWindow]
+        /// Active Safari profile name for this window, parsed from the
+        /// window's `name` AppleScript property which Safari 17+ formats
+        /// as `<profile> — <page-title>`. `nil` when the window name
+        /// has no profile separator (default profile, pre-multi-profile
+        /// Safari, or transient page-load state). Issue #47.
+        let profile: String?
+
+        /// Backwards-compatible initializer with `profile` defaulting
+        /// to `nil`. Existing test fixtures and callers that don't care
+        /// about profile keep working without explicit `profile:` arg.
+        init(
+            windowIndex: Int,
+            currentTabIndex: Int,
+            tabs: [TabInWindow],
+            profile: String? = nil
+        ) {
+            self.windowIndex = windowIndex
+            self.currentTabIndex = currentTabIndex
+            self.tabs = tabs
+            self.profile = profile
+        }
     }
 
     /// Output of the native-path resolver. `windowIndex` is the Safari
@@ -1826,6 +1881,13 @@ enum SafariBridge {
                 repeat with w from 1 to windowCount
                     set currentIdx to index of current tab of window w
                     set tabCount to count of tabs of window w
+                    -- Window-level title carries the profile prefix
+                    -- (e.g. "個人 — Plaud Web") on Safari 17+ multi-profile
+                    -- setups. Per-tab `name of tab` does NOT include the
+                    -- prefix, so we have to read window name once per
+                    -- window and emit it on every record.
+                    set winName to name of window w
+                    if winName is missing value then set winName to ""
                     repeat with t from 1 to tabCount
                         set tabUrl to URL of tab t of window w
                         if tabUrl is missing value then set tabUrl to ""
@@ -1836,7 +1898,7 @@ enum SafariBridge {
                         else
                             set isCur to "0"
                         end if
-                        set output to output & w & GS & t & GS & isCur & GS & tabUrl & GS & tabName & RS
+                        set output to output & w & GS & t & GS & isCur & GS & tabUrl & GS & tabName & GS & winName & RS
                     end repeat
                 end repeat
                 return output
@@ -1862,6 +1924,7 @@ enum SafariBridge {
 
         var byWindow: [Int: [TabInWindow]] = [:]
         var currentTabByWindow: [Int: Int] = [:]
+        var windowNameByWindow: [Int: String] = [:]
 
         for record in trimmed.components(separatedBy: rs) where !record.isEmpty {
             let fields = record.components(separatedBy: gs)
@@ -1873,6 +1936,12 @@ enum SafariBridge {
             let isCurrent = fields[2] == "1"
             let url = fields[3]
             let title = fields.count >= 5 ? fields[4] : ""
+            // 6th field: window-level title (Issue #47). Stored once per
+            // window — every tab record carries the same value, so first
+            // observation wins. Absent on legacy 4-/5-field records.
+            if fields.count >= 6, windowNameByWindow[winIdx] == nil {
+                windowNameByWindow[winIdx] = fields[5]
+            }
             byWindow[winIdx, default: []].append(TabInWindow(
                 tabIndex: tabIdx,
                 url: url,
@@ -1886,10 +1955,20 @@ enum SafariBridge {
 
         return byWindow.keys.sorted().map { w in
             let tabs = (byWindow[w] ?? []).sorted(by: { $0.tabIndex < $1.tabIndex })
+            // Parse profile from window name (Issue #47). nil propagates
+            // when no window-name field was emitted (5-field legacy) or
+            // when the name has no profile separator.
+            let profile: String?
+            if let winName = windowNameByWindow[w] {
+                profile = UrlMatcher.parseProfile(fromWindowName: winName).profile
+            } else {
+                profile = nil
+            }
             return WindowInfo(
                 windowIndex: w,
                 currentTabIndex: currentTabByWindow[w] ?? 1,
-                tabs: tabs
+                tabs: tabs,
+                profile: profile
             )
         }
     }
