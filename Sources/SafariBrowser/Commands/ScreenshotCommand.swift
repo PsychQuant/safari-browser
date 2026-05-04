@@ -89,7 +89,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
 
         let resolvedWindowIndex: Int?
         if hasExplicitTarget {
-            let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+            let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
 
             // #26 verify P1-2: fail-closed when the resolved target is a
             // background tab. Screenshot captures window-level visible

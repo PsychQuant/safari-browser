@@ -56,6 +56,15 @@ struct TargetOptions: ParsableArguments {
 
     @Option(
         name: .long,
+        help: ArgumentHelp(
+            "Restrict target resolution to windows of the given Safari profile (e.g. \"個人\", \"Work\").",
+            discussion: "Detection is by window-name parsing: Safari 17+ prepends the active profile to each window's title with em-dash separator (`<profile> — <title>`). AppleScript has no `current profile` property, so window-name parsing is the only reliable mechanism — verified against Safari 18 in Issue #47. Combine with --url / --window / etc. to disambiguate same-URL tabs across profiles. Profile = nil windows (default profile or pre-multi-profile Safari) never match — exact-match semantics. Case-sensitive."
+        )
+    )
+    var profile: String?
+
+    @Option(
+        name: .long,
         help: "Target the document of the Nth Safari window (1-indexed). Pair with --tab-in-window to select a specific tab."
     )
     var window: Int?
@@ -325,5 +334,16 @@ struct TargetOptions: ParsableArguments {
             firstMatch,
             { msg in FileHandle.standardError.write(Data(msg.utf8)) }
         )
+    }
+
+    /// Sibling accessor for the `--profile` CLI flag (Issue #47).
+    /// Returns the parsed profile string, or `nil` when the user did
+    /// not pass `--profile`. Kept separate from `resolveWithFirstMatch()`
+    /// so adding profile filtering doesn't churn the existing 38
+    /// command call sites that destructure the 3-tuple — Step 5 of the
+    /// plan plumbs `targetOptions.resolveProfile()` through alongside
+    /// the existing tuple call.
+    func resolveProfile() -> String? {
+        profile
     }
 }

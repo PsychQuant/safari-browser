@@ -27,7 +27,12 @@ struct GetURL: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        print(try await SafariBridge.getCurrentURL(target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter))
+        print(try await SafariBridge.getCurrentURL(
+            target: target.resolve(),
+            firstMatch: target.firstMatch,
+            warnWriter: TargetOptions.stderrWarnWriter,
+            profile: target.resolveProfile()
+        ))
     }
 }
 
@@ -40,7 +45,12 @@ struct GetTitle: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        print(try await SafariBridge.getCurrentTitle(target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter))
+        print(try await SafariBridge.getCurrentTitle(
+            target: target.resolve(),
+            firstMatch: target.firstMatch,
+            warnWriter: TargetOptions.stderrWarnWriter,
+            profile: target.resolveProfile()
+        ))
     }
 }
 

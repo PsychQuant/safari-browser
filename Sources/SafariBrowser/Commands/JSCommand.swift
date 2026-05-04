@@ -47,10 +47,12 @@ struct JSCommand: AsyncParsableCommand {
         // or `.windowIndex` that resolveToAppleScript passes through
         // unchanged.
         let (initialTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let profile = target.resolveProfile()
         let documentTarget = try await SafariBridge.resolveToConcreteTarget(
             initialTarget,
             firstMatch: firstMatch,
-            warnWriter: warnWriter
+            warnWriter: warnWriter,
+            profile: profile
         )
         let result: String
         if large || output != nil {
