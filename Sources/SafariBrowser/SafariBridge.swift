@@ -147,8 +147,23 @@ enum SafariBridge {
     static func resolveToAppleScript(
         _ target: TargetDocument,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
+        // Profile filter (Issue #47) flows through resolveNativeTarget
+        // for url/documentIndex/windowTab. For frontWindow/windowIndex
+        // (no enumeration) we honor it by routing to native-path resolver
+        // instead of the sync mapping when profile is set, so the filter
+        // applies even to legacy "implicit front window" calls.
+        if profile != nil {
+            let resolved = try await resolveNativeTarget(
+                from: target,
+                firstMatch: firstMatch,
+                warnWriter: warnWriter,
+                profile: profile
+            )
+            return docRefFromResolved(resolved)
+        }
         switch target {
         case .frontWindow, .windowIndex:
             return resolveDocumentReference(target)
@@ -156,7 +171,8 @@ enum SafariBridge {
             let resolved = try await resolveNativeTarget(
                 from: target,
                 firstMatch: firstMatch,
-                warnWriter: warnWriter
+                warnWriter: warnWriter,
+                profile: profile
             )
             return docRefFromResolved(resolved)
         }
@@ -183,8 +199,25 @@ enum SafariBridge {
     static func resolveToConcreteTarget(
         _ target: TargetDocument,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> TargetDocument {
+        // Profile filter (Issue #47): when set, force resolution
+        // through resolveNativeTarget even for already-concrete targets,
+        // so the filter validates the target lives in the requested
+        // profile (and throws documentNotFound otherwise).
+        if profile != nil {
+            let resolved = try await resolveNativeTarget(
+                from: target,
+                firstMatch: firstMatch,
+                warnWriter: warnWriter,
+                profile: profile
+            )
+            if let tab = resolved.tabIndexInWindow {
+                return .windowTab(window: resolved.windowIndex, tabInWindow: tab)
+            }
+            return .windowIndex(resolved.windowIndex)
+        }
         switch target {
         case .frontWindow, .windowIndex, .windowTab:
             return target
@@ -192,7 +225,8 @@ enum SafariBridge {
             let resolved = try await resolveNativeTarget(
                 from: target,
                 firstMatch: firstMatch,
-                warnWriter: warnWriter
+                warnWriter: warnWriter,
+                profile: profile
             )
             if let tab = resolved.tabIndexInWindow {
                 return .windowTab(window: resolved.windowIndex, tabInWindow: tab)
@@ -1176,12 +1210,14 @@ enum SafariBridge {
         _ code: String,
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter
+            warnWriter: warnWriter,
+            profile: profile
         )
         return try await runTargetedAppleScript("""
             tell application "Safari"
@@ -1198,17 +1234,20 @@ enum SafariBridge {
         _ code: String,
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         // Store result in window variable. Only the first doJavaScript
         // call forwards the warnWriter — subsequent chunked reads reuse
         // the already-resolved tab, so re-emitting the multi-match
-        // warning each chunk would spam the caller.
+        // warning each chunk would spam the caller. profile likewise
+        // only on the first call (filter validates once at resolution).
         _ = try await doJavaScript(
             "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()",
             target: target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter
+            warnWriter: warnWriter,
+            profile: profile
         )
 
         // Get total length
@@ -1246,12 +1285,14 @@ enum SafariBridge {
     static func getCurrentURL(
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter
+            warnWriter: warnWriter,
+            profile: profile
         )
         return try await runTargetedAppleScript("""
             tell application "Safari"
@@ -1264,12 +1305,14 @@ enum SafariBridge {
     static func getCurrentTitle(
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter
+            warnWriter: warnWriter,
+            profile: profile
         )
         return try await runTargetedAppleScript("""
             tell application "Safari"
@@ -1282,12 +1325,14 @@ enum SafariBridge {
     static func getCurrentText(
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter
+            warnWriter: warnWriter,
+            profile: profile
         )
         return try await runTargetedAppleScript("""
             tell application "Safari"
@@ -1807,8 +1852,22 @@ enum SafariBridge {
     static func resolveNativeTarget(
         from target: TargetDocument,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> ResolvedWindowTarget {
+        // Profile filter (Issue #47): when set, must enumerate windows
+        // even for trivial cases — without enumeration we can't verify
+        // the target window has the requested profile.
+        if profile != nil {
+            let windows = try await listAllWindows()
+            return try resolveNativeTargetInWindows(
+                target,
+                windows: windows,
+                firstMatch: firstMatch,
+                warnWriter: warnWriter,
+                profile: profile
+            )
+        }
         switch target {
         case .frontWindow:
             return ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil)
@@ -1820,7 +1879,8 @@ enum SafariBridge {
                 target,
                 windows: windows,
                 firstMatch: firstMatch,
-                warnWriter: warnWriter
+                warnWriter: warnWriter,
+                profile: profile
             )
         }
     }
@@ -1835,10 +1895,11 @@ enum SafariBridge {
         _ target: TargetDocument,
         windows: [WindowInfo],
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) throws -> ResolvedWindowTarget {
         do {
-            return try pickNativeTarget(target, in: windows)
+            return try pickNativeTarget(target, in: windows, profile: profile)
         } catch let error as SafariBrowserError {
             // --first-match opt-in: recover from ambiguousWindowMatch
             // on `.urlMatch` by selecting the first match in
@@ -1852,7 +1913,8 @@ enum SafariBridge {
                 return try pickFirstMatchFallback(
                     matcher: matcher,
                     in: windows,
-                    warnWriter: warnWriter
+                    warnWriter: warnWriter,
+                    profile: profile
                 )
             }
             throw error
@@ -1868,10 +1930,17 @@ enum SafariBridge {
     static func pickFirstMatchFallback(
         matcher: UrlMatcher,
         in windows: [WindowInfo],
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) throws -> ResolvedWindowTarget {
+        // Apply profile filter (Issue #47) before searching for matches.
+        // Without this, the --first-match fallback path would silently
+        // bypass --profile and pick a tab from the wrong profile.
+        let candidates: [WindowInfo] = profile.map { p in
+            windows.filter { $0.profile == p }
+        } ?? windows
         var matches: [(windowIndex: Int, tab: TabInWindow)] = []
-        for window in windows {
+        for window in candidates {
             for tab in window.tabs where matcher.matches(tab.url) {
                 matches.append((window.windowIndex, tab))
             }
