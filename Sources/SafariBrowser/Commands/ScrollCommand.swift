@@ -15,6 +15,7 @@ struct ScrollCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "scroll")
         let (x, y): (Int, Int) = switch direction.lowercased() {
         case "down": (0, pixels)
         case "up": (0, -pixels)

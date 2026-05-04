@@ -17,6 +17,7 @@ struct CloseCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "close")
         let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
         try await SafariBridge.performTabSwitchIfNeeded(
             window: resolved.windowIndex,

@@ -21,6 +21,7 @@ struct FindCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "find")
         let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let findJS: String = switch locator.lowercased() {
         case "text":

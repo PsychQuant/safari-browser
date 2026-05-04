@@ -27,6 +27,7 @@ struct CookiesGet: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "cookies get")
         let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         if let name {
             let result = try await SafariBridge.doJavaScript(
@@ -61,6 +62,7 @@ struct CookiesSet: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "cookies set")
         _ = try await SafariBridge.doJavaScript(
             "document.cookie = '\(name.escapedForJS)=\(value.escapedForJS); path=/'",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
@@ -77,6 +79,7 @@ struct CookiesClear: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "cookies clear")
         _ = try await SafariBridge.doJavaScript(
             "(function(){ document.cookie.split(';').forEach(function(c){ var n = c.split('=')[0].trim(); document.cookie = n + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'; }); })()",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter

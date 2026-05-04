@@ -37,6 +37,7 @@ struct TabSwitchCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        documentTarget.warnIfProfileUnsupported(commandName: "tab switch")
         if tabArg.lowercased() == "new" {
             try await SafariBridge.openNewTab(window: documentTarget.window)
             return
@@ -65,6 +66,7 @@ struct TabIsMarkedCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "tab is-marked")
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         do {
             // Read document.title (NOT window title) so the marker
@@ -104,6 +106,7 @@ struct TabUnmarkCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "tab unmark")
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         do {
             // Read via document.title to match how setTabTitle wrote it.

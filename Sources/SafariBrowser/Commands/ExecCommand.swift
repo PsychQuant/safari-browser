@@ -22,6 +22,7 @@ struct ExecCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "exec")
         let source: String
         if let scriptPath = script {
             let path = (scriptPath as NSString).expandingTildeInPath

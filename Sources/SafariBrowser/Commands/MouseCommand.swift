@@ -25,6 +25,7 @@ struct MouseMove: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "mouse move")
         _ = try await SafariBridge.doJavaScript(
             "document.elementFromPoint(\(x),\(y)).dispatchEvent(new MouseEvent('mousemove',{clientX:\(x),clientY:\(y),bubbles:true}))",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
@@ -41,6 +42,7 @@ struct MouseDown: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "mouse down")
         _ = try await SafariBridge.doJavaScript(
             "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
@@ -57,6 +59,7 @@ struct MouseUp: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "mouse up")
         _ = try await SafariBridge.doJavaScript(
             "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mouseup',{bubbles:true}))",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
@@ -75,6 +78,7 @@ struct MouseWheel: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "mouse wheel")
         _ = try await SafariBridge.doJavaScript(
             "document.dispatchEvent(new WheelEvent('wheel',{deltaY:\(deltaY),bubbles:true}))",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter

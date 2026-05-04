@@ -22,6 +22,7 @@ struct PdfCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "pdf")
         guard allowHid else {
             FileHandle.standardError.write(Data("""
                 PDF export requires System Events (keyboard/mouse simulation).

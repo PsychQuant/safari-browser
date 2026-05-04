@@ -55,6 +55,7 @@ struct OpenCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "open")
         if newWindow {
             try await SafariBridge.openURLInNewWindow(url)
             return

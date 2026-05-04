@@ -42,6 +42,7 @@ struct WaitCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "wait")
         if let forUrl {
             try await waitForURL(pattern: forUrl)
         } else if let js {

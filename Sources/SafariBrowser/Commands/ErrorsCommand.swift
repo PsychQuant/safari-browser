@@ -15,6 +15,7 @@ struct ErrorsCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        target.warnIfProfileUnsupported(commandName: "errors")
         let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         if start {
             _ = try await SafariBridge.doJavaScript("""
