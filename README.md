@@ -215,7 +215,7 @@ warning: --profile 'work' is parsed but not yet enforced for 'click'. Tracked in
 The warning goes to stderr only — stdout (e.g. `get text` body content) is
 unaffected. To filter from a pipeline, redirect stderr: `safari-browser
 click --profile work "#x" 2>/dev/null`. Per `#51` plumb-rollout, individual
-commands graduate to honored over time;the warning helper exists only for
+commands graduate to honored over time; the warning helper exists only for
 the transitional period.
 
 Without any flag, commands default to `document 1` — equivalent to
