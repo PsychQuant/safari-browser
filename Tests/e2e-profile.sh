@@ -36,6 +36,32 @@ echo "=== safari-browser --profile E2E (Issue #47) ==="
 echo "Looking for profiles: '$PROFILE_A', '$PROFILE_B'"
 echo ""
 
+echo "## --profile warning (Issue #54)"
+
+# Test: unhonored command with --profile emits stderr warning.
+# Independent of multi-profile setup — works on any Safari.
+# `click --profile XXNONE_DUMMY` parses --profile fine, runs warn helper,
+# then attempts the click which fails because the selector doesn't exist.
+# We only care about the warning line.
+WARN_OUT=$("$SB" click --profile XXNONE_DUMMY "#nonexistent_for_warn_test" 2>&1 >/dev/null | head -1 || true)
+if [[ "$WARN_OUT" == *"warning: --profile"* ]]; then
+  pass "unhonored command (click) emits stderr warning when --profile passed"
+else
+  fail "unhonored command should emit '--profile' warning to stderr" "got: $WARN_OUT"
+fi
+
+# Test: honored command does NOT emit the unhonored-warning line.
+# Regression guard against accidentally adding warn calls to commands
+# that already plumb profile through to SafariBridge (#47).
+DOCS_WARN=$("$SB" documents --profile XXNONE_DUMMY 2>&1 >/dev/null | head -1 || true)
+if [[ "$DOCS_WARN" != *"warning: --profile"* ]]; then
+  pass "honored command (documents) emits NO stderr warning"
+else
+  fail "honored command must not emit '--profile' warning" "got: $DOCS_WARN"
+fi
+
+echo ""
+
 # Quick discovery — list current state and verify multi-profile
 DOCS_OUT=$("$SB" documents 2>&1 || true)
 echo "$DOCS_OUT" | head -10
