@@ -1484,12 +1484,14 @@ enum SafariBridge {
     static func getCurrentSource(
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter
+            warnWriter: warnWriter,
+            profile: profile
         )
         return try await runTargetedAppleScript("""
             tell application "Safari"

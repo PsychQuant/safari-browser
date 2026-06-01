@@ -15,8 +15,8 @@ struct ConsoleCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "console")
-        let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let documentTarget = target.resolve()
+        let profile = target.resolveProfile()
         if start {
             _ = try await SafariBridge.doJavaScript("""
                 (function(){
@@ -37,13 +37,13 @@ struct ConsoleCommand: AsyncParsableCommand {
                         }
                     }
                 })()
-                """, target: documentTarget)
+                """, target: documentTarget, profile: profile)
         } else if clear {
-            _ = try await SafariBridge.doJavaScript("window.__sbConsole = []", target: documentTarget)
+            _ = try await SafariBridge.doJavaScript("window.__sbConsole = []", target: documentTarget, profile: profile)
         } else {
             let result = try await SafariBridge.doJavaScript(
                 "(window.__sbConsole || []).join('\\n')",
-                target: documentTarget
+                target: documentTarget, profile: profile
             )
             if !result.isEmpty {
                 print(result)

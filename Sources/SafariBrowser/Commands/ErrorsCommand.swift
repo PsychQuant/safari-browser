@@ -15,8 +15,8 @@ struct ErrorsCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "errors")
-        let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let documentTarget = target.resolve()
+        let profile = target.resolveProfile()
         if start {
             _ = try await SafariBridge.doJavaScript("""
                 (function(){
@@ -30,13 +30,13 @@ struct ErrorsCommand: AsyncParsableCommand {
                         };
                     }
                 })()
-                """, target: documentTarget)
+                """, target: documentTarget, profile: profile)
         } else if clear {
-            _ = try await SafariBridge.doJavaScript("window.__sbErrors = []", target: documentTarget)
+            _ = try await SafariBridge.doJavaScript("window.__sbErrors = []", target: documentTarget, profile: profile)
         } else {
             let result = try await SafariBridge.doJavaScript(
                 "(window.__sbErrors || []).join('\\n')",
-                target: documentTarget
+                target: documentTarget, profile: profile
             )
             if !result.isEmpty {
                 print(result)
