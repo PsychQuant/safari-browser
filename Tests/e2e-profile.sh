@@ -1,5 +1,5 @@
 #!/bin/bash
-# E2E tests for --profile filter (Issue #47)
+# E2E tests for --profile filter (Issue #47 + #51 full rollout)
 #
 # Requires manual setup:
 # - Safari running with at least 2 profiles configured
@@ -23,7 +23,7 @@
 
 set -e
 
-SB="$HOME/bin/safari-browser"
+SB="${SAFARI_BROWSER_BIN:-$HOME/bin/safari-browser}"
 PROFILE_A="${SAFARI_E2E_PROFILE_A:-個人}"
 PROFILE_B="${SAFARI_E2E_PROFILE_B:-工作}"
 
@@ -36,29 +36,34 @@ echo "=== safari-browser --profile E2E (Issue #47) ==="
 echo "Looking for profiles: '$PROFILE_A', '$PROFILE_B'"
 echo ""
 
-echo "## --profile warning (Issue #54)"
+echo "## #51: --profile is honored everywhere (no 'not yet enforced' warning)"
 
-# Test: unhonored command with --profile emits stderr warning.
-# Independent of multi-profile setup — works on any Safari.
-# `click --profile XXNONE_DUMMY` parses --profile fine, runs warn helper,
-# then attempts the click which fails because the selector doesn't exist.
-# We only care about the warning line.
-WARN_OUT=$("$SB" click --profile XXNONE_DUMMY "#nonexistent_for_warn_test" 2>&1 >/dev/null | head -1 || true)
-if [[ "$WARN_OUT" == *"warning: --profile"* ]]; then
-  pass "unhonored command (click) emits stderr warning when --profile passed"
-else
-  fail "unhonored command should emit '--profile' warning to stderr" "got: $WARN_OUT"
-fi
-
-# Test: honored command does NOT emit the unhonored-warning line.
-# Regression guard against accidentally adding warn calls to commands
-# that already plumb profile through to SafariBridge (#47).
-DOCS_WARN=$("$SB" documents --profile XXNONE_DUMMY 2>&1 >/dev/null | head -1 || true)
-if [[ "$DOCS_WARN" != *"warning: --profile"* ]]; then
-  pass "honored command (documents) emits NO stderr warning"
-else
-  fail "honored command must not emit '--profile' warning" "got: $DOCS_WARN"
-fi
+# Post-#51 the rollout is COMPLETE — every targeting-capable command honors
+# --profile at the SafariBridge boundary, so the transitional "parsed but not
+# yet enforced" warning (#54) must NEVER appear. This is the live regression
+# guard that #51 stays complete; the pure-unit mirror is
+# testHonoredCommandsDoNotCallWarnHelper (#64). Independent of multi-profile
+# setup — runs on any Safari (commands may fail on the dummy selector / lack of
+# match, but the obsolete warning would print BEFORE any Safari work).
+WARN_PHRASE="is parsed but not yet enforced"
+for cmd_args in \
+    "click #nonexistent_smoke_test" \
+    "get text" \
+    "tabs" \
+    "back" \
+    "reload" \
+    "console" \
+    "errors" \
+    "cookies get" \
+    "documents"; do
+  name=$(echo "$cmd_args" | awk '{print $1 (NF>1 && $2 !~ /^#/ ? " "$2 : "")}')
+  OUT=$("$SB" $cmd_args --profile XXNONE_DUMMY 2>&1 >/dev/null | head -3 || true)
+  if [[ "$OUT" != *"$WARN_PHRASE"* ]]; then
+    pass "'$name --profile' honored — no 'not yet enforced' warning (#51)"
+  else
+    fail "'$name' still emits the obsolete unhonored warning — #51 regression" "$OUT"
+  fi
+done
 
 echo ""
 

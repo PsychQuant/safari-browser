@@ -166,6 +166,36 @@ else
     fail "conflicting URL flags rejected" "expected non-zero exit"
 fi
 
+# 9. Screenshot (#44: --content-only constraint + no phantom file)
+echo "## Screenshot"
+SHOT=/tmp/sb-e2e-shot.png
+rm -f "$SHOT"
+$SB screenshot "$SHOT" 2>/dev/null || true
+if [ -s "$SHOT" ]; then
+    pass "screenshot writes a non-empty PNG"
+else
+    fail "screenshot did not produce a file" "no $SHOT"
+fi
+
+# #44: --content-only EITHER succeeds (front tab + AX permission) OR fails with
+# the truthful constraint error AND leaves NO file behind (never a phantom
+# un-cropped one — the old misleading 'may be the original' hint is gone).
+CO=/tmp/sb-e2e-shot-content.png
+rm -f "$CO"
+CO_ERR=$($SB screenshot "$CO" --content-only 2>&1 >/dev/null || true)
+if [ -s "$CO" ]; then
+    pass "screenshot --content-only produced a cropped PNG (front tab + AX)"
+elif [ ! -e "$CO" ]; then
+    if echo "$CO_ERR" | grep -qE "front tab|Accessibility|--content-only|NO file"; then
+        pass "#44: --content-only failure leaves NO file + states the real constraint"
+    else
+        fail "#44: --content-only failed without the truthful constraint message" "$CO_ERR"
+    fi
+else
+    fail "#44: --content-only failed but left a phantom file at $CO" "$(ls -l "$CO" 2>/dev/null)"
+fi
+rm -f "$SHOT" "$CO"
+
 # Cleanup: close the duplicate tab to keep test state idempotent.
 $SB close --url-endswith "test-page.html" --first-match 2>/dev/null || true
 
