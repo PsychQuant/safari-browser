@@ -58,7 +58,7 @@ struct TargetOptions: ParsableArguments {
         name: .long,
         help: ArgumentHelp(
             "Restrict target resolution to windows of the given Safari profile (e.g. \"個人\", \"Work\").",
-            discussion: "Detection is by window-name parsing: Safari 17+ prepends the active profile to each window's title with em-dash separator (`<profile> — <title>`). AppleScript has no `current profile` property, so window-name parsing is the only reliable mechanism — verified against Safari 18 in Issue #47. Combine with --url / --window / etc. to disambiguate same-URL tabs across profiles. Profile = nil windows (default profile or pre-multi-profile Safari) never match — exact-match semantics. Case-sensitive.\n\nHonored by: \(TargetOptions.honoredProfileCommandsHelp). Other commands parse but currently ignore this flag (Issue #51 tracks rollout). When --profile is passed to an unhonored command, a stderr warning is emitted before execution to prevent silent wrong-profile dispatch. A profile name must be non-empty, at most 256 characters, free of control characters, and must not contain the em-dash separator Safari places between profile and window title (such a name is unparseable — see #55)."
+            discussion: "Detection is by window-name parsing: Safari 17+ prepends the active profile to each window's title with em-dash separator (`<profile> — <title>`). AppleScript has no `current profile` property, so window-name parsing is the only reliable mechanism — verified against Safari 18 in Issue #47. Combine with --url / --window / etc. to disambiguate same-URL tabs across profiles. Profile = nil windows (default profile or pre-multi-profile Safari) never match — exact-match semantics. Case-sensitive.\n\nHonored by all targeting-capable commands — the Issue #51 rollout is complete, so --profile is enforced at the SafariBridge boundary everywhere it applies. The rare exceptions that cannot honor it (e.g. `open --new-window`, where Safari's API has no profile selector) emit an explicit note instead of silently dropping it. A profile name must be non-empty, at most 256 characters, free of control characters, and must not contain the em-dash separator Safari places between profile and window title (such a name is unparseable — see #55)."
         )
     )
     var profile: String?
@@ -347,6 +347,23 @@ struct TargetOptions: ParsableArguments {
         FileHandle.standardError.write(Data(msg.utf8))
     }
 
+    /// Resolve to a concrete `TargetDocument`, scoped to `--profile` when set.
+    /// When `--profile` is present, the result is the profile's concrete
+    /// window/tab (via `resolveToConcreteTarget`, reusing the #47 filter), so
+    /// downstream bridge calls inherit profile scoping without each needing a
+    /// `profile:` parameter. When absent, returns `resolve()` unchanged so the
+    /// no-profile path is byte-identical. Used by commands whose downstream
+    /// bridge methods don't take `profile:` (get text/html, save-image, upload).
+    func resolveProfileScoped() async throws -> SafariBridge.TargetDocument {
+        guard let profile = profile, !profile.isEmpty else { return resolve() }
+        return try await SafariBridge.resolveToConcreteTarget(
+            resolve(),
+            firstMatch: firstMatch,
+            warnWriter: Self.stderrWarnWriter,
+            profile: profile
+        )
+    }
+
     /// Convenience wrapper that bundles the resolved `TargetDocument`
     /// with the `firstMatch` opt-in flag and a stderr-backed
     /// `warnWriter`. Commands should prefer this over `resolve()` when
@@ -393,7 +410,7 @@ struct TargetOptions: ParsableArguments {
     /// the matching `target.warnIfProfileUnsupported(...)` call from
     /// that command's `run()`. The two are mirrored — the warning
     /// helper exists for commands NOT in this list.
-    static let honoredProfileCommandsHelp = "js, get url, get title, get source, get value, get attr, get count, get box, screenshot, documents, click, fill, type, press, select, hover, dblclick, drag, focus, scroll, scrollintoview, highlight, check, uncheck, is visible, is exists, is enabled, is checked, errors, console, cookies get, cookies set, cookies clear, storage local get, storage local set, storage local remove, storage local clear, storage session get, storage session set, storage session remove, storage session clear, back, forward, reload, set media, close, mouse move, mouse down, mouse up, mouse wheel, pdf, snapshot, tabs, tab switch, tab is-marked, tab unmark, find, wait, exec"
+    static let honoredProfileCommandsHelp = "js, get url, get title, get source, get value, get attr, get count, get box, screenshot, documents, click, fill, type, press, select, hover, dblclick, drag, focus, scroll, scrollintoview, highlight, check, uncheck, is visible, is exists, is enabled, is checked, errors, console, cookies get, cookies set, cookies clear, storage local get, storage local set, storage local remove, storage local clear, storage session get, storage session set, storage session remove, storage session clear, back, forward, reload, set media, close, mouse move, mouse down, mouse up, mouse wheel, pdf, snapshot, tabs, tab switch, tab is-marked, tab unmark, find, wait, exec, get text, get html, save-image, upload, open"
 
     /// Emit a stderr warning when `--profile` was passed but the
     /// invoking command does not yet honor the filter at the

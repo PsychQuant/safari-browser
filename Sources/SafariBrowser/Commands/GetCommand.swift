@@ -66,8 +66,7 @@ struct GetText: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "get text")
-        let documentTarget = target.resolve()
+        let documentTarget = try await target.resolveProfileScoped()
         if let selector {
             let result = try await SafariBridge.doJavaScript(
                 "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.textContent; })()",
@@ -134,8 +133,7 @@ struct GetHTML: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "get html")
-        let documentTarget = target.resolve()
+        let documentTarget = try await target.resolveProfileScoped()
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.innerHTML; })()",
             target: documentTarget

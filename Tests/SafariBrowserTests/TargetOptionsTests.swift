@@ -524,6 +524,19 @@ final class TargetOptionsTests: XCTestCase {
         }
     }
 
+    func testResolveProfileScopedReturnsResolveWhenNoProfile() async throws {
+        // #51: with no --profile the helper returns resolve() unchanged (no
+        // Safari resolution), so the no-profile path of every command using it
+        // (get text/html, save-image, upload, open) is byte-identical.
+        var opts = makeOptions(url: "plaud")
+        opts.profile = nil
+        let scoped = try await opts.resolveProfileScoped()
+        guard case .urlMatch(.contains(let p)) = scoped else {
+            return XCTFail("Expected unchanged .urlMatch(.contains), got \(scoped)")
+        }
+        XCTAssertEqual(p, "plaud")
+    }
+
     func testWarnIfProfileUnsupportedSilentWhenProfileEmpty() {
         // #61: even if validate() is bypassed, the warn helper must not emit
         // the quirky "'' is parsed but not enforced" warning for empty input.

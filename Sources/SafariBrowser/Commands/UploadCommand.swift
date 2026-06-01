@@ -104,7 +104,6 @@ struct UploadCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "upload")
         let expandedPath = (filePath as NSString).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: expandedPath) else {
             throw SafariBrowserError.fileNotFound(filePath)
@@ -113,7 +112,9 @@ struct UploadCommand: AsyncParsableCommand {
         // --js explicitly selects JS DataTransfer path. Size cap already
         // enforced at validate() time.
         if js {
-            try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+            // #51: scope to --profile via a concrete target (10 MB JS path).
+            let scoped = try await target.resolveProfileScoped()
+            try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
 
@@ -140,7 +141,8 @@ struct UploadCommand: AsyncParsableCommand {
                 Grant Accessibility permission in System Settings → Privacy & Security → Accessibility
                 to enable fast native file dialog upload.\n
             """.utf8))
-        try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+        let scoped = try await target.resolveProfileScoped()
+        try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 
     /// Resolve the target to a (windowIndex, tabIndexInWindow) pair via
@@ -154,7 +156,8 @@ struct UploadCommand: AsyncParsableCommand {
     /// workaround and restoring AI-agent autonomy in multi-window
     /// Safari sessions.
     private func runNativeWithResolver(expandedPath: String) async throws {
-        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+        let scoped = try await target.resolveProfileScoped()
+        let resolved = try await SafariBridge.resolveNativeTarget(from: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
 
         // Tab switch is a passively interfering side effect transitively
         // authorized by --native / --allow-hid. The stderr warning in

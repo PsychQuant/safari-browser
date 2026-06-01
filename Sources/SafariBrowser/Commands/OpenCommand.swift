@@ -55,35 +55,48 @@ struct OpenCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "open")
+        let profile = target.resolveProfile()
         if newWindow {
+            // #51: Safari's new-window API has no profile selector, so
+            // --profile can't be honored here. Be explicit rather than
+            // silently dropping it.
+            if profile != nil {
+                FileHandle.standardError.write(Data(
+                    "note: --profile is ignored with --new-window (Safari opens new windows without profile selection)\n".utf8
+                ))
+            }
             try await SafariBridge.openURLInNewWindow(url)
             return
         }
         if newTab {
-            try await SafariBridge.openURLInNewTab(url, window: target.window)
+            // #51: open the new tab in the requested profile's window.
+            try await SafariBridge.openURLInNewTab(url, window: profileWindow() ?? target.window)
             return
         }
         if replaceTab {
-            // Opt-out of focus-existing: legacy behavior — navigate the
-            // target document via `do JavaScript window.location.href`.
-            try await SafariBridge.openURL(url, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+            // Opt-out of focus-existing: navigate the (profile-scoped) target
+            // document via `do JavaScript window.location.href`.
+            let scoped = try await target.resolveProfileScoped()
+            try await SafariBridge.openURL(url, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
 
-        // Default path — focus-existing. If the caller supplied a
-        // targeting flag, defer to explicit-target navigation (their
-        // flag says exactly which tab to change). Otherwise search for
-        // an exact URL match and focus it; when no match exists, open
-        // a new tab.
+        // Default path — focus-existing. If the caller supplied a targeting
+        // flag — or --profile (#51) — defer to explicit-target navigation:
+        // their flag says exactly which tab to change, and focus-existing
+        // across ALL profiles could land in the wrong identity. Otherwise
+        // search for an exact URL match and focus it; when no match exists,
+        // open a new tab.
         let hasExplicitTarget = target.url != nil
             || target.window != nil
             || target.tab != nil
             || target.document != nil
             || target.tabInWindow != nil
+            || profile != nil
 
         if hasExplicitTarget {
-            try await SafariBridge.openURL(url, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+            let scoped = try await target.resolveProfileScoped()
+            try await SafariBridge.openURL(url, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
 
@@ -102,5 +115,23 @@ struct OpenCommand: AsyncParsableCommand {
 
         // No existing tab matches — open a new tab in the front window.
         try await SafariBridge.openURLInNewTab(url, window: nil)
+    }
+
+    /// Resolve the requested profile's window index (its front window, or
+    /// --window N validated within it), or nil when --profile is not set. #51.
+    private func profileWindow() async throws -> Int? {
+        guard let profile = target.resolveProfile() else { return nil }
+        let base: SafariBridge.TargetDocument = target.window.map { .windowIndex($0) } ?? .frontWindow
+        let concrete = try await SafariBridge.resolveToConcreteTarget(
+            base,
+            firstMatch: target.firstMatch,
+            warnWriter: TargetOptions.stderrWarnWriter,
+            profile: profile
+        )
+        switch concrete {
+        case .windowIndex(let n): return n
+        case .windowTab(let n, _): return n
+        default: return target.window
+        }
     }
 }

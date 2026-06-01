@@ -39,9 +39,11 @@ struct SaveImageCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "save-image")
         let trackEnum = SafariBridge.ResourceTrack(rawValue: track) ?? .currentSrc
-        let docTarget = target.resolve()
+        // #51: scope to --profile up front so the concrete target carries the
+        // profile resolution into resolveElementResource / fetchResourceWithCookies
+        // / doJavaScript without each needing a profile: parameter.
+        let docTarget = try await target.resolveProfileScoped()
 
         // Resolve the target window (validates target options + raises
         // background-tab error if applicable — reuse #26 machinery).
