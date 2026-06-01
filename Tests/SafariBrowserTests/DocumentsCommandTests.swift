@@ -139,4 +139,34 @@ final class DocumentsCommandTests: XCTestCase {
         XCTAssertTrue(lines[1].contains("[-]"),
                       "Window with nil profile in mixed list shows [-] placeholder so column stays aligned")
     }
+
+    // MARK: - #56: [profile] column padding for URL alignment
+
+    func testFormatTextPadsProfileColumnSoURLsAlign() {
+        // Variable-length profile names ([個人] vs [PsychQuant]) must not
+        // ragged-shift the URL column. Same index width + same coords width,
+        // so any URL-offset difference is purely the profile-column width.
+        let docs = [
+            doc(index: 1, window: 1, tabInWindow: 1, url: "https://a", title: "A", isCurrent: true, profile: "個人"),
+            doc(index: 2, window: 2, tabInWindow: 1, url: "https://b", title: "B", isCurrent: true, profile: "PsychQuant"),
+        ]
+        let lines = DocumentsCommand.formatText(docs)
+        let off0 = lines[0].distance(from: lines[0].startIndex,
+                                     to: lines[0].range(of: "https://a")!.lowerBound)
+        let off1 = lines[1].distance(from: lines[1].startIndex,
+                                     to: lines[1].range(of: "https://b")!.lowerBound)
+        XCTAssertEqual(off0, off1,
+                       "URL column must align across variable-width [profile] values")
+    }
+
+    // MARK: - #46: active-tab legend
+
+    func testLegendLineExplainsAsteriskAndPointsToJSON() {
+        let legend = DocumentsCommand.legendLine()
+        XCTAssertTrue(legend.contains("*"), "Legend must explain the * glyph")
+        XCTAssertTrue(legend.lowercased().contains("active"),
+                      "Legend must say * marks the active tab")
+        XCTAssertTrue(legend.contains("is_current"),
+                      "Legend must point scripters at the JSON boolean instead of glyph-matching")
+    }
 }

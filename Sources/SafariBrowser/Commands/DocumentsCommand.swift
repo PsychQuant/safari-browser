@@ -64,9 +64,23 @@ struct DocumentsCommand: AsyncParsableCommand {
         if documents.isEmpty {
             return
         }
+        // #46: emit the active-tab legend to stderr so humans can decode the
+        // '*' marker, while stdout stays a bit-stable parseable tab list
+        // (scripts that pipe stdout are unaffected; for programmatic active
+        // detection use --json's is_current field).
+        FileHandle.standardError.write(Data(DocumentsCommand.legendLine().utf8))
         for line in DocumentsCommand.formatText(documents) {
             print(line)
         }
+    }
+
+    /// One-line legend explaining the `*` active-tab marker in text output.
+    /// Emitted to stderr (never stdout) so the parseable tab list stays
+    /// bit-stable for scripts. Pure helper for unit testing. #46.
+    static func legendLine() -> String {
+        "documents: '*' marks the active tab of each window (live snapshot; "
+            + "each window has one, so multiple '*' across windows is normal — "
+            + "for scripting use the is_current field from --json).\n"
     }
 
     /// Pure formatter for the text output mode. Exposed for unit testing
@@ -80,12 +94,20 @@ struct DocumentsCommand: AsyncParsableCommand {
     /// don't have multi-profile enabled (zero break for legacy parsers).
     static func formatText(_ documents: [SafariBridge.DocumentInfo]) -> [String] {
         let hasAnyProfile = documents.contains { $0.profile != nil }
-        return documents.map { doc in
+        // #56: pad the [profile] column to the widest bracketed value so the
+        // URL column stays aligned across variable-length profile names.
+        // Width is by Character count; CJK names occupy fewer display columns
+        // than their count, so alignment is exact only for same-script names
+        // (true display-width alignment is out of scope — see #56).
+        let profileCols = documents.map { "[\($0.profile ?? "-")]" }
+        let profileColWidth = profileCols.map(\.count).max() ?? 0
+        return documents.enumerated().map { index, doc in
             let marker = doc.isCurrent ? "*" : " "
             let coords = "w\(doc.window).t\(doc.tabInWindow)"
             let body = "\(doc.url) — \(doc.title)"
             if hasAnyProfile {
-                let profileCol = "[\(doc.profile ?? "-")]"
+                let raw = profileCols[index]
+                let profileCol = raw + String(repeating: " ", count: max(0, profileColWidth - raw.count))
                 return "[\(doc.index)] \(marker) \(coords)  \(profileCol)  \(body)"
             }
             return "[\(doc.index)] \(marker) \(coords)  \(body)"
