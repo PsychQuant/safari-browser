@@ -12,7 +12,6 @@ struct PressCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "press")
         let parts = key.split(separator: "+").map(String.init)
         let keyName: String
         var ctrlKey = false
@@ -68,6 +67,6 @@ struct PressCommand: AsyncParsableCommand {
                 return 'OK';
             })()
             """
-        _ = try await SafariBridge.doJavaScript(js, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+        _ = try await SafariBridge.doJavaScript(js, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
     }
 }

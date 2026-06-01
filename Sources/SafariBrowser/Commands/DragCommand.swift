@@ -18,7 +18,6 @@ struct DragCommand: AsyncParsableCommand {
     @OptionGroup var documentTarget: TargetOptions
 
     func run() async throws {
-        documentTarget.warnIfProfileUnsupported(commandName: "drag")
         let result = try await SafariBridge.doJavaScript("""
             (function(){
                 var src = \(source.resolveRefJS);
@@ -32,7 +31,7 @@ struct DragCommand: AsyncParsableCommand {
                 src.dispatchEvent(new DragEvent('dragend', {bubbles: true, dataTransfer: dt}));
                 return 'OK';
             })()
-            """, target: documentTarget.resolve())
+            """, target: documentTarget.resolve(), firstMatch: documentTarget.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: documentTarget.resolveProfile())
         if result == "SRC_NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(source)
         }

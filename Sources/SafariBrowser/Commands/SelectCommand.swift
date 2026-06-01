@@ -15,10 +15,9 @@ struct SelectCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "select")
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; var prev = el.value; el.value = '\(value.escapedForJS)'; if (el.value !== '\(value.escapedForJS)') return 'INVALID_OPTION'; el.dispatchEvent(new Event('change', {bubbles: true})); return 'OK'; })()",
-            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
         )
         if result == "NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)

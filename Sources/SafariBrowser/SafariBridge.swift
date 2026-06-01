@@ -1352,7 +1352,8 @@ enum SafariBridge {
         _ newTitle: String,
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         // Use JS path because `set name of <docRef>` in AppleScript is
         // unreliable across Safari versions and gets immediately
@@ -1362,7 +1363,8 @@ enum SafariBridge {
             "document.title = \(newTitle.jsStringLiteral)",
             target: target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter
+            warnWriter: warnWriter,
+            profile: profile
         )
         return newTitle
     }
@@ -1376,13 +1378,15 @@ enum SafariBridge {
     static func getDocumentTitle(
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         return try await doJavaScript(
             "document.title",
             target: target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter
+            warnWriter: warnWriter,
+            profile: profile
         )
     }
 
@@ -1398,6 +1402,7 @@ enum SafariBridge {
         mode: TargetOptions.MarkTabMode,
         firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil,
         operation: () async throws -> T
     ) async throws -> T {
         switch mode {
@@ -1410,27 +1415,27 @@ enum SafariBridge {
             // window title prepends the macOS username, which would
             // break marker equality on next read.
             let original = try await getDocumentTitle(
-                target: target, firstMatch: firstMatch, warnWriter: warnWriter
+                target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
             )
             let wrapped = MarkerConstants.wrap(title: original)
             try await setTabTitle(
-                wrapped, target: target, firstMatch: firstMatch, warnWriter: warnWriter
+                wrapped, target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
             )
             return try await operation()
 
         case .ephemeral:
             let original = try await getDocumentTitle(
-                target: target, firstMatch: firstMatch, warnWriter: warnWriter
+                target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
             )
             let wrapped = MarkerConstants.wrap(title: original)
             try await setTabTitle(
-                wrapped, target: target, firstMatch: firstMatch, warnWriter: warnWriter
+                wrapped, target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
             )
             do {
                 let result = try await operation()
                 try await unwrapEphemeral(
                     expectedWrapped: wrapped, original: original,
-                    target: target, firstMatch: firstMatch, warnWriter: warnWriter
+                    target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
                 )
                 return result
             } catch {
@@ -1438,7 +1443,7 @@ enum SafariBridge {
                 // the original error after best-effort restore.
                 try? await unwrapEphemeral(
                     expectedWrapped: wrapped, original: original,
-                    target: target, firstMatch: firstMatch, warnWriter: warnWriter
+                    target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
                 )
                 throw error
             }
@@ -1454,17 +1459,18 @@ enum SafariBridge {
         original: String,
         target: TargetDocument,
         firstMatch: Bool,
-        warnWriter: ((String) -> Void)?
+        warnWriter: ((String) -> Void)?,
+        profile: String? = nil
     ) async throws {
         // Read via document.title (NOT window title) so this round-trips
         // symmetrically with setTabTitle / wrap. Safari prepends the
         // macOS username to window titles, breaking marker equality.
         let currentTitle = try await getDocumentTitle(
-            target: target, firstMatch: firstMatch, warnWriter: warnWriter
+            target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
         )
         if currentTitle == expectedWrapped {
             try await setTabTitle(
-                original, target: target, firstMatch: firstMatch, warnWriter: warnWriter
+                original, target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
             )
             return
         }

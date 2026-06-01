@@ -12,18 +12,21 @@ struct ClickCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "click")
+        // #51: --profile now honored for click — scope resolution + marker
+        // to the named profile and drop the transitional warn helper.
         let resolved = target.resolve()
+        let profile = target.resolveProfile()
         let mode = target.markTabResolved()
         try await SafariBridge.markTabIfRequested(
             target: resolved,
             mode: mode,
             firstMatch: target.firstMatch,
-            warnWriter: TargetOptions.stderrWarnWriter
+            warnWriter: TargetOptions.stderrWarnWriter,
+            profile: profile
         ) {
             let result = try await SafariBridge.doJavaScript(
                 "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()",
-                target: resolved, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
+                target: resolved, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile
             )
             if result == "NOT_FOUND" {
                 throw SafariBrowserError.elementNotFound(selector)
