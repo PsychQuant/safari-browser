@@ -688,4 +688,30 @@ final class WindowIndexResolverTests: XCTestCase {
         let result = try SafariBridge.pickNativeTarget(.windowIndex(2), in: windows)
         XCTAssertEqual(result.windowIndex, 2, "nil-profile must preserve legacy bit-exact behavior")
     }
+
+    // MARK: - #49: --url resolution scoped within a profile
+
+    func testProfileFilterUrlMatchScopedToProfile() throws {
+        // #49: `--url` combined with `--profile` must resolve the URL among
+        // ONLY that profile's windows. The fixture has a.com in both 個人 (w1)
+        // and 工作 (w2); profile 工作 must land on w2, never w1.
+        let windows = makeProfileFixture()
+        let result = try SafariBridge.pickNativeTarget(
+            .urlMatch(.contains("a.com")), in: windows, profile: "工作"
+        )
+        XCTAssertEqual(result.windowIndex, 2,
+                       "--url must resolve within the requested profile's windows, not across all")
+    }
+
+    func testProfileFilterUrlMatchAbsentInProfileThrows() throws {
+        // #49: a URL present only in another profile must NOT be found when
+        // scoped to a profile that lacks it. b.com lives in the nil-profile
+        // window (w3); scoping to 工作 (w2, which has only a.com) → not found.
+        let windows = makeProfileFixture()
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(
+                .urlMatch(.contains("b.com")), in: windows, profile: "工作"
+            )
+        )
+    }
 }
