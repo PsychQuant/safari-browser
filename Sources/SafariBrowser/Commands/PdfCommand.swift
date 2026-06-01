@@ -22,7 +22,6 @@ struct PdfCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "pdf")
         guard allowHid else {
             FileHandle.standardError.write(Data("""
                 PDF export requires System Events (keyboard/mouse simulation).
@@ -46,7 +45,7 @@ struct PdfCommand: AsyncParsableCommand {
         // warning, so users with a typo never see the misleading
         // "Controlling keyboard..." message for a run that fails
         // immediately without touching the keyboard.
-        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
 
         // Tab switch is a passively interfering side effect transitively
         // authorized by --allow-hid. Emit the addendum before the

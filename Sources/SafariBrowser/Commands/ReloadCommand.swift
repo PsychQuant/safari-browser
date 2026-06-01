@@ -9,7 +9,6 @@ struct ReloadCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "reload")
-        _ = try await SafariBridge.doJavaScript("location.reload()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+        _ = try await SafariBridge.doJavaScript("location.reload()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
     }
 }

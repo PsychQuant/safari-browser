@@ -41,7 +41,7 @@ struct SaveImageCommand: AsyncParsableCommand {
     func run() async throws {
         target.warnIfProfileUnsupported(commandName: "save-image")
         let trackEnum = SafariBridge.ResourceTrack(rawValue: track) ?? .currentSrc
-        let (docTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let docTarget = target.resolve()
 
         // Resolve the target window (validates target options + raises
         // background-tab error if applicable — reuse #26 machinery).

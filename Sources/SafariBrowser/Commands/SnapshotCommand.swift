@@ -28,7 +28,6 @@ struct SnapshotCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "snapshot")
         if page {
             try await runPageScan()
             return
@@ -109,11 +108,12 @@ struct SnapshotCommand: AsyncParsableCommand {
             """
 
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
-        var result = try await SafariBridge.doJavaScript(js, target: resolvedTarget)
+        let profile = target.resolveProfile()
+        var result = try await SafariBridge.doJavaScript(js, target: resolvedTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
 
         // If result is empty or not valid JSON, it may be truncated — retry with chunked read
         if result.isEmpty || result.data(using: .utf8).flatMap({ try? JSONSerialization.jsonObject(with: $0) }) == nil {
-            result = try await SafariBridge.doJavaScriptLarge(js, target: resolvedTarget)
+            result = try await SafariBridge.doJavaScriptLarge(js, target: resolvedTarget, firstMatch: firstMatch, profile: profile)
         }
 
         guard let data = result.data(using: .utf8),
@@ -352,10 +352,11 @@ struct SnapshotCommand: AsyncParsableCommand {
             """
 
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
-        var result = try await SafariBridge.doJavaScript(js, target: resolvedTarget)
+        let profile = target.resolveProfile()
+        var result = try await SafariBridge.doJavaScript(js, target: resolvedTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
 
         if result.isEmpty || result.data(using: .utf8).flatMap({ try? JSONSerialization.jsonObject(with: $0) }) == nil {
-            result = try await SafariBridge.doJavaScriptLarge(js, target: resolvedTarget)
+            result = try await SafariBridge.doJavaScriptLarge(js, target: resolvedTarget, firstMatch: firstMatch, profile: profile)
         }
 
         guard let data = result.data(using: .utf8),
