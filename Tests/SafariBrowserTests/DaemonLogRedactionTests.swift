@@ -348,4 +348,30 @@ final class DaemonLogRedactionTests: XCTestCase {
             bytes.append(buf[0])
         }
     }
+
+    // MARK: - #66 sanitizeForLog (control-char / ANSI neutralization)
+
+    func testSanitizeForLogEscapesAnsiAndC0Controls() {
+        // ESC (0x1B) + other C0 controls + DEL become a readable \xNN token.
+        XCTAssertEqual(DaemonLog.sanitizeForLog("a\u{1B}[2Jb"), "a\\x1B[2Jb")
+        XCTAssertEqual(DaemonLog.sanitizeForLog("x\u{7F}y"), "x\\x7Fy")
+        XCTAssertEqual(DaemonLog.sanitizeForLog("\u{00}\u{07}"), "\\x00\\x07")
+    }
+
+    func testSanitizeForLogPreservesNewlineTabAndUnicode() {
+        // \n and \t survive (JSON encoding handles them); printable + CJK +
+        // accented Latin pass through untouched.
+        XCTAssertEqual(DaemonLog.sanitizeForLog("keep\ttab\nnl"), "keep\ttab\nnl")
+        XCTAssertEqual(DaemonLog.sanitizeForLog("plain 個人 áé"), "plain 個人 áé")
+    }
+
+    func testTruncateResultLeavesNoRawEscByte() {
+        // Defense-in-depth guard: a result string carrying an ESC must not
+        // leave a raw 0x1B byte in the logged payload.
+        let result = try! JSONSerialization.data(
+            withJSONObject: ["out": "danger\u{1B}[2J"], options: []
+        )
+        let out = DaemonLog.truncateResult(resultJSON: result, logFull: false)
+        XCTAssertFalse(out.contains(0x1B), "raw ESC byte must not survive into the logged result")
+    }
 }

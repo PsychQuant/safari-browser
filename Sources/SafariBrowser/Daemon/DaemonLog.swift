@@ -79,7 +79,12 @@ enum DaemonLog {
             }
         }
 
-        return (try? JSONSerialization.data(withJSONObject: dict, options: []))
+        // #66: neutralize control chars / ANSI escapes in any remaining
+        // (non-redacted) param value — defense-in-depth for future loggers
+        // that surface params such as exec.runScript's targetArgs.
+        let sanitized = (sanitizeAny(dict) as? [String: Any]) ?? dict
+
+        return (try? JSONSerialization.data(withJSONObject: sanitized, options: []))
             ?? Data(#"{"_log":"<redacted; serialization failed>"}"#.utf8)
     }
 
@@ -126,8 +131,11 @@ enum DaemonLog {
     /// underlying UTF-8 bytes at a valid character boundary at or below
     /// the cap and appends the truncation marker.
     private static func truncateString(_ s: String) -> String {
-        let bytes = Array(s.utf8)
-        if bytes.count <= truncationLimit { return s }
+        // #66: neutralize control chars / ANSI escapes before truncation so
+        // raw sequences can't reach the log file via a result payload.
+        let safe = sanitizeForLog(s)
+        let bytes = Array(safe.utf8)
+        if bytes.count <= truncationLimit { return safe }
         // Walk back from the cap to a UTF-8 leading-byte position so we
         // never split a multi-byte sequence. Continuation bytes have the
         // top two bits as `10`; leading bytes for ASCII or multi-byte
@@ -139,6 +147,46 @@ enum DaemonLog {
         let prefix = Array(bytes[0..<cut])
         let prefixString = String(decoding: prefix, as: UTF8.self)
         return prefixString + "…(truncated)"
+    }
+
+    // MARK: - Control-char sanitization (#66)
+
+    /// Replace C0 control characters (`0x00`–`0x1F`, except `\n`/`\t`) and
+    /// `DEL` (`0x7F`) with a readable `\xNN` token so ANSI / CSI escape
+    /// sequences embedded in any logged value cannot hijack a terminal that
+    /// later `cat`s the daemon log, nor confuse a downstream log relay.
+    ///
+    /// `JSONSerialization` already escapes control chars (`0x1B` → `\u001b`)
+    /// for values that flow through the JSON envelope, so this is primarily
+    /// (a) a more readable, format-independent rendering and (b) the reusable
+    /// boundary helper any *future* plain-text log path (e.g. a prospective
+    /// `exec.runScript` `targetArgs` debug line) SHALL route through. `\n`
+    /// and `\t` are preserved — the JSON line encoder neutralizes them.
+    static func sanitizeForLog(_ s: String) -> String {
+        var out = ""
+        out.unicodeScalars.reserveCapacity(s.unicodeScalars.count)
+        for scalar in s.unicodeScalars {
+            let v = scalar.value
+            if (v < 0x20 && scalar != "\n" && scalar != "\t") || v == 0x7F {
+                out += String(format: "\\x%02X", v)
+            } else {
+                out.unicodeScalars.append(scalar)
+            }
+        }
+        return out
+    }
+
+    /// Recursively apply `sanitizeForLog` to every string value in a JSON
+    /// tree (dicts / arrays), leaving keys and non-string scalars untouched.
+    private static func sanitizeAny(_ value: Any) -> Any {
+        if let s = value as? String { return sanitizeForLog(s) }
+        if let arr = value as? [Any] { return arr.map(sanitizeAny) }
+        if let dict = value as? [String: Any] {
+            var out: [String: Any] = [:]
+            for (k, v) in dict { out[k] = sanitizeAny(v) }
+            return out
+        }
+        return value
     }
 
     // MARK: - Opt-out
