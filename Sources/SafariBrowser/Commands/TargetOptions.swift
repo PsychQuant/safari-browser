@@ -58,7 +58,7 @@ struct TargetOptions: ParsableArguments {
         name: .long,
         help: ArgumentHelp(
             "Restrict target resolution to windows of the given Safari profile (e.g. \"個人\", \"Work\").",
-            discussion: "Detection is by window-name parsing: Safari 17+ prepends the active profile to each window's title with em-dash separator (`<profile> — <title>`). AppleScript has no `current profile` property, so window-name parsing is the only reliable mechanism — verified against Safari 18 in Issue #47. Combine with --url / --window / etc. to disambiguate same-URL tabs across profiles. Profile = nil windows (default profile or pre-multi-profile Safari) never match — exact-match semantics. Case-sensitive.\n\nHonored by: \(TargetOptions.honoredProfileCommandsHelp). Other commands parse but currently ignore this flag (Issue #51 tracks rollout). When --profile is passed to an unhonored command, a stderr warning is emitted before execution to prevent silent wrong-profile dispatch."
+            discussion: "Detection is by window-name parsing: Safari 17+ prepends the active profile to each window's title with em-dash separator (`<profile> — <title>`). AppleScript has no `current profile` property, so window-name parsing is the only reliable mechanism — verified against Safari 18 in Issue #47. Combine with --url / --window / etc. to disambiguate same-URL tabs across profiles. Profile = nil windows (default profile or pre-multi-profile Safari) never match — exact-match semantics. Case-sensitive.\n\nHonored by: \(TargetOptions.honoredProfileCommandsHelp). Other commands parse but currently ignore this flag (Issue #51 tracks rollout). When --profile is passed to an unhonored command, a stderr warning is emitted before execution to prevent silent wrong-profile dispatch. A profile name must be non-empty, at most 256 characters, free of control characters, and must not contain the em-dash separator Safari places between profile and window title (such a name is unparseable — see #55)."
         )
     )
     var profile: String?
@@ -261,6 +261,41 @@ struct TargetOptions: ParsableArguments {
         if let m = tabInWindow, m < 1 {
             throw ValidationError("--tab-in-window must be >= 1 (1-indexed), got \(m)")
         }
+
+        // --profile validation hardening. Real Safari profile names are
+        // short printable strings; anything else signals a typo or an
+        // attempt to smuggle control sequences into stderr / shared logs
+        // (self-DoS only on a personal-Mac CLI, but failing fast surfaces
+        // intent errors early). Checks ordered cheap → specific.
+        if let p = profile {
+            // #61: empty value expresses no intent — mirror --url-endswith "".
+            if p.isEmpty {
+                throw ValidationError(
+                    "--profile requires a non-empty name (an empty profile matches nothing)."
+                )
+            }
+            // #65: cap length so a typo can't produce a 1MB stderr line.
+            if p.count > 256 {
+                throw ValidationError(
+                    "--profile name too long (\(p.count) chars; limit 256). Real Safari profile names are short."
+                )
+            }
+            // #63 + #65: reject control chars / ANSI escapes at the boundary.
+            if p.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) {
+                throw ValidationError(
+                    "--profile contains control characters; use printable Unicode only."
+                )
+            }
+            // #55: parseProfile splits window titles on this exact separator,
+            // so a profile name containing it could never match its own
+            // window. Reuse the parser's constant so the two can't drift.
+            if p.contains(SafariBridge.UrlMatcher.profileSeparator) {
+                throw ValidationError(
+                    "--profile cannot contain the \"\(SafariBridge.UrlMatcher.profileSeparator)\" separator "
+                    + "(Safari uses it to delimit profile from window title; such a name is unmatchable). See #55."
+                )
+            }
+        }
     }
 
     /// Convert the parsed flags into a `TargetDocument`. Precedence
@@ -387,7 +422,9 @@ struct TargetOptions: ParsableArguments {
         commandName: String,
         warnWriter: ((String) -> Void)? = nil
     ) {
-        guard let profile = profile else { return }
+        // #61: stay silent for empty --profile too (validate() rejects it,
+        // but guard here as well so the helper is robust if called directly).
+        guard let profile = profile, !profile.isEmpty else { return }
         let writer = warnWriter ?? Self.stderrWarnWriter
         let msg = "warning: --profile '\(profile)' is parsed but not yet enforced for '\(commandName)'. Tracked in #51.\n"
             + "  → Falling back: all profiles considered.\n"

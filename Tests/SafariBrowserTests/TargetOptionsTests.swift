@@ -19,6 +19,7 @@ final class TargetOptionsTests: XCTestCase {
         urlExact: String? = nil,
         urlEndswith: String? = nil,
         urlRegex: String? = nil,
+        profile: String? = nil,
         window: Int? = nil,
         tab: Int? = nil,
         document: Int? = nil,
@@ -32,6 +33,11 @@ final class TargetOptionsTests: XCTestCase {
         opts.urlExact = urlExact
         opts.urlEndswith = urlEndswith
         opts.urlRegex = urlRegex
+        // Initialize profile so validate() (which now reads it for the
+        // #65/#63/#61/#55 hardening) doesn't trap on the uninitialized
+        // ArgumentParser @Option storage. Production always populates this
+        // via parse(); only the zero-arg test path needs the explicit init.
+        opts.profile = profile
         opts.window = window
         opts.tab = tab
         opts.document = document
@@ -411,5 +417,79 @@ final class TargetOptionsTests: XCTestCase {
             XCTAssertTrue(help.contains(token),
                           "honoredProfileCommandsHelp should advertise '\(token)' as honored, got: \(help)")
         }
+    }
+
+    // MARK: - --profile validation hardening (#65 + #63 + #61 + #55)
+
+    func testProfileEmptyRejected() {
+        // #61: empty --profile expresses no intent — mirror --url-endswith "".
+        var opts = makeOptions(); opts.profile = ""
+        XCTAssertThrowsError(try opts.validate()) { error in
+            XCTAssertTrue("\(error)".contains("--profile"),
+                          "Error must name the offending flag, got: \(error)")
+        }
+    }
+
+    func testProfileTooLongRejected() {
+        // #65: cap length so a typo'd profile can't produce a 1MB stderr line.
+        var opts = makeOptions(); opts.profile = String(repeating: "a", count: 257)
+        XCTAssertThrowsError(try opts.validate()) { error in
+            XCTAssertTrue("\(error)".contains("too long"),
+                          "Error must explain the length cap, got: \(error)")
+        }
+    }
+
+    func testProfileMaxLengthAccepted() throws {
+        // 256 is the inclusive boundary — must NOT throw.
+        var opts = makeOptions(); opts.profile = String(repeating: "a", count: 256)
+        try opts.validate()
+    }
+
+    func testProfileControlCharRejected() {
+        // #63 + #65: reject control chars (ESC) so ANSI escapes can't reach
+        // stderr / shared logs via the profile value.
+        var opts = makeOptions(); opts.profile = "work\u{1B}[2J"
+        XCTAssertThrowsError(try opts.validate()) { error in
+            XCTAssertTrue("\(error)".contains("control"),
+                          "Error must explain control chars are disallowed, got: \(error)")
+        }
+    }
+
+    func testProfileDelCharRejected() {
+        // 0x7F (DEL) is the upper boundary of the control-char check.
+        var opts = makeOptions(); opts.profile = "work\u{7F}"
+        XCTAssertThrowsError(try opts.validate())
+    }
+
+    func testProfileContainingSeparatorRejected() {
+        // #55: a name containing the " — " separator is unparseable —
+        // parseProfile splits window titles on that exact separator, so the
+        // filter could never match its own window. Reject at the boundary.
+        var opts = makeOptions()
+        opts.profile = "R&D" + SafariBridge.UrlMatcher.profileSeparator + "Lab"
+        XCTAssertThrowsError(try opts.validate()) { error in
+            let msg = "\(error)"
+            XCTAssertTrue(msg.contains("separator") || msg.contains("#55"),
+                          "Error must explain the separator collision, got: \(msg)")
+        }
+    }
+
+    func testProfileOrdinaryValuesStillValidate() throws {
+        // Regression guard: CJK, ampersand, hyphen, spaces are all fine —
+        // the hardening must not over-reject legitimate profile names.
+        for name in ["個人", "工作", "R&D Lab", "Personal-2", "a"] {
+            var opts = makeOptions(); opts.profile = name
+            try opts.validate()
+        }
+    }
+
+    func testWarnIfProfileUnsupportedSilentWhenProfileEmpty() {
+        // #61: even if validate() is bypassed, the warn helper must not emit
+        // the quirky "'' is parsed but not enforced" warning for empty input.
+        var captured: [String] = []
+        var opts = makeOptions(); opts.profile = ""
+        opts.warnIfProfileUnsupported(commandName: "click") { captured.append($0) }
+        XCTAssertTrue(captured.isEmpty,
+                      "Helper must stay silent for an empty --profile, got: \(captured)")
     }
 }
