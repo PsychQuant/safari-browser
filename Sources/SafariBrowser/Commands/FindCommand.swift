@@ -21,8 +21,8 @@ struct FindCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "find")
         let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let profile = target.resolveProfile()
         let findJS: String = switch locator.lowercased() {
         case "text":
             """
@@ -78,7 +78,7 @@ struct FindCommand: AsyncParsableCommand {
         // different document than findJS landed on. warnWriter fires once
         // (here); the subsequent calls carry firstMatch only for consistency.
         let findResult = try await SafariBridge.doJavaScript(
-            findJS, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter
+            findJS, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
         )
         if findResult == "NOT_FOUND" {
             throw SafariBrowserError.elementNotFound("\(locator)=\(value)")
@@ -106,7 +106,7 @@ struct FindCommand: AsyncParsableCommand {
                     if (el === topEl || el.contains(topEl) || topEl.contains(el)) return 'OK';
                     return 'OBSTRUCTED:' + topEl.tagName;
                 })()
-                """, target: documentTarget, firstMatch: firstMatch)
+                """, target: documentTarget, firstMatch: firstMatch, profile: profile)
             if occlusionResult.isEmpty || occlusionResult == "HIDDEN" {
                 throw SafariBrowserError.elementNotFound("\(locator)=\(value) (element found but hidden)")
             }
@@ -114,14 +114,14 @@ struct FindCommand: AsyncParsableCommand {
                 let blocker = occlusionResult.replacingOccurrences(of: "OBSTRUCTED:", with: "")
                 throw SafariBrowserError.elementNotFound("\(locator)=\(value) (element obstructed by \(blocker))")
             }
-            _ = try await SafariBridge.doJavaScript("window.__sbFound.click()", target: documentTarget, firstMatch: firstMatch)
+            _ = try await SafariBridge.doJavaScript("window.__sbFound.click()", target: documentTarget, firstMatch: firstMatch, profile: profile)
         case "fill":
             guard let text = actionText else {
                 throw ValidationError("fill action requires text argument")
             }
             _ = try await SafariBridge.doJavaScript(
                 "(function(){ var el = window.__sbFound; el.value = '\(text.escapedForJS)'; el.dispatchEvent(new Event('input',{bubbles:true})); el.dispatchEvent(new Event('change',{bubbles:true})); })()",
-                target: documentTarget, firstMatch: firstMatch
+                target: documentTarget, firstMatch: firstMatch, profile: profile
             )
         default:
             throw ValidationError("Action must be click or fill")

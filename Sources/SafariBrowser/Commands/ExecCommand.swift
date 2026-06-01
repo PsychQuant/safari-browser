@@ -22,7 +22,9 @@ struct ExecCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "exec")
+        // #51: exec honors --profile transitively — encodeTargetArgs (#60)
+        // propagates the parent's --profile into every sub-step's
+        // sharedTargetArgs, so the filter reaches the dispatched commands.
         let source: String
         if let scriptPath = script {
             let path = (scriptPath as NSString).expandingTildeInPath

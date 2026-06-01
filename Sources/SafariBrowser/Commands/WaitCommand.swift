@@ -42,7 +42,6 @@ struct WaitCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "wait")
         if let forUrl {
             try await waitForURL(pattern: forUrl)
         } else if let js {
@@ -68,7 +67,8 @@ struct WaitCommand: AsyncParsableCommand {
             let currentURL = try await SafariBridge.getCurrentURL(
                 target: resolvedTarget,
                 firstMatch: firstMatch,
-                warnWriter: firstPoll ? warnWriter : nil
+                warnWriter: firstPoll ? warnWriter : nil,
+                profile: target.resolveProfile()
             )
             firstPoll = false
             if currentURL.contains(pattern) {
@@ -89,7 +89,8 @@ struct WaitCommand: AsyncParsableCommand {
                 "!!(\(expression)) ? 'true' : ''",
                 target: resolvedTarget,
                 firstMatch: firstMatch,
-                warnWriter: firstPoll ? warnWriter : nil
+                warnWriter: firstPoll ? warnWriter : nil,
+                profile: target.resolveProfile()
             )
             firstPoll = false
             if result.trimmingCharacters(in: .whitespacesAndNewlines) == "true" {

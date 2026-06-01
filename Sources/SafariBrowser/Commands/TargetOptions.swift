@@ -393,7 +393,7 @@ struct TargetOptions: ParsableArguments {
     /// the matching `target.warnIfProfileUnsupported(...)` call from
     /// that command's `run()`. The two are mirrored — the warning
     /// helper exists for commands NOT in this list.
-    static let honoredProfileCommandsHelp = "js, get url, get title, get source, get value, get attr, get count, get box, screenshot, documents, click, fill, type, press, select, hover, dblclick, drag, focus, scroll, scrollintoview, highlight, check, uncheck, is visible, is exists, is enabled, is checked, errors, console, cookies get, cookies set, cookies clear, storage local get, storage local set, storage local remove, storage local clear, storage session get, storage session set, storage session remove, storage session clear, back, forward, reload, set media, close, mouse move, mouse down, mouse up, mouse wheel, pdf, snapshot, tabs, tab switch, tab is-marked, tab unmark"
+    static let honoredProfileCommandsHelp = "js, get url, get title, get source, get value, get attr, get count, get box, screenshot, documents, click, fill, type, press, select, hover, dblclick, drag, focus, scroll, scrollintoview, highlight, check, uncheck, is visible, is exists, is enabled, is checked, errors, console, cookies get, cookies set, cookies clear, storage local get, storage local set, storage local remove, storage local clear, storage session get, storage session set, storage session remove, storage session clear, back, forward, reload, set media, close, mouse move, mouse down, mouse up, mouse wheel, pdf, snapshot, tabs, tab switch, tab is-marked, tab unmark, find, wait, exec"
 
     /// Emit a stderr warning when `--profile` was passed but the
     /// invoking command does not yet honor the filter at the
