@@ -36,12 +36,22 @@ trap cleanup EXIT
 #   1. get title → bind to $t
 #   2. js with substituted args → no var
 #   3. js skipped because if:false
-SCRIPT='[
+#
+# `<<'JSON'` (quoted delimiter) does NO shell expansion, so `$u` / `$t` and
+# every quote stay literal — `exec` itself performs the variable substitution.
+# Step 2's `'$u :: $t'` becomes a valid JS string literal after substitution
+# (the fixture URL/title contain no single quotes). The previous single-quoted
+# form broke out of the shell quote at `["'$u`, leaving an unbalanced `"` that
+# made the whole script unparseable (`bash -n` failed since commit 3a99702).
+SCRIPT=$(cat <<'JSON'
+[
   {"cmd": "get url", "var": "u"},
   {"cmd": "get title", "var": "t"},
-  {"cmd": "js", "args": ["'$u + ' :: ' + '$t'"]},
+  {"cmd": "js", "args": ["'$u :: $t'"]},
   {"cmd": "js", "args": ["1"], "if": "$u contains \"this-substring-is-absent\""}
-]'
+]
+JSON
+)
 
 OUT=$(echo "$SCRIPT" | "$SB" exec --url test-page 2>&1)
 EXIT=$?
