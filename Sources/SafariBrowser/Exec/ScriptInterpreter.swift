@@ -175,6 +175,10 @@ struct ScriptInterpreter {
         if let urlExact = options.urlExact { out.append(contentsOf: ["--url-exact", urlExact]) }
         if let urlEndswith = options.urlEndswith { out.append(contentsOf: ["--url-endswith", urlEndswith]) }
         if let urlRegex = options.urlRegex { out.append(contentsOf: ["--url-regex", urlRegex]) }
+        // #60: propagate --profile so exec sub-steps inherit the parent's
+        // profile scope. Omitting it dropped the filter silently for honored
+        // sub-commands (e.g. get url) in both the subprocess and daemon paths.
+        if let profile = options.profile { out.append(contentsOf: ["--profile", profile]) }
         if let window = options.window { out.append(contentsOf: ["--window", String(window)]) }
         if let tab = options.tab { out.append(contentsOf: ["--tab", String(tab)]) }
         if let document = options.document { out.append(contentsOf: ["--document", String(document)]) }

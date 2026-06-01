@@ -345,4 +345,39 @@ final class ScriptInterpreterTests: XCTestCase {
             "expected empty JSON array, got '\(json)'"
         )
     }
+
+    // MARK: - #60: exec sub-step --profile propagation
+
+    func testEncodeTargetArgsIncludesProfile() throws {
+        // The parent exec's --profile must ride along in sharedTargetArgs so
+        // no-target sub-steps inherit it (previously dropped → sub-steps ran
+        // in the wrong profile, silently, for honored commands like get url).
+        let target = try TargetOptions.parse(["--profile", "work", "--url", "plaud"])
+        let args = ScriptInterpreter.encodeTargetArgs(target)
+        guard let idx = args.firstIndex(of: "--profile") else {
+            return XCTFail("encodeTargetArgs dropped --profile; got \(args)")
+        }
+        XCTAssertEqual(args[safe: idx + 1], "work",
+                       "--profile must be followed by its value")
+        // sanity: existing flags still encoded
+        XCTAssertTrue(args.contains("--url"))
+    }
+
+    func testEncodeTargetArgsOmitsProfileWhenUnset() throws {
+        let target = try TargetOptions.parse(["--url", "plaud"])
+        XCTAssertFalse(ScriptInterpreter.encodeTargetArgs(target).contains("--profile"))
+    }
+
+    func testTargetFlagNamesIncludesProfile() {
+        // A step carrying its own --profile must be recognized as a target
+        // override so the parent's sharedTargetArgs isn't ALSO injected,
+        // which would produce a duplicate --profile and an ArgumentParser error.
+        XCTAssertTrue(TargetOptions.targetFlagNames.contains("--profile"))
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
 }

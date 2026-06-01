@@ -114,7 +114,7 @@ extension TargetOptions {
     /// explicitly so the dispatcher can detect when a step's args
     /// supersede the exec-level shared target.
     static let targetFlagNames: Set<String> = [
-        "--url", "--url-exact", "--url-endswith", "--url-regex",
+        "--url", "--url-exact", "--url-endswith", "--url-regex", "--profile",
         "--window", "--tab", "--document", "--tab-in-window",
     ]
 }
