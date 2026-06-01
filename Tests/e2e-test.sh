@@ -11,9 +11,21 @@ SB="${SAFARI_BROWSER_BIN:-$HOME/bin/safari-browser}"
 TEST_PAGE="file://$(cd "$(dirname "$0")" && pwd)/Fixtures/test-page.html"
 PASS=0
 FAIL=0
+SKIP=0
 
 pass() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1: $2"; }
+skip() { SKIP=$((SKIP + 1)); echo "  ⊘ SKIP $1"; }
+
+# A window pixel-capture failure means the CONTROLLING process (the one
+# spawning safari-browser) lacks macOS Screen Recording permission — which is
+# absent in headless / CI / background-job contexts and is environment, not
+# code (the installed binary fails identically there). Such an assertion is
+# skipped, not failed. Grant Screen Recording to the controlling terminal to
+# exercise real pixel capture.
+is_capture_denied() {
+    echo "$1" | grep -qiE "could not create image|screen recording|not authorized|kCGError|CGWindowList|operation not permitted"
+}
 
 echo "=== safari-browser E2E Tests ==="
 echo "Test page: $TEST_PAGE"
@@ -174,11 +186,13 @@ fi
 echo "## Screenshot"
 SHOT=/tmp/sb-e2e-shot.png
 rm -f "$SHOT"
-$SB screenshot "$SHOT" 2>/dev/null || true
+SHOT_ERR=$($SB screenshot "$SHOT" 2>&1 >/dev/null || true)
 if [ -s "$SHOT" ]; then
     pass "screenshot writes a non-empty PNG"
+elif is_capture_denied "$SHOT_ERR"; then
+    skip "screenshot pixel-capture — no Screen Recording permission ($SHOT_ERR)"
 else
-    fail "screenshot did not produce a file" "no $SHOT"
+    fail "screenshot did not produce a file" "no $SHOT (stderr: $SHOT_ERR)"
 fi
 
 # #44: --content-only EITHER succeeds (front tab + AX permission) OR fails with
@@ -189,14 +203,14 @@ rm -f "$CO"
 CO_ERR=$($SB screenshot "$CO" --content-only 2>&1 >/dev/null || true)
 if [ -s "$CO" ]; then
     pass "screenshot --content-only produced a cropped PNG (front tab + AX)"
-elif [ ! -e "$CO" ]; then
-    if echo "$CO_ERR" | grep -qE "front tab|Accessibility|--content-only|NO file"; then
-        pass "#44: --content-only failure leaves NO file + states the real constraint"
-    else
-        fail "#44: --content-only failed without the truthful constraint message" "$CO_ERR"
-    fi
-else
+elif [ -e "$CO" ]; then
     fail "#44: --content-only failed but left a phantom file at $CO" "$(ls -l "$CO" 2>/dev/null)"
+elif echo "$CO_ERR" | grep -qE "front tab|Accessibility|--content-only|NO file"; then
+    pass "#44: --content-only failure leaves NO file + states the real constraint"
+elif is_capture_denied "$CO_ERR"; then
+    skip "screenshot --content-only — no Screen Recording permission ($CO_ERR)"
+else
+    fail "#44: --content-only failed without the truthful constraint message" "$CO_ERR"
 fi
 rm -f "$SHOT" "$CO"
 
@@ -207,7 +221,7 @@ rm -f /tmp/sb-fm-out /tmp/sb-fm-err /tmp/sb-fc-out /tmp/sb-fc-err /tmp/sb-regex-
 
 # Summary
 echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
+echo "=== Results: $PASS passed, $FAIL failed, $SKIP skipped ==="
 if [ "$FAIL" -gt 0 ]; then
     exit 1
 fi
