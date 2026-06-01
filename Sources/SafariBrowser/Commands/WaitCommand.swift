@@ -58,8 +58,19 @@ struct WaitCommand: AsyncParsableCommand {
     private func waitForURL(pattern: String) async throws {
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
+        // #59: thread firstMatch/warnWriter through so the multi-match URL
+        // fallback warning is emitted (it was silently dropped before). The
+        // warning fires only on the first poll — the target is re-resolved
+        // each 500ms iteration, and re-emitting the same ambiguity warning
+        // on every poll would spam stderr.
+        var firstPoll = true
         while Date() < deadline {
-            let currentURL = try await SafariBridge.getCurrentURL(target: resolvedTarget)
+            let currentURL = try await SafariBridge.getCurrentURL(
+                target: resolvedTarget,
+                firstMatch: firstMatch,
+                warnWriter: firstPoll ? warnWriter : nil
+            )
+            firstPoll = false
             if currentURL.contains(pattern) {
                 return
             }
@@ -71,11 +82,16 @@ struct WaitCommand: AsyncParsableCommand {
     private func waitForJS(expression: String) async throws {
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
+        // #59: see waitForURL — warn once on the first poll only.
+        var firstPoll = true
         while Date() < deadline {
             let result = try await SafariBridge.doJavaScript(
                 "!!(\(expression)) ? 'true' : ''",
-                target: resolvedTarget
+                target: resolvedTarget,
+                firstMatch: firstMatch,
+                warnWriter: firstPoll ? warnWriter : nil
             )
+            firstPoll = false
             if result.trimmingCharacters(in: .whitespacesAndNewlines) == "true" {
                 return
             }
