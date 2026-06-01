@@ -364,10 +364,15 @@ enum SafariBrowserError: LocalizedError {
         case .imageCroppingFailed(let reason):
             return """
                 Image cropping failed: \(reason)
-                The screenshot was captured but the chrome-cropping step
-                could not complete. The file on disk may be the original
-                un-cropped capture or may not exist — check its presence
-                before re-running.
+                The capture's cropping step could not complete; the partial
+                file is removed on failure, so there is NO file at the path to
+                check — no un-cropped fallback is left behind (#44).
+                Crop flags (--content-only / --element) measure the FRONT
+                document's Accessibility frame, so the target must be the front
+                tab of the front window. With explicit --window /
+                --tab-in-window / --url targeting, bring the target to front
+                first (e.g. `safari-browser tab <N> --window <M>`) or drop the
+                crop flag.
                 """
         case .webAreaNotFound(let reason):
             return """

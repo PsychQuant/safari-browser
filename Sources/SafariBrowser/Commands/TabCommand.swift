@@ -4,9 +4,10 @@ import Foundation
 struct TabCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "tab",
-        abstract: "Switch to a tab by index, open a new tab, or query/clear the ownership marker",
+        abstract: "Switch to a tab by index/target, open a new tab, or query/clear the ownership marker",
         subcommands: [
             TabSwitchCommand.self,
+            TabFocusCommand.self,
             TabIsMarkedCommand.self,
             TabUnmarkCommand.self,
         ],
@@ -67,6 +68,37 @@ struct TabSwitchCommand: AsyncParsableCommand {
             try await SafariBridge.switchToTab(index, window: window)
         } catch {
             throw SafariBrowserError.invalidTabIndex(index)
+        }
+    }
+}
+
+/// `safari-browser tab focus` — bring an existing tab to the front of its
+/// window by target (#45). Unlike `tab <N>` (index-only, within a window),
+/// this resolves the full TargetOptions (`--url` / `--url-exact` /
+/// `--url-endswith` / `--window` / `--tab-in-window` / `--profile`) to a
+/// concrete tab and sets it current via AppleScript `set current tab` — NO
+/// navigation, so form input, scroll position, and focus are preserved (the
+/// gap that previously forced the `open --replace-tab` re-navigation hack).
+struct TabFocusCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "focus",
+        abstract: "Bring an existing tab to the front by --url / --window / --tab-in-window (no navigation; preserves tab state)"
+    )
+
+    @OptionGroup var target: TargetOptions
+
+    func run() async throws {
+        let resolved = try await SafariBridge.resolveNativeTarget(
+            from: target.resolve(),
+            firstMatch: target.firstMatch,
+            warnWriter: TargetOptions.stderrWarnWriter,
+            profile: target.resolveProfile()
+        )
+        // resolveNativeTarget returns tabIndexInWindow = the tab to switch to,
+        // or nil when the target IS already the current tab of its window
+        // (idempotent no-op in that case).
+        if let tab = resolved.tabIndexInWindow {
+            try await SafariBridge.switchToTab(tab, window: resolved.windowIndex)
         }
     }
 }

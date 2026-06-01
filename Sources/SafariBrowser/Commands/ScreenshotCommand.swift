@@ -371,35 +371,45 @@ struct ScreenshotCommand: AsyncParsableCommand {
         path: String,
         preMeasuredWindowBounds: CGRect? = nil
     ) throws {
-        let windowBounds: CGRect
-        if let preMeasuredWindowBounds {
-            windowBounds = preMeasuredWindowBounds
-        } else {
-            windowBounds = try SafariBridge.getAXWindowBounds(axWindow)
-        }
-        let webAreaScreen = try SafariBridge.getAXWebAreaBounds(axWindow)
+        do {
+            let windowBounds: CGRect
+            if let preMeasuredWindowBounds {
+                windowBounds = preMeasuredWindowBounds
+            } else {
+                windowBounds = try SafariBridge.getAXWindowBounds(axWindow)
+            }
+            let webAreaScreen = try SafariBridge.getAXWebAreaBounds(axWindow)
 
-        // No-op: viewport effectively fills window (fullscreen, Reader
-        // Mode). Threshold logic is in ImageCropping so unit tests can
-        // exercise it without spinning up an AX window.
-        if ImageCropping.isNoOpCrop(windowBounds: windowBounds, webAreaBounds: webAreaScreen) {
-            return
-        }
+            // No-op: viewport effectively fills window (fullscreen, Reader
+            // Mode). Threshold logic is in ImageCropping so unit tests can
+            // exercise it without spinning up an AX window. The un-cropped
+            // capture IS the desired output here, so return WITHOUT removing.
+            if ImageCropping.isNoOpCrop(windowBounds: windowBounds, webAreaBounds: webAreaScreen) {
+                return
+            }
 
-        // Window-relative rect: AX returns screen-absolute coords; the
-        // captured PNG's image-space origin (0,0) corresponds to the
-        // window's top-left. Subtract to translate.
-        let rectInWindow = CGRect(
-            x: webAreaScreen.origin.x - windowBounds.origin.x,
-            y: webAreaScreen.origin.y - windowBounds.origin.y,
-            width: webAreaScreen.width,
-            height: webAreaScreen.height
-        )
-        try ImageCropping.cropPNG(
-            at: path,
-            rectPoints: rectInWindow,
-            windowWidthPoints: windowBounds.width
-        )
+            // Window-relative rect: AX returns screen-absolute coords; the
+            // captured PNG's image-space origin (0,0) corresponds to the
+            // window's top-left. Subtract to translate.
+            let rectInWindow = CGRect(
+                x: webAreaScreen.origin.x - windowBounds.origin.x,
+                y: webAreaScreen.origin.y - windowBounds.origin.y,
+                width: webAreaScreen.width,
+                height: webAreaScreen.height
+            )
+            try ImageCropping.cropPNG(
+                at: path,
+                rectPoints: rectInWindow,
+                windowWidthPoints: windowBounds.width
+            )
+        } catch {
+            // #44: on ANY crop failure (AX frame read or cropPNG), remove the
+            // un-cropped capture so callers don't find a misleading
+            // chrome-included file at the path (mirrors applyElementCrop) — the
+            // error message promises no file is left behind.
+            try? FileManager.default.removeItem(atPath: path)
+            throw error
+        }
     }
 
     /// #30: crop the captured PNG to the bounding rectangle of a DOM
