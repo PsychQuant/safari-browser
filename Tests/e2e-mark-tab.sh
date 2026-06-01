@@ -13,7 +13,9 @@
 # or the binary isn't installed.
 
 set -u
-SB="${SB:-$HOME/bin/safari-browser}"
+# Binary under test: override with SAFARI_BROWSER_BIN=.build/debug/safari-browser
+# to exercise current source (the default ~/bin build can be weeks-stale).
+SB="${SAFARI_BROWSER_BIN:-$HOME/bin/safari-browser}"
 FIXTURE="$(cd "$(dirname "$0")/.." && pwd)/Tests/Fixtures/test-page.html"
 FIXTURE_URL="file://${FIXTURE}"
 

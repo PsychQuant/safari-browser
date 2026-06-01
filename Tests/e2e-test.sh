@@ -1,9 +1,13 @@
 #!/bin/bash
 # E2E tests for safari-browser
 # Requires: Safari running, binary installed at ~/bin/safari-browser
+#
+# Binary under test: override with SAFARI_BROWSER_BIN=.build/debug/safari-browser
+# to exercise current source (the default ~/bin build can be weeks-stale and
+# predate the feature under test).
 set -e
 
-SB="$HOME/bin/safari-browser"
+SB="${SAFARI_BROWSER_BIN:-$HOME/bin/safari-browser}"
 TEST_PAGE="file://$(cd "$(dirname "$0")" && pwd)/Fixtures/test-page.html"
 PASS=0
 FAIL=0
