@@ -483,6 +483,41 @@ final class TargetOptionsTests: XCTestCase {
         }
     }
 
+    func testHonoredCommandsDoNotCallWarnHelper() throws {
+        // #64: bidirectional mirror guard. testHonoredProfileCommandsHelpStringStable
+        // verifies honored tokens are ADVERTISED; this verifies none of those
+        // commands ALSO call warnIfProfileUnsupported — which would emit a
+        // self-contradictory "honored by … X" + "not yet enforced for X" pair.
+        // Tokens are derived from the constant so the guard auto-covers each
+        // command as #51 graduates it to honored.
+        let tokens = TargetOptions.honoredProfileCommandsHelp
+            .components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        XCTAssertFalse(tokens.isEmpty, "Expected at least one honored token to check")
+        let cmdsDir = URL(fileURLWithPath: #file)
+            .deletingLastPathComponent()  // Tests/SafariBrowserTests
+            .deletingLastPathComponent()  // Tests
+            .deletingLastPathComponent()  // repo root
+            .appendingPathComponent("Sources/SafariBrowser/Commands")
+        let files = try FileManager.default.contentsOfDirectory(
+            at: cmdsDir, includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "swift" }
+        // Guard against a silent vacuous pass if path resolution ever breaks.
+        XCTAssertFalse(files.isEmpty, "Should find command sources at \(cmdsDir.path)")
+        for token in tokens {
+            for file in files {
+                let content = try String(contentsOf: file, encoding: .utf8)
+                let pattern = "warnIfProfileUnsupported(commandName: \"\(token)\")"
+                XCTAssertFalse(
+                    content.contains(pattern),
+                    "\(file.lastPathComponent) calls the warn helper for honored token "
+                        + "'\(token)' — drop that call when a command graduates to honored (#51 mirror)."
+                )
+            }
+        }
+    }
+
     func testWarnIfProfileUnsupportedSilentWhenProfileEmpty() {
         // #61: even if validate() is bypassed, the warn helper must not emit
         // the quirky "'' is parsed but not enforced" warning for empty input.
