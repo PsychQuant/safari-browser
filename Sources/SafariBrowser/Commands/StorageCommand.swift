@@ -44,10 +44,9 @@ struct StorageLocalGet: AsyncParsableCommand {
     @Argument(help: "Key") var key: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "storage local get")
         print(try await SafariBridge.doJavaScript(
             "localStorage.getItem('\(key.escapedForJS)') || ''",
-            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
         ))
     }
 }
@@ -58,10 +57,9 @@ struct StorageLocalSet: AsyncParsableCommand {
     @Argument(help: "Value") var value: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "storage local set")
         _ = try await SafariBridge.doJavaScript(
             "localStorage.setItem('\(key.escapedForJS)', '\(value.escapedForJS)')",
-            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
         )
     }
 }
@@ -71,10 +69,9 @@ struct StorageLocalRemove: AsyncParsableCommand {
     @Argument(help: "Key") var key: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "storage local remove")
         _ = try await SafariBridge.doJavaScript(
             "localStorage.removeItem('\(key.escapedForJS)')",
-            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
         )
     }
 }
@@ -83,8 +80,7 @@ struct StorageLocalClear: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "clear", abstract: "Clear all localStorage")
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "storage local clear")
-        _ = try await SafariBridge.doJavaScript("localStorage.clear()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+        _ = try await SafariBridge.doJavaScript("localStorage.clear()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
     }
 }
 
@@ -95,10 +91,9 @@ struct StorageSessionGet: AsyncParsableCommand {
     @Argument(help: "Key") var key: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "storage session get")
         print(try await SafariBridge.doJavaScript(
             "sessionStorage.getItem('\(key.escapedForJS)') || ''",
-            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
         ))
     }
 }
@@ -109,10 +104,9 @@ struct StorageSessionSet: AsyncParsableCommand {
     @Argument(help: "Value") var value: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "storage session set")
         _ = try await SafariBridge.doJavaScript(
             "sessionStorage.setItem('\(key.escapedForJS)', '\(value.escapedForJS)')",
-            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
         )
     }
 }
@@ -122,10 +116,9 @@ struct StorageSessionRemove: AsyncParsableCommand {
     @Argument(help: "Key") var key: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "storage session remove")
         _ = try await SafariBridge.doJavaScript(
             "sessionStorage.removeItem('\(key.escapedForJS)')",
-            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter
+            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
         )
     }
 }
@@ -134,7 +127,6 @@ struct StorageSessionClear: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "clear", abstract: "Clear all sessionStorage")
     @OptionGroup var target: TargetOptions
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "storage session clear")
-        _ = try await SafariBridge.doJavaScript("sessionStorage.clear()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+        _ = try await SafariBridge.doJavaScript("sessionStorage.clear()", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
     }
 }
