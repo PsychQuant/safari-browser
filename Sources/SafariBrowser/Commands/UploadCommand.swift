@@ -174,12 +174,46 @@ struct UploadCommand: AsyncParsableCommand {
             tab: resolved.tabIndexInWindow
         )
 
-        try await uploadViaNativeDialog(
-            selector: selector,
-            path: expandedPath,
-            timeout: timeout,
-            window: resolved.windowIndex
-        )
+        do {
+            try await uploadViaNativeDialog(
+                selector: selector,
+                path: expandedPath,
+                timeout: timeout,
+                window: resolved.windowIndex
+            )
+        } catch {
+            // #67: the native file dialog can enter a stale state after a
+            // prior aborted attempt (focus race / expired user gesture) where
+            // it's visible but no longer accepts keystrokes — the Cmd+Shift+G
+            // "Go to Folder" panel never appears, and bare retries loop. Rewrap
+            // that opaque AppleScript timeout with actionable recovery guidance.
+            if let guidance = Self.staleDialogGuidance(forErrorText: "\(error)") {
+                throw SafariBrowserError.appleScriptFailed("\(error)\n\n\(guidance)")
+            }
+            throw error
+        }
+    }
+
+    /// #67: detect the stale-file-dialog signature (the native dialog is
+    /// visible but rejecting keystrokes, typically after a prior aborted
+    /// attempt) and return actionable recovery guidance. Returns nil for
+    /// unrelated errors so they propagate unchanged. Pure — unit-tested.
+    static func staleDialogGuidance(forErrorText text: String) -> String? {
+        let signatures = [
+            "Go to Folder panel did not appear",
+            "File dialog did not appear",
+            "Go to Folder did not close",
+        ]
+        guard signatures.contains(where: { text.contains($0) }) else { return nil }
+        return """
+        The native file dialog opened but stopped accepting keystrokes — most likely a prior
+        aborted attempt left it in a non-interactive state (focus race / expired user gesture, #67).
+        Recover by either:
+          • Dismiss any open file dialog (press Esc), then retry from a clean state.
+          • Complete it manually: drag-and-drop the file into the upload area, OR switch to an
+            English input source, press Cmd+Shift+G, and paste the path.
+        Note: --js (DataTransfer) is capped at 10 MB (#24), so it is not a fallback for large files.
+        """
     }
 
     // MARK: - Native file dialog
