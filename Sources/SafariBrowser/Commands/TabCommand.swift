@@ -37,9 +37,25 @@ struct TabSwitchCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        documentTarget.warnIfProfileUnsupported(commandName: "tab switch")
+        // #52: honor --profile by resolving the profile's window first, then
+        // switching/opening within it.
+        var window = documentTarget.window
+        if let profile = documentTarget.resolveProfile() {
+            let base: SafariBridge.TargetDocument = documentTarget.window.map { .windowIndex($0) } ?? .frontWindow
+            let concrete = try await SafariBridge.resolveToConcreteTarget(
+                base,
+                firstMatch: documentTarget.firstMatch,
+                warnWriter: TargetOptions.stderrWarnWriter,
+                profile: profile
+            )
+            switch concrete {
+            case .windowIndex(let n): window = n
+            case .windowTab(let n, _): window = n
+            default: break
+            }
+        }
         if tabArg.lowercased() == "new" {
-            try await SafariBridge.openNewTab(window: documentTarget.window)
+            try await SafariBridge.openNewTab(window: window)
             return
         }
 
@@ -48,7 +64,7 @@ struct TabSwitchCommand: AsyncParsableCommand {
         }
 
         do {
-            try await SafariBridge.switchToTab(index, window: documentTarget.window)
+            try await SafariBridge.switchToTab(index, window: window)
         } catch {
             throw SafariBrowserError.invalidTabIndex(index)
         }
@@ -66,8 +82,8 @@ struct TabIsMarkedCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "tab is-marked")
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let profile = target.resolveProfile()
         do {
             // Read document.title (NOT window title) so the marker
             // detection matches what setTabTitle wrote. Safari's window
@@ -76,7 +92,8 @@ struct TabIsMarkedCommand: AsyncParsableCommand {
             let title = try await SafariBridge.getDocumentTitle(
                 target: resolvedTarget,
                 firstMatch: firstMatch,
-                warnWriter: warnWriter
+                warnWriter: warnWriter,
+                profile: profile
             )
             if MarkerConstants.hasMarker(title: title) {
                 throw ExitCode(0)  // marked → exit 0
@@ -106,21 +123,23 @@ struct TabUnmarkCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "tab unmark")
         let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let profile = target.resolveProfile()
         do {
             // Read via document.title to match how setTabTitle wrote it.
             let title = try await SafariBridge.getDocumentTitle(
                 target: resolvedTarget,
                 firstMatch: firstMatch,
-                warnWriter: warnWriter
+                warnWriter: warnWriter,
+                profile: profile
             )
             if let original = MarkerConstants.unwrap(title: title) {
                 try await SafariBridge.setTabTitle(
                     original,
                     target: resolvedTarget,
                     firstMatch: firstMatch,
-                    warnWriter: warnWriter
+                    warnWriter: warnWriter,
+                    profile: profile
                 )
             }
             // No marker present → nothing to do, exit 0.

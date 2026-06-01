@@ -24,8 +24,26 @@ struct TabsCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        target.warnIfProfileUnsupported(commandName: "tabs")
-        let tabs = try await SafariBridge.listTabs(window: target.window)
+        // #52: honor --profile by resolving the requested profile's window
+        // (its front window, or --window N validated to live in the profile)
+        // and listing that window's tabs. Reuses the #47 profile filter via
+        // resolveToConcreteTarget — no listTabs change needed.
+        var window = target.window
+        if let profile = target.resolveProfile() {
+            let base: SafariBridge.TargetDocument = target.window.map { .windowIndex($0) } ?? .frontWindow
+            let concrete = try await SafariBridge.resolveToConcreteTarget(
+                base,
+                firstMatch: target.firstMatch,
+                warnWriter: TargetOptions.stderrWarnWriter,
+                profile: profile
+            )
+            switch concrete {
+            case .windowIndex(let n): window = n
+            case .windowTab(let n, _): window = n
+            default: break
+            }
+        }
+        let tabs = try await SafariBridge.listTabs(window: window)
         if json {
             let arr = tabs.map { ["index": $0.index, "title": $0.title, "url": $0.url] as [String: Any] }
             let data = try JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted, .sortedKeys])
