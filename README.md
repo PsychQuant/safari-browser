@@ -218,6 +218,23 @@ click --profile work "#x" 2>/dev/null`. Per `#51` plumb-rollout, individual
 commands graduate to honored over time; the warning helper exists only for
 the transitional period.
 
+**Exec sub-step double-warning (#62, by design)**: a pathological invocation
+that passes `--profile` to BOTH the exec parent and a sub-step with its own
+`--profile` emits **two** warnings — one for the parent `exec`, one for the
+child command — e.g.:
+
+```
+safari-browser exec --profile A --script '[{"cmd":"click","args":["x","--profile","B"]}]'
+# warning: --profile 'A' is parsed but not yet enforced for 'exec'. ...
+# warning: --profile 'B' is parsed but not yet enforced for 'click'. ...
+```
+
+This is intentional: each unhonored command that receives a `--profile` warns,
+and an explicit sub-step `--profile` is a distinct override (it rides as its own
+target per `#60`), so the dual warning is *more* informative, not a bug. A
+sub-step with no `--profile` inherits the parent's profile silently (one warning
+at the parent only).
+
 Without any flag, commands default to `document 1` — equivalent to
 `current tab of front window` in single-window usage, so existing scripts
 keep working unchanged. Read-only queries (`get url`, `get title`,

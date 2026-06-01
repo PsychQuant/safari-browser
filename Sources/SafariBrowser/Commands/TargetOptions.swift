@@ -413,6 +413,13 @@ struct TargetOptions: ParsableArguments {
     /// two-word name — `Self.configuration.commandName` would only
     /// return the leaf "text" and produce a confusing warning.
     ///
+    /// #62: when used inside `exec`, a parent `exec --profile A` and a
+    /// sub-step carrying its own `--profile B` each warn (two lines total).
+    /// This is by design — the sub-step `--profile` is a distinct override
+    /// (it rides as its own target per #60), so the dual warning is more
+    /// informative, not a bug. A sub-step without `--profile` inherits the
+    /// parent's profile and warns only at the parent.
+    ///
     /// - Parameters:
     ///   - commandName: User-facing command name (e.g. "click",
     ///     "get text") embedded into the warning text.
