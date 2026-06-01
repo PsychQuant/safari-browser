@@ -10,6 +10,10 @@
 - **#46 `documents` active-tab legend** — text output now prints a one-line legend to **stderr** explaining that `*` marks the active tab of each window (a live snapshot; multiple `*` across windows is normal). Emitted to stderr so the stdout tab list stays bit-stable for parsers; for programmatic active-tab detection use `--json`'s existing `is_current` boolean. Closes #46.
 - **#53 `documents --json` key-position note** — the `"profile"` key added in #47 sorts alphabetically (output uses `.sortedKeys`) **between** `is_current` and `tab_in_window`, shifting the position of every later key. This is an additive change (clients accessing keys by name are unaffected), but golden-file / position-sensitive consumers should re-baseline. Closes #53.
 
+### Cleanup
+
+- **Zero-warning build** — cleared the last pre-existing compiler warnings (masked all along by incremental builds): `screenshot --full`'s dimensions read now routes through `resolveProfileScoped()` (profile-scoped + drops an unused destructure); removed an unnecessary `try` on the non-throwing `target.resolve()` in the daemon + exec dispatchers; `_ = try?` on a discarded `seekToEnd()`; and the deprecated `String(cString: [CChar])` → the `withUnsafeBufferPointer` pointer overload. A clean `swift build` now emits 0 warnings.
+
 ### Tests
 
 - **#64 bidirectional mirror guard** — `testHonoredCommandsDoNotCallWarnHelper` asserts none of the honored `--profile` commands also call `warnIfProfileUnsupported` (which would produce a contradictory "honored by … X" + "not yet enforced for X" pair). Tokens are derived from `honoredProfileCommandsHelp` so the guard auto-covers commands as #51 graduates them. Closes #64.

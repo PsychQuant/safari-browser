@@ -46,7 +46,7 @@ struct InProcessStepDispatcher: StepDispatcher {
         let cmdArgs = Self.stripTargetFlags(args)
 
         let target = try Self.parseTargetOptions(from: effectiveTargetArgs)
-        let resolved = try target.resolve()
+        let resolved = target.resolve()
 
         switch cmd {
         case "js":

@@ -174,7 +174,7 @@ enum DaemonDispatch {
             // wrapper, not by individual steps). For `.off` the closure
             // body runs directly, so the daemon path stays zero-overhead
             // when no marker is requested.
-            let resolved = try target.resolve()
+            let resolved = target.resolve()
             let results: [StepResult] = try await SafariBridge.markTabIfRequested(
                 target: resolved,
                 mode: markTabMode,

@@ -127,7 +127,7 @@ enum DaemonServeLoop {
                     FileManager.default.createFile(atPath: logPath, contents: nil, attributes: [.posixPermissions: 0o600])
                 }
                 if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath)) {
-                    try? handle.seekToEnd()
+                    _ = try? handle.seekToEnd()
                     self.logFileHandle = handle
                     let writer: @Sendable (String) -> Void = { entry in
                         try? handle.write(contentsOf: Data(entry.utf8))

@@ -121,7 +121,10 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // TargetOptions resolution so `--full --url plaud` reads
         // plaud's dimensions via doJavaScript even when plaud is in a
         // background tab of its owning window.
-        let (docTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        // #51: scope the --full JS dimensions read to --profile too (screenshot
+        // is honored), and drop the previously-unused firstMatch/warnWriter
+        // destructure.
+        let docTarget = try await target.resolveProfileScoped()
 
         if !full {
             // Simple path: capture whatever CG ID resolved. Always silent (-x).

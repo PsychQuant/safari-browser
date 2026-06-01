@@ -272,7 +272,8 @@ private func currentExecutablePath() -> String {
     _ = _NSGetExecutablePath(nil, &size)
     var buf = [CChar](repeating: 0, count: Int(size))
     _ = _NSGetExecutablePath(&buf, &size)
-    return String(cString: buf)
+    // Use the UnsafePointer overload (the [CChar] array overload is deprecated).
+    return buf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
 }
 
 // MARK: - daemon __serve (hidden, hosts the actual daemon process)
