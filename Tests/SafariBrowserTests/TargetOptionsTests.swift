@@ -495,11 +495,17 @@ final class TargetOptionsTests: XCTestCase {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         XCTAssertFalse(tokens.isEmpty, "Expected at least one honored token to check")
-        let cmdsDir = URL(fileURLWithPath: #file)
-            .deletingLastPathComponent()  // Tests/SafariBrowserTests
-            .deletingLastPathComponent()  // Tests
-            .deletingLastPathComponent()  // repo root
-            .appendingPathComponent("Sources/SafariBrowser/Commands")
+        // Locate the repo root by walking up to the Package.swift marker.
+        // #filePath (not #file) is always an absolute path — #file is the
+        // concise Module/File.swift form under the Swift 6 language mode, which
+        // resolves relative to CWD and made level-counting flaky.
+        var root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while root.path != "/"
+            && !FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("Package.swift").path) {
+            root = root.deletingLastPathComponent()
+        }
+        let cmdsDir = root.appendingPathComponent("Sources/SafariBrowser/Commands")
         let files = try FileManager.default.contentsOfDirectory(
             at: cmdsDir, includingPropertiesForKeys: nil
         ).filter { $0.pathExtension == "swift" }
