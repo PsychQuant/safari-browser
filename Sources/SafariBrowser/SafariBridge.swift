@@ -1252,7 +1252,12 @@ enum SafariBridge {
 
         // Get total length
         let lenStr = try await doJavaScript("window.__sbResultLen", target: target)
-        guard let totalLen = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)), totalLen > 0 else {
+        // AppleScript returns numbers as "9.0" — parse via Double then truncate.
+        // Mirrors the non-large path in JSCommand.swift; #74. Int("5489.0")
+        // returns nil → length parses to 0 → the whole chunked read returns ""
+        // (silent data loss on every --large / --output / `get text` invocation).
+        let totalLen = Int(Double(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
+        guard totalLen > 0 else {
             return ""
         }
 
