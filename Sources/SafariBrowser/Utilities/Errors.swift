@@ -32,6 +32,7 @@ enum SafariBrowserError: LocalizedError {
     case elementNotFound(String)
     case accessibilityNotGranted
     case accessibilityRequired(flag: String)
+    case screenRecordingRequired(staleGrant: Bool)
     case webAreaNotFound(reason: String)
     case imageCroppingFailed(reason: String)
     case elementAmbiguous(selector: String, matches: [ElementMatch])
@@ -406,6 +407,35 @@ enum SafariBrowserError: LocalizedError {
                 also still work because they intentionally raise window N before
                 their keystroke operations (keystrokes inherently target the
                 front window).
+                """
+        case .screenRecordingRequired(let staleGrant):
+            let staleParagraph = staleGrant
+                ? """
+
+
+                Note: the permission preflight passed but capture still failed —
+                the TCC grant may be stale (the controlling app or this binary
+                changed since the grant, e.g. after a rebuild or reinstall).
+                Quit and reopen the controlling app; if that does not help,
+                remove and re-add it in the Screen Recording list.
+                """
+                : ""
+            return """
+                Screen Recording permission required for `screenshot`.
+                Window pixel capture (/usr/sbin/screencapture) needs macOS
+                Screen Recording permission, and the grant attaches to the
+                controlling app that launched safari-browser (Terminal, iTerm,
+                your IDE, or the automation host) — not to the safari-browser
+                binary itself.
+
+                Grant permission:
+                  System Settings → Privacy & Security → Screen Recording →
+                  enable your terminal app, then quit and reopen that app
+                  (macOS applies the grant only after the app restarts).
+
+                Alternatives that read page CONTENT without capturing pixels
+                (no Screen Recording needed): `snapshot --url <substring>`,
+                `get source --url <substring>`, `get text <selector>`.\(staleParagraph)
                 """
         }
     }

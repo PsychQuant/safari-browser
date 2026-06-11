@@ -64,6 +64,16 @@ struct ScreenshotCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #70: every screenshot path ends in /usr/sbin/screencapture, whose
+        // pixel capture requires Screen Recording permission on the
+        // CONTROLLING app. Preflight (read-only, never prompts — preserves
+        // Non-Interference) so the failure is a named permission error with
+        // guidance instead of screencapture's raw stderr surfacing as a
+        // misleading "AppleScript error".
+        guard CGPreflightScreenCaptureAccess() else {
+            throw SafariBrowserError.screenRecordingRequired(staleGrant: false)
+        }
+
         // #29 / #30: --content-only and --element both hard-fail
         // without Accessibility. Check BEFORE resolveWindowForCapture
         // so useless AX resolution doesn't run. --element flag takes
@@ -128,7 +138,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
 
         if !full {
             // Simple path: capture whatever CG ID resolved. Always silent (-x).
-            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
+            try await Self.runCapture(windowID: windowID, path: path)
             // Post-capture crop: --element takes precedence over
             // --content-only because element coords are already
             // viewport-relative (chrome-excluded). Combining both is
@@ -234,7 +244,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
         var cropError: Error?
         if resizeError == nil {
             do {
-                try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
+                try await Self.runCapture(windowID: windowID, path: path)
             } catch {
                 captureError = error
             }
@@ -366,6 +376,31 @@ struct ScreenshotCommand: AsyncParsableCommand {
     ///     pass them here to skip a redundant AX query. Avoiding the
     ///     extra query sidesteps a race where `kAXPositionAttribute`
     ///     briefly returns `noValue` during the resize settle phase.
+    /// #70: shared capture wrapper for both the plain and `--full` paths.
+    /// Rewraps a screencapture permission-denial (detected via
+    /// `isScreenRecordingDenial`) as `screenRecordingRequired(staleGrant:
+    /// true)` — reaching here means `CGPreflightScreenCaptureAccess()`
+    /// passed at the top of run(), so a denial now indicates a stale TCC
+    /// grant. Unrelated failures (bad path, disk full) propagate unchanged
+    /// so they are not misdirected into a permission error.
+    static func runCapture(windowID: String, path: String) async throws {
+        do {
+            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
+        } catch {
+            if isScreenRecordingDenial(errorText: "\(error)") {
+                throw SafariBrowserError.screenRecordingRequired(staleGrant: true)
+            }
+            throw error
+        }
+    }
+
+    /// #70: detect screencapture's Screen-Recording-denial stderr signature
+    /// ("could not create image from window" / "... from display"). Mirrors
+    /// the #67 `staleDialogGuidance` classifier shape. Pure — unit-tested.
+    static func isScreenRecordingDenial(errorText: String) -> Bool {
+        errorText.contains("could not create image")
+    }
+
     private func applyContentOnlyCrop(
         axWindow: AXUIElement,
         path: String,
