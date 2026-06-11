@@ -32,7 +32,7 @@ enum SafariBrowserError: LocalizedError {
     case elementNotFound(String)
     case accessibilityNotGranted
     case accessibilityRequired(flag: String)
-    case screenRecordingRequired(staleGrant: Bool)
+    case screenRecordingRequired(staleGrant: Bool, underlying: String?)
     case webAreaNotFound(reason: String)
     case imageCroppingFailed(reason: String)
     case elementAmbiguous(selector: String, matches: [ElementMatch])
@@ -408,18 +408,34 @@ enum SafariBrowserError: LocalizedError {
                 their keystroke operations (keystrokes inherently target the
                 front window).
                 """
-        case .screenRecordingRequired(let staleGrant):
-            let staleParagraph = staleGrant
-                ? """
+        case .screenRecordingRequired(let staleGrant, let underlying):
+            // Post-preflight paragraph (verify #70 round 1, 5-lens corroborated):
+            // the same screencapture stderr fires for vanished/invalid window
+            // IDs in a fully-granted environment, so asserting "stale TCC
+            // grant" as the sole cause would misdirect users into TCC surgery
+            // for a window-lifecycle race. Present BOTH hypotheses, cheap
+            // check first, and carry the original stderr.
+            let postPreflightParagraph: String
+            if staleGrant {
+                let underlyingLine = underlying.map { "\n                (underlying error: \($0))" } ?? ""
+                postPreflightParagraph = """
 
 
-                Note: the permission preflight passed but capture still failed —
-                the TCC grant may be stale (the controlling app or this binary
-                changed since the grant, e.g. after a rebuild or reinstall).
-                Quit and reopen the controlling app; if that does not help,
-                remove and re-add it in the Screen Recording list.
+                Note: the permission preflight passed but capture still failed.\(underlyingLine)
+                Two possible causes:
+                  1. The target window vanished or became uncapturable between
+                     window resolution and capture (this exact error also fires
+                     for invalid window IDs). Re-run `safari-browser documents`
+                     to confirm the window still exists, then retry.
+                  2. The Screen Recording grant is stale — the controlling app
+                     changed since it was granted (e.g. an app update), or the
+                     grant was revoked. Quit and reopen the controlling app; if
+                     that does not help, remove and re-add it in the Screen
+                     Recording list.
                 """
-                : ""
+            } else {
+                postPreflightParagraph = ""
+            }
             return """
                 Screen Recording permission required for `screenshot`.
                 Window pixel capture (/usr/sbin/screencapture) needs macOS
@@ -432,10 +448,14 @@ enum SafariBrowserError: LocalizedError {
                   System Settings → Privacy & Security → Screen Recording →
                   enable your terminal app, then quit and reopen that app
                   (macOS applies the grant only after the app restarts).
+                  If the app is not yet listed, click '+' and add it manually —
+                  the preflight fails closed before any capture attempt, so the
+                  failed attempt that would normally register the app in the
+                  list never happens.
 
                 Alternatives that read page CONTENT without capturing pixels
                 (no Screen Recording needed): `snapshot --url <substring>`,
-                `get source --url <substring>`, `get text <selector>`.\(staleParagraph)
+                `get source --url <substring>`, `get text <selector>`.\(postPreflightParagraph)
                 """
         }
     }

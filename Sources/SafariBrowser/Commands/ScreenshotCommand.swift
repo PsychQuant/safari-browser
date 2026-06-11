@@ -71,7 +71,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // guidance instead of screencapture's raw stderr surfacing as a
         // misleading "AppleScript error".
         guard CGPreflightScreenCaptureAccess() else {
-            throw SafariBrowserError.screenRecordingRequired(staleGrant: false)
+            throw SafariBrowserError.screenRecordingRequired(staleGrant: false, underlying: nil)
         }
 
         // #29 / #30: --content-only and --element both hard-fail
@@ -355,6 +355,52 @@ struct ScreenshotCommand: AsyncParsableCommand {
         if let cropError { throw cropError }
     }
 
+    /// #70: shared capture wrapper for both the plain and `--full` paths.
+    /// Rewraps a screencapture denial-signature failure (detected via
+    /// `isScreenRecordingDenial`) as `screenRecordingRequired(staleGrant:
+    /// true, underlying:)`. The preflight at the top of run() already
+    /// passed by the time we get here, so the failure is EITHER a stale
+    /// TCC grant OR a window-lifecycle race — the same stderr fires for
+    /// vanished/invalid window IDs in a fully-granted environment (verify
+    /// #70 round 1, empirically confirmed with `screencapture -l
+    /// 999999999`). The error message presents both hypotheses and
+    /// carries the original stderr so the user can disambiguate.
+    /// Unrelated failures propagate unchanged.
+    static func runCapture(windowID: String, path: String) async throws {
+        do {
+            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
+        } catch {
+            if isScreenRecordingDenial(errorText: "\(error)") {
+                // Carry the raw stderr; unwrap runShell's generic
+                // appleScriptFailed shell-wrapper so the message doesn't
+                // echo its misleading "AppleScript error" prefix (#73).
+                let underlying: String
+                if case .appleScriptFailed(let stderrText)? = error as? SafariBrowserError {
+                    underlying = stderrText
+                } else {
+                    underlying = "\(error)"
+                }
+                throw SafariBrowserError.screenRecordingRequired(staleGrant: true, underlying: underlying)
+            }
+            throw error
+        }
+    }
+
+    /// #70: detect screencapture's capture-denial stderr signature
+    /// ("could not create image from window" / "... from display").
+    /// Case-insensitive, mirroring the e2e harness matcher it pairs with
+    /// (`is_capture_denied`, Tests/e2e-test.sh). Deliberately NARROWER
+    /// than that matcher's other branches (not authorized / kCGError /
+    /// operation not permitted): under-matching just lets the raw error
+    /// propagate, while over-matching would misdirect users into TCC
+    /// remediation (verify #70 round 1). NOTE the signature is NOT unique
+    /// to permission denial — it also fires for vanished/invalid window
+    /// IDs, which is why the rewrapped message presents both hypotheses.
+    /// Pure — unit-tested.
+    static func isScreenRecordingDenial(errorText: String) -> Bool {
+        errorText.lowercased().contains("could not create image")
+    }
+
     /// #29: crop the captured PNG so it contains only the Safari web
     /// content area (AXWebArea), excluding URL bar, tab bar, and
     /// toolbar. Called from both the simple path and the --full path;
@@ -376,31 +422,6 @@ struct ScreenshotCommand: AsyncParsableCommand {
     ///     pass them here to skip a redundant AX query. Avoiding the
     ///     extra query sidesteps a race where `kAXPositionAttribute`
     ///     briefly returns `noValue` during the resize settle phase.
-    /// #70: shared capture wrapper for both the plain and `--full` paths.
-    /// Rewraps a screencapture permission-denial (detected via
-    /// `isScreenRecordingDenial`) as `screenRecordingRequired(staleGrant:
-    /// true)` — reaching here means `CGPreflightScreenCaptureAccess()`
-    /// passed at the top of run(), so a denial now indicates a stale TCC
-    /// grant. Unrelated failures (bad path, disk full) propagate unchanged
-    /// so they are not misdirected into a permission error.
-    static func runCapture(windowID: String, path: String) async throws {
-        do {
-            try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
-        } catch {
-            if isScreenRecordingDenial(errorText: "\(error)") {
-                throw SafariBrowserError.screenRecordingRequired(staleGrant: true)
-            }
-            throw error
-        }
-    }
-
-    /// #70: detect screencapture's Screen-Recording-denial stderr signature
-    /// ("could not create image from window" / "... from display"). Mirrors
-    /// the #67 `staleDialogGuidance` classifier shape. Pure — unit-tested.
-    static func isScreenRecordingDenial(errorText: String) -> Bool {
-        errorText.contains("could not create image")
-    }
-
     private func applyContentOnlyCrop(
         axWindow: AXUIElement,
         path: String,
