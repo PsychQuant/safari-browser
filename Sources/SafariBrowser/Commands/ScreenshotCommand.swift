@@ -69,9 +69,14 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // CONTROLLING app. Preflight (read-only, never prompts — preserves
         // Non-Interference) so the failure is a named permission error with
         // guidance instead of screencapture's raw stderr surfacing as a
-        // misleading "AppleScript error".
+        // misleading "AppleScript error". DELIBERATE ordering: this runs
+        // before target/AX validation because the permission is a universal
+        // precondition of every screenshot path — in an unauthorized
+        // environment the permission error outranks more specific
+        // diagnostics (verify #70 round 2 reviewed and accepted this
+        // precedence change).
         guard CGPreflightScreenCaptureAccess() else {
-            throw SafariBrowserError.screenRecordingRequired(staleGrant: false, underlying: nil)
+            throw SafariBrowserError.screenRecordingRequired(postPreflight: false, underlying: nil)
         }
 
         // #29 / #30: --content-only and --element both hard-fail
@@ -357,48 +362,58 @@ struct ScreenshotCommand: AsyncParsableCommand {
 
     /// #70: shared capture wrapper for both the plain and `--full` paths.
     /// Rewraps a screencapture denial-signature failure (detected via
-    /// `isScreenRecordingDenial`) as `screenRecordingRequired(staleGrant:
-    /// true, underlying:)`. The preflight at the top of run() already
-    /// passed by the time we get here, so the failure is EITHER a stale
-    /// TCC grant OR a window-lifecycle race — the same stderr fires for
-    /// vanished/invalid window IDs in a fully-granted environment (verify
-    /// #70 round 1, empirically confirmed with `screencapture -l
-    /// 999999999`). The error message presents both hypotheses and
-    /// carries the original stderr so the user can disambiguate.
-    /// Unrelated failures propagate unchanged.
+    /// `isScreenRecordingDenial`) as `screenRecordingRequired(
+    /// postPreflight: true, underlying:)`. The preflight at the top of
+    /// run() already passed by the time we get here, so the failure is
+    /// EITHER a stale TCC grant OR a window-lifecycle race — the same
+    /// stderr fires for vanished/invalid window IDs in a fully-granted
+    /// environment (verify #70 round 1, empirically confirmed with
+    /// `screencapture -l 999999999`). The error message presents both
+    /// hypotheses and carries the original stderr so the user can
+    /// disambiguate. Unrelated failures propagate unchanged.
     static func runCapture(windowID: String, path: String) async throws {
         do {
             try await SafariBridge.runShell("/usr/sbin/screencapture", ["-x", "-l", windowID, path])
         } catch {
             if isScreenRecordingDenial(errorText: "\(error)") {
-                // Carry the raw stderr; unwrap runShell's generic
-                // appleScriptFailed shell-wrapper so the message doesn't
-                // echo its misleading "AppleScript error" prefix (#73).
-                let underlying: String
-                if case .appleScriptFailed(let stderrText)? = error as? SafariBrowserError {
-                    underlying = stderrText
-                } else {
-                    underlying = "\(error)"
-                }
-                throw SafariBrowserError.screenRecordingRequired(staleGrant: true, underlying: underlying)
+                throw SafariBrowserError.screenRecordingRequired(
+                    postPreflight: true, underlying: underlyingText(from: error))
             }
             throw error
         }
     }
 
-    /// #70: detect screencapture's capture-denial stderr signature
-    /// ("could not create image from window" / "... from display").
-    /// Case-insensitive, mirroring the e2e harness matcher it pairs with
-    /// (`is_capture_denied`, Tests/e2e-test.sh). Deliberately NARROWER
-    /// than that matcher's other branches (not authorized / kCGError /
-    /// operation not permitted): under-matching just lets the raw error
-    /// propagate, while over-matching would misdirect users into TCC
-    /// remediation (verify #70 round 1). NOTE the signature is NOT unique
-    /// to permission denial — it also fires for vanished/invalid window
-    /// IDs, which is why the rewrapped message presents both hypotheses.
-    /// Pure — unit-tested.
+    /// #70: extract the raw stderr from a runShell failure for display.
+    /// Unwraps runShell's generic appleScriptFailed shell-wrapper so the
+    /// message doesn't echo its misleading "AppleScript error" prefix
+    /// (that mislabel is #73's scope); any other error falls back to its
+    /// interpolated description. Pure — unit-tested.
+    static func underlyingText(from error: Error) -> String {
+        if case .appleScriptFailed(let stderrText)? = error as? SafariBrowserError {
+            return stderrText
+        }
+        return "\(error)"
+    }
+
+    /// #70: detect screencapture's capture-denial stderr signatures —
+    /// exactly "could not create image from window" / "... from display"
+    /// (case-insensitive). Verify round 2 narrowed this from the bare
+    /// "could not create image" prefix: the full signatures are what
+    /// screencapture actually emits for capture denial, and a broader
+    /// prefix would rewrap unrelated future messages (e.g. "could not
+    /// create image file") as permission errors, violating the
+    /// "unrelated failures propagate unchanged" contract. Deliberately
+    /// NARROWER than the e2e matcher it pairs with (`is_capture_denied`,
+    /// Tests/e2e-test.sh — also greps not authorized / kCGError / ...):
+    /// under-matching just lets the raw error propagate, while
+    /// over-matching misdirects users into TCC remediation. NOTE the
+    /// signature is NOT unique to permission denial — it also fires for
+    /// vanished/invalid window IDs, which is why the rewrapped message
+    /// presents both hypotheses. Pure — unit-tested.
     static func isScreenRecordingDenial(errorText: String) -> Bool {
-        errorText.lowercased().contains("could not create image")
+        let lowered = errorText.lowercased()
+        return lowered.contains("could not create image from window")
+            || lowered.contains("could not create image from display")
     }
 
     /// #29: crop the captured PNG so it contains only the Safari web
