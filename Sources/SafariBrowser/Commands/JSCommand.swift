@@ -74,7 +74,7 @@ struct JSCommand: AsyncParsableCommand {
                 firstMatch: firstMatch,
                 warnWriter: warnWriter
             )
-            var lenStr = try await SafariBridge.doJavaScript("String(window.__sbLen)", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
+            var lenStr = try await SafariBridge.doJavaScript("'' + window.__sbLen", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
             if lenStr.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
                 _ = try await SafariBridge.doJavaScript(
                     JSWrapper.statementWrapper(jsCode),
@@ -82,7 +82,7 @@ struct JSCommand: AsyncParsableCommand {
                     firstMatch: firstMatch,
                     warnWriter: warnWriter
                 )
-                lenStr = try await SafariBridge.doJavaScript("String(window.__sbLen)", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
+                lenStr = try await SafariBridge.doJavaScript("'' + window.__sbLen", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
                 if lenStr.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
                     throw SafariBrowserError.appleScriptFailed(
                         "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"
@@ -126,6 +126,15 @@ struct JSCommand: AsyncParsableCommand {
     /// expression form is just newline-guarded parens. Parse failure is
     /// detected the same way as the non-large path: preset the protocol
     /// globals, then check whether the wrapper ever set __sbResultLen.
+    ///
+    /// INVARIANT (verify-round finding, #76): the empty-result vs
+    /// parse-failure discrimination below requires that doJavaScriptLarge
+    /// does NOT delete __sbResultLen on its zero-length early return —
+    /// a legitimately-empty result must leave __sbResultLen == 0 (set by
+    /// the wrapper), while a parse failure leaves it undefined (preset).
+    /// If doJavaScriptLarge is ever refactored to always run its cleanup,
+    /// every empty `--large` result would misread as a parse failure.
+    /// Pinned by the `--large ""` cases in Tests/e2e-csp.sh.
     private func runLargePath(
         _ jsCode: String,
         target: SafariBridge.TargetDocument,
@@ -133,32 +142,47 @@ struct JSCommand: AsyncParsableCommand {
         warnWriter: ((String) -> Void)?
     ) async throws -> String {
         _ = try await SafariBridge.doJavaScript(JSWrapper.presetLargeProtocolGlobals, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-        do {
-            var result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeExpression(jsCode), target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-            if result.isEmpty {
-                let marker = try await SafariBridge.doJavaScript("String(window.__sbResultLen)", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-                if marker.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                    // Expression form never parsed — retry as function body.
-                    result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeStatement(jsCode), target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-                    if result.isEmpty {
-                        let marker2 = try await SafariBridge.doJavaScript("String(window.__sbResultLen)", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-                        if marker2.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                            throw SafariBrowserError.appleScriptFailed(
-                                "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"
-                            )
-                        }
+        var result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeExpression(jsCode), target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+        if result.isEmpty {
+            // Order matters: a runtime error is captured in-band (the wrapper
+            // returns '' after recording __sbLargeErr, so __sbResultLen reads
+            // 0, not the sentinel) — check it BEFORE the parse-failure marker,
+            // and never retry after it: re-running user code that already
+            // executed would double its side effects.
+            try await throwLargeRuntimeErrorIfAny(target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+            let marker = try await SafariBridge.doJavaScript("'' + window.__sbResultLen", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+            if marker.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
+                // Expression form never parsed (nothing ran) — retry as function body.
+                result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeStatement(jsCode), target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+                if result.isEmpty {
+                    try await throwLargeRuntimeErrorIfAny(target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+                    let marker2 = try await SafariBridge.doJavaScript("'' + window.__sbResultLen", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+                    if marker2.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
+                        throw SafariBrowserError.appleScriptFailed(
+                            "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"
+                        )
                     }
                 }
             }
-            return result
-        } catch let error as SafariBrowserError {
-            // #76: runtime errors on this path propagate as raw AppleScript
-            // errors; append the CSP hint when the user code itself called
-            // eval()/new Function() on a strict-CSP page.
-            if case .appleScriptFailed(let msg) = error, let hint = JSWrapper.cspEvalHint(for: msg) {
-                throw SafariBrowserError.appleScriptFailed(msg + hint)
-            }
-            throw error
         }
+        return result
+    }
+
+    /// #76: `do JavaScript` swallows uncaught runtime throws as silently as
+    /// SyntaxErrors, so the large-path wrappers record them to
+    /// window.__sbLargeErr in-band. Throws the normalized `JavaScript
+    /// error:` form (matching the non-large path) with the CSP hint when
+    /// the user code itself called eval()/new Function() on a strict-CSP
+    /// page.
+    private func throwLargeRuntimeErrorIfAny(
+        target: SafariBridge.TargetDocument,
+        firstMatch: Bool,
+        warnWriter: ((String) -> Void)?
+    ) async throws {
+        let errMsg = try await SafariBridge.doJavaScript("'' + window.__sbLargeErr", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+        let trimmed = errMsg.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != JSWrapper.lenUnsetSentinel, !trimmed.isEmpty else { return }
+        _ = try? await SafariBridge.doJavaScript("delete window.__sbLargeErr", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+        throw SafariBrowserError.appleScriptFailed("JavaScript error: \(errMsg)\(JSWrapper.cspEvalHint(for: errMsg) ?? "")")
     }
 }

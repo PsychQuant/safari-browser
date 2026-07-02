@@ -9,7 +9,9 @@
 </head>
 <body>
 <h1 id="heading">CSP strict (no unsafe-eval)</h1>
-<button id="btn" onclick="void 0">Click me</button>
+<!-- No inline onclick: script-src 'self' blocks inline handlers too.
+     The e2e suite arms listeners via `js` (addEventListener) instead. -->
+<button id="btn">Click me</button>
 <input id="field" type="text" placeholder="type here">
 <div id="tall" style="height: 3000px">tall content for scroll tests</div>
 </body>

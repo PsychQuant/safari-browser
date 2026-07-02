@@ -1257,6 +1257,11 @@ enum SafariBridge {
         // returns nil → length parses to 0 → the whole chunked read returns ""
         // (silent data loss on every --large / --output / `get text` invocation).
         let totalLen = Int(Double(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
+        // #76 INVARIANT: this early return must NOT delete the protocol
+        // globals — JSCommand.runLargePath reads __sbResultLen afterward to
+        // distinguish "legitimately empty result" (0, set by the wrapper)
+        // from "wrapper never parsed" (undefined, preset). Moving the
+        // cleanup above this guard breaks every empty `--large` result.
         guard totalLen > 0 else {
             return ""
         }

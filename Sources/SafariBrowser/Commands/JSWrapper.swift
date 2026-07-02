@@ -16,11 +16,13 @@
 /// Parse-failure detection: `do JavaScript` swallows SyntaxError silently
 /// (returns empty, throws nothing — verified live), so JSCommand presets
 /// the protocol globals to undefined and reads back
-/// `String(window.__sbLen)`; `lenUnsetSentinel` means the wrapper failed
-/// to parse and the next form should be tried.
+/// `'' + window.__sbLen` (ToString coercion — NOT `String(...)`, whose
+/// `window.String` binding page/user code can reassign);
+/// `lenUnsetSentinel` means the wrapper failed to parse and the next
+/// form should be tried.
 enum JSWrapper {
 
-    /// Reading `String(window.__sbLen)` after injection yields this when
+    /// Reading `'' + window.__sbLen` after injection yields this when
     /// the wrapper never executed (parse failure of the whole string).
     static let lenUnsetSentinel = "undefined"
 
@@ -30,9 +32,12 @@ enum JSWrapper {
         "window.__sbLen = void 0; window.__sbResult = void 0"
 
     /// Preset for the large path's protocol globals (doJavaScriptLarge
-    /// uses __sbResult / __sbResultLen).
+    /// uses __sbResult / __sbResultLen; __sbLargeErr carries runtime
+    /// errors in-band — `do JavaScript` swallows uncaught runtime throws
+    /// just as silently as SyntaxErrors, so without this capture a
+    /// runtime error would misread as a parse failure).
     static let presetLargeProtocolGlobals =
-        "window.__sbResult = void 0; window.__sbResultLen = void 0"
+        "window.__sbResult = void 0; window.__sbResultLen = void 0; window.__sbLargeErr = void 0"
 
     /// Expression form: user code inlined as a parenthesized expression.
     /// Newlines guard both sides so a trailing `// comment` in user code
@@ -56,23 +61,31 @@ enum JSWrapper {
         """
     }
 
-    /// Large-path expression form. doJavaScriptLarge already wraps its
-    /// argument as `'' + (code)`; this only adds newline-guarded parens.
+    /// Large-path expression form. doJavaScriptLarge wraps its argument as
+    /// `'' + (code)`, so this stays an expression: an IIFE with try/catch
+    /// that records runtime errors to __sbLargeErr in-band (uncaught
+    /// throws vanish silently in `do JavaScript`) and newline-guards the
+    /// user code against trailing comments.
     static func largeExpression(_ code: String) -> String {
-        "(\n\(code)\n)"
+        "(function(){ try { return ('' + (\n\(code)\n)); } catch(e) { window.__sbLargeErr = e.message; return ''; } })()"
     }
 
-    /// Large-path statement form: IIFE over a function body.
+    /// Large-path statement form: user code runs as a function body (use
+    /// `return` for a value), same in-band runtime-error capture.
     static func largeStatement(_ code: String) -> String {
-        "(function(){\n\(code)\n})()"
+        "(function(){ try { return ('' + (function(){\n\(code)\n})()); } catch(e) { window.__sbLargeErr = e.message; return ''; } })()"
     }
 
     /// Detects a CSP eval refusal in a JS error message and returns an
     /// actionable hint. After #76 the `js` wrapper itself is eval-free, so
     /// this only fires when the *user-provided* code calls eval()/new
-    /// Function() on a strict-CSP page.
+    /// Function() on a strict-CSP page. Requires a CSP marker alongside
+    /// the refusal phrase so user-authored errors that merely contain
+    /// "Refused to evaluate" don't get a misleading hint.
     static func cspEvalHint(for message: String) -> String? {
-        guard message.contains("Refused to evaluate") else { return nil }
+        guard message.contains("Refused to evaluate"),
+              message.contains("unsafe-eval") || message.contains("Content Security Policy")
+        else { return nil }
         return """
 
 

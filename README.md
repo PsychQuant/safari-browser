@@ -171,6 +171,17 @@ expression's value implicitly (old page-context `eval()` semantics); without
 `return` the result is `undefined`. Code that itself calls `eval()`/`new
 Function()` still fails on strict-CSP pages — the error includes a hint.
 
+Two edge notes (#76 verify round):
+
+- Grammatically ambiguous inputs now parse as expressions: `js "{}"` yields
+  `[object Object]` (eval treated it as an empty block → `undefined`), and
+  `js "function f(){}"` / `js "class A {}"` yield the source text instead of
+  declaring anything.
+- The `exec` script `js` step injects raw code (never eval-routed, so it was
+  never CSP-affected) and keeps completion-value semantics — a multi-statement
+  snippet without `return` returns a value there but `undefined` on the CLI.
+  Cross-surface alignment is tracked separately.
+
 ### Screenshot, PDF & Upload
 
 ```bash

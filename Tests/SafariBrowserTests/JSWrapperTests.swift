@@ -66,21 +66,28 @@ final class JSWrapperTests: XCTestCase {
 
     // MARK: - large-path forms
 
-    func testLargeExpression_parenthesizesWithNewlineGuards() {
-        // doJavaScriptLarge already wraps its argument as `'' + (code)`;
-        // the large expression form only needs newline-guarded parens so a
-        // trailing comment cannot eat the outer wrapper.
+    func testLargeExpression_capturesRuntimeErrorsInBand() {
+        // `do JavaScript` swallows uncaught runtime throws silently, so the
+        // large forms must record them to __sbLargeErr in-band; user code
+        // stays newline-guarded against trailing comments.
         let form = JSWrapper.largeExpression("1+1 // c")
-        XCTAssertEqual(form, "(\n1+1 // c\n)")
+        XCTAssertTrue(form.contains("(\n1+1 // c\n)"))
+        XCTAssertTrue(form.contains("window.__sbLargeErr = e.message"))
+        XCTAssertTrue(form.contains("catch"))
+        XCTAssertFalse(form.contains("eval("))
+        XCTAssertFalse(form.contains("new Function"))
+    }
+
+    func testLargeStatement_isFunctionBodyWithErrorCapture() {
+        let form = JSWrapper.largeStatement("var a = 1;\nreturn a;")
+        XCTAssertTrue(form.contains("(function(){\nvar a = 1;\nreturn a;\n})()"))
+        XCTAssertTrue(form.contains("window.__sbLargeErr = e.message"))
         XCTAssertFalse(form.contains("eval("))
     }
 
-    func testLargeStatement_isIIFEOverFunctionBody() {
-        let form = JSWrapper.largeStatement("var a = 1;\nreturn a;")
-        XCTAssertTrue(form.hasPrefix("(function(){\n"))
-        XCTAssertTrue(form.hasSuffix("\n})()"))
-        XCTAssertTrue(form.contains("var a = 1;\nreturn a;"))
-        XCTAssertFalse(form.contains("eval("))
+    func testPresetLargeProtocolGlobals_includesErrorSlot() {
+        XCTAssertTrue(JSWrapper.presetLargeProtocolGlobals.contains("__sbLargeErr"))
+        XCTAssertTrue(JSWrapper.presetLargeProtocolGlobals.contains("__sbResultLen"))
     }
 
     // MARK: - cspEvalHint
@@ -93,9 +100,19 @@ final class JSWrapperTests: XCTestCase {
         XCTAssertTrue(hint?.contains("unsafe-eval") ?? false)
     }
 
-    func testCSPEvalHint_detectsBareRefusedToEvaluate() {
-        let hint = JSWrapper.cspEvalHint(for: "Refused to evaluate a string as JavaScript")
-        XCTAssertNotNil(hint)
+    func testCSPEvalHint_detectsCSPMarkerVariants() {
+        // Either marker alongside the refusal phrase qualifies.
+        XCTAssertNotNil(JSWrapper.cspEvalHint(
+            for: "Refused to evaluate a string as JavaScript because 'unsafe-eval' is not allowed"))
+        XCTAssertNotNil(JSWrapper.cspEvalHint(
+            for: "Refused to evaluate a string as JavaScript — blocked by Content Security Policy"))
+    }
+
+    func testCSPEvalHint_nilForCoincidentalRefusalPhrase() {
+        // Verify-round finding (#76): user-authored errors that merely contain
+        // the refusal phrase must not get the misleading CSP hint.
+        XCTAssertNil(JSWrapper.cspEvalHint(for: "Refused to evaluate the submitted form"))
+        XCTAssertNil(JSWrapper.cspEvalHint(for: "Refused to evaluate a string as JavaScript"))
     }
 
     func testCSPEvalHint_nilForUnrelatedErrors() {
@@ -109,7 +126,8 @@ final class JSWrapperTests: XCTestCase {
     func testLenUnsetSentinel_matchesStringifiedUndefined() {
         // `do JavaScript` swallows SyntaxError silently (returns empty, no
         // error), so parse failure is detected by presetting the protocol
-        // globals to undefined and reading back String(window.__sbLen):
+        // globals to undefined and reading back `'' + window.__sbLen`
+        // (ToString coercion — immune to window.String reassignment):
         // "undefined" == the wrapper never ran.
         XCTAssertEqual(JSWrapper.lenUnsetSentinel, "undefined")
     }
