@@ -157,6 +157,20 @@ safari-browser js --large "<code>"     # chunked read for large output (>1MB)
 safari-browser js --output file "<code>"  # write result to file
 ```
 
+`js` is eval-free (#76): it works on strict-CSP pages (`script-src` without
+`'unsafe-eval'` — facebook.com, claude.ai, most modern sites). A single
+expression prints its value (`js "1+1"` → `2`). A multi-statement script runs
+as a function body — use `return` for a value:
+
+```bash
+safari-browser js "var a = 2; return a + 3;"   # → 5
+```
+
+Breaking change vs pre-#76: multi-statement scripts no longer yield the last
+expression's value implicitly (old page-context `eval()` semantics); without
+`return` the result is `undefined`. Code that itself calls `eval()`/`new
+Function()` still fails on strict-CSP pages — the error includes a hint.
+
 ### Screenshot, PDF & Upload
 
 ```bash

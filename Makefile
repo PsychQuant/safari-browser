@@ -11,7 +11,7 @@ export SAFARI_BROWSER_BIN
 
 .PHONY: build build-debug install clean \
         test test-unit test-smoke test-all \
-        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-exec-script test-mark-tab
+        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-exec-script test-mark-tab test-csp
 
 build:
 	swift build -c release
@@ -66,6 +66,10 @@ test-exec-script: build-debug
 
 test-mark-tab: build-debug
 	./Tests/e2e-mark-tab.sh
+
+# #76: js on strict-CSP pages (eval-free wrappers) + interaction commands.
+test-csp: build-debug
+	./Tests/e2e-csp.sh
 
 clean:
 	rm -rf .build
