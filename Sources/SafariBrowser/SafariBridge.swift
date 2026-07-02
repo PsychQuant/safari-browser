@@ -64,6 +64,17 @@ enum SafariBridge {
         /// `pickNativeTarget`) for uniform fail-closed semantics.
         case urlMatch(UrlMatcher)
         case documentIndex(Int)
+        /// Identity-anchored concrete target (#79) — produced by
+        /// `resolveToConcreteTarget` from a `.urlMatch` /
+        /// `.documentIndex` resolution when the enumeration carried the
+        /// window's stable AppleScript id. References render as
+        /// `tab T of window id W`, which survives z-order churn that
+        /// dangles positional `window N` refs mid-command. `rematch`
+        /// carries the original URL matcher so per-round-trip guards can
+        /// verify the tab still matches and a bounded retry can
+        /// re-resolve once; `nil` for `.documentIndex`-originated
+        /// targets (no matcher to re-verify against).
+        case resolvedTab(windowID: Int, tabInWindow: Int, rematch: UrlMatcher?)
         /// Composite target: the tab-in-window-th tab of the window-th
         /// window. Addresses same-URL duplicate tabs that `.urlMatch`
         /// cannot disambiguate (issue #28 gap #2). Always requires both
@@ -113,6 +124,10 @@ enum SafariBridge {
             return "document \(n)"
         case .windowTab(let w, let t):
             return "tab \(t) of window \(w)"
+        case .resolvedTab(let windowID, let tab, _):
+            // #79: window id is stable for the window's lifetime, unlike
+            // the z-order `window N` index the other cases use.
+            return "tab \(tab) of window id \(windowID)"
         }
     }
 
@@ -122,6 +137,14 @@ enum SafariBridge {
     /// the reference points at that specific tab; otherwise it points
     /// at the current tab's document via `document of window N`.
     static func docRefFromResolved(_ resolved: ResolvedWindowTarget) -> String {
+        // #79: identity-anchored form when the enumeration carried the
+        // stable window id AND a concrete tab is known. Window-level
+        // targets (no anchor tab) keep the document-scoped positional
+        // form — the #21 modal-sheet bypass depends on it.
+        if let windowID = resolved.windowID,
+           let tab = resolved.anchorTabIndex ?? resolved.tabIndexInWindow {
+            return "tab \(tab) of window id \(windowID)"
+        }
         if let tab = resolved.tabIndexInWindow {
             return "tab \(tab) of window \(resolved.windowIndex)"
         }
@@ -165,7 +188,9 @@ enum SafariBridge {
             return docRefFromResolved(resolved)
         }
         switch target {
-        case .frontWindow, .windowIndex:
+        case .frontWindow, .windowIndex, .resolvedTab:
+            // .resolvedTab is already concrete (#79) — render directly,
+            // no enumeration round-trip.
             return resolveDocumentReference(target)
         case .urlMatch, .documentIndex, .windowTab:
             let resolved = try await resolveNativeTarget(
@@ -213,13 +238,10 @@ enum SafariBridge {
                 warnWriter: warnWriter,
                 profile: profile
             )
-            if let tab = resolved.tabIndexInWindow {
-                return .windowTab(window: resolved.windowIndex, tabInWindow: tab)
-            }
-            return .windowIndex(resolved.windowIndex)
+            return concreteTarget(from: resolved, original: target)
         }
         switch target {
-        case .frontWindow, .windowIndex, .windowTab:
+        case .frontWindow, .windowIndex, .windowTab, .resolvedTab:
             return target
         case .urlMatch, .documentIndex:
             let resolved = try await resolveNativeTarget(
@@ -228,11 +250,35 @@ enum SafariBridge {
                 warnWriter: warnWriter,
                 profile: profile
             )
-            if let tab = resolved.tabIndexInWindow {
-                return .windowTab(window: resolved.windowIndex, tabInWindow: tab)
-            }
-            return .windowIndex(resolved.windowIndex)
+            return concreteTarget(from: resolved, original: target)
         }
+    }
+
+    /// Pure collapse of a `ResolvedWindowTarget` into a concrete
+    /// `TargetDocument`. Prefers the identity-anchored `.resolvedTab`
+    /// (#79) — stable window id + concrete tab, carrying the original
+    /// URL matcher for per-round-trip guards and bounded re-resolve —
+    /// and degrades to the pre-#79 positional forms when the
+    /// enumeration didn't yield an id (legacy records) or no concrete
+    /// tab is known (window-level target).
+    static func concreteTarget(
+        from resolved: ResolvedWindowTarget,
+        original: TargetDocument
+    ) -> TargetDocument {
+        if let windowID = resolved.windowID,
+           let tab = resolved.anchorTabIndex ?? resolved.tabIndexInWindow {
+            let rematch: UrlMatcher?
+            if case .urlMatch(let matcher) = original {
+                rematch = matcher
+            } else {
+                rematch = nil
+            }
+            return .resolvedTab(windowID: windowID, tabInWindow: tab, rematch: rematch)
+        }
+        if let tab = resolved.tabIndexInWindow {
+            return .windowTab(window: resolved.windowIndex, tabInWindow: tab)
+        }
+        return .windowIndex(resolved.windowIndex)
     }
 
     // MARK: - Focus-existing (Group 8: open default)
@@ -461,6 +507,9 @@ enum SafariBridge {
         case .urlMatch(let matcher): return matcher.description
         case .documentIndex(let n): return "document \(n)"
         case .windowTab(let w, let t): return "window \(w) tab \(t)"
+        case .resolvedTab(let windowID, let tab, let rematch):
+            let suffix = rematch.map { " (matched: \($0.description))" } ?? ""
+            return "window id \(windowID) tab \(tab)\(suffix)"
         }
     }
 
@@ -1668,6 +1717,33 @@ enum SafariBridge {
     struct ResolvedWindowTarget: Sendable, Equatable {
         let windowIndex: Int
         let tabIndexInWindow: Int?
+        /// Stable AppleScript window id of the resolved window (#79).
+        /// `nil` on legacy enumeration records or targets resolved
+        /// without enumeration — reference production falls back to the
+        /// positional form.
+        let windowID: Int?
+        /// Concrete tab index of the resolved match (#79) — set even
+        /// when the match is the window's current tab (where
+        /// `tabIndexInWindow` collapses to nil because no tab switch is
+        /// needed). Identity-anchored references need the concrete
+        /// index; without it the ref would track the user's tab
+        /// switching via `current tab`.
+        let anchorTabIndex: Int?
+
+        /// Backwards-compatible initializer — existing construction
+        /// sites and test fixtures that don't carry identity fields
+        /// keep working unchanged.
+        init(
+            windowIndex: Int,
+            tabIndexInWindow: Int?,
+            windowID: Int? = nil,
+            anchorTabIndex: Int? = nil
+        ) {
+            self.windowIndex = windowIndex
+            self.tabIndexInWindow = tabIndexInWindow
+            self.windowID = windowID
+            self.anchorTabIndex = anchorTabIndex
+        }
     }
 
     /// Pure resolver core. Maps a `TargetDocument` to a concrete
@@ -1750,6 +1826,27 @@ enum SafariBridge {
             }
             return ResolvedWindowTarget(windowIndex: first.windowIndex, tabIndexInWindow: nil)
 
+        case .resolvedTab(let windowID, let tab, _):
+            // Already-concrete identity target (#79) re-entering the
+            // resolver (defensive totality — production flows render it
+            // directly via resolveDocumentReference). Map the stable id
+            // back to the current z-order index; a missing id means the
+            // window closed since resolution.
+            guard let window = windows.first(where: { $0.windowID == windowID }) else {
+                throw SafariBrowserError.documentNotFound(
+                    pattern: "window id \(windowID) tab \(tab)",
+                    availableDocuments: windows.flatMap { w in
+                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                    }
+                )
+            }
+            return ResolvedWindowTarget(
+                windowIndex: window.windowIndex,
+                tabIndexInWindow: window.currentTabIndex == tab ? nil : tab,
+                windowID: windowID,
+                anchorTabIndex: tab
+            )
+
         case .windowIndex(let n):
             if n < 1 || n > windows.count {
                 let availableSummary = windows.map { w -> String in
@@ -1801,7 +1898,9 @@ enum SafariBridge {
                     let tab = window.tabs[remaining - 1]
                     return ResolvedWindowTarget(
                         windowIndex: window.windowIndex,
-                        tabIndexInWindow: tab.isCurrent ? nil : tab.tabIndex
+                        tabIndexInWindow: tab.isCurrent ? nil : tab.tabIndex,
+                        windowID: window.windowID,
+                        anchorTabIndex: tab.tabIndex
                     )
                 }
                 remaining -= window.tabs.count
@@ -1849,7 +1948,9 @@ enum SafariBridge {
             let match = matches[0]
             return ResolvedWindowTarget(
                 windowIndex: match.windowIndex,
-                tabIndexInWindow: match.isCurrent ? nil : match.tabIndex
+                tabIndexInWindow: match.isCurrent ? nil : match.tabIndex,
+                windowID: windows.first(where: { $0.windowIndex == match.windowIndex })?.windowID,
+                anchorTabIndex: match.tabIndex
             )
 
         case .windowTab(let w, let t):
@@ -1927,7 +2028,7 @@ enum SafariBridge {
             return ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil)
         case .windowIndex(let n):
             return ResolvedWindowTarget(windowIndex: n, tabIndexInWindow: nil)
-        case .urlMatch, .documentIndex, .windowTab:
+        case .urlMatch, .documentIndex, .windowTab, .resolvedTab:
             let windows = try await listAllWindows()
             return try resolveNativeTargetInWindows(
                 target,
@@ -2019,7 +2120,9 @@ enum SafariBridge {
         }
         return ResolvedWindowTarget(
             windowIndex: first.windowIndex,
-            tabIndexInWindow: first.tab.isCurrent ? nil : first.tab.tabIndex
+            tabIndexInWindow: first.tab.isCurrent ? nil : first.tab.tabIndex,
+            windowID: candidates.first(where: { $0.windowIndex == first.windowIndex })?.windowID,
+            anchorTabIndex: first.tab.tabIndex
         )
     }
 

@@ -51,4 +51,80 @@ final class TargetIdentityTests: XCTestCase {
         XCTAssertNil(windows[0].windowID)
         XCTAssertEqual(windows[0].tabs[0].url, "https://a.com")
     }
+
+    // MARK: - S2: identity-anchored references
+
+    private func twoWindowFixture() -> [SafariBridge.WindowInfo] {
+        [
+            SafariBridge.WindowInfo(
+                windowIndex: 1,
+                currentTabIndex: 1,
+                tabs: [
+                    SafariBridge.TabInWindow(tabIndex: 1, url: "https://a.com/x", title: "A", isCurrent: true),
+                    SafariBridge.TabInWindow(tabIndex: 2, url: "https://b.com/y", title: "B", isCurrent: false),
+                ],
+                windowID: 22510
+            ),
+            SafariBridge.WindowInfo(
+                windowIndex: 2,
+                currentTabIndex: 1,
+                tabs: [
+                    SafariBridge.TabInWindow(tabIndex: 1, url: "https://c.com/z", title: "C", isCurrent: true)
+                ],
+                windowID: 30691
+            ),
+        ]
+    }
+
+    func testPickNativeTargetURLMatchCarriesWindowIDAndAnchor() throws {
+        let resolved = try SafariBridge.pickNativeTarget(
+            .urlMatch(.contains("b.com")),
+            in: twoWindowFixture()
+        )
+        XCTAssertEqual(resolved.windowID, 22510)
+        // Anchor is the concrete matched tab index — set even when the
+        // match is a background tab (here) or the current tab.
+        XCTAssertEqual(resolved.anchorTabIndex, 2)
+    }
+
+    func testPickNativeTargetURLMatchCurrentTabStillAnchored() throws {
+        // isCurrent collapses tabIndexInWindow to nil (no switch needed)
+        // but the identity anchor must stay concrete.
+        let resolved = try SafariBridge.pickNativeTarget(
+            .urlMatch(.contains("c.com")),
+            in: twoWindowFixture()
+        )
+        XCTAssertNil(resolved.tabIndexInWindow)
+        XCTAssertEqual(resolved.windowID, 30691)
+        XCTAssertEqual(resolved.anchorTabIndex, 1)
+    }
+
+    func testDocRefFromResolvedUsesWindowIDWhenAnchored() {
+        let resolved = SafariBridge.ResolvedWindowTarget(
+            windowIndex: 1, tabIndexInWindow: 2, windowID: 22510, anchorTabIndex: 2)
+        XCTAssertEqual(
+            SafariBridge.docRefFromResolved(resolved),
+            "tab 2 of window id 22510"
+        )
+    }
+
+    func testDocRefFromResolvedFallsBackToPositionalWithoutWindowID() {
+        // Legacy enumeration (no id) keeps the pre-#79 positional form.
+        let resolved = SafariBridge.ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: 2)
+        XCTAssertEqual(SafariBridge.docRefFromResolved(resolved), "tab 2 of window 1")
+    }
+
+    func testDocRefFromResolvedWindowLevelKeepsDocumentForm() {
+        // Window-level target (no anchor tab): keep `document of window N`
+        // — the #21 modal-sheet bypass depends on document-scoped refs.
+        let resolved = SafariBridge.ResolvedWindowTarget(
+            windowIndex: 1, tabIndexInWindow: nil, windowID: 22510, anchorTabIndex: nil)
+        XCTAssertEqual(SafariBridge.docRefFromResolved(resolved), "document of window 1")
+    }
+
+    func testResolveDocumentReferenceResolvedTab() {
+        let ref = SafariBridge.resolveDocumentReference(
+            .resolvedTab(windowID: 22510, tabInWindow: 3, rematch: nil))
+        XCTAssertEqual(ref, "tab 3 of window id 22510")
+    }
 }
