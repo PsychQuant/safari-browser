@@ -1634,20 +1634,28 @@ enum SafariBridge {
         /// has no profile separator (default profile, pre-multi-profile
         /// Safari, or transient page-load state). Issue #47.
         let profile: String?
+        /// Stable AppleScript `id` of the window (#79). Unlike
+        /// `windowIndex` (a z-order position that dangles when the user
+        /// clicks another window), the id stays fixed for the window's
+        /// lifetime, so `tab T of window id W` references survive z-order
+        /// churn. `nil` on legacy 4/5/6-field enumeration records.
+        let windowID: Int?
 
-        /// Backwards-compatible initializer with `profile` defaulting
-        /// to `nil`. Existing test fixtures and callers that don't care
-        /// about profile keep working without explicit `profile:` arg.
+        /// Backwards-compatible initializer with `profile` / `windowID`
+        /// defaulting to `nil`. Existing test fixtures and callers that
+        /// don't care about them keep working without explicit args.
         init(
             windowIndex: Int,
             currentTabIndex: Int,
             tabs: [TabInWindow],
-            profile: String? = nil
+            profile: String? = nil,
+            windowID: Int? = nil
         ) {
             self.windowIndex = windowIndex
             self.currentTabIndex = currentTabIndex
             self.tabs = tabs
             self.profile = profile
+            self.windowID = windowID
         }
     }
 
@@ -2044,6 +2052,9 @@ enum SafariBridge {
                     -- window and emit it on every record.
                     set winName to name of window w
                     if winName is missing value then set winName to ""
+                    -- #79: stable window id — unlike the z-order index w,
+                    -- it doesn't dangle when the user raises another window.
+                    set winID to id of window w
                     repeat with t from 1 to tabCount
                         set tabUrl to URL of tab t of window w
                         if tabUrl is missing value then set tabUrl to ""
@@ -2054,7 +2065,7 @@ enum SafariBridge {
                         else
                             set isCur to "0"
                         end if
-                        set output to output & w & GS & t & GS & isCur & GS & tabUrl & GS & tabName & GS & winName & RS
+                        set output to output & w & GS & t & GS & isCur & GS & tabUrl & GS & tabName & GS & winName & GS & winID & RS
                     end repeat
                 end repeat
                 return output
@@ -2065,13 +2076,15 @@ enum SafariBridge {
     }
 
     /// Parse the `listAllWindows` output format. Exposed for unit
-    /// testing the parser independently of Safari. Record layout (5
+    /// testing the parser independently of Safari. Record layout (7
     /// fields separated by GS, terminated by RS):
-    /// `window_idx GS tab_idx GS is_current GS url GS title RS`
+    /// `window_idx GS tab_idx GS is_current GS url GS title GS win_name GS win_id RS`
     ///
-    /// Backward compatibility: if a record only has 4 fields (legacy
-    /// pre-title format), the title defaults to empty string so tests
-    /// and callers that don't care about title still work.
+    /// Backward compatibility: shorter records still parse — 4 fields
+    /// (pre-title) default title to empty, 5 (pre-window-name, #47)
+    /// leave profile nil, 6 (pre-window-id, #79) leave windowID nil —
+    /// so tests and mid-deploy states that don't emit the newer fields
+    /// keep working.
     static func parseWindowEnumeration(_ raw: String) -> [WindowInfo] {
         let gs = "\u{1D}"
         let rs = "\u{1E}"
@@ -2081,6 +2094,7 @@ enum SafariBridge {
         var byWindow: [Int: [TabInWindow]] = [:]
         var currentTabByWindow: [Int: Int] = [:]
         var windowNameByWindow: [Int: String] = [:]
+        var windowIDByWindow: [Int: Int] = [:]
 
         for record in trimmed.components(separatedBy: rs) where !record.isEmpty {
             let fields = record.components(separatedBy: gs)
@@ -2097,6 +2111,13 @@ enum SafariBridge {
             // observation wins. Absent on legacy 4-/5-field records.
             if fields.count >= 6, windowNameByWindow[winIdx] == nil {
                 windowNameByWindow[winIdx] = fields[5]
+            }
+            // 7th field: stable AppleScript window id (#79). Same
+            // once-per-window convention; non-numeric values degrade to
+            // nil (positional fallback) rather than corrupting the record.
+            if fields.count >= 7, windowIDByWindow[winIdx] == nil,
+               let winID = Int(fields[6]) {
+                windowIDByWindow[winIdx] = winID
             }
             byWindow[winIdx, default: []].append(TabInWindow(
                 tabIndex: tabIdx,
@@ -2124,7 +2145,8 @@ enum SafariBridge {
                 windowIndex: w,
                 currentTabIndex: currentTabByWindow[w] ?? 1,
                 tabs: tabs,
-                profile: profile
+                profile: profile,
+                windowID: windowIDByWindow[w]
             )
         }
     }
