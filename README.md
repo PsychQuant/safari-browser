@@ -157,6 +157,31 @@ safari-browser js --large "<code>"     # chunked read for large output (>1MB)
 safari-browser js --output file "<code>"  # write result to file
 ```
 
+`js` is eval-free (#76): it works on strict-CSP pages (`script-src` without
+`'unsafe-eval'` — facebook.com, claude.ai, most modern sites). A single
+expression prints its value (`js "1+1"` → `2`). A multi-statement script runs
+as a function body — use `return` for a value:
+
+```bash
+safari-browser js "var a = 2; return a + 3;"   # → 5
+```
+
+Breaking change vs pre-#76: multi-statement scripts no longer yield the last
+expression's value implicitly (old page-context `eval()` semantics); without
+`return` the result is `undefined`. Code that itself calls `eval()`/`new
+Function()` still fails on strict-CSP pages — the error includes a hint.
+
+Two edge notes (#76 verify round):
+
+- Grammatically ambiguous inputs now parse as expressions: `js "{}"` yields
+  `[object Object]` (eval treated it as an empty block → `undefined`), and
+  `js "function f(){}"` / `js "class A {}"` yield the source text instead of
+  declaring anything.
+- The `exec` script `js` step injects raw code (never eval-routed, so it was
+  never CSP-affected) and keeps completion-value semantics — a multi-statement
+  snippet without `return` returns a value there but `undefined` on the CLI.
+  Cross-surface alignment is tracked separately.
+
 ### Screenshot, PDF & Upload
 
 ```bash

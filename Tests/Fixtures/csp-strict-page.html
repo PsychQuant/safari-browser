@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+<!-- #76: strict CSP without 'unsafe-eval' — mirrors facebook.com / claude.ai.
+     Page-context eval()/new Function() is refused here, while AppleScript
+     `do JavaScript` injection (UA-privileged) still runs. -->
+<meta http-equiv="Content-Security-Policy" content="script-src 'self'">
+<title>CSP Strict Test Page</title>
+</head>
+<body>
+<h1 id="heading">CSP strict (no unsafe-eval)</h1>
+<!-- No inline onclick: script-src 'self' blocks inline handlers too.
+     The e2e suite arms listeners via `js` (addEventListener) instead. -->
+<button id="btn">Click me</button>
+<input id="field" type="text" placeholder="type here">
+<div id="tall" style="height: 3000px">tall content for scroll tests</div>
+</body>
+</html>
