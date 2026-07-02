@@ -127,4 +127,80 @@ final class TargetIdentityTests: XCTestCase {
             .resolvedTab(windowID: 22510, tabInWindow: 3, rematch: nil))
         XCTAssertEqual(ref, "tab 3 of window id 22510")
     }
+
+    // MARK: - S3: in-script URL guard clauses
+
+    func testURLGuardClauseContains() {
+        let clause = SafariBridge.urlGuardClause(for: .contains("plaud"))
+        XCTAssertEqual(
+            clause,
+            "if (URL of _t) does not contain \"plaud\" then error \"SB_TARGET_CHANGED\" number 9001"
+        )
+    }
+
+    func testURLGuardClauseExact() {
+        let clause = SafariBridge.urlGuardClause(for: .exact("https://a.com/x"))
+        XCTAssertEqual(
+            clause,
+            "if (URL of _t) is not equal to \"https://a.com/x\" then error \"SB_TARGET_CHANGED\" number 9001"
+        )
+    }
+
+    func testURLGuardClauseEndsWith() {
+        let clause = SafariBridge.urlGuardClause(for: .endsWith("/play"))
+        XCTAssertEqual(
+            clause,
+            "if (URL of _t) does not end with \"/play\" then error \"SB_TARGET_CHANGED\" number 9001"
+        )
+    }
+
+    func testURLGuardClauseRegexIsNil() {
+        // AppleScript has no regex — the regex matcher uses a Swift-side
+        // pre-check round-trip instead of an in-script clause.
+        let re = try! NSRegularExpression(pattern: "a+")
+        XCTAssertNil(SafariBridge.urlGuardClause(for: .regex(re)))
+    }
+
+    func testURLGuardClauseEscapesQuotes() {
+        // Matcher strings are user input — quotes must not break out of
+        // the AppleScript string literal.
+        let clause = SafariBridge.urlGuardClause(for: .contains(#"x"y"#))
+        XCTAssertTrue(clause?.contains(#"x\"y"#) ?? false)
+    }
+
+    // MARK: - S4: dangle detection (retry decision logic)
+
+    func testIsTargetDangleErrorGuardTrip() {
+        XCTAssertTrue(SafariBridge.isTargetDangleError(
+            .appleScriptFailed("execution error: SB_TARGET_CHANGED (9001)")))
+    }
+
+    func testIsTargetDangleErrorInvalidIndex() {
+        XCTAssertTrue(SafariBridge.isTargetDangleError(
+            .appleScriptFailed("execution error: Safari發生錯誤：無法取得「tab 2 of window id 5」。索引錯誤。 (-1719)")))
+    }
+
+    func testIsTargetDangleErrorDocumentNotFound() {
+        // runTargetedAppleScript translates -1719/-1728 on non-default
+        // targets into documentNotFound — that translated form is also a
+        // dangle signal for a .resolvedTab execution.
+        XCTAssertTrue(SafariBridge.isTargetDangleError(
+            .documentNotFound(pattern: "window id 5 tab 2", availableDocuments: [])))
+    }
+
+    func testIsTargetDangleErrorUnrelatedErrorsFalse() {
+        XCTAssertFalse(SafariBridge.isTargetDangleError(.elementNotFound("#btn")))
+        XCTAssertFalse(SafariBridge.isTargetDangleError(
+            .appleScriptFailed("JavaScript error: TypeError: undefined")))
+        XCTAssertFalse(SafariBridge.isTargetDangleError(
+            .ambiguousWindowMatch(pattern: "x", matches: [])))
+    }
+
+    func testTargetTabChangedErrorDescriptionIsActionable() {
+        let error = SafariBrowserError.targetTabChanged(
+            expected: "URL containing \"plaud\"", actualURL: "https://other.com")
+        let desc = error.errorDescription ?? ""
+        XCTAssertTrue(desc.contains("plaud"))
+        XCTAssertTrue(desc.contains("documents"), "should point at `safari-browser documents` for re-discovery")
+    }
 }

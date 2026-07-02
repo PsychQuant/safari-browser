@@ -1255,6 +1255,43 @@ enum SafariBridge {
 
     // MARK: - JavaScript
 
+    /// #79: AppleScript guard clause verifying the identity-anchored tab
+    /// still matches the original URL matcher, evaluated in the SAME
+    /// osascript run as the JS dispatch (no resolve/execute gap). The
+    /// clause references `_t`, bound by the caller's prelude. Returns
+    /// `nil` for `.regex` — AppleScript has no regex, so that matcher
+    /// uses a Swift-side pre-check round-trip instead.
+    static func urlGuardClause(for matcher: UrlMatcher) -> String? {
+        switch matcher {
+        case .contains(let s):
+            return "if (URL of _t) does not contain \"\(s.escapedForAppleScript)\" then error \"SB_TARGET_CHANGED\" number 9001"
+        case .exact(let s):
+            return "if (URL of _t) is not equal to \"\(s.escapedForAppleScript)\" then error \"SB_TARGET_CHANGED\" number 9001"
+        case .endsWith(let s):
+            return "if (URL of _t) does not end with \"\(s.escapedForAppleScript)\" then error \"SB_TARGET_CHANGED\" number 9001"
+        case .regex:
+            return nil
+        }
+    }
+
+    /// #79: does this error mean the identity-anchored target dangled
+    /// (window closed / tab moved / guard tripped) — i.e. a bounded
+    /// re-resolve is worth one attempt? Pure; drives the retry decision.
+    static func isTargetDangleError(_ error: SafariBrowserError) -> Bool {
+        switch error {
+        case .appleScriptFailed(let msg):
+            // Guard trip (our sentinel) or invalid-index on a dangled ref.
+            // JS runtime errors ("JavaScript error: ...") never match.
+            return msg.contains("SB_TARGET_CHANGED") || msg.contains("-1719") || msg.contains("-1728")
+        case .documentNotFound:
+            // runTargetedAppleScript translates -1719/-1728 on non-default
+            // targets into documentNotFound before we see it.
+            return true
+        default:
+            return false
+        }
+    }
+
     static func doJavaScript(
         _ code: String,
         target: TargetDocument = .frontWindow,
@@ -1268,6 +1305,76 @@ enum SafariBridge {
             warnWriter: warnWriter,
             profile: profile
         )
+        do {
+            return try await dispatchJS(code, docRef: docRef, target: target)
+        } catch let error as SafariBrowserError {
+            // #79 bounded retry: the identity-anchored ref dangled
+            // (window closed / tab moved / guard tripped). Re-resolve the
+            // ORIGINAL matcher once — identity re-resolve finds the same
+            // page wherever it moved, so multi-round-trip protocol state
+            // (window.__sb* globals) stays valid. Multi-match stays
+            // fail-closed (ambiguousWindowMatch propagates); a second
+            // dangle fails closed as targetTabChanged — never a silent
+            // wrong-tab dispatch.
+            guard case .resolvedTab(_, _, .some(let matcher)) = target,
+                  isTargetDangleError(error) else { throw error }
+            let resolved = try await resolveNativeTarget(
+                from: .urlMatch(matcher),
+                firstMatch: firstMatch,
+                warnWriter: nil,  // warning already fired on first resolve
+                profile: profile
+            )
+            let retryTarget = concreteTarget(from: resolved, original: .urlMatch(matcher))
+            let retryRef = try await resolveToAppleScript(retryTarget, profile: profile)
+            do {
+                return try await dispatchJS(code, docRef: retryRef, target: retryTarget)
+            } catch let retryError as SafariBrowserError where isTargetDangleError(retryError) {
+                throw SafariBrowserError.targetTabChanged(
+                    expected: matcher.description,
+                    actualURL: nil
+                )
+            }
+        }
+    }
+
+    /// Single JS dispatch. For identity-anchored targets carrying a
+    /// rematch matcher, the URL guard runs in the SAME osascript as the
+    /// dispatch (`.regex` matchers pre-check from Swift instead — one
+    /// extra round-trip, only on that matcher kind). All other targets
+    /// keep the pre-#79 script byte-identical.
+    private static func dispatchJS(
+        _ code: String,
+        docRef: String,
+        target: TargetDocument
+    ) async throws -> String {
+        guard case .resolvedTab(_, _, .some(let matcher)) = target else {
+            return try await runTargetedAppleScript("""
+                tell application "Safari"
+                    do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
+                end tell
+                """, target: target)
+        }
+        if let guardClause = urlGuardClause(for: matcher) {
+            return try await runTargetedAppleScript("""
+                tell application "Safari"
+                    set _t to \(docRef)
+                    \(guardClause)
+                    do JavaScript "\(code.escapedForAppleScript)" in _t
+                end tell
+                """, target: target)
+        }
+        // Regex matcher: Swift-side pre-check. The gap between check and
+        // dispatch is far narrower than resolve-to-execute was, and a miss
+        // still lands on the dangle/retry path via the thrown sentinel.
+        let currentURL = try await runTargetedAppleScript("""
+            tell application "Safari"
+                return URL of \(docRef)
+            end tell
+            """, target: target)
+        guard matcher.matches(currentURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw SafariBrowserError.appleScriptFailed(
+                "SB_TARGET_CHANGED: URL of target tab no longer matches \(matcher.description)")
+        }
         return try await runTargetedAppleScript("""
             tell application "Safari"
                 do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
