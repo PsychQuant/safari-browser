@@ -204,7 +204,7 @@ safari-browser tab new                 # new tab
 safari-browser tab new --window 2      # new tab in window 2
 ```
 
-### Multi-window Targeting (#17 #18 #21 #23)
+### Multi-window Targeting (#17 #18 #21 #23 #79)
 
 When Safari has more than one window, every subcommand that reads from or
 drives a document accepts one of four mutually exclusive global flags:
@@ -216,6 +216,17 @@ safari-browser <cmd> --tab <n>         # document N (alias for --document)
 safari-browser <cmd> --document <n>    # document N in Safari's document collection
 safari-browser <cmd> --profile <name>  # restrict to windows of named Safari profile (#47)
 ```
+
+**Identity-anchored `--url` resolution (#79)**: a `--url` match resolves to
+the tab's *identity* (`tab T of window id W`, using Safari's stable window
+id), not its z-order position — so multi-round-trip commands (`js`, chunked
+reads) keep hitting the same tab even if you click other Safari windows
+mid-command. Every round-trip re-verifies the tab's URL in the same
+AppleScript; on a miss (window closed, tab moved/navigated) the command
+re-resolves once and otherwise fails closed with `targetTabChanged` — never
+a silent wrong-tab dispatch. Explicit `--window N` / `--tab-in-window M`
+stay positional **by design**: those flags mean "whatever sits at this
+position right now".
 
 `--profile` (#47) is orthogonal — combine with any other lock flag to
 disambiguate same-URL tabs across Safari profiles. **Detection mechanism**:

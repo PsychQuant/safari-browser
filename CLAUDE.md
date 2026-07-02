@@ -97,10 +97,12 @@ safari-browser 預設行為應貼近人類用 Safari 的心智模型 — 與 Non
 
 完整規範：`openspec/specs/human-emulation/spec.md`（tab-targeting-v2 archive 後生成）
 
-## Multi-window / Multi-document targeting (#17 #18 #21 #23 #26)
+## Multi-window / Multi-document targeting (#17 #18 #21 #23 #26 #79)
 
 多視窗環境下，**預設 target 是 `document 1`**（單視窗時等價於 `current tab of front window`）。
-當 Safari 有多個視窗時，**優先用 `--url`** 明確指定 document，避免 z-order 歧義：
+當 Safari 有多個視窗時，**優先用 `--url`** 明確指定 document，避免 z-order 歧義。
+
+**Identity-anchored resolution（#79）**：`--url` 匹配結果收斂成 `TargetDocument.resolvedTab(windowID:tabInWindow:rematch:)` — reference 形式 `tab T of window id W`（Safari 穩定 window id，z-order 免疫）。multi-roundtrip 指令（`js` 協定、chunked read）執行中使用者點擊其他視窗不再導致跨分頁 dispatch。每個 roundtrip 在**同一段 AppleScript** 內以 URL guard 重驗目標（regex matcher 走 Swift-side 預檢 +1 roundtrip）；guard 失敗或 -1719 → 以原始 matcher re-resolve **一次**（multi-match 仍 fail-closed），二次失敗丟 `targetTabChanged` — 永不 silent 打錯分頁。**顯式 `--window N` / `--tab-in-window M` 維持 positional 語意**（by design：使用者指定的就是座標）。Legacy enumeration（無 window id 欄位）自動 fallback 舊 positional 形式。相關新抽象：`WindowInfo.windowID` / `ResolvedWindowTarget.windowID+anchorTabIndex` / `concreteTarget(from:original:)` / `urlGuardClause(for:)` / `isTargetDangleError(_:)` / `SafariBrowserError.targetTabChanged`。e2e：`make test-target-identity`。
 
 ```bash
 # 先發現可用的 targets
