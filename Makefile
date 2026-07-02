@@ -11,7 +11,7 @@ export SAFARI_BROWSER_BIN
 
 .PHONY: build build-debug install clean \
         test test-unit test-smoke test-all \
-        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-exec-script test-mark-tab test-csp
+        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-exec-script test-mark-tab test-csp test-target-identity
 
 build:
 	swift build -c release
@@ -70,6 +70,10 @@ test-mark-tab: build-debug
 # #76: js on strict-CSP pages (eval-free wrappers) + interaction commands.
 test-csp: build-debug
 	./Tests/e2e-csp.sh
+
+# #79: identity-anchored refs survive z-order churn (window-id + guard + retry).
+test-target-identity: build-debug
+	./Tests/e2e-target-identity.sh
 
 clean:
 	rm -rf .build
