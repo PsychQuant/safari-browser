@@ -29,7 +29,9 @@ fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1: $2"; }
 
 # Close EVERY tab matching a fixture URL — stale tabs from earlier runs
 # make --url multi-match fail-closed refuse (correctly) and poison every
-# assertion. --first-match closes one candidate per iteration.
+# assertion. --first-match closes one candidate per iteration. Patterns
+# are the FULL fixture paths (verify finding: a bare "test-page" substring
+# could match an unrelated user tab — non-interference requires precision).
 close_all() {
     local pattern="$1"
     for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -38,8 +40,8 @@ close_all() {
     done
 }
 cleanup() {
-    close_all test-page
-    close_all csp-strict-page
+    close_all "Tests/Fixtures/test-page.html"
+    close_all "Tests/Fixtures/csp-strict-page.html"
 }
 trap cleanup EXIT
 
@@ -67,8 +69,8 @@ $SB open --new-window "$PAGE_A" 2>/dev/null || { echo "FATAL: cannot open window
 sleep 2
 $SB open --new-window "$PAGE_B" 2>/dev/null || { echo "FATAL: cannot open window B"; exit 1; }
 sleep 2
-WID_A=$(window_id_for "test-page")
-WID_B=$(window_id_for "csp-strict-page")
+WID_A=$(window_id_for "Tests/Fixtures/test-page.html")
+WID_B=$(window_id_for "Tests/Fixtures/csp-strict-page.html")
 if [ -z "$WID_A" ] || [ -z "$WID_B" ] || [ "$WID_A" = "$WID_B" ]; then
     echo "FATAL: expected two distinct test windows, got A='$WID_A' B='$WID_B'"
     exit 1
@@ -126,28 +128,24 @@ fi
 
 echo "## dangle → bounded retry (#78 smoke)"
 # Close and reopen window B, then target it immediately without settling —
-# pre-#79 this raced -1719 (resolve-then-execute gap); the bounded retry
-# absorbs the transient.
+# pre-#79 this raced -1719 (resolve-then-execute gap). The built-in bounded
+# retry must absorb the transient: NO manual second attempt (verify finding:
+# an escape-hatch retry here would mask a broken auto-retry). A failure on
+# the first invocation is a test failure.
 $SB close --url csp-strict-page 2>/dev/null
 $SB open "$PAGE_B" 2>/dev/null
 R=$($SB js "1+1" --url csp-strict-page 2>&1); RC=$?
-if [ "$RC" -ne 0 ]; then
-    # One transient failure is the pre-fix symptom; a single manual retry
-    # must succeed. Zero failures is the target behavior.
-    sleep 1
-    R=$($SB js "1+1" --url csp-strict-page 2>&1); RC=$?
-fi
 if [ "$RC" -eq 0 ] && [ "$R" = "2" ]; then
-    pass "open → immediate js on --url target"
+    pass "open → immediate js on --url target (auto-retry, no manual fallback)"
 else
-    fail "open → immediate js on --url target" "rc=$RC got: $R"
+    fail "open → immediate js on --url target (auto-retry, no manual fallback)" "rc=$RC got: $R"
 fi
 
-echo "## guard fail-closed: no silent wrong-tab result"
-# Navigate window B's tab away mid-target: a stale .resolvedTab whose URL no
-# longer matches must fail closed (targetTabChanged/documentNotFound), never
-# return the other page's data. We simulate by closing the tab and asking for
-# it — expect a clean error, not a wrong answer.
+echo "## missing-target fail-closed: no silent wrong-tab result"
+# Scope note (verify finding): this exercises the RESOLUTION-miss path
+# (target gone before resolve), not the mid-command guard trip — the
+# latter needs sub-roundtrip timing injection and is pinned by unit tests
+# on urlGuardClause / isTargetDangleError instead.
 $SB close --url csp-strict-page 2>/dev/null
 ERR=$($SB js "document.title" --url csp-strict-page 2>&1); RC=$?
 if [ "$RC" -ne 0 ] && ! echo "$ERR" | grep -q "Safari Browser Test Page"; then

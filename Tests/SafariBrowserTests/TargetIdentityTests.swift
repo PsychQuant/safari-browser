@@ -124,34 +124,58 @@ final class TargetIdentityTests: XCTestCase {
 
     func testResolveDocumentReferenceResolvedTab() {
         let ref = SafariBridge.resolveDocumentReference(
-            .resolvedTab(windowID: 22510, tabInWindow: 3, rematch: nil))
+            .resolvedTab(windowID: 22510, tabInWindow: 3, rematch: nil, profile: nil))
         XCTAssertEqual(ref, "tab 3 of window id 22510")
+    }
+
+    func testConcreteTargetCarriesProfileForRetry() {
+        // Verify-round finding: a profile-blind retry could dispatch into
+        // another profile's same-URL tab. The resolve-time profile rides
+        // in the .resolvedTab case so the bounded retry re-resolves
+        // within the same profile.
+        let resolved = SafariBridge.ResolvedWindowTarget(
+            windowIndex: 1, tabIndexInWindow: 2, windowID: 22510, anchorTabIndex: 2)
+        let target = SafariBridge.concreteTarget(
+            from: resolved, original: .urlMatch(.contains("plaud")), profile: "個人")
+        guard case .resolvedTab(let wid, let tab, .some(.contains(let s)), let profile) = target else {
+            return XCTFail("expected .resolvedTab, got \(target)")
+        }
+        XCTAssertEqual(wid, 22510)
+        XCTAssertEqual(tab, 2)
+        XCTAssertEqual(s, "plaud")
+        XCTAssertEqual(profile, "個人")
     }
 
     // MARK: - S3: in-script URL guard clauses
 
     func testURLGuardClauseContains() {
         let clause = SafariBridge.urlGuardClause(for: .contains("plaud"))
-        XCTAssertEqual(
-            clause,
-            "if (URL of _t) does not contain \"plaud\" then error \"SB_TARGET_CHANGED\" number 9001"
-        )
+        XCTAssertNotNil(clause)
+        XCTAssertTrue(clause!.contains("if (URL of _t) does not contain \"plaud\" then error \"SB_TARGET_CHANGED\" number 9001"))
     }
 
     func testURLGuardClauseExact() {
         let clause = SafariBridge.urlGuardClause(for: .exact("https://a.com/x"))
-        XCTAssertEqual(
-            clause,
-            "if (URL of _t) is not equal to \"https://a.com/x\" then error \"SB_TARGET_CHANGED\" number 9001"
-        )
+        XCTAssertNotNil(clause)
+        XCTAssertTrue(clause!.contains("if (URL of _t) is not equal to \"https://a.com/x\" then error \"SB_TARGET_CHANGED\" number 9001"))
     }
 
     func testURLGuardClauseEndsWith() {
         let clause = SafariBridge.urlGuardClause(for: .endsWith("/play"))
-        XCTAssertEqual(
-            clause,
-            "if (URL of _t) does not end with \"/play\" then error \"SB_TARGET_CHANGED\" number 9001"
-        )
+        XCTAssertNotNil(clause)
+        XCTAssertTrue(clause!.contains("if (URL of _t) does not end with \"/play\" then error \"SB_TARGET_CHANGED\" number 9001"))
+    }
+
+    func testURLGuardClauseIsCaseSensitive() {
+        // Verify-round finding: AppleScript compares case-insensitively by
+        // default while UrlMatcher.matches is case-sensitive Swift — the
+        // guard must wrap its comparison in `considering case` so it
+        // enforces the SAME predicate the resolver uses.
+        for matcher in [SafariBridge.UrlMatcher.contains("x"), .exact("x"), .endsWith("x")] {
+            let clause = SafariBridge.urlGuardClause(for: matcher)
+            XCTAssertTrue(clause?.contains("considering case") ?? false)
+            XCTAssertTrue(clause?.contains("end considering") ?? false)
+        }
     }
 
     func testURLGuardClauseRegexIsNil() {
@@ -194,6 +218,17 @@ final class TargetIdentityTests: XCTestCase {
             .appleScriptFailed("JavaScript error: TypeError: undefined")))
         XCTAssertFalse(SafariBridge.isTargetDangleError(
             .ambiguousWindowMatch(pattern: "x", matches: [])))
+    }
+
+    func testIsTargetDangleErrorExcludesWebControllableText() {
+        // Verify-round finding: a page throwing Error("-1719") or
+        // Error("SB_TARGET_CHANGED") surfaces as "JavaScript error: <msg>"
+        // — web-controllable text must never spoof the dangle signal
+        // (which would re-dispatch side-effecting code a second time).
+        XCTAssertFalse(SafariBridge.isTargetDangleError(
+            .appleScriptFailed("JavaScript error: -1719")))
+        XCTAssertFalse(SafariBridge.isTargetDangleError(
+            .appleScriptFailed("JavaScript error: SB_TARGET_CHANGED")))
     }
 
     func testTargetTabChangedErrorDescriptionIsActionable() {

@@ -73,8 +73,12 @@ enum SafariBridge {
         /// carries the original URL matcher so per-round-trip guards can
         /// verify the tab still matches and a bounded retry can
         /// re-resolve once; `nil` for `.documentIndex`-originated
-        /// targets (no matcher to re-verify against).
-        case resolvedTab(windowID: Int, tabInWindow: Int, rematch: UrlMatcher?)
+        /// targets (no matcher to re-verify against). `profile` carries
+        /// the resolve-time `--profile` filter so the bounded retry
+        /// re-resolves within the same profile (verify finding: a
+        /// profile-blind retry could dispatch into another profile's
+        /// same-URL tab — an isolation violation).
+        case resolvedTab(windowID: Int, tabInWindow: Int, rematch: UrlMatcher?, profile: String?)
         /// Composite target: the tab-in-window-th tab of the window-th
         /// window. Addresses same-URL duplicate tabs that `.urlMatch`
         /// cannot disambiguate (issue #28 gap #2). Always requires both
@@ -124,7 +128,7 @@ enum SafariBridge {
             return "document \(n)"
         case .windowTab(let w, let t):
             return "tab \(t) of window \(w)"
-        case .resolvedTab(let windowID, let tab, _):
+        case .resolvedTab(let windowID, let tab, _, _):
             // #79: window id is stable for the window's lifetime, unlike
             // the z-order `window N` index the other cases use.
             return "tab \(tab) of window id \(windowID)"
@@ -149,6 +153,13 @@ enum SafariBridge {
             return "tab \(tab) of window \(resolved.windowIndex)"
         }
         return "document of window \(resolved.windowIndex)"
+    }
+
+    /// Small predicate — keeps `if profile != nil, !resolvedTab` guards
+    /// readable (a `case` pattern can't sit in a compound condition).
+    private static func isResolvedTab(_ target: TargetDocument) -> Bool {
+        if case .resolvedTab = target { return true }
+        return false
     }
 
     /// Async dispatch: produce an AppleScript document reference after
@@ -178,7 +189,10 @@ enum SafariBridge {
         // (no enumeration) we honor it by routing to native-path resolver
         // instead of the sync mapping when profile is set, so the filter
         // applies even to legacy "implicit front window" calls.
-        if profile != nil {
+        // .resolvedTab is exempt (#79): profile was validated at its
+        // resolve time and re-validation would cost an enumeration per
+        // round-trip.
+        if profile != nil, isResolvedTab(target) == false {
             let resolved = try await resolveNativeTarget(
                 from: target,
                 firstMatch: firstMatch,
@@ -232,13 +246,17 @@ enum SafariBridge {
         // so the filter validates the target lives in the requested
         // profile (and throws documentNotFound otherwise).
         if profile != nil {
+            // Already-concrete identity target: resolved (and
+            // profile-validated) once at command entry — re-validating on
+            // every internal round-trip would add an enumeration per call.
+            if case .resolvedTab = target { return target }
             let resolved = try await resolveNativeTarget(
                 from: target,
                 firstMatch: firstMatch,
                 warnWriter: warnWriter,
                 profile: profile
             )
-            return concreteTarget(from: resolved, original: target)
+            return concreteTarget(from: resolved, original: target, profile: profile)
         }
         switch target {
         case .frontWindow, .windowIndex, .windowTab, .resolvedTab:
@@ -250,20 +268,22 @@ enum SafariBridge {
                 warnWriter: warnWriter,
                 profile: profile
             )
-            return concreteTarget(from: resolved, original: target)
+            return concreteTarget(from: resolved, original: target, profile: profile)
         }
     }
 
     /// Pure collapse of a `ResolvedWindowTarget` into a concrete
     /// `TargetDocument`. Prefers the identity-anchored `.resolvedTab`
     /// (#79) — stable window id + concrete tab, carrying the original
-    /// URL matcher for per-round-trip guards and bounded re-resolve —
-    /// and degrades to the pre-#79 positional forms when the
-    /// enumeration didn't yield an id (legacy records) or no concrete
-    /// tab is known (window-level target).
+    /// URL matcher (for per-round-trip guards and bounded re-resolve)
+    /// and the resolve-time profile filter (so the retry stays within
+    /// the same profile) — and degrades to the pre-#79 positional forms
+    /// when the enumeration didn't yield an id (legacy records) or no
+    /// concrete tab is known (window-level target).
     static func concreteTarget(
         from resolved: ResolvedWindowTarget,
-        original: TargetDocument
+        original: TargetDocument,
+        profile: String? = nil
     ) -> TargetDocument {
         if let windowID = resolved.windowID,
            let tab = resolved.anchorTabIndex ?? resolved.tabIndexInWindow {
@@ -273,7 +293,7 @@ enum SafariBridge {
             } else {
                 rematch = nil
             }
-            return .resolvedTab(windowID: windowID, tabInWindow: tab, rematch: rematch)
+            return .resolvedTab(windowID: windowID, tabInWindow: tab, rematch: rematch, profile: profile)
         }
         if let tab = resolved.tabIndexInWindow {
             return .windowTab(window: resolved.windowIndex, tabInWindow: tab)
@@ -507,7 +527,7 @@ enum SafariBridge {
         case .urlMatch(let matcher): return matcher.description
         case .documentIndex(let n): return "document \(n)"
         case .windowTab(let w, let t): return "window \(w) tab \(t)"
-        case .resolvedTab(let windowID, let tab, let rematch):
+        case .resolvedTab(let windowID, let tab, let rematch, _):
             let suffix = rematch.map { " (matched: \($0.description))" } ?? ""
             return "window id \(windowID) tab \(tab)\(suffix)"
         }
@@ -1262,16 +1282,28 @@ enum SafariBridge {
     /// `nil` for `.regex` — AppleScript has no regex, so that matcher
     /// uses a Swift-side pre-check round-trip instead.
     static func urlGuardClause(for matcher: UrlMatcher) -> String? {
+        // `considering case`: AppleScript string comparison is
+        // case-INSENSITIVE by default, but UrlMatcher.matches (the
+        // resolver + retry predicate) is case-sensitive Swift — without
+        // the block the guard would admit case-variant URLs the resolver
+        // would reject (verify finding: guard more permissive than the
+        // matcher it enforces).
+        let comparison: String
         switch matcher {
         case .contains(let s):
-            return "if (URL of _t) does not contain \"\(s.escapedForAppleScript)\" then error \"SB_TARGET_CHANGED\" number 9001"
+            comparison = "(URL of _t) does not contain \"\(s.escapedForAppleScript)\""
         case .exact(let s):
-            return "if (URL of _t) is not equal to \"\(s.escapedForAppleScript)\" then error \"SB_TARGET_CHANGED\" number 9001"
+            comparison = "(URL of _t) is not equal to \"\(s.escapedForAppleScript)\""
         case .endsWith(let s):
-            return "if (URL of _t) does not end with \"\(s.escapedForAppleScript)\" then error \"SB_TARGET_CHANGED\" number 9001"
+            comparison = "(URL of _t) does not end with \"\(s.escapedForAppleScript)\""
         case .regex:
             return nil
         }
+        return """
+        considering case
+                    if \(comparison) then error "SB_TARGET_CHANGED" number 9001
+                end considering
+        """
     }
 
     /// #79: does this error mean the identity-anchored target dangled
@@ -1280,8 +1312,15 @@ enum SafariBridge {
     static func isTargetDangleError(_ error: SafariBrowserError) -> Bool {
         switch error {
         case .appleScriptFailed(let msg):
+            // Explicit exclusion first (verify finding): messages carrying
+            // web-controllable JS error text ("JavaScript error: <e.message>")
+            // must never classify as a dangle — a page throwing
+            // "Error('-1719')" would otherwise trigger a re-dispatch.
+            // (Structurally these are raised OUTSIDE doJavaScript's retry
+            // scope — JSCommand throws them after readback — so this is
+            // defense in depth, keeping the predicate safe for any caller.)
+            if msg.contains("JavaScript error:") { return false }
             // Guard trip (our sentinel) or invalid-index on a dangled ref.
-            // JS runtime errors ("JavaScript error: ...") never match.
             return msg.contains("SB_TARGET_CHANGED") || msg.contains("-1719") || msg.contains("-1728")
         case .documentNotFound:
             // runTargetedAppleScript translates -1719/-1728 on non-default
@@ -1294,11 +1333,26 @@ enum SafariBridge {
 
     static func doJavaScript(
         _ code: String,
-        target: TargetDocument = .frontWindow,
+        target initialTarget: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil,
         profile: String? = nil
     ) async throws -> String {
+        // #79 normalization (verify finding): a raw `.urlMatch` /
+        // `.documentIndex` arriving here would get an identity-anchored
+        // REF string but keep its original case value — bypassing the
+        // in-script guard and the bounded retry (both key off
+        // `.resolvedTab`). Normalize at the boundary so the guarantee
+        // cannot be skipped by any caller. Round-trip count is unchanged
+        // (resolveToAppleScript would have enumerated anyway).
+        var target = initialTarget
+        switch target {
+        case .urlMatch, .documentIndex:
+            target = try await resolveToConcreteTarget(
+                target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+        default:
+            break
+        }
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
@@ -1310,22 +1364,45 @@ enum SafariBridge {
         } catch let error as SafariBrowserError {
             // #79 bounded retry: the identity-anchored ref dangled
             // (window closed / tab moved / guard tripped). Re-resolve the
-            // ORIGINAL matcher once — identity re-resolve finds the same
-            // page wherever it moved, so multi-round-trip protocol state
-            // (window.__sb* globals) stays valid. Multi-match stays
-            // fail-closed (ambiguousWindowMatch propagates); a second
-            // dangle fails closed as targetTabChanged — never a silent
-            // wrong-tab dispatch.
-            guard case .resolvedTab(_, _, .some(let matcher)) = target,
+            // ORIGINAL matcher once, within the resolve-time profile.
+            // Multi-match stays fail-closed (ambiguousWindowMatch
+            // propagates); a no-match re-resolve or a second dangle fails
+            // closed as targetTabChanged — never a silent wrong-tab
+            // dispatch.
+            guard case .resolvedTab(let originalWindowID, _, .some(let matcher), let carriedProfile) = target,
                   isTargetDangleError(error) else { throw error }
-            let resolved = try await resolveNativeTarget(
-                from: .urlMatch(matcher),
-                firstMatch: firstMatch,
-                warnWriter: nil,  // warning already fired on first resolve
-                profile: profile
-            )
-            let retryTarget = concreteTarget(from: resolved, original: .urlMatch(matcher))
-            let retryRef = try await resolveToAppleScript(retryTarget, profile: profile)
+            let resolved: ResolvedWindowTarget
+            do {
+                resolved = try await resolveNativeTarget(
+                    from: .urlMatch(matcher),
+                    firstMatch: firstMatch,
+                    warnWriter: nil,  // warning already fired on first resolve
+                    profile: carriedProfile ?? profile
+                )
+            } catch let resolveError as SafariBrowserError {
+                // Documented contract: dangles surface as targetTabChanged.
+                // documentNotFound here means the page is gone entirely.
+                if case .documentNotFound = resolveError {
+                    throw SafariBrowserError.targetTabChanged(
+                        expected: matcher.description, actualURL: nil)
+                }
+                throw resolveError  // ambiguousWindowMatch etc. stay fail-closed
+            }
+            // The retry must find the SAME window (verify finding: a
+            // DIFFERENT tab uniquely matching the URL now would receive
+            // this round-trip while the protocol state (__sb* globals)
+            // lives on the original tab — a silent wrong-tab read).
+            // Same-window is the strongest identity check available
+            // (Safari tabs have no stable id); a within-window tab shift
+            // keeps the windowID and is safe to follow.
+            let retryTarget = concreteTarget(
+                from: resolved, original: .urlMatch(matcher), profile: carriedProfile ?? profile)
+            guard case .resolvedTab(let newWindowID, _, _, _) = retryTarget,
+                  newWindowID == originalWindowID else {
+                throw SafariBrowserError.targetTabChanged(
+                    expected: matcher.description, actualURL: nil)
+            }
+            let retryRef = try await resolveToAppleScript(retryTarget)
             do {
                 return try await dispatchJS(code, docRef: retryRef, target: retryTarget)
             } catch let retryError as SafariBrowserError where isTargetDangleError(retryError) {
@@ -1347,7 +1424,7 @@ enum SafariBridge {
         docRef: String,
         target: TargetDocument
     ) async throws -> String {
-        guard case .resolvedTab(_, _, .some(let matcher)) = target else {
+        guard case .resolvedTab(_, _, .some(let matcher), _) = target else {
             return try await runTargetedAppleScript("""
                 tell application "Safari"
                     do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
@@ -1933,7 +2010,7 @@ enum SafariBridge {
             }
             return ResolvedWindowTarget(windowIndex: first.windowIndex, tabIndexInWindow: nil)
 
-        case .resolvedTab(let windowID, let tab, _):
+        case .resolvedTab(let windowID, let tab, _, _):
             // Already-concrete identity target (#79) re-entering the
             // resolver (defensive totality — production flows render it
             // directly via resolveDocumentReference). Map the stable id

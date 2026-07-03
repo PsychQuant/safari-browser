@@ -217,16 +217,24 @@ safari-browser <cmd> --document <n>    # document N in Safari's document collect
 safari-browser <cmd> --profile <name>  # restrict to windows of named Safari profile (#47)
 ```
 
-**Identity-anchored `--url` resolution (#79)**: a `--url` match resolves to
-the tab's *identity* (`tab T of window id W`, using Safari's stable window
-id), not its z-order position — so multi-round-trip commands (`js`, chunked
-reads) keep hitting the same tab even if you click other Safari windows
-mid-command. Every round-trip re-verifies the tab's URL in the same
-AppleScript; on a miss (window closed, tab moved/navigated) the command
-re-resolves once and otherwise fails closed with `targetTabChanged` — never
-a silent wrong-tab dispatch. Explicit `--window N` / `--tab-in-window M`
-stay positional **by design**: those flags mean "whatever sits at this
-position right now".
+**Identity-anchored `--url` / `--document` resolution (#79)**: a `--url` or
+`--document` match resolves to the tab's *identity* (`tab T of window id W`,
+using Safari's stable window id), not its z-order position — so
+multi-round-trip commands (`js`, chunked reads) keep hitting the same tab
+even if you click other Safari windows mid-command. Every round-trip
+re-verifies the tab's URL (case-sensitively) in the same AppleScript; on a
+miss (window closed, tab moved, or navigated to a non-matching URL) the
+command re-resolves once **within the same window and profile** and
+otherwise fails closed with `targetTabChanged` — never a silent wrong-tab
+dispatch. Explicit `--window N` / `--tab-in-window M` stay positional
+**by design**: those flags mean "whatever sits at this position right now".
+
+Known boundaries: a same-tab navigation to a URL that *still matches* your
+pattern resets the page's JS context between round-trips — the guard cannot
+distinguish it (tracked in #82 with the navigation family); on strict
+same-URL duplicates within one window, a re-resolve after a tab shift may
+follow the duplicate (Safari tabs have no stable id — window identity is
+the strongest available anchor).
 
 `--profile` (#47) is orthogonal — combine with any other lock flag to
 disambiguate same-URL tabs across Safari profiles. **Detection mechanism**:
