@@ -112,8 +112,14 @@ enum PreCompiledScripts {
             // #87: a 0-tab front window has no `current tab`; the bare
             // `do JavaScript ... in current tab of front window` would raise
             // a raw -1728. Guard with an explicit, actionable error first.
+            // The zero-windows guard MUST come first — with no windows,
+            // `front window` itself doesn't exist, so `count of tabs of
+            // front window` would raise the same raw -1728 (#88 verify M1).
             source: """
                 tell application "Safari"
+                    if (count of windows) = 0 then
+                        error "Safari has no windows — open a window or target a specific window/url"
+                    end if
                     if (count of tabs of front window) = 0 then
                         error "front window has no tabs — open a tab or target a specific window/url"
                     end if
