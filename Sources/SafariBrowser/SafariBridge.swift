@@ -2024,19 +2024,27 @@ enum SafariBridge {
     /// Performance: O(1) AppleScript roundtrips regardless of window /
     /// tab count, vs. the naive per-tab query approach which would
     /// dominate upload latency (10 windows × 5 tabs ≈ 70 roundtrips).
-    static func listAllWindows() async throws -> [WindowInfo] {
-        let script = """
-            tell application "Safari"
-                set windowCount to count of windows
-                if windowCount = 0 then
-                    return ""
-                end if
-                set output to ""
-                set GS to (character id 29)
-                set RS to (character id 30)
-                repeat with w from 1 to windowCount
+    /// AppleScript that enumerates every window/tab in one roundtrip.
+    /// Exposed for unit-testing the guard structure (ZeroTabWindowGuardTests);
+    /// the string is the pure testable output — live execution is E2E-only.
+    ///
+    /// #85: a window with 0 tabs has no `current tab`; reading it raises
+    /// AppleScript -1728. We count tabs FIRST and skip 0-tab windows entirely,
+    /// so one empty window (e.g. a freshly-opened profile window) can't blow up
+    /// the whole enumeration that every window-targeting command depends on.
+    static let listAllWindowsScript = """
+        tell application "Safari"
+            set windowCount to count of windows
+            if windowCount = 0 then
+                return ""
+            end if
+            set output to ""
+            set GS to (character id 29)
+            set RS to (character id 30)
+            repeat with w from 1 to windowCount
+                set tabCount to count of tabs of window w
+                if tabCount > 0 then
                     set currentIdx to index of current tab of window w
-                    set tabCount to count of tabs of window w
                     -- Window-level title carries the profile prefix
                     -- (e.g. "個人 — Plaud Web") on Safari 17+ multi-profile
                     -- setups. Per-tab `name of tab` does NOT include the
@@ -2056,11 +2064,14 @@ enum SafariBridge {
                         end if
                         set output to output & w & GS & t & GS & isCur & GS & tabUrl & GS & tabName & GS & winName & RS
                     end repeat
-                end repeat
-                return output
-            end tell
-            """
-        let raw = try await runAppleScript(script)
+                end if
+            end repeat
+            return output
+        end tell
+        """
+
+    static func listAllWindows() async throws -> [WindowInfo] {
+        let raw = try await runAppleScript(listAllWindowsScript)
         return parseWindowEnumeration(raw)
     }
 
