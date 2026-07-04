@@ -108,8 +108,15 @@ enum PreCompiledScripts {
             // AppleScript string literal. The caller is responsible for
             // escaping embedded quotes / backslashes before rendering —
             // see `String.escapedForAppleScript` in `SafariBridge.swift`.
+            //
+            // #87: a 0-tab front window has no `current tab`; the bare
+            // `do JavaScript ... in current tab of front window` would raise
+            // a raw -1728. Guard with an explicit, actionable error first.
             source: """
                 tell application "Safari"
+                    if (count of tabs of front window) = 0 then
+                        error "front window has no tabs — open a tab or target a specific window/url"
+                    end if
                     do JavaScript "{{JS_SOURCE}}" in current tab of front window
                 end tell
                 """
