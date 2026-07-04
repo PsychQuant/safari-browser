@@ -2275,6 +2275,19 @@ enum SafariBridge {
     /// caps per-call AX messaging at 2 seconds (default is 6s). With
     /// up to ~10 AX calls per resolution, this bounds total hang at
     /// ~20s for pathological Safari states.
+    /// Tab-independent existence probe for window N. Exposed for unit testing
+    /// (ZeroTabWindowGuardTests). #86: the previous check read `current tab of
+    /// window N`, which raises -1728 for a window that exists but has 0 tabs —
+    /// a false negative. `id of window N` succeeds for any existing window
+    /// regardless of tab count.
+    static func windowExistenceValidationScript(windowIndex: Int) -> String {
+        """
+        tell application "Safari"
+            set _ to id of window \(windowIndex)
+        end tell
+        """
+    }
+
     private static func getWindowIDViaAX(windowIndex: Int) async throws -> (cgID: String, axWindow: AXUIElement?) {
         guard AXIsProcessTrusted() else {
             throw SafariBrowserError.accessibilityNotGranted
@@ -2282,11 +2295,11 @@ enum SafariBridge {
 
         // Validate window N exists. Routes through runTargetedAppleScript so
         // a bad `--window 99` surfaces `documentNotFound` with available-docs.
-        _ = try await runTargetedAppleScript("""
-            tell application "Safari"
-                set t to current tab of window \(windowIndex)
-            end tell
-            """, target: .windowIndex(windowIndex))
+        // #86: probe via `id of window N` (tab-independent) — the former
+        // `current tab of window N` raised -1728 for an existing 0-tab window.
+        _ = try await runTargetedAppleScript(
+            windowExistenceValidationScript(windowIndex: windowIndex),
+            target: .windowIndex(windowIndex))
 
         // Read bounds of window N (AS). Used to match against AX windows below.
         let asBoundsRaw = try await runAppleScript("""
