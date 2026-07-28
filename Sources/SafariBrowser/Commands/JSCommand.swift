@@ -43,9 +43,11 @@ struct JSCommand: AsyncParsableCommand {
         // multi-match fires its stderr warning at most once and (b)
         // downstream internal `doJavaScript` calls (store/read-length/
         // read-result/delete) cannot race on Safari tab-list changes
-        // between chunked reads. The concrete target is a `.windowTab`
-        // or `.windowIndex` that resolveToAppleScript passes through
-        // unchanged.
+        // between chunked reads. The concrete target is normally an
+        // identity-anchored `.resolvedTab` (#79 — stable window id +
+        // in-script URL guard + bounded retry on every round-trip);
+        // legacy enumeration without window ids degrades to positional
+        // `.windowTab` / `.windowIndex`.
         let (initialTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let profile = target.resolveProfile()
         let documentTarget = try await SafariBridge.resolveToConcreteTarget(

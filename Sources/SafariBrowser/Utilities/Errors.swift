@@ -47,11 +47,22 @@ enum SafariBrowserError: LocalizedError {
     case unsupportedURLScheme(url: String, scheme: String)
     case axOperationFailed(String)
     case windowIdentityAmbiguous(reason: String)
+    case targetTabChanged(expected: String, actualURL: String?)
 
     var errorDescription: String? {
         switch self {
         case .appleScriptFailed(let message):
             return "AppleScript error: \(message)"
+        case .targetTabChanged(let expected, let actualURL):
+            // #79: the identity-anchored target stopped matching mid-command
+            // (window closed, or the tab moved/navigated within its window)
+            // and one automatic re-resolve did not find it again.
+            let actualLine = actualURL.map { "Target position now shows: \($0)\n" } ?? ""
+            return """
+                Target tab changed mid-command: expected \(expected), but the tab no longer matches after one automatic re-resolve.
+                \(actualLine)The window may have closed, or the tab moved/navigated during execution.
+                Run `safari-browser documents` to re-discover targets, then retry.
+                """
         case .fileNotFound(let path):
             return "File not found: \(path)"
         case .invalidTabIndex(let index):
