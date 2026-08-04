@@ -7,7 +7,14 @@ import XCTest
 /// that reads `current tab` unconditionally raises `-1728`. These tests assert
 /// the guard *structure* in the pure AppleScript-string outputs — this repo
 /// tests AppleScript at the string level (see DocumentsCommandTests /
-/// PreCompiledScriptsTests); live 0-tab execution is covered by E2E, not here.
+/// PreCompiledScriptsTests).
+///
+/// Coverage boundary (#88 re-verify finding 4): there is currently **no** E2E
+/// harness exercising a live 0-tab window — these string assertions plus the
+/// parser/resolver tests below are the whole safety net. Creating a real 0-tab
+/// Safari window on demand is not scriptable without HID, which the
+/// non-interference contract forbids; a harness would have to wait for the
+/// state to occur naturally. Do not read these tests as live-behavior proof.
 ///
 /// Assertion discipline (#88 re-verify): pin the guard *block* (condition +
 /// body), not merely textual precedence — a "keyword before read" check passes
@@ -86,8 +93,11 @@ final class ZeroTabWindowGuardTests: XCTestCase {
             return XCTFail("runJSInCurrentTab template missing")
         }
         let s = tmpl.source
-        guard let body = guardBody(s, after: "count of tabs of front window") else {
-            return XCTFail("front-window tab guard missing or unclosed")
+        // Pin the full `= 0` condition, not just the property read: keying on
+        // "count of tabs of front window" alone let an inverted `> 0` guard
+        // keep passing (#88 re-verify finding 5, also flagged by Codex).
+        guard let body = guardBody(s, after: "if (count of tabs of front window) = 0 then") else {
+            return XCTFail("front-window tab guard missing, unclosed, or no longer `= 0`")
         }
         XCTAssertTrue(
             body.contains("error") && body.contains("front window has no tabs"),
@@ -126,8 +136,134 @@ final class ZeroTabWindowGuardTests: XCTestCase {
     // MARK: - Parser behavior
 
     func testParseWindowEnumeration_emptyStringYieldsNoWindows() {
-        // When every window is 0-tab, listAllWindowsScript returns "" (same as
-        // 0 windows). The parser must treat that as "no windows" cleanly.
+        // Only Safari-has-no-windows returns "" now — a 0-tab window emits a
+        // tab-less shell record (see the density tests below). The parser must
+        // still treat the genuinely empty string as "no windows" cleanly.
         XCTAssertEqual(SafariBridge.parseWindowEnumeration(""), [])
+    }
+
+    // MARK: - Enumeration density (#88 re-verify findings 1 / 3 / 9)
+
+    /// Build one enumeration record in the 7-field wire format.
+    private func record(
+        window: Int, tab: Int, isCurrent: Bool = false,
+        url: String = "", title: String = "", winName: String = "", winID: String = ""
+    ) -> String {
+        let gs = "\u{1D}", rs = "\u{1E}"
+        return [String(window), String(tab), isCurrent ? "1" : "0",
+                url, title, winName, winID].joined(separator: gs) + rs
+    }
+
+    func testListAllWindowsScript_emitsShellRecordForZeroTabWindow() {
+        // Dropping 0-tab windows entirely made the enumeration sparse, which
+        // silently shifted every positional lookup after the hole. The guard
+        // must have an else branch that still emits the window's slot.
+        let s = SafariBridge.listAllWindowsScript
+        guard let shell = s.range(of: "set output to output & w & GS & 0 & GS") else {
+            return XCTFail("0-tab windows must emit a tab-less shell record (tab_idx 0), not be skipped")
+        }
+        guard let guardStart = s.range(of: "if tabCount > 0 then") else {
+            return XCTFail("script missing `if tabCount > 0 then` guard")
+        }
+        // The shell record only runs for 0-tab windows if it sits on the guard's
+        // else path. Anchoring on the nearest preceding `else` (rather than the
+        // first one in the script) skips the inner is-current branch.
+        guard let elseRange = s.range(of: "else", options: .backwards,
+                                      range: guardStart.upperBound..<shell.lowerBound) else {
+            return XCTFail("shell record is not on the `if tabCount > 0` else path — it would run for every window")
+        }
+        XCTAssertFalse(
+            s[elseRange.upperBound..<shell.lowerBound].contains("current tab"),
+            "the shell-record branch must stay free of `current tab` — that read is what raises -1728")
+    }
+
+    func testParseWindowEnumeration_shellRecordYieldsTablessWindow() {
+        let raw = record(window: 1, tab: 1, isCurrent: true, url: "https://a/", winID: "11")
+            + record(window: 2, tab: 0, winName: "個人 — (untitled)", winID: "22")
+            + record(window: 3, tab: 1, isCurrent: true, url: "https://c/", winID: "33")
+        let windows = SafariBridge.parseWindowEnumeration(raw)
+
+        XCTAssertEqual(windows.map(\.windowIndex), [1, 2, 3],
+                       "the 0-tab window must keep its slot so indices stay dense")
+        XCTAssertTrue(windows[1].tabs.isEmpty,
+                      "a shell record must not synthesise a phantom tab")
+        XCTAssertEqual(windows[1].windowID, 22,
+                       "window identity must survive on a tab-less window (#79 interop)")
+        XCTAssertEqual(windows[1].profile, "個人",
+                       "profile is parsed from the window name, which a 0-tab window still has")
+    }
+
+    func testPickNativeTarget_windowTabResolvesByPositionAcrossZeroTabHole() throws {
+        // The regression this whole fix exists for: with the 0-tab window
+        // present, `--window 3 --tab-in-window 2` must land on Safari window 3
+        // — before the density fix it silently resolved to window 4.
+        let windows = [
+            SafariBridge.WindowInfo(windowIndex: 1, currentTabIndex: 1, tabs: [
+                SafariBridge.TabInWindow(tabIndex: 1, url: "https://w1a/", title: "", isCurrent: true),
+            ], profile: nil, windowID: 11),
+            SafariBridge.WindowInfo(windowIndex: 2, currentTabIndex: 1, tabs: [],
+                                    profile: nil, windowID: 22),
+            SafariBridge.WindowInfo(windowIndex: 3, currentTabIndex: 1, tabs: [
+                SafariBridge.TabInWindow(tabIndex: 1, url: "https://w3a/", title: "", isCurrent: true),
+                SafariBridge.TabInWindow(tabIndex: 2, url: "https://w3b/", title: "", isCurrent: false),
+            ], profile: nil, windowID: 33),
+        ]
+
+        let resolved = try SafariBridge.pickNativeTarget(.windowTab(window: 3, tabInWindow: 2), in: windows)
+        XCTAssertEqual(resolved.windowIndex, 3,
+                       "must resolve to Safari window 3, not shift past the 0-tab hole")
+        XCTAssertEqual(resolved.tabIndexInWindow, 2)
+
+        let byIndex = try SafariBridge.pickNativeTarget(.windowIndex(3), in: windows)
+        XCTAssertEqual(byIndex.windowIndex, 3, "--window N must agree with --window N --tab-in-window M")
+    }
+
+    func testPickNativeTarget_zeroTabWindowTargetFailsHonestly() {
+        // Targeting the 0-tab window itself must say "0 tabs", not claim the
+        // window is missing (the old failure mode #86 set out to kill).
+        let windows = [
+            SafariBridge.WindowInfo(windowIndex: 1, currentTabIndex: 1, tabs: [
+                SafariBridge.TabInWindow(tabIndex: 1, url: "https://w1a/", title: "", isCurrent: true),
+            ], profile: nil, windowID: 11),
+            SafariBridge.WindowInfo(windowIndex: 2, currentTabIndex: 1, tabs: [],
+                                    profile: nil, windowID: 22),
+        ]
+        XCTAssertThrowsError(try SafariBridge.pickNativeTarget(.windowTab(window: 2, tabInWindow: 1), in: windows)) { error in
+            guard case SafariBrowserError.documentNotFound(let pattern, _) = error else {
+                return XCTFail("expected documentNotFound, got \(error)")
+            }
+            XCTAssertTrue(pattern.contains("0 tab"),
+                          "error must name the real cause (window has 0 tabs), got: \(pattern)")
+        }
+    }
+
+    func testPickNativeTarget_outOfRangeErrorIsSelfConsistent() {
+        // D1: the pattern quotes the ordinal the caller typed, so the available
+        // list must be labelled the same way. Printing "window 3 not found"
+        // above "window 3: https://…" is a contradiction the user cannot act on.
+        let windows = [
+            SafariBridge.WindowInfo(windowIndex: 1, currentTabIndex: 1, tabs: [
+                SafariBridge.TabInWindow(tabIndex: 1, url: "https://w1a/", title: "", isCurrent: true),
+            ], profile: "個人", windowID: 11),
+            SafariBridge.WindowInfo(windowIndex: 3, currentTabIndex: 1, tabs: [
+                SafariBridge.TabInWindow(tabIndex: 1, url: "https://w3a/", title: "", isCurrent: true),
+            ], profile: "個人", windowID: 33),
+        ]
+        // Profile filtering is the case where ordinal and Safari index legitimately
+        // diverge; the summary must disambiguate rather than mix the two.
+        XCTAssertThrowsError(
+            try SafariBridge.pickNativeTarget(.windowTab(window: 3, tabInWindow: 1), in: windows, profile: "個人")
+        ) { error in
+            guard case SafariBrowserError.documentNotFound(let pattern, let available) = error else {
+                return XCTFail("expected documentNotFound, got \(error)")
+            }
+            XCTAssertTrue(pattern.contains("window 3"))
+            XCTAssertFalse(
+                available.contains(where: { $0.hasPrefix("window 3:") }),
+                "must not list `window 3` as available while claiming window 3 is not found: \(available)")
+            XCTAssertTrue(
+                available.contains(where: { $0.contains("Safari window 3") }),
+                "the Safari index must still be surfaced for actionability: \(available)")
+        }
     }
 }

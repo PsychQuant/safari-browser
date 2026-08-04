@@ -1986,6 +1986,26 @@ enum SafariBridge {
     /// already-filtered candidate list. Extracted so the entry point's
     /// profile-filter responsibility stays separate from per-case
     /// resolution details. Issue #47.
+    /// Available-window summary for the ordinal-addressed cases
+    /// (`.windowIndex` / `.windowTab`), whose `pattern` quotes the
+    /// ordinal the caller typed. Labelling the list by Safari's own
+    /// window index while the pattern quotes an ordinal produced
+    /// self-contradictory errors once the two could diverge — "window 4
+    /// not found" printed directly above "window 4: https://…". Label by
+    /// the same ordinal the pattern uses, and name Safari's index only
+    /// when a profile filter makes them differ.
+    private static func candidateSummary(_ windows: [WindowInfo]) -> [String] {
+        windows.enumerated().map { (offset, w) -> String in
+            let ordinal = offset + 1
+            let label = ordinal == w.windowIndex
+                ? "window \(ordinal)"
+                : "window \(ordinal) (Safari window \(w.windowIndex))"
+            guard !w.tabs.isEmpty else { return "\(label): (0 tabs)" }
+            let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+            return "\(label): \(cur)"
+        }
+    }
+
     private static func pickNativeTargetCore(
         _ target: TargetDocument,
         in windows: [WindowInfo]
@@ -2033,13 +2053,9 @@ enum SafariBridge {
 
         case .windowIndex(let n):
             if n < 1 || n > windows.count {
-                let availableSummary = windows.map { w -> String in
-                    let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
-                    return "window \(w.windowIndex): \(cur)"
-                }
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window \(n)",
-                    availableDocuments: availableSummary
+                    availableDocuments: candidateSummary(windows)
                 )
             }
             // Issue #47 fix: `n` is 1-based into the (possibly filtered)
@@ -2144,13 +2160,9 @@ enum SafariBridge {
             // but this pure function is a public entry point so it
             // still defends against bad inputs.
             if w < 1 || w > windows.count {
-                let availableSummary = windows.map { win -> String in
-                    let cur = win.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
-                    return "window \(win.windowIndex): \(cur)"
-                }
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window \(w) tab \(t)",
-                    availableDocuments: availableSummary
+                    availableDocuments: candidateSummary(windows)
                 )
             }
             let window = windows[w - 1]
@@ -2362,6 +2374,26 @@ enum SafariBridge {
                         end if
                         set output to output & w & GS & t & GS & isCur & GS & tabUrl & GS & tabName & GS & winName & GS & winID & RS
                     end repeat
+                else
+                    -- Tab-less shell record (tab_idx 0). A 0-tab window
+                    -- must still occupy its slot: dropping it entirely
+                    -- makes the enumeration sparse, and the positional
+                    -- lookups in pickNativeTargetCore then resolve
+                    -- `--window N` to the wrong Safari window instead of
+                    -- failing loudly. Reads below are tab-independent
+                    -- (`name` / `id`), but stay defensive — a ghost
+                    -- window that cannot answer them degrades to an
+                    -- anonymous slot rather than killing enumeration.
+                    set winName to ""
+                    try
+                        set winName to name of window w
+                        if winName is missing value then set winName to ""
+                    end try
+                    set winIDStr to ""
+                    try
+                        set winIDStr to (id of window w) as text
+                    end try
+                    set output to output & w & GS & 0 & GS & "0" & GS & "" & GS & "" & GS & winName & GS & winIDStr & RS
                 end if
             end repeat
             return output
@@ -2416,6 +2448,14 @@ enum SafariBridge {
             if fields.count >= 7, windowIDByWindow[winIdx] == nil,
                let winID = Int(fields[6]) {
                 windowIDByWindow[winIdx] = winID
+            }
+            // tab_idx 0 is the tab-less shell record emitted for a 0-tab
+            // window. It registers the window (keeping the enumeration
+            // dense so positional lookups stay aligned with Safari's own
+            // window numbering) without contributing a phantom tab.
+            if tabIdx == 0 {
+                if byWindow[winIdx] == nil { byWindow[winIdx] = [] }
+                continue
             }
             byWindow[winIdx, default: []].append(TabInWindow(
                 tabIndex: tabIdx,
