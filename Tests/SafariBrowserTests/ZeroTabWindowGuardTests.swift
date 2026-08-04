@@ -177,6 +177,77 @@ final class ZeroTabWindowGuardTests: XCTestCase {
             "the shell-record branch must stay free of `current tab` — that read is what raises -1728")
     }
 
+    func testListAllWindowsScript_shellAndTabRecordsShareFieldCount() {
+        // The script↔parser contract, pinned structurally. Hand-written
+        // fixtures elsewhere in this file cannot catch a change to the script's
+        // own emission: dropping the trailing winID field, or the empty title
+        // field (which shifts winName into the title slot), both left every
+        // test green while silently stripping the window's profile and window
+        // id — putting the window back outside `--profile` candidate lists and
+        // reopening the sparsity hole this whole fix closes (#88 verify r2).
+        let s = SafariBridge.listAllWindowsScript
+        let emissions = s
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("set output to output & w & GS &") }
+        XCTAssertEqual(emissions.count, 2,
+                       "expected exactly two emission sites (tab record + shell record), got \(emissions.count)")
+        let separatorCounts = emissions.map { $0.components(separatedBy: "& GS &").count - 1 }
+        XCTAssertEqual(
+            separatorCounts.first, separatorCounts.last,
+            "shell and tab records must carry identical field counts — a shifted field silently drops profile / window id: \(emissions)")
+        XCTAssertEqual(
+            separatorCounts.first, 6,
+            "the wire format is 7 fields (6 GS separators); parseWindowEnumeration reads winName at index 5 and winID at index 6")
+        for emission in emissions {
+            XCTAssertTrue(emission.hasSuffix("& RS"),
+                          "every record must be RS-terminated: \(emission)")
+        }
+    }
+
+    func testParseWindowEnumeration_ignoresMalformedZeroTabRecord() {
+        // A truncated / corrupt record that merely carries tab_idx 0 must NOT
+        // register a window — conjuring a phantom candidate shifts every
+        // positional lookup after it (Codex r2 finding 1).
+        let gs = "\u{1D}", rs = "\u{1E}"
+        let legacyFourField = ["2", "0", "0", ""].joined(separator: gs) + rs
+        let raw = record(window: 1, tab: 1, isCurrent: true, url: "https://a/", winID: "11")
+            + legacyFourField
+            + record(window: 3, tab: 1, isCurrent: true, url: "https://c/", winID: "33")
+        let windows = SafariBridge.parseWindowEnumeration(raw)
+        XCTAssertEqual(windows.map(\.windowIndex), [1, 3],
+                       "a 4-field record is not a shell record and must not create window 2")
+    }
+
+    func testPickNativeTarget_otherTargetKindsUnaffectedByTablessWindow() {
+        // Density restored for ordinals must not disturb the target kinds that
+        // address tabs directly (Codex r2 finding 2).
+        let windows = [
+            SafariBridge.WindowInfo(windowIndex: 1, currentTabIndex: 1, tabs: [],
+                                    profile: nil, windowID: 11),
+            SafariBridge.WindowInfo(windowIndex: 2, currentTabIndex: 1, tabs: [
+                SafariBridge.TabInWindow(tabIndex: 1, url: "https://w2a/", title: "", isCurrent: true),
+            ], profile: nil, windowID: 22),
+        ]
+
+        // .documentIndex counts real tabs only — the tab-less window consumes
+        // no document ordinal.
+        let doc1 = try? SafariBridge.pickNativeTarget(.documentIndex(1), in: windows)
+        XCTAssertEqual(doc1?.windowIndex, 2, "document 1 must be window 2's only tab")
+
+        // .urlMatch scans tabs, so the shell contributes no candidate.
+        let byURL = try? SafariBridge.pickNativeTarget(
+.urlMatch(.contains("w2a")), in: windows)
+        XCTAssertEqual(byURL?.windowIndex, 2)
+
+        // .frontWindow keeps naming the first window even when it has no tabs.
+        // Silently skipping ahead to the first *non-empty* window would be a
+        // wrong-target resolution dressed up as convenience.
+        let front = try? SafariBridge.pickNativeTarget(.frontWindow, in: windows)
+        XCTAssertEqual(front?.windowIndex, 1,
+                       ".frontWindow must not skip past a tab-less first window")
+    }
+
     func testParseWindowEnumeration_shellRecordYieldsTablessWindow() {
         let raw = record(window: 1, tab: 1, isCurrent: true, url: "https://a/", winID: "11")
             + record(window: 2, tab: 0, winName: "個人 — (untitled)", winID: "22")

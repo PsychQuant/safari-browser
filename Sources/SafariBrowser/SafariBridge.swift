@@ -2336,9 +2336,20 @@ enum SafariBridge {
     /// the string is the pure testable output — live execution is E2E-only.
     ///
     /// #85: a window with 0 tabs has no `current tab`; reading it raises
-    /// AppleScript -1728. We count tabs FIRST and skip 0-tab windows entirely,
-    /// so one empty window (e.g. a freshly-opened profile window) can't blow up
-    /// the whole enumeration that every window-targeting command depends on.
+    /// AppleScript -1728. We count tabs FIRST and skip only the tab-level
+    /// reads, so one empty window (e.g. a freshly-opened profile window) can't
+    /// blow up the whole enumeration that every window-targeting command
+    /// depends on.
+    ///
+    /// The window itself is still emitted, as a tab-less shell record
+    /// (`tab_idx 0`) on the guard's else path. Do not "simplify" that branch
+    /// away: dropping 0-tab windows makes the enumeration sparse, and the
+    /// positional lookups in `pickNativeTargetCore` then resolve `--window N`
+    /// to the wrong Safari window instead of failing loudly (#88 verify
+    /// round 1). The shell record's field count MUST stay identical to the
+    /// tab record's — a dropped or shifted field silently strips the window's
+    /// profile, which puts it back outside `--profile` candidate lists and
+    /// reopens the same sparsity hole (#88 verify round 2).
     static let listAllWindowsScript = """
         tell application "Safari"
             set windowCount to count of windows
@@ -2453,8 +2464,21 @@ enum SafariBridge {
             // window. It registers the window (keeping the enumeration
             // dense so positional lookups stay aligned with Safari's own
             // window numbering) without contributing a phantom tab.
-            if tabIdx == 0 {
-                if byWindow[winIdx] == nil { byWindow[winIdx] = [] }
+            //
+            // Accept it only in the exact shape the script emits — full
+            // 7 fields, not current, empty url and title. A truncated or
+            // corrupt record that merely happens to carry tab_idx 0 would
+            // otherwise conjure a candidate window out of nothing and shift
+            // every positional lookup after it, which is the very failure
+            // this record exists to prevent.
+            if tabIdx <= 0 {
+                let isShellRecord = fields.count >= 7
+                    && !isCurrent
+                    && url.isEmpty
+                    && title.isEmpty
+                if isShellRecord, byWindow[winIdx] == nil {
+                    byWindow[winIdx] = []
+                }
                 continue
             }
             byWindow[winIdx, default: []].append(TabInWindow(
