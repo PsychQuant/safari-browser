@@ -1986,6 +1986,26 @@ enum SafariBridge {
     /// already-filtered candidate list. Extracted so the entry point's
     /// profile-filter responsibility stays separate from per-case
     /// resolution details. Issue #47.
+    /// Available-window summary for the ordinal-addressed cases
+    /// (`.windowIndex` / `.windowTab`), whose `pattern` quotes the
+    /// ordinal the caller typed. Labelling the list by Safari's own
+    /// window index while the pattern quotes an ordinal produced
+    /// self-contradictory errors once the two could diverge — "window 4
+    /// not found" printed directly above "window 4: https://…". Label by
+    /// the same ordinal the pattern uses, and name Safari's index only
+    /// when a profile filter makes them differ.
+    private static func candidateSummary(_ windows: [WindowInfo]) -> [String] {
+        windows.enumerated().map { (offset, w) -> String in
+            let ordinal = offset + 1
+            let label = ordinal == w.windowIndex
+                ? "window \(ordinal)"
+                : "window \(ordinal) (Safari window \(w.windowIndex))"
+            guard !w.tabs.isEmpty else { return "\(label): (0 tabs)" }
+            let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+            return "\(label): \(cur)"
+        }
+    }
+
     private static func pickNativeTargetCore(
         _ target: TargetDocument,
         in windows: [WindowInfo]
@@ -2033,13 +2053,9 @@ enum SafariBridge {
 
         case .windowIndex(let n):
             if n < 1 || n > windows.count {
-                let availableSummary = windows.map { w -> String in
-                    let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
-                    return "window \(w.windowIndex): \(cur)"
-                }
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window \(n)",
-                    availableDocuments: availableSummary
+                    availableDocuments: candidateSummary(windows)
                 )
             }
             // Issue #47 fix: `n` is 1-based into the (possibly filtered)
@@ -2144,13 +2160,9 @@ enum SafariBridge {
             // but this pure function is a public entry point so it
             // still defends against bad inputs.
             if w < 1 || w > windows.count {
-                let availableSummary = windows.map { win -> String in
-                    let cur = win.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
-                    return "window \(win.windowIndex): \(cur)"
-                }
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window \(w) tab \(t)",
-                    availableDocuments: availableSummary
+                    availableDocuments: candidateSummary(windows)
                 )
             }
             let window = windows[w - 1]
@@ -2319,19 +2331,38 @@ enum SafariBridge {
     /// Performance: O(1) AppleScript roundtrips regardless of window /
     /// tab count, vs. the naive per-tab query approach which would
     /// dominate upload latency (10 windows × 5 tabs ≈ 70 roundtrips).
-    static func listAllWindows() async throws -> [WindowInfo] {
-        let script = """
-            tell application "Safari"
-                set windowCount to count of windows
-                if windowCount = 0 then
-                    return ""
-                end if
-                set output to ""
-                set GS to (character id 29)
-                set RS to (character id 30)
-                repeat with w from 1 to windowCount
+    /// AppleScript that enumerates every window/tab in one roundtrip.
+    /// Exposed for unit-testing the guard structure (ZeroTabWindowGuardTests);
+    /// the string is the pure testable output — live execution is E2E-only.
+    ///
+    /// #85: a window with 0 tabs has no `current tab`; reading it raises
+    /// AppleScript -1728. We count tabs FIRST and skip only the tab-level
+    /// reads, so one empty window (e.g. a freshly-opened profile window) can't
+    /// blow up the whole enumeration that every window-targeting command
+    /// depends on.
+    ///
+    /// The window itself is still emitted, as a tab-less shell record
+    /// (`tab_idx 0`) on the guard's else path. Do not "simplify" that branch
+    /// away: dropping 0-tab windows makes the enumeration sparse, and the
+    /// positional lookups in `pickNativeTargetCore` then resolve `--window N`
+    /// to the wrong Safari window instead of failing loudly (#88 verify
+    /// round 1). The shell record's field count MUST stay identical to the
+    /// tab record's — a dropped or shifted field silently strips the window's
+    /// profile, which puts it back outside `--profile` candidate lists and
+    /// reopens the same sparsity hole (#88 verify round 2).
+    static let listAllWindowsScript = """
+        tell application "Safari"
+            set windowCount to count of windows
+            if windowCount = 0 then
+                return ""
+            end if
+            set output to ""
+            set GS to (character id 29)
+            set RS to (character id 30)
+            repeat with w from 1 to windowCount
+                set tabCount to count of tabs of window w
+                if tabCount > 0 then
                     set currentIdx to index of current tab of window w
-                    set tabCount to count of tabs of window w
                     -- Window-level title carries the profile prefix
                     -- (e.g. "個人 — Plaud Web") on Safari 17+ multi-profile
                     -- setups. Per-tab `name of tab` does NOT include the
@@ -2354,11 +2385,34 @@ enum SafariBridge {
                         end if
                         set output to output & w & GS & t & GS & isCur & GS & tabUrl & GS & tabName & GS & winName & GS & winID & RS
                     end repeat
-                end repeat
-                return output
-            end tell
-            """
-        let raw = try await runAppleScript(script)
+                else
+                    -- Tab-less shell record (tab_idx 0). A 0-tab window
+                    -- must still occupy its slot: dropping it entirely
+                    -- makes the enumeration sparse, and the positional
+                    -- lookups in pickNativeTargetCore then resolve
+                    -- `--window N` to the wrong Safari window instead of
+                    -- failing loudly. Reads below are tab-independent
+                    -- (`name` / `id`), but stay defensive — a ghost
+                    -- window that cannot answer them degrades to an
+                    -- anonymous slot rather than killing enumeration.
+                    set winName to ""
+                    try
+                        set winName to name of window w
+                        if winName is missing value then set winName to ""
+                    end try
+                    set winIDStr to ""
+                    try
+                        set winIDStr to (id of window w) as text
+                    end try
+                    set output to output & w & GS & 0 & GS & "0" & GS & "" & GS & "" & GS & winName & GS & winIDStr & RS
+                end if
+            end repeat
+            return output
+        end tell
+        """
+
+    static func listAllWindows() async throws -> [WindowInfo] {
+        let raw = try await runAppleScript(listAllWindowsScript)
         return parseWindowEnumeration(raw)
     }
 
@@ -2405,6 +2459,27 @@ enum SafariBridge {
             if fields.count >= 7, windowIDByWindow[winIdx] == nil,
                let winID = Int(fields[6]) {
                 windowIDByWindow[winIdx] = winID
+            }
+            // tab_idx 0 is the tab-less shell record emitted for a 0-tab
+            // window. It registers the window (keeping the enumeration
+            // dense so positional lookups stay aligned with Safari's own
+            // window numbering) without contributing a phantom tab.
+            //
+            // Accept it only in the exact shape the script emits — full
+            // 7 fields, not current, empty url and title. A truncated or
+            // corrupt record that merely happens to carry tab_idx 0 would
+            // otherwise conjure a candidate window out of nothing and shift
+            // every positional lookup after it, which is the very failure
+            // this record exists to prevent.
+            if tabIdx <= 0 {
+                let isShellRecord = fields.count >= 7
+                    && !isCurrent
+                    && url.isEmpty
+                    && title.isEmpty
+                if isShellRecord, byWindow[winIdx] == nil {
+                    byWindow[winIdx] = []
+                }
+                continue
             }
             byWindow[winIdx, default: []].append(TabInWindow(
                 tabIndex: tabIdx,
@@ -2573,6 +2648,19 @@ enum SafariBridge {
     /// caps per-call AX messaging at 2 seconds (default is 6s). With
     /// up to ~10 AX calls per resolution, this bounds total hang at
     /// ~20s for pathological Safari states.
+    /// Tab-independent existence probe for window N. Exposed for unit testing
+    /// (ZeroTabWindowGuardTests). #86: the previous check read `current tab of
+    /// window N`, which raises -1728 for a window that exists but has 0 tabs —
+    /// a false negative. `id of window N` succeeds for any existing window
+    /// regardless of tab count.
+    static func windowExistenceValidationScript(windowIndex: Int) -> String {
+        """
+        tell application "Safari"
+            set _ to id of window \(windowIndex)
+        end tell
+        """
+    }
+
     private static func getWindowIDViaAX(windowIndex: Int) async throws -> (cgID: String, axWindow: AXUIElement?) {
         guard AXIsProcessTrusted() else {
             throw SafariBrowserError.accessibilityNotGranted
@@ -2580,11 +2668,11 @@ enum SafariBridge {
 
         // Validate window N exists. Routes through runTargetedAppleScript so
         // a bad `--window 99` surfaces `documentNotFound` with available-docs.
-        _ = try await runTargetedAppleScript("""
-            tell application "Safari"
-                set t to current tab of window \(windowIndex)
-            end tell
-            """, target: .windowIndex(windowIndex))
+        // #86: probe via `id of window N` (tab-independent) — the former
+        // `current tab of window N` raised -1728 for an existing 0-tab window.
+        _ = try await runTargetedAppleScript(
+            windowExistenceValidationScript(windowIndex: windowIndex),
+            target: .windowIndex(windowIndex))
 
         // Read bounds of window N (AS). Used to match against AX windows below.
         let asBoundsRaw = try await runAppleScript("""
