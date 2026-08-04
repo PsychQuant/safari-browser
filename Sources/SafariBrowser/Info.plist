@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Embedded into the binary's __TEXT,__info_plist section by the linker flags
+    in Package.swift — a CLI has no bundle to read this from, and TCC needs a
+    bundle identifier to hang a grant on and a usage string to show in the
+    prompt. Without it the prompt is either unattributed or, under hardened
+    runtime, refused outright.
+
+    NSAppleEventsUsageDescription is the one that matters today: every command
+    drives Safari through AppleScript. Accessibility and Screen Recording have
+    no corresponding usage-description key — macOS words those prompts itself —
+    so they rely on the bundle identity here plus the request calls in
+    `safari-browser setup`.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.checheng.safari-browser</string>
+	<key>CFBundleName</key>
+	<string>safari-browser</string>
+	<key>CFBundleVersion</key>
+	<string>2.6.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>safari-browser drives Safari — opening pages, reading them, and clicking elements — on your behalf.</string>
+</dict>
+</plist>

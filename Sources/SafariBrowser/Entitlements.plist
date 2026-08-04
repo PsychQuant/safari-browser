@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Used by the signed-build path (`make sign`). Ad-hoc builds ignore this file
+    and keep working exactly as before.
+
+    apple-events is required, not optional, once the binary is signed with the
+    hardened runtime: every command in this tool reaches Safari through an Apple
+    Event, and the hardened runtime blocks those by default. che-ical-mcp #154
+    is the cautionary case — tccd refuses to even *show* a prompt for a
+    hardened-runtime binary missing the matching entitlement, so the denial is
+    silent and permanent while every status API still reports green.
+
+    Accessibility and Screen Recording have no entitlement of their own; they
+    are granted per-binary in System Settings and requested by
+    `safari-browser setup`.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

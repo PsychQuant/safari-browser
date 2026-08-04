@@ -68,7 +68,7 @@ safari-browser get text "h1"
 TOKEN=$(safari-browser js "localStorage.getItem('token')")
 ```
 
-## Commands (36)
+## Commands (37)
 
 ### Navigation
 
@@ -231,6 +231,39 @@ safari-browser tab <n>                 # switch to tab
 safari-browser tab new                 # new tab
 safari-browser tab new --window 2      # new tab in window 2
 ```
+
+### Permissions
+
+```bash
+safari-browser setup                  # show status, then request what is missing
+safari-browser setup --check          # status only, never raises a dialog (exit 1 if incomplete)
+safari-browser setup --open-settings  # also open the relevant System Settings panes
+```
+
+Two macOS permissions gate part of the CLI:
+
+| Permission | Needed for | Without it |
+|---|---|---|
+| **Accessibility** | window resolution for `screenshot` / `pdf` / `upload --native`, blocked-dialog detection | those paths refuse; front-window resolution falls back to a heuristic and says so |
+| **Screen Recording** | the pixel capture inside `screenshot` | `screenshot` refuses with guidance |
+
+`setup` is the **only** command that raises a permission dialog. Every other
+command detects and refuses with guidance instead, because a background
+automation run must never pop an alert — a dialog you asked for by typing
+`setup` is not an interruption. Nothing else changed about that.
+
+Three things regularly look like bugs and are not:
+
+- A grant applies at **process start**, so the status printed immediately after
+  granting still says NOT granted. Re-run to confirm.
+- The grant attaches to whatever macOS holds responsible for the process, which
+  for a shell-launched CLI is often the terminal app rather than the binary.
+  `setup` prints the binary path so you can check both names in Settings.
+- macOS offers the Screen Recording prompt **once per app, ever**. If it never
+  appears, use `--open-settings` and add the binary with `+`.
+
+`make install` re-signs the copied binary, because TCC keys a grant to the code
+signature — an unsigned copy is a different subject with no permissions.
 
 ### Multi-window Targeting (#17 #18 #21 #23 #79)
 

@@ -19,11 +19,36 @@ build:
 build-debug:
 	swift build
 
+# Re-signing after the copy matters: TCC keys a grant to the binary's code
+# signature, so an unsigned copy is a different subject and starts with no
+# permissions. The entitlements file only takes effect under a hardened-runtime
+# Developer ID signature (see `sign-developer-id`) but is passed here too so
+# both paths stay in step. (#98)
 install: build
 	@mkdir -p $(INSTALL_DIR)
 	cp .build/release/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
-	@codesign --force --sign - $(INSTALL_DIR)/$(BINARY_NAME) 2>/dev/null || true
+	@codesign --force --sign - \
+	         --entitlements Sources/SafariBrowser/Entitlements.plist \
+	         $(INSTALL_DIR)/$(BINARY_NAME) 2>/dev/null \
+	  || codesign --force --sign - $(INSTALL_DIR)/$(BINARY_NAME) 2>/dev/null \
+	  || true
 	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME)"
+	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
+
+# Developer ID + hardened runtime. Only needed if macOS starts refusing to
+# prompt an ad-hoc binary for these services the way it already does for
+# Calendar/Reminders (che-ical-mcp #154) — Accessibility and Screen Recording
+# still prompt for ad-hoc builds today, so this is not part of `install`.
+# Requires DEVELOPER_ID (certificate SHA-1) in the environment.
+sign-developer-id: build
+	@test -n "$(DEVELOPER_ID)" || { echo "DEVELOPER_ID is unset — see CLAUDE.md 'Apple Developer / Notarization Pipeline'"; exit 1; }
+	codesign --force --options runtime \
+	         --sign $(DEVELOPER_ID) \
+	         --entitlements Sources/SafariBrowser/Entitlements.plist \
+	         .build/release/$(BINARY_NAME)
+	@codesign -dv --entitlements - .build/release/$(BINARY_NAME) 2>&1 | grep -q apple-events \
+	  && echo "✓ signed with apple-events entitlement" \
+	  || { echo "✗ entitlement missing from the signed binary"; exit 1; }
 
 # ── CI-safe tiers (no live Safari required) ──────────────────────────
 test:
