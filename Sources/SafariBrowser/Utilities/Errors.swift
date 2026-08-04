@@ -19,6 +19,7 @@ struct ElementMatch: Equatable {
 
 enum SafariBrowserError: LocalizedError {
     case appleScriptFailed(String)
+    case subprocessFailed(executable: String, message: String)
     case fileNotFound(String)
     case invalidTabIndex(Int)
     case timeout(seconds: Int)
@@ -53,6 +54,11 @@ enum SafariBrowserError: LocalizedError {
         switch self {
         case .appleScriptFailed(let message):
             return "AppleScript error: \(message)"
+        case .subprocessFailed(let executable, let message):
+            // #73: the executable is named because the category used to be a
+            // lie — a screencapture failure reading "AppleScript error" points
+            // at the one subsystem that cannot be at fault.
+            return "\((executable as NSString).lastPathComponent) failed (\(executable)): \(message)"
         case .targetTabChanged(let expected, let actualURL):
             // #79: the identity-anchored target stopped matching mid-command
             // (window closed, or the tab moved/navigated within its window)

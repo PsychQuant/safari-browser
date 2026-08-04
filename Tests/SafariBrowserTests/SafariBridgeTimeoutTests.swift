@@ -42,8 +42,32 @@ final class SafariBridgeTimeoutTests: XCTestCase {
             )
             XCTFail("Expected error but runShell returned normally")
         } catch let error as SafariBrowserError {
+            // #73: /bin/sh is not osascript, so the failure is attributed to
+            // the process that actually failed rather than blamed on
+            // AppleScript.
+            guard case .subprocessFailed(let executable, _) = error else {
+                XCTFail("Expected .subprocessFailed but got \(error)")
+                return
+            }
+            XCTAssertEqual(executable, "/bin/sh")
+        }
+    }
+
+    /// #73: osascript keeps `.appleScriptFailed`. This is not stylistic —
+    /// `UploadCommand.staleDialogGuidance` and the e2e harnesses match on that
+    /// message, so recategorising it would break recovery paths that currently
+    /// work. The split exists precisely so this case can stay put.
+    func testRunShellKeepsAppleScriptCategoryForOsascript() async throws {
+        do {
+            _ = try await SafariBridge.runShell(
+                "/usr/bin/osascript",
+                ["-e", "error \"deliberate failure\""],
+                timeout: 5.0
+            )
+            XCTFail("Expected error but runShell returned normally")
+        } catch let error as SafariBrowserError {
             guard case .appleScriptFailed = error else {
-                XCTFail("Expected .appleScriptFailed but got \(error)")
+                XCTFail("osascript must stay .appleScriptFailed, got \(error)")
                 return
             }
         }
@@ -175,9 +199,10 @@ final class SafariBridgeTimeoutTests: XCTestCase {
                 XCTFail("External SIGTERM was misreported as processTimedOut — F2 regression")
                 return
             }
-            // .appleScriptFailed is the expected path (non-zero exit / signal exit)
-            guard case .appleScriptFailed = error else {
-                XCTFail("Expected .appleScriptFailed but got \(error)")
+            // Signal exit surfaces as the subprocess's own failure (#73) —
+            // the point of this test is that it is not a timeout.
+            guard case .subprocessFailed = error else {
+                XCTFail("Expected .subprocessFailed but got \(error)")
                 return
             }
         }

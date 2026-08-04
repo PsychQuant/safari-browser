@@ -63,6 +63,26 @@ struct ScreenshotCommand: AsyncParsableCommand {
     /// level and limited to whatever tab is foregrounded in that window.
     @OptionGroup var target: TargetOptions
 
+    /// #75: `SAFARI_BROWSER_SKIP_SR_PREFLIGHT=1` skips the Screen Recording
+    /// preflight. Diagnostic escape hatch for a preflight that misreports —
+    /// not a way to run without permission, since the capture itself still
+    /// fails, only with a hedged message instead of a precise one.
+    static var screenRecordingPreflightDisabled: Bool {
+        isTruthyEnvFlag(ProcessInfo.processInfo.environment["SAFARI_BROWSER_SKIP_SR_PREFLIGHT"])
+    }
+
+    /// Pure parser so the accepted spellings are testable without mutating the
+    /// process environment. Accepts the shapes people actually type; anything
+    /// else — including the empty string a bare `export VAR=` leaves behind —
+    /// reads as off, because an accidentally-cleared variable must not silently
+    /// disable a safety check.
+    static func isTruthyEnvFlag(_ raw: String?) -> Bool {
+        guard let raw = raw?.trimmingCharacters(in: .whitespaces).lowercased(), !raw.isEmpty else {
+            return false
+        }
+        return ["1", "true", "yes", "on"].contains(raw)
+    }
+
     func run() async throws {
         // #70: every screenshot path ends in /usr/sbin/screencapture, whose
         // pixel capture requires Screen Recording permission on the
@@ -75,8 +95,18 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // environment the permission error outranks more specific
         // diagnostics (verify #70 round 2 reviewed and accepted this
         // precedence change).
-        guard CGPreflightScreenCaptureAccess() else {
-            throw SafariBrowserError.screenRecordingRequired(postPreflight: false, underlying: nil)
+        // #75: the preflight fails closed, so a false negative would make
+        // screenshot unusable with no way around it. No such misreport has
+        // been observed — this exists because the cost of the escape hatch is
+        // one env var and the cost of being wrong without one is total. A
+        // bypassed capture that genuinely lacks permission still fails, just
+        // via the reactive `isScreenRecordingDenial` rewrap further down, so
+        // skipping the preflight trades a precise error for a hedged one
+        // rather than trading it for silence.
+        if !ScreenshotCommand.screenRecordingPreflightDisabled {
+            guard CGPreflightScreenCaptureAccess() else {
+                throw SafariBrowserError.screenRecordingRequired(postPreflight: false, underlying: nil)
+            }
         }
 
         // #29 / #30: --content-only and --element both hard-fail

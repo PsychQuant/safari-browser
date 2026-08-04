@@ -3211,7 +3211,21 @@ enum SafariBridge {
         if process.terminationStatus != 0 {
             let errorMessage = String(data: errorData, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
-            throw SafariBrowserError.appleScriptFailed(errorMessage)
+            // #73: name the process that actually failed. Every subprocess
+            // failure used to render as "AppleScript error:", so a
+            // `screencapture` that ran out of disk sent the reader looking at
+            // Safari and Apple Events — the one place the fault could not be.
+            // osascript keeps the original case: its message text is matched
+            // by UploadCommand.staleDialogGuidance and by the e2e harnesses,
+            // and those greps are the reason this is a split rather than a
+            // rename.
+            if (executable as NSString).lastPathComponent == "osascript" {
+                throw SafariBrowserError.appleScriptFailed(errorMessage)
+            }
+            throw SafariBrowserError.subprocessFailed(
+                executable: executable,
+                message: errorMessage
+            )
         }
 
         return String(data: outputData, encoding: .utf8)?
