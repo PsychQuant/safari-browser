@@ -104,10 +104,22 @@ safari-browser hover <sel>             # hover
 safari-browser focus <sel>             # focus
 safari-browser check / uncheck <sel>   # checkbox
 safari-browser scroll <dir> [px]       # up/down/left/right (default 500px)
+safari-browser scroll <dir> [px] --selector <sel>   # scroll a nested container
 safari-browser scrollintoview <sel>    # scroll into view
 safari-browser drag <src> <dst>        # drag and drop
 safari-browser highlight <sel>         # red outline (debug)
 ```
+
+`--selector` scrolls a nested scrollable container (message lists, feeds)
+rather than the page — `window.scrollBy` does nothing to those, and the page
+around them often has nothing to scroll at all. The command reports the two
+outcomes that would otherwise be silent no-ops: an element with no overflow
+fails with `Element matches but is not scrollable` (usually the selector
+matched a wrapper rather than the child carrying the overflow, so the error
+includes a one-liner that lists the page's real scroll containers), and a
+container already at the end of its range prints a `did not move` note to
+stderr — not an error, but a loop that cannot see it never terminates.
+
 
 ### Keyboard
 

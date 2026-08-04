@@ -39,6 +39,7 @@ enum SafariBrowserError: LocalizedError {
     case elementAmbiguous(selector: String, matches: [ElementMatch])
     case elementIndexOutOfRange(selector: String, index: Int, matchCount: Int)
     case elementZeroSize(selector: String)
+    case elementNotScrollable(selector: String)
     case elementOutsideViewport(selector: String, rect: CGRect, viewport: CGSize)
     case elementSelectorInvalid(selector: String, reason: String)
     case elementHasNoSrc(selector: String, tagName: String)
@@ -105,6 +106,21 @@ enum SafariBrowserError: LocalizedError {
                 \(listing)
                 \(SafariBrowserError.targetingHint(for: pattern))
                 """
+        case .elementNotScrollable(let selector):
+            // #77: the element matched but carries no overflow, so scrollBy
+            // did nothing. Reported rather than silently succeeding, because
+            // the usual cause is a selector that matched a wrapper instead of
+            // the child that actually scrolls — and a silent no-op sends the
+            // caller looking anywhere but at the selector.
+            return """
+                Element matches but is not scrollable: \(selector)
+                Its scrollHeight/scrollWidth do not exceed its client size, so there is
+                nothing to scroll. Usually the selector matched an outer wrapper rather
+                than the element carrying the overflow. To find the real one:
+                  safari-browser js "Array.from(document.querySelectorAll('*')).filter(function(e){return e.scrollHeight>e.clientHeight}).slice(0,10).map(function(e){return e.tagName+'.'+e.className}).join('\\n')"
+                Omit --selector to scroll the page itself.
+                """
+
         case .backgroundTabNotCapturable(let windowIndex, let tabIndex):
             return """
                 Screenshot target resolves to a background tab (window \(windowIndex), tab \(tabIndex))

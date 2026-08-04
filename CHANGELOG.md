@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **#77 `scroll --selector` scrolls a nested container** — Message lists and feeds live in their own scrollable elements, which `window.scrollBy` does not touch; the page around them frequently has nothing to scroll at all. The workarounds were hand-written `el.scrollTop` JS per site, or `press PageUp` after clicking the container to focus it. `scroll down 500 --selector ".message-list"` now does it directly, reusing the same `@ref`/selector resolution as `click` and `scrollintoview`. It also reports the two outcomes that would otherwise be **silent no-ops**, since `scrollBy` returns nothing whether it worked or not: an element with no overflow fails with `Element matches but is not scrollable` (the usual cause is a selector matching an outer wrapper rather than the child carrying the overflow, so the error carries a one-liner that lists the page's actual scroll containers), and a container already at its edge prints a `did not move` note to stderr — not an error, since reaching the end of a list is a normal outcome, but a scroll-until-loaded loop that cannot distinguish it from a successful scroll never terminates. Page-level behavior without `--selector` is unchanged. Closes #77.
+
 ### Fixed & Hardening
 
 - **#95 `documents` accounts for windows it cannot list** — `documents` is the command #85 names as the way to diagnose a stuck Safari, but its output is tab-level, so a 0-tab window has no row to occupy: the window most likely to be causing the trouble was the one thing the diagnostic could not show. It now reports them on **stderr** (`documents: window 2 has no tabs, so it is not listed above. A tab-less window still occupies its position for --window N.`) — stderr because stdout is a parser-stable tab list (#46, #53) and a synthetic row would corrupt it for every existing consumer. Silent when every window has tabs, since a note printed on every run stops being read; plural-aware; and honors `--profile`, so a filtered listing never reports a window the user just filtered out. Closes #95.
