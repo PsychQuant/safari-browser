@@ -17,6 +17,14 @@ struct ElementMatch: Equatable {
     let textSnippet: String?
 }
 
+/// Why a capture did not land on disk (#99). Two shapes worth distinguishing:
+/// a path that was never created points at the directory, an empty file points
+/// at the write itself.
+enum CaptureWriteFailure: Sendable, Equatable {
+    case noFile
+    case emptyFile
+}
+
 enum SafariBrowserError: LocalizedError {
     case appleScriptFailed(String)
     case subprocessFailed(executable: String, message: String)
@@ -40,6 +48,7 @@ enum SafariBrowserError: LocalizedError {
     case elementIndexOutOfRange(selector: String, index: Int, matchCount: Int)
     case elementZeroSize(selector: String)
     case elementNotScrollable(selector: String)
+    case captureNotWritten(path: String, reason: CaptureWriteFailure)
     case javaScriptDialogBlocking(message: String, buttons: [String])
     case elementOutsideViewport(selector: String, rect: CGRect, viewport: CGSize)
     case elementSelectorInvalid(selector: String, reason: String)
@@ -141,6 +150,21 @@ enum SafariBrowserError: LocalizedError {
                 or `safari-browser documents` to see which windows exist.
                 safari-browser will not dismiss it for you: clicking an unread dialog can
                 confirm an action you never saw.
+                """
+
+        case .captureNotWritten(let path, let reason):
+            // #99: screencapture reports success (exit 0, no stderr) even when
+            // it cannot write the file, so the absence of the file is the only
+            // signal there is. Reported rather than passed on, because the next
+            // step in a caller's pipeline would otherwise open a path that was
+            // never created.
+            let cause = reason == .noFile ? "no file was created" : "the file is empty"
+            return """
+                Screenshot was not written: \(path)
+                screencapture reported success but \(cause). It exits 0 even when the output
+                path cannot be written, so this is detected by checking for the file itself.
+                Check that the directory exists and is writable (a read-only volume, a missing
+                parent directory, a full disk, or a sandbox restriction all land here).
                 """
 
         case .backgroundTabNotCapturable(let windowIndex, let tabIndex):

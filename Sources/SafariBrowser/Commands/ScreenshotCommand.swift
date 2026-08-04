@@ -411,6 +411,25 @@ struct ScreenshotCommand: AsyncParsableCommand {
             }
             throw error
         }
+        // #99: screencapture exits 0 when it cannot write the file — measured
+        // against a missing directory and against SIP-protected /System, both
+        // of which produced exit 0, no stderr, and no file. Nothing above can
+        // catch that, so the only evidence of success is the file itself.
+        // A caller doing `screenshot "$OUT" && process "$OUT"` would otherwise
+        // proceed to a path that does not exist.
+        try verifyCaptureLanded(at: path)
+    }
+
+    /// Throws unless `path` now holds a non-empty file. Zero bytes counts as a
+    /// failure: a truncated capture is not a screenshot, and passing one
+    /// downstream fails somewhere less obvious than here.
+    static func verifyCaptureLanded(at path: String) throws {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
+        let size = (attrs?[.size] as? NSNumber)?.intValue
+        guard let size, size > 0 else {
+            throw SafariBrowserError.captureNotWritten(
+                path: path, reason: attrs == nil ? .noFile : .emptyFile)
+        }
     }
 
     /// #70: extract the raw stderr from a runShell failure for display.
