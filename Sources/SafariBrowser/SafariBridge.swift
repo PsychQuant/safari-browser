@@ -2696,6 +2696,20 @@ enum SafariBridge {
         """
     }
 
+    /// #91: index of the one window whose title equals `target`, or nil when
+    /// that does not identify exactly one.
+    ///
+    /// Returns nil for an empty target or an empty candidate title: an unknown
+    /// title is not evidence of a match, and treating "both blank" as identity
+    /// would silently pick a window on no evidence at all — the failure mode
+    /// the bounds tiebreak was removed for.
+    static func uniqueTitleMatchIndex(titles: [String], target: String) -> Int? {
+        guard !target.isEmpty else { return nil }
+        let matches = titles.enumerated().filter { !$0.element.isEmpty && $0.element == target }
+        guard matches.count == 1 else { return nil }
+        return matches[0].offset
+    }
+
     private static func getWindowIDViaAX(windowIndex: Int) async throws -> (cgID: String, axWindow: AXUIElement?) {
         guard AXIsProcessTrusted() else {
             throw SafariBrowserError.accessibilityNotGranted
@@ -2710,12 +2724,30 @@ enum SafariBridge {
             target: .windowIndex(windowIndex))
 
         // Read bounds of window N (AS). Used to match against AX windows below.
-        let asBoundsRaw = try await runAppleScript("""
+        // #91: the window title comes along for the ride. Maximized windows
+        // share bounds exactly, which is the daily state on a multi-profile
+        // machine — bounds alone can never separate them, and the resulting
+        // fail-closed made screenshot structurally unavailable in precisely
+        // the sessions where visual ground truth mattered most. Titles do
+        // separate them, and both AppleScript and Accessibility expose the
+        // same one, so it is a real second axis rather than another guess.
+        // Uses the unit separator: a title can contain a comma.
+        let asWindowRaw = try await runAppleScript("""
             tell application "Safari"
                 set b to bounds of window \(windowIndex)
-                return ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string)
+                set n to ""
+                try
+                    set n to name of window \(windowIndex)
+                    if n is missing value then set n to ""
+                end try
+                return ((item 1 of b) as string) & "," & ((item 2 of b) as string) & "," & ((item 3 of b) as string) & "," & ((item 4 of b) as string) & (character id 31) & n
             end tell
             """)
+        let unitSeparated = asWindowRaw.components(separatedBy: "\u{1F}")
+        let asBoundsRaw = unitSeparated.first ?? ""
+        let asTitle = unitSeparated.count > 1
+            ? unitSeparated[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
         let parts = asBoundsRaw.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
         guard parts.count == 4 else {
             throw SafariBrowserError.noSafariWindow
@@ -2733,7 +2765,7 @@ enum SafariBridge {
         }
 
         // Collect (axWindow, bounds, cgID) for every AX window.
-        let candidates: [(ax: AXUIElement, x: Double, y: Double, w: Double, h: Double, cgID: CGWindowID)] =
+        let candidates: [(ax: AXUIElement, x: Double, y: Double, w: Double, h: Double, cgID: CGWindowID, title: String)] =
             axWindows.compactMap { axWin in
                 guard let (px, py) = axPoint(axWin, attribute: kAXPositionAttribute as CFString),
                       let (sw, sh) = axSize(axWin, attribute: kAXSizeAttribute as CFString) else {
@@ -2742,7 +2774,8 @@ enum SafariBridge {
                 var cgID: CGWindowID = 0
                 let err = _AXUIElementGetWindow(axWin, &cgID)
                 guard err == .success, cgID != 0 else { return nil }
-                return (axWin, px, py, sw, sh, cgID)
+                let title = axStringAttribute(axWin, kAXTitleAttribute as String) ?? ""
+                return (axWin, px, py, sw, sh, cgID, title.trimmingCharacters(in: .whitespacesAndNewlines))
             }
 
         if candidates.isEmpty {
@@ -2771,8 +2804,25 @@ enum SafariBridge {
         // mode and can work around (rearrange windows or use document-
         // scoped commands).
         if boundsMatches.count > 1 {
+            // #91: try the title before giving up. This is not the R7 tiebreak
+            // that was removed — that one assumed AS-index equals AX-index and
+            // could return a wrong window under ordering drift. This compares
+            // a value both sides report for the same window, so a match is
+            // evidence of identity rather than an assumption about ordering.
+            // An empty title proves nothing and is not matched on.
+            if let only = uniqueTitleMatchIndex(
+                titles: boundsMatches.map { $0.title }, target: asTitle) {
+                return (String(boundsMatches[only].cgID), boundsMatches[only].ax)
+            }
+            // Still ambiguous: same bounds AND same (or unreadable) title.
+            // Fail closed — a wrong window here is a screenshot of somebody
+            // else's screen.
+            let titles = boundsMatches
+                .map { $0.title.isEmpty ? "(untitled)" : $0.title }
+                .joined(separator: " | ")
             throw SafariBrowserError.windowIdentityAmbiguous(
                 reason: "\(boundsMatches.count) Safari windows share bounds {\(asX),\(asY),\(asX + asW),\(asY + asH)}"
+                    + " and could not be separated by title (titles: \(titles))"
             )
         }
 
