@@ -50,9 +50,26 @@ enum SafariBridge {
     /// `resolveDocumentReference(_:)`, which is safe to interpolate into a
     /// `tell application "Safari"` block.
     ///
-    /// The default `.frontWindow` resolves to `document 1` rather than
-    /// `current tab of front window` so that read-only queries bypass
-    /// modal-sheet blocks on the front window (#21).
+    /// The default `.frontWindow` resolves to `document of front window`.
+    ///
+    /// It used to be `document 1`, chosen over `current tab of front window`
+    /// so read-only queries would survive a modal sheet on the front window
+    /// (#21). But Safari's `documents` collection **omits tab-less windows**
+    /// (measured: 4 windows, 3 documents), and the collection follows window
+    /// order — so when the frontmost window has no tabs, `document 1` is a
+    /// *different window's* document and every default-target command silently
+    /// operates on a page the caller never asked for (#97).
+    ///
+    /// Naming the window instead makes that case fail loudly: a tab-less front
+    /// window has no document, so the reference raises rather than resolving
+    /// to someone else's page.
+    ///
+    /// The #21 concern was measured before making the change, under both
+    /// dialog shapes this tool can create — a JavaScript `alert` and a native
+    /// file picker. `document of front window` was readable under both, as was
+    /// `document 1`, `count of tabs of front window`, and even the
+    /// `current tab of front window` that #21 originally found blocked. Only
+    /// `do JavaScript` blocks (which is #89's business, not targeting's).
     enum TargetDocument: Sendable {
         case frontWindow
         case windowIndex(Int)
@@ -110,7 +127,10 @@ enum SafariBridge {
     static func resolveDocumentReference(_ target: TargetDocument) -> String {
         switch target {
         case .frontWindow:
-            return "document 1"
+            // #97: NOT `document 1` — that is the first entry of a collection
+            // which skips tab-less windows, so it silently points at another
+            // window whenever the front one has no tabs.
+            return "document of front window"
         case .windowIndex(let n):
             return "document of window \(n)"
         case .urlMatch:
@@ -2954,15 +2974,45 @@ enum SafariBridge {
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
               let windows = windowsValue as? [AXUIElement] else { return nil }
         for window in windows {
-            var sheetsValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &sheetsValue) == .success,
-                  let children = sheetsValue as? [AXUIElement] else { continue }
-            for child in children where axRole(of: child) == kAXSheetRole {
+            if let dialog = findDialogElement(in: window, depth: 0) {
                 return BlockingDialog(
-                    message: axCollectStaticText(child).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines),
-                    buttons: axCollectButtonTitles(child)
+                    message: axCollectStaticText(dialog).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines),
+                    buttons: axCollectButtonTitles(dialog)
                 )
             }
+        }
+        return nil
+    }
+
+    /// Locate the element representing a blocking dialog, if the window has
+    /// one.
+    ///
+    /// A JavaScript `alert` is **not** an `AXSheet` and **not** a direct child
+    /// of the window — measured on Safari 26: it is an `AXGroup` whose subrole
+    /// is `AXDialog`, nested `AXWindow → AXSplitGroup → AXTabGroup → AXGroup`.
+    /// The first version of this function looked only for a top-level
+    /// `AXSheet`, which is a native file picker — so it detected the one dialog
+    /// shape that does *not* block JavaScript and missed the one that does.
+    ///
+    /// Both shapes are matched now: the sheet because a stuck file picker is
+    /// worth naming too, and the dialog subrole because that is the actual JS
+    /// blocker. Depth is bounded because this runs while something is already
+    /// stuck, and a diagnostic that hangs is worse than no diagnostic.
+    private static func findDialogElement(in element: AXUIElement, depth: Int) -> AXUIElement? {
+        guard depth < 5 else { return nil }
+        if depth > 0 {
+            let role = axRole(of: element)
+            if role == kAXSheetRole { return element }
+            if role == kAXGroupRole,
+               axStringAttribute(element, kAXSubroleAttribute as String) == "AXDialog" {
+                return element
+            }
+        }
+        var childrenValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+              let children = childrenValue as? [AXUIElement] else { return nil }
+        for child in children.prefix(30) {
+            if let found = findDialogElement(in: child, depth: depth + 1) { return found }
         }
         return nil
     }

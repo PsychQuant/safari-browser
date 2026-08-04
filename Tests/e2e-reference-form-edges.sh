@@ -2,6 +2,14 @@
 # e2e: document-reference behavior under two conditions that cannot be created
 # on demand — a 0-tab front window (#96) and a modal sheet (#83).
 #
+# MEASURED 2026-08-05 (Safari 26), by opening a throwaway window and producing
+# each dialog shape in it: under BOTH a JavaScript alert and a native file
+# picker, every reference form stayed readable — `document 1`,
+# `document of front window`, `count of tabs of front window`, `id of window N`,
+# `tab T of window N`, and even the `current tab of front window` that #21
+# originally found blocked. Only `do JavaScript` blocked. #97 relies on that
+# result; re-run this harness if Safari's behavior changes.
+#
 # Both questions are about which document a reference actually resolves to when
 # the front window is in an unusual state. Neither state is scriptable: making a
 # 0-tab window frontmost means reordering the user's windows, and opening a
