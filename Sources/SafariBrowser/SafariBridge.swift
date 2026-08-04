@@ -1601,11 +1601,22 @@ enum SafariBridge {
             warnWriter: warnWriter,
             profile: profile
         )
-        return try await runTargetedAppleScript("""
+        let text = try await runTargetedAppleScript("""
             tell application "Safari"
                 get text of \(docRef)
             end tell
             """, target: target)
+        // #89: this is the worst of the dialog symptoms — an empty string with
+        // exit 0. A script reading it concludes "the page has no content",
+        // which is the opposite of the truth: the page is fine and a dialog is
+        // holding it. An empty page is legitimate too, so the probe only runs
+        // when the result is empty, and only reclassifies when a dialog is
+        // actually found.
+        if text.isEmpty, let dialog = detectBlockingDialog() {
+            throw SafariBrowserError.javaScriptDialogBlocking(
+                message: dialog.message, buttons: dialog.buttons)
+        }
+        return text
     }
 
     /// Set the target document's title via injected JavaScript
@@ -2862,6 +2873,100 @@ enum SafariBridge {
     /// Find Safari's running process and return its AX application
     /// element, with a 2-second per-call messaging timeout applied.
     /// Throws `noSafariWindow` if Safari is not running.
+    /// #89: what a blocking JavaScript dialog looks like from outside the tab.
+    struct BlockingDialog: Sendable, Equatable {
+        /// The dialog's own text, as shown to the user. Empty when Safari
+        /// exposes no static text (rare, but a dialog with no readable message
+        /// is still a dialog and still blocks).
+        let message: String
+        /// Button titles, in the order Safari lists them. Used to tell the
+        /// caller what would dismiss it — never to click anything.
+        let buttons: [String]
+    }
+
+    /// Probe for a modal sheet on any Safari window (`alert` / `confirm` /
+    /// `beforeunload`). Read-only: it reads Accessibility attributes and
+    /// clicks nothing, so it does not dismiss the dialog or disturb the user.
+    ///
+    /// A dialog freezes that tab's JavaScript, which is why the symptoms are
+    /// so scattered — `js` times out after 30s, `get text` returns empty and
+    /// exits 0, `click` blames System Events. None of them name the cause, and
+    /// they contradict each other, so this exists to be called *on failure*
+    /// and turn any of those into the same honest answer. It is not called on
+    /// the happy path: the AX round-trip is not worth paying for every command.
+    ///
+    /// Returns nil when Accessibility is not granted — no permission means no
+    /// information, not "no dialog", and callers must not report the absence
+    /// of a probe as the absence of a dialog.
+    static func detectBlockingDialog() -> BlockingDialog? {
+        guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else { return nil }
+        var windowsValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+              let windows = windowsValue as? [AXUIElement] else { return nil }
+        for window in windows {
+            var sheetsValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &sheetsValue) == .success,
+                  let children = sheetsValue as? [AXUIElement] else { continue }
+            for child in children where axRole(of: child) == kAXSheetRole {
+                return BlockingDialog(
+                    message: axCollectStaticText(child).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines),
+                    buttons: axCollectButtonTitles(child)
+                )
+            }
+        }
+        return nil
+    }
+
+    private static func axRole(of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .success
+        else { return nil }
+        return value as? String
+    }
+
+    private static func axStringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
+        else { return nil }
+        return value as? String
+    }
+
+    /// Depth-limited so a pathological tree cannot turn a diagnostic into a
+    /// second hang — this runs while something is already stuck.
+    private static func axCollectStaticText(_ element: AXUIElement, depth: Int = 0) -> [String] {
+        guard depth < 4 else { return [] }
+        var collected: [String] = []
+        if axRole(of: element) == kAXStaticTextRole,
+           let text = axStringAttribute(element, kAXValueAttribute), !text.isEmpty {
+            collected.append(text)
+        }
+        var childrenValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+           let children = childrenValue as? [AXUIElement] {
+            for child in children.prefix(30) {
+                collected.append(contentsOf: axCollectStaticText(child, depth: depth + 1))
+            }
+        }
+        return collected
+    }
+
+    private static func axCollectButtonTitles(_ element: AXUIElement, depth: Int = 0) -> [String] {
+        guard depth < 4 else { return [] }
+        var collected: [String] = []
+        if axRole(of: element) == kAXButtonRole,
+           let title = axStringAttribute(element, kAXTitleAttribute), !title.isEmpty {
+            collected.append(title)
+        }
+        var childrenValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
+           let children = childrenValue as? [AXUIElement] {
+            for child in children.prefix(30) {
+                collected.append(contentsOf: axCollectButtonTitles(child, depth: depth + 1))
+            }
+        }
+        return collected
+    }
+
     private static func safariAXApplication() throws -> AXUIElement {
         guard let safariApp = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == "com.apple.Safari" }) else {
             throw SafariBrowserError.noSafariWindow
@@ -3239,6 +3344,16 @@ enum SafariBridge {
         // and we should treat the run as successful, not a timeout.
         if didTimeout.value && process.terminationStatus != 0 {
             let cmdStr = ([executable] + arguments).joined(separator: " ")
+            // #89: an osascript timeout against Safari is far more often a
+            // blocking JS dialog than a genuine hang, and "Process timed out"
+            // sends the reader looking at permissions, Spaces and Apple Events
+            // instead. Probe once, here, where we already know something is
+            // wrong — the cost only lands on a run that already failed.
+            if (executable as NSString).lastPathComponent == "osascript",
+               let dialog = detectBlockingDialog() {
+                throw SafariBrowserError.javaScriptDialogBlocking(
+                    message: dialog.message, buttons: dialog.buttons)
+            }
             // Use ceil so sub-second timeouts don't render as "0 seconds".
             throw SafariBrowserError.processTimedOut(
                 command: cmdStr,

@@ -40,6 +40,7 @@ enum SafariBrowserError: LocalizedError {
     case elementIndexOutOfRange(selector: String, index: Int, matchCount: Int)
     case elementZeroSize(selector: String)
     case elementNotScrollable(selector: String)
+    case javaScriptDialogBlocking(message: String, buttons: [String])
     case elementOutsideViewport(selector: String, rect: CGRect, viewport: CGSize)
     case elementSelectorInvalid(selector: String, reason: String)
     case elementHasNoSrc(selector: String, tagName: String)
@@ -119,6 +120,27 @@ enum SafariBrowserError: LocalizedError {
                 than the element carrying the overflow. To find the real one:
                   safari-browser js "Array.from(document.querySelectorAll('*')).filter(function(e){return e.scrollHeight>e.clientHeight}).slice(0,10).map(function(e){return e.tagName+'.'+e.className}).join('\\n')"
                 Omit --selector to scroll the page itself.
+                """
+
+        case .javaScriptDialogBlocking(let message, let buttons):
+            // #89: the actual cause behind three symptoms that contradict each
+            // other — js times out, get text returns empty and exits 0, click
+            // blames System Events. None of them mention a dialog, and the
+            // window holding it is often on another Space where it cannot be
+            // seen at all.
+            let quoted = message.isEmpty ? "(no readable message)" : "\"\(message)\""
+            let buttonLine = buttons.isEmpty
+                ? "Its buttons could not be read."
+                : "Dismiss it with: \(buttons.joined(separator: " / "))"
+            return """
+                A JavaScript dialog is open and blocking this tab: \(quoted)
+                \(buttonLine)
+                JavaScript in the tab cannot run until someone dismisses it, which is why
+                the failure looked like a timeout, an empty page, or a System Events fault.
+                The dialog may be on a Safari window in another Space — check every Space,
+                or `safari-browser documents` to see which windows exist.
+                safari-browser will not dismiss it for you: clicking an unread dialog can
+                confirm an action you never saw.
                 """
 
         case .backgroundTabNotCapturable(let windowIndex, let tabIndex):
