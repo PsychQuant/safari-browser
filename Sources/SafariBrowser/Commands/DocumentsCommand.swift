@@ -24,7 +24,15 @@ struct DocumentsCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        let allDocuments = try await SafariBridge.listAllDocuments()
+        // #95: `documents` is the command #85 names as the way to diagnose a
+        // stuck Safari, but its output is tab-level — a 0-tab window has no
+        // tabs to list, so the very window causing the trouble was the one
+        // thing it could not show. Read the window list too and account for
+        // them. The note goes to stderr because stdout is a parseable tab list
+        // (#46, #53) and a synthetic row would corrupt it for every existing
+        // consumer.
+        let windows = try await SafariBridge.listAllWindows()
+        let allDocuments = SafariBridge.flattenWindowsToDocuments(windows)
         // Apply --profile filter (Issue #47) at the listing layer so
         // `documents --profile X` enumerates only the requested
         // profile's tabs. Other lock flags (--url, --window, etc.) are
@@ -69,9 +77,40 @@ struct DocumentsCommand: AsyncParsableCommand {
         // (scripts that pipe stdout are unaffected; for programmatic active
         // detection use --json's is_current field).
         FileHandle.standardError.write(Data(DocumentsCommand.legendLine().utf8))
+        if let note = DocumentsCommand.tablessWindowNote(
+            for: windows, profileFilter: profileFilter) {
+            FileHandle.standardError.write(Data(note.utf8))
+        }
         for line in DocumentsCommand.formatText(documents) {
             print(line)
         }
+    }
+
+    /// #95: names any window that has no tabs, so a window that cannot appear
+    /// in a tab listing is still accounted for. Returns nil when there are
+    /// none — silence is correct in the ordinary case, and a note printed
+    /// every run would stop being read.
+    ///
+    /// Honors `--profile` so a filtered listing does not report windows the
+    /// user just filtered out. A tab-less window whose profile could not be
+    /// parsed is reported only in the unfiltered listing, where it is still a
+    /// real answer to "what else is open?".
+    static func tablessWindowNote(
+        for windows: [SafariBridge.WindowInfo],
+        profileFilter: String?
+    ) -> String? {
+        let empty = windows.filter { window in
+            guard window.tabs.isEmpty else { return false }
+            guard let profileFilter else { return true }
+            return window.profile == profileFilter
+        }
+        guard !empty.isEmpty else { return nil }
+        let list = empty.map { "window \($0.windowIndex)" }.joined(separator: ", ")
+        let subject = empty.count == 1 ? "\(list) has" : "\(list) have"
+        return """
+            documents: \(subject) no tabs, so \(empty.count == 1 ? "it is" : "they are") not listed above. \
+            A tab-less window still occupies its position for --window N.\n
+            """
     }
 
     /// One-line legend explaining the `*` active-tab marker in text output.
