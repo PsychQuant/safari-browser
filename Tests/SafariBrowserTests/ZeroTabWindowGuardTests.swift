@@ -337,4 +337,39 @@ final class ZeroTabWindowGuardTests: XCTestCase {
                 "the Safari index must still be surfaced for actionability: \(available)")
         }
     }
+
+    // MARK: - #93 closeCurrentTab 0-tab guard
+
+    func testCloseCurrentTabScript_guardsZeroTabsBeforeClosing() {
+        // A 0-tab window used to reach `close current tab of window N`, whose
+        // -1728 was translated into "window N not found" — the window plainly
+        // exists, and that false negative is the one #86 removed from the
+        // existence probe. Guard the count first, and say what is actually
+        // wrong.
+        let s = SafariBridge.closeCurrentTabScript(windowRef: "window 3")
+        guard let body = guardBody(s, after: "if (count of tabs of window 3) = 0 then") else {
+            return XCTFail("tab-count guard missing, unclosed, or no longer `= 0`")
+        }
+        XCTAssertTrue(
+            body.contains("error") && body.contains("no tabs"),
+            "the 0-tab case must fail with its real cause, not a missing-window error")
+        guard let tabGuard = s.range(of: "count of tabs of window 3"),
+              let close = s.range(of: "close current tab") else {
+            return XCTFail("script missing guard / close")
+        }
+        XCTAssertLessThan(tabGuard.lowerBound, close.lowerBound,
+                          "the guard must precede the close, or it guards nothing")
+    }
+
+    func testCloseCurrentTabScript_zeroWindowsGuardComesFirst() {
+        // With no windows at all, `count of tabs of front window` would itself
+        // raise -1728 — the guard has to be reachable to be useful.
+        let s = SafariBridge.closeCurrentTabScript(windowRef: "front window")
+        guard let winGuard = s.range(of: "if (count of windows) = 0 then"),
+              let tabGuard = s.range(of: "count of tabs of front window") else {
+            return XCTFail("script missing windows / tab guards")
+        }
+        XCTAssertLessThan(winGuard.lowerBound, tabGuard.lowerBound,
+                          "zero-windows guard must precede the tab-count guard")
+    }
 }

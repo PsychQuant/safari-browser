@@ -617,13 +617,33 @@ enum SafariBridge {
     /// `runTargetedAppleScript` so `--window 99` surfaces a user-friendly
     /// `documentNotFound` error listing every open document, matching the
     /// error contract of all other targeted commands (#23 verify R1).
+    /// Exposed for unit-testing the guard structure, mirroring
+    /// `listAllWindowsScript` (ZeroTabWindowGuardTests). `windowRef` is a
+    /// literal AppleScript reference built from an Int or the constant
+    /// "front window" — never user text, so it cannot carry injection.
+    static func closeCurrentTabScript(windowRef: String) -> String {
+        """
+        tell application "Safari"
+            if (count of windows) = 0 then
+                error "Safari has no windows — nothing to close"
+            end if
+            if (count of tabs of \(windowRef)) = 0 then
+                error "\(windowRef) has no tabs — nothing to close"
+            end if
+            close current tab of \(windowRef)
+        end tell
+        """
+    }
+
     static func closeCurrentTab(window: Int? = nil) async throws {
         let windowRef = window.map { "window \($0)" } ?? "front window"
-        let script = """
-            tell application "Safari"
-                close current tab of \(windowRef)
-            end tell
-            """
+        // #93: guard the tab count first. `close current tab of window N` on a
+        // 0-tab window raises -1728, which runTargetedAppleScript translates to
+        // `documentNotFound("window N")` — telling the user the window does not
+        // exist when it plainly does. That false negative is the exact failure
+        // #86 set out to remove from the existence probe; it survived here.
+        // Without `--window` the same call surfaces the raw -1728 instead.
+        let script = closeCurrentTabScript(windowRef: windowRef)
         if let window {
             _ = try await runTargetedAppleScript(script, target: .windowIndex(window))
         } else {
@@ -3049,10 +3069,15 @@ enum SafariBridge {
         let frontBrowserWindowName: String? = {
             let proc = Process()
             proc.executableURL = URL(filePath: "/usr/bin/osascript")
+            // #94: the probe used to read `current tab of front window` before
+            // the name. That made the name unreadable for a 0-tab front window
+            // — the enclosing `try` swallowed the -1728 and the caller fell
+            // through to the heuristic below. Window count is the liveness
+            // check that was actually wanted; it does not depend on tabs.
             proc.arguments = ["-e", """
                 tell application "Safari"
                     try
-                        set t to current tab of front window
+                        if (count of windows) = 0 then return ""
                         return name of front window
                     end try
                 end tell
@@ -3084,12 +3109,25 @@ enum SafariBridge {
 
         // Fallback: first Safari window with height > 100 (legacy behavior
         // preserved for the no-target case; --window N never lands here).
+        //
+        // #94: this is a guess, and it used to be a silent one — the caller got
+        // a window id indistinguishable from a confirmed match. Say so. The
+        // guess is still made (refusing here would break the no-target case in
+        // environments where window names are unreadable, e.g. without Screen
+        // Recording), but a wrong window is now attributable instead of
+        // arriving as a mysteriously wrong screenshot.
         for w in windows {
             guard let owner = w[kCGWindowOwnerName as String] as? String, owner == "Safari",
                   let layer = w[kCGWindowLayer as String] as? Int, layer == 0,
                   let bounds = w[kCGWindowBounds as String] as? [String: Any],
                   let height = bounds["Height"] as? Int, height > 100,
                   let num = w[kCGWindowNumber as String] as? Int else { continue }
+            FileHandle.standardError.write(Data("""
+                warning: could not confirm which Safari window is frontmost \
+                (window titles unreadable — commonly missing Screen Recording permission). \
+                Falling back to the first Safari window taller than 100px; \
+                if this is the wrong window, target it explicitly with --window N.\n
+                """.utf8))
             return String(num)
         }
         throw SafariBrowserError.noSafariWindow
