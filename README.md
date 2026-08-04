@@ -120,7 +120,6 @@ includes a one-liner that lists the page's real scroll containers), and a
 container already at the end of its range prints a `did not move` note to
 stderr — not an error, but a loop that cannot see it never terminates.
 
-
 ### Keyboard
 
 ```bash
@@ -189,6 +188,7 @@ Two edge notes (#76 verify round):
   `[object Object]` (eval treated it as an empty block → `undefined`), and
   `js "function f(){}"` / `js "class A {}"` yield the source text instead of
   declaring anything.
+
 **The `exec` script `js` step and the CLI `js` command agree** — a snippet
 moves between them unchanged (#80, measured):
 
