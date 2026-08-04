@@ -510,9 +510,13 @@ enum SafariBridge {
             if case .appleScriptFailed(let msg) = error,
                msg.contains("-1719") || msg.contains("-1728") || msg.contains("Can't get") || msg.contains("無法取得") {
                 let docs = (try? await listAllDocuments()) ?? []
+                // #72: carry each tab's coordinates, not just its URL — the
+                // error's hint tells the reader to retarget with
+                // `--window N --tab-in-window M`, which is unusable advice
+                // when the listing does not say what N and M are.
                 throw SafariBrowserError.documentNotFound(
                     pattern: targetDescription(target),
-                    availableDocuments: docs.map { $0.url }
+                    availableDocuments: docs.map { "window \($0.window) tab \($0.tabInWindow): \($0.url)" }
                 )
             }
             throw error

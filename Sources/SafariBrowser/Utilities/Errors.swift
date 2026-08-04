@@ -94,9 +94,10 @@ enum SafariBrowserError: LocalizedError {
             }
             return """
                 No Safari document matches "\(pattern)".
+                (The flag is supported and did run — this is a targeting miss, not an unknown option.)
                 Available documents:
                 \(listing)
-                Run `safari-browser documents` to list documents, or use a different --url / --window / --document value.
+                \(SafariBrowserError.targetingHint(for: pattern))
                 """
         case .backgroundTabNotCapturable(let windowIndex, let tabIndex):
             return """
@@ -478,5 +479,32 @@ enum SafariBrowserError: LocalizedError {
                 `get source --url <substring>`, `get text <selector>`.
                 """
         }
+    }
+}
+
+extension SafariBrowserError {
+    /// #72: `No Safari document matches …` used to stop at the listing, which
+    /// left the reader to guess whether the flag had been rejected or had
+    /// simply not matched. The two look nothing alike to the tool and
+    /// identical to the user, so say which one happened and what to type next.
+    ///
+    /// The advice differs by what was being matched: a URL substring miss is
+    /// fixed by refining the substring, while a positional miss (`window 4`)
+    /// is fixed by reading coordinates off the listing above.
+    static func targetingHint(for pattern: String) -> String {
+        let positional = pattern.hasPrefix("window ") || pattern.hasPrefix("document ")
+        if positional {
+            return """
+                Hint: each entry above shows its own coordinates — target one with
+                      --window N --tab-in-window M, or --document N for the [N] index.
+                """
+        }
+        return """
+            Hint: --url matches a *substring* of the URL, not the whole URL, and not the title —
+                  no tab's URL contained this text. Refine it against the URLs above, or target
+                  positionally with --window N --tab-in-window M (coordinates are shown per entry),
+                  or --document N for the [N] index. For stricter matching see
+                  --url-exact / --url-endswith / --url-regex.
+            """
     }
 }

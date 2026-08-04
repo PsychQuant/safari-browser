@@ -283,10 +283,32 @@ The initial implementation SHALL support dispatching at minimum the same command
 
 - **WHEN** a step is `{"cmd": "screenshot", "args": ["/tmp/out.png"]}` during initial rollout
 - **THEN** the step SHALL fail with `{"error":{"code":"unsupportedInExec","message":"command 'screenshot' is not yet available in exec scripts"}}`
-- **AND** subsequent step handling SHALL follow the step's `onError` mode
 
-<!-- @trace
-source: script-exec-command
-updated: 2026-04-25
-code:
--->
+---
+### Requirement: `js` step result semantics match the CLI
+
+A `js` step SHALL produce the same result as the CLI `js` command given the
+same code. Both hand the script to Safari's `do JavaScript`, which evaluates
+it as a *function body* — so a multi-statement snippet SHALL require an
+explicit `return` to yield a value on either surface, and a bare trailing
+expression SHALL yield `undefined` on both.
+
+The two reach this by different routes: the CLI wraps the code (#76) to carry
+results, errors and >1MB payloads across an AppleScript boundary that only
+returns strings, while a step passes the code through unwrapped. Because the
+routes differ, the agreement is not structural and SHALL be pinned by the
+scenarios below — a future change to either surface's wrapping could silently
+reintroduce the divergence #80 was filed about, and a snippet that quietly
+means something different after being moved is a defect no error can surface.
+
+#### Scenario: multi-statement snippet needs `return` on both surfaces
+
+- **WHEN** a step is `{"cmd": "js", "args": ["var a = 2; a + 3"], "var": "sum"}`
+- **THEN** `$sum` SHALL be `undefined`
+- **AND** `safari-browser js "var a = 2; a + 3"` SHALL also yield `undefined`
+
+#### Scenario: explicit return yields the value on both surfaces
+
+- **WHEN** a step is `{"cmd": "js", "args": ["var a = 2; return a + 3"], "var": "sum"}`
+- **THEN** `$sum` SHALL be `5`
+- **AND** `safari-browser js "var a = 2; return a + 3"` SHALL also yield `5`

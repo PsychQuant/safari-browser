@@ -177,10 +177,26 @@ Two edge notes (#76 verify round):
   `[object Object]` (eval treated it as an empty block → `undefined`), and
   `js "function f(){}"` / `js "class A {}"` yield the source text instead of
   declaring anything.
-- The `exec` script `js` step injects raw code (never eval-routed, so it was
-  never CSP-affected) and keeps completion-value semantics — a multi-statement
-  snippet without `return` returns a value there but `undefined` on the CLI.
-  Cross-surface alignment is tracked separately.
+**The `exec` script `js` step and the CLI `js` command agree** — a snippet
+moves between them unchanged (#80, measured):
+
+| Snippet | CLI `js` | `exec` `js` step |
+|---|---|---|
+| `1 + 1` | `2` | `2` |
+| `document.title` | the title | the title |
+| `{}` | `[object Object]` | `[object Object]` |
+| `var a = 2; a + 3` | `undefined` | `undefined` |
+| `var a = 2; return a + 3` | `5` | `5` |
+
+They arrive there by different routes — the CLI wraps your code so it can
+carry results, errors and >1MB payloads across an AppleScript boundary that
+only returns strings, while an `exec` step hands the code to Safari's
+`do JavaScript` unwrapped — but Safari evaluates a script as a *function body*
+too, so both end up needing `return` for a multi-statement value.
+
+`#80` was filed expecting `exec` to keep completion-value semantics
+(`var a = 2; a + 3` → `5`). It does not, and the table above is the measured
+behavior on both surfaces.
 
 ### Screenshot, PDF & Upload
 
@@ -210,12 +226,29 @@ When Safari has more than one window, every subcommand that reads from or
 drives a document accepts one of four mutually exclusive global flags:
 
 ```bash
-safari-browser <cmd> --url <pattern>   # first document whose URL contains pattern
-safari-browser <cmd> --window <n>      # current document of the Nth window (1-indexed)
-safari-browser <cmd> --tab <n>         # document N (alias for --document)
-safari-browser <cmd> --document <n>    # document N in Safari's document collection
-safari-browser <cmd> --profile <name>  # restrict to windows of named Safari profile (#47)
+safari-browser <cmd> --url <substring>  # tab whose URL CONTAINS this text (see below)
+safari-browser <cmd> --window <n>       # current document of the Nth window (1-indexed)
+safari-browser <cmd> --window <n> --tab-in-window <m>   # window N's Mth tab — "wN.tM"
+safari-browser <cmd> --tab <n>          # document N (alias for --document)
+safari-browser <cmd> --document <n>     # document N in Safari's document collection
+safari-browser <cmd> --profile <name>   # restrict to windows of named Safari profile (#47)
 ```
+
+**`--url` is a substring match against the URL** — not the whole URL, and not
+the page title. `--url plaud` matches `https://app.plaud.ai/…`; `--url "My
+Notes"` matches nothing even when that is exactly what the tab is called.
+Stricter variants: `--url-exact`, `--url-endswith`, `--url-regex`.
+
+A miss therefore reports `No Safari document matches "…"` — the flag ran and
+found nothing. That is a different failure from an unsupported flag, which
+reports `Unknown option`. Reading the first as the second sends you looking
+for a missing feature instead of a better substring (#71); the error now says
+which one happened and lists each tab's `window N tab M` coordinates so you
+can retarget positionally (#72).
+
+**To target "window 1, tab 3"** use `--window 1 --tab-in-window 3`. Run
+`safari-browser documents` first — its `wN.tM` column is exactly these two
+numbers.
 
 **Identity-anchored `--url` / `--document` resolution (#79)**: a `--url` or
 `--document` match resolves to the tab's *identity* (`tab T of window id W`,
