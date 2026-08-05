@@ -222,6 +222,8 @@ safari-browser upload --js <sel> <file>  # JS DataTransfer injection (no permiss
 
 `upload` uses native file dialog by default when Accessibility permission is granted (fast, any file size). Without permission, it falls back to JS DataTransfer automatically. Use `--js` to force JS mode. `pdf` always requires `--allow-hid` (no JS alternative).
 
+Which commands synthesise keyboard/mouse events, which reach Safari another way, and the rule for when a keystroke path may be deleted: [`docs/operation-paths.md`](docs/operation-paths.md). Note `--allow-hid` on `pdf` gates the *save-destination* keystrokes, not the export itself — that part is already keystroke-free.
+
 ### Tab Management
 
 ```bash
