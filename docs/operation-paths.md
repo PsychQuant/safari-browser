@@ -7,7 +7,9 @@ names those paths, records which one each operation currently takes, and states
 the rule for choosing between them.
 
 The rule is short: **when a non-HID path is proven to work, the HID path is
-deleted, not kept alongside it.** Everything below is either the evidence for
+deleted, not kept alongside it.** "Proven" is not a judgement call — §2 defines
+it as *measured*, and §3 spends most of its length on what the word has to mean
+before it can license removing code. Everything below is either the evidence for
 applying that rule, or the honest reason it cannot yet be applied.
 
 ---
@@ -30,69 +32,126 @@ indistinguishable from the user physically typing or clicking.
 **The two `click`s are the trap.** System Events exposes `click` for both an
 element reference and a screen coordinate. They share a name and mean opposite
 things: `click <element>` asks the element to activate itself; `click at {x,y}`
-moves nothing but injects a mouse event wherever the cursor happens to be
-pointed. One is invisible to the user, the other competes with them.
+injects a synthetic mouse event **at the coordinate you name**, regardless of
+where the user's cursor is. Apple's own dictionary is explicit about the
+parameter — `at` is "the { x, y } location at which to click, in global
+coordinates". One goes through the element; the other goes around it and lands
+wherever it was told to.
 
 ### Two properties, often confused
 
 Non-HID does **not** mean "does not change anything". `AXPress` on a Cancel
 button dismisses a dialog — that is a real state change. What it avoids is
-touching the user's *input devices*: the cursor does not move, focus is not
-stolen, and a keystroke the user types at that moment goes where they meant it
-to go.
+narrower than it first looks: it never *fabricates an input event*, so it cannot
+take a keystroke out of the user's hands mid-keypress.
 
-So there are two independent properties:
+It does not follow that a non-HID action is invisible to the user. `AXPress` can
+raise a sheet, and a sheet takes keyboard focus. This repo does exactly that:
+`pdf` opens the export sheet with `click menu item "Export as PDF…"` — an
+`AXPress`, non-HID by the table above — and `PdfCommand` prints *"Controlling
+keyboard for PDF export. Do not type until complete"* **before** it sends any
+keystroke, because part of the takeover has already happened. Focus theft is a
+consequence of what the action does, not of which mechanism dispatched it.
+
+So there are at least two independent properties:
 
 | Property | Meaning | `AXPress` |
 |---|---|---|
-| **Input-device non-interference** | does not move the cursor / steal focus / race the user's typing | ✅ satisfies |
-| **State non-mutation** | does not change anything | ❌ does not satisfy |
+| **No synthetic input** | does not fabricate key or mouse events | ✅ satisfies |
+| **State non-mutation** | changes nothing — including focus and window state | ❌ does not satisfy |
 
-The [Non-Interference principle](../openspec/specs/non-interference/spec.md) is
-about the first. A command can be non-HID and still be actively interfering in
-the second sense — which is why `AXPress`-based actions still belong behind
-explicit opt-in commands rather than firing automatically.
+**This document's HID classification is decided by the first property alone.**
+It is not a verdict on the
+[Non-Interference principle](../openspec/specs/non-interference/spec.md), which
+prohibits five separate things: synthetic mouse events, synthetic keystrokes,
+system dialogs, audible feedback, and stealing window focus. Only the first two
+are what "HID" names here. The other three still have to be assessed per
+command, and a path this document calls non-HID can violate any of them — which
+is why `AXPress`-based actions belong behind explicit opt-in rather than firing
+automatically. Moving an operation onto a non-HID path is progress on one axis;
+it does not discharge the interference triage.
 
 ---
 
 ## 2. Operation inventory
 
-**Measured 2026-08-05 on macOS 27.0 / Safari 27.0.** Status values are limited
-to three, and they mean different things:
+**Measured 2026-08-05.** For rows that have a candidate non-HID path, status is
+one of three, and they mean different things:
 
 - **proven** — a non-HID path was executed and produced the intended result
 - **disproven** — a non-HID path was attempted and did **not** produce the result
 - **untested** — no non-HID attempt has been made
 
-| Operation | Current implementation | Non-HID path | Status |
-|---|---|---|---|
-| Click a page element | `doJavaScript` `el.click()` | same | already non-HID |
-| Read / fill / scroll | `doJavaScript` | same | already non-HID |
-| Screenshot | AX bounds + `screencapture` | same | already non-HID (#23) |
-| Switch tab / close window | AppleScript command | same | already non-HID |
-| Dismiss a JavaScript dialog | *(no such command yet — #103)* | `AXPress` on its button | **proven** |
-| Cancel a native file dialog | *(no such command yet)* | `AXPress` on Cancel (nested inside the sheet; needs a recursive search) | **proven** |
-| Open a native file dialog | `upload --native` clicks the file input | click `<input type="file">` | **proven** |
-| **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | none found | **disproven** — see §4.1 |
-| **Export a PDF** | `Cmd+P` + dialog navigation (`--allow-hid`) | possibly `print`; untried | **untested** — see §4.2 |
+`already non-HID` is not a fourth point on that scale — it marks rows where the
+question does not arise, because there is no HID path to displace. The deletion
+rule in §3 is correctly vacuous over them.
+
+| Operation | Current implementation | Non-HID path | Permission | Status |
+|---|---|---|---|---|
+| Click a page element | `doJavaScript` `el.click()` | same | — | already non-HID |
+| Read / fill / scroll | `doJavaScript` | same | — | already non-HID |
+| Screenshot | AX bounds + `screencapture` | same | Accessibility (bounds) + Screen Recording (pixels) | already non-HID (#23) |
+| Switch tab / close window | AppleScript command | same | — | already non-HID |
+| Upload a file, no flags, AX **not** granted | `doJavaScript` DataTransfer, capped at 10 MB | same | — | already non-HID |
+| Upload a file, no flags, AX granted | the native dialog — see the *Open a native file dialog* and *Choose a file* rows | — | Accessibility | split, see those rows |
+| Dismiss a JavaScript dialog | *(no such command yet — #103)* | `AXPress` on its button | Accessibility | **proven** |
+| Cancel a native file dialog | *(no such command yet)* | `AXPress` on Cancel (nested inside the sheet; needs a recursive search) | Accessibility | **proven** |
+| Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | — | already non-HID |
+| **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | none found yet | Accessibility | **disproven** — see §4.1 |
+| **Name the save destination for a PDF** | same keystrokes, via `SafariBridge.navigateFileDialog` | none found yet | Accessibility | **untested** — see §4.2 |
+| Open the PDF export sheet | `click menu item "Export as PDF…"` | same | Accessibility | already non-HID |
+
+### Permissions do not track the HID split
+
+The `Permission` column exists because the obvious inference from this document
+is wrong. **`AXPress` and synthetic keystrokes go through the same System Events
+channel and require the same Accessibility grant.** Moving an operation from the
+HID column to the non-HID column does not lower the privilege it asks of the
+user, and a reader who cannot take the non-HID path could not have taken the HID
+path either.
+
+Rows marked `—` need neither Accessibility nor Screen Recording; they reach
+Safari through `do JavaScript` or a plain AppleScript command. Sending Apple
+events to Safari at all is common to every row here, so it is not recorded per
+row — it does not discriminate between paths. The user-facing account of the two
+grants that do discriminate lives in [`README.md`](../README.md) under
+*Permissions*; `safari-browser setup` (#98) reports and requests them.
+
+The one place the privilege axis and the HID axis genuinely diverge is `upload`,
+and it runs **opposite** to intuition: with Accessibility granted it takes the
+keystroke path, and without it, it falls to the fully non-HID JS DataTransfer
+route. See §3's note on why the deletion rule does not fire there.
 
 ### How this was measured
 
 Each dialog was produced inside a throwaway Safari window opened for the
 purpose, measured, dismissed via `AXPress`, and the window closed — the user's
-existing windows were never touched. To re-measure:
+existing windows were never touched. The procedure is recorded in #97.
 
-```bash
-make test-reference-edges     # runs when the conditions are already present
-```
+**There is currently no command that re-runs these measurements.**
+`make test-reference-edges` is *not* it: that harness answers a different
+question — which document reference form resolves correctly when the front
+window has no tabs (#96) or carries a modal sheet (#83). It performs no
+`AXPress`, enumerates no file-dialog accessibility tree, and probes no print
+verb, so it cannot re-derive the status of a single row above. Worse for anyone
+who reaches for it: with no dialog present it prints `skip:` notes and exits 0
+reporting "no failures", which reads like a green light for measurements it
+never took. Re-measuring today means repeating #97's manual procedure.
 
-That harness detects a live dialog rather than creating one, and reports absence
-as *skipped* rather than passed. The measurements in the table above were taken
-by deliberately creating each condition; see #97 for the procedure.
+**This table expires.** It describes one macOS and Safari version, and a status
+of `disproven` may become reachable while a `proven` one stops being true. Two
+cautions about the stamp itself:
 
-**This table expires.** It describes one macOS version and one Safari version.
-A status of `disproven` may become reachable, and `proven` may stop being true.
-Re-measure before relying on a row, and update the date above when you do.
+- The environment recorded here is **macOS 27.0 (build 26A5388g) / Safari 27.0**,
+  read from `sw_vers` and Safari's `CFBundleShortVersionString` on the machine
+  that ran the measurements. But #97 and `Tests/e2e-reference-form-edges.sh:5`
+  both record *Safari 26* for the same day and the same session. That
+  contradiction is unresolved; this document restamped measurements it cites
+  rather than ones it took, and an assigned stamp is worth less than a recorded
+  one. Treat any row as version-suspect until re-measured with the build number
+  written down.
+- The expiry warning fences *reading* a row. It says nothing about a deletion
+  already carried out on the strength of one — see §3.
 
 ---
 
@@ -101,10 +160,29 @@ Re-measure before relying on a row, and update the date above when you do.
 > **When a non-HID path is proven, delete the HID path.**
 
 Note the precondition. The rule licenses deletion only against a row marked
-**proven** — a path that is `untested` has not earned the deletion, and one that
-is `disproven` positively forbids it. Deleting an HID path because the rule
-"says so", without a proven replacement, removes a working capability and
-replaces it with nothing.
+**proven**. A row marked `untested` has not earned it; a row marked `disproven`
+withholds it. Deleting an HID path because the rule "says so", without a proven
+replacement, removes a working capability and replaces it with nothing.
+
+`disproven` withholds the licence — it does not close the question. The status
+records that one attempt failed, which is not the same as establishing that no
+non-HID path exists. §4.1 is `disproven` and still names an untried route.
+
+**Applied to the table as it stands today, this rule licenses zero deletions.**
+Every `already non-HID` row has nothing to displace; both `proven` rows describe
+commands that do not exist yet (#103); `Choose a file` is `disproven`; the PDF
+save destination is `untested`. That is worth stating plainly, because it bounds
+every worry in this section to the future: no capability can be lost by this
+document standing as written. The first row that becomes genuinely deletable is
+the one to argue carefully about.
+
+**Deletion is the one step this document cannot take back.** §2's expiry warning
+tells you to re-measure before *relying* on a row. Nothing tells you what to do
+when a row you already deleted against stops being true — the code is gone, and
+re-measuring finds only its absence. Before acting on a `proven` row, record what
+was actually proven and on which build; the strength of the evidence should be
+proportional to the irreversibility of the action, and one measurement on one
+machine is thin support for a permanent removal.
 
 ### Why delete rather than keep as a fallback
 
@@ -113,10 +191,15 @@ alone:
 
 - **Two paths are two behaviours** to maintain, test, and reason about — and one
   of them is already known to be worse.
-- **A retained path becomes a fallback, and fallbacks fire silently.** The caller
-  believes they took the safe route; the tool quietly took the other one. That
-  failure is invisible at the call site and only shows up as a stolen keystroke
-  minutes later.
+- **A retained path becomes a fallback, and a fallback that fires silently is
+  worse than no fallback.** The caller believes they took the safe route; the
+  tool quietly took the other one, and the substitution only shows up as a stolen
+  keystroke minutes later. This repo does not currently make that mistake — the
+  JS upload route prints `ℹ️ Using JS DataTransfer`, the daemon prints
+  `[daemon fallback: <reason>]`, and `screenshot` refuses a background tab rather
+  than capturing the wrong one. Announcing the substitution is the mitigation,
+  and it is why this bullet argues against *silence* rather than against every
+  second path.
 - **HID conflicts with Non-Interference directly.** It moves the cursor, takes
   focus, and races whatever the user is doing. A path that does this is not a
   peer of one that doesn't.
@@ -124,14 +207,38 @@ alone:
   offers "dangerous" or "unavailable" — and when there is a third option, making
   the user pick between the first two is a design failure, not a safety feature.
 
+### The one live case: why `upload` keeps both paths
+
+`upload` ships two paths side by side and picks between them at runtime on
+`AXIsProcessTrusted()`. Read against the bullet above, that looks like exactly
+the arrangement this section condemns — so it is worth saying why the rule does
+not fire, rather than leaving the document's clearest counter-example unmentioned.
+
+The rule fires when a non-HID path **achieves the same result**. The JS
+DataTransfer route does not: it is hard-capped at 10 MB
+(`UploadCommand.swift`, `jsHardCapBytes`), so for an 11 MB file it is not a
+worse way to do the job, it is unable to do the job. Two paths with different
+domains are not a path and its fallback; they are two operations that share a
+command name. The rule has nothing to delete here, and the honest description is
+the one the code already prints to stderr when it takes the JS route.
+
+This is also why the substitution must stay loud. A user whose 11 MB upload
+silently became a 10 MB refusal, or whose fast native path silently became the
+slow one, has been told something false about what happened.
+
 ### Where the rule does not reach
 
 The rule governs *how* an operation is performed, not *whether* it happens
-automatically. A non-HID action can still be surprising — see §1's two
-properties. Commands whose effect the user should consciously authorise stay
-behind explicit opt-in regardless of which path they use; `setup` (#98) and the
-proposed `dialog dismiss` (#103) are both non-HID **and** opt-in, for different
-reasons.
+automatically, and not whether it interferes. A non-HID action can still raise a
+sheet, take focus, or surprise the user — see §1. Commands whose effect the user
+should consciously authorise stay behind explicit opt-in regardless of which path
+they use; `setup` (#98) and the proposed `dialog dismiss` (#103) are both non-HID
+**and** opt-in, for different reasons.
+
+Nor does the rule cover *new* HID paths. Any command added later that takes one
+must be recorded in §4 with a named reason and a tracking issue — an inventory
+that only documents the exceptions someone happened to notice decays into a list
+of historical curiosities.
 
 ---
 
@@ -149,44 +256,83 @@ full path into it **succeeded** (the value read back correctly), `AXConfirm`
 **succeeded**, and pressing the Upload button **succeeded** — yet the page saw
 `input.files.length === 0` and the sheet stayed open.
 
-The likely explanation: that text field is the sidebar's search box. The real
-path-entry field belongs to the **nested sheet that `Cmd+Shift+G` creates** —
-and that sheet does not exist until the keystroke is sent. The HID here is not
-laziness; the UI element being driven has to be summoned by HID first.
+The working hypothesis is that the text field is the sidebar's search box, and
+that the real path-entry field belongs to the **nested sheet `Cmd+Shift+G`
+creates** — a sheet that does not exist until the keystroke is sent. If that is
+right, the HID here is not laziness: the element being driven has to be summoned
+by HID first. It would also fit the shape of #67 (`Go to Folder panel did not
+appear within 10 seconds`), where the thing failing to appear is that same
+nested sheet.
 
-This also explains the shape of #67 (`Go to Folder panel did not appear within
-10 seconds`): the thing that fails to appear is exactly this nested sheet.
+**It is a hypothesis, and the measurement does not single it out.** At least
+three other readings fit the same evidence: an AX value write can be accepted and
+stored by the accessibility layer without ever firing the control's action, so
+"the value read back correctly" discriminates nothing; `AXConfirm` returning
+success reports that the action was dispatched, not that it produced a
+navigation; and the open panel runs out of process, so even a correct selection
+need not yield a file URL the web content process can consume. The sheet staying
+open is consistent with all of them. The check that would separate these is
+read-only and cheap — the `AXRoleDescription`, placeholder, and parent chain of
+that one `AXTextField` — and it has not been run.
 
-Tracked in **#101**. If a different non-HID route exists — driving the dialog's
-file browser (`AXOutline` / `AXBrowser`) to select the target directly, never
-needing Go-to-Folder — then the keystrokes can go, and #67's hang family goes
-with them structurally.
+What the status records is therefore narrow and exact: this attempt failed. Not
+that no non-HID path exists.
 
-### 4.2 Exporting a PDF — untested, and testing has side effects
+Tracked in **#101**, which names an untried route: driving the dialog's file
+browser (`AXOutline` / `AXBrowser`) to select the target directly, never needing
+Go-to-Folder. Note also that `UploadCommand` carries its **own copy** of the
+keystroke sequence rather than calling the shared
+`SafariBridge.navigateFileDialog` that `pdf` uses — so a fix here has two call
+sites, not one.
 
-`PdfCommand` requires `--allow-hid` and drives `Cmd+P` plus dialog navigation.
+### 4.2 Naming a PDF's save destination — untested, and testing has side effects
 
-Safari's own scripting definition exposes nine commands, none of which is
-`print`, `save`, or `export`. But it inherits the Cocoa Standard Suite via
-`xi:include`, and `osacompile -e 'tell application "Safari" to print document 1'`
-**compiles** — the verb exists.
+**`PdfCommand` does not drive `Cmd+P`.** It opens the export sheet with
+`click menu item "Export as PDF…" of menu "File" of menu bar 1` — a System Events
+element click, which by §1 is an `AXPress` and **not** HID. The only `Cmd+P` in
+this repository is a comment in `PdfCommand.swift` describing the route that was
+deliberately *not* taken. So the invocation leg of PDF export is already on the
+preferred side of this document's own rule.
 
-What is unknown is whether it can be aimed at a PDF file rather than a printer.
-**Testing that has a real side effect**: wrong parameters may send an actual
-print job. It needs a deliberate, isolated experiment, not a casual probe during
-other work.
+The HID residue is one step later: `PdfCommand` calls
+`SafariBridge.navigateFileDialog`, which enters the save destination with
+`Cmd+Shift+G` → `Cmd+V` → `Return`. That is what `--allow-hid` is actually
+gating.
 
-Tracked in **#102**, including a second route worth trying: the print sheet is
-itself reachable via Accessibility, so `AXPress` on its PDF popup may reach
-"Save as PDF" without any keystroke.
+This matters for how the remaining work is scoped. It is the *save panel* that
+needs a non-HID route, not the export menu — an `AXPress` on the print sheet's
+PDF popup would reach "Save as PDF" and then land in the same save panel, having
+removed no keystroke. A route that stops there cannot retire `--allow-hid`.
+
+Two further notes on the scripting-definition argument, since it is what makes
+`print` look promising:
+
+- Safari's own scripting definition declares **ten** commands (five of them
+  `hidden="yes"`), none of which is `print`, `save`, or `export`. It inherits the
+  Cocoa Standard Suite via `xi:include`, and
+  `osacompile -e 'tell application "Safari" to print document 1'` **compiles**,
+  while a nonsense verb fails with `-2740` — so the probe discriminates and the
+  verb really does exist. `save` comes back the same way; only `export` does not.
+- What remains unknown is whether `print` can be aimed at a file rather than a
+  printer. **Testing has a real side effect**: wrong parameters may send an actual
+  print job. It needs a deliberate, isolated experiment, not a casual probe during
+  other work.
+
+Tracked in **#102**. Note that this row and §4.1 share the *keystroke sequence*
+but not necessarily the *problem*: `upload` drives an **open** panel and needs to
+select an existing file, whereas `pdf` drives a **save** panel and needs to name
+a destination, where the "Save As:" field is a first-class control. Techniques
+for the former do not automatically transfer to the latter, and the save panel
+may well be the easier of the two. Solving #101 does not automatically retire
+this row.
 
 ---
 
 ## 5. Relationship to Foresay P02
 
-This document is an instance of **P02 Multi-Representation** from
-[Foresay](https://github.com/kiki830621/foresay) (`kiki830621/foresay` v5.0.0,
-private; path below is relative to that repo root —
+This document is an instance of **P02 Multi-Representation** from Foresay
+(`kiki830621/foresay` v5.0.0 — a private repository, so this is a citation
+rather than a link; the path below is relative to that repo root:
 `00_principles/pragmatics/P02_multi_representation.md`):
 
 > Every computational entity exists simultaneously in **multiple
@@ -200,26 +346,32 @@ three disciplines map directly onto this file:
 | P02 discipline | Here |
 |---|---|
 | **Name the representation** | §2 records, per operation, which path is taken — "clicked the button" is not a complete statement |
-| **Document transitions** | when an intent crosses paths it stays traceable (e.g. `upload` falling back from native to JS DataTransfer) |
+| **Document transitions** | where one command can run as more than one representation, the choice is announced rather than silent — `upload` decides between the native and JS routes on the Accessibility grant and prints which one it took. (It decides *once*, at entry; there is no runtime fallback from one to the other, and the code says so: "`--js` (DataTransfer) is capped at 10 MB, so it is **not** a fallback for large files.") |
 | **Debug along the chain** | locating *which path* failed is half the diagnosis — #67 is precisely a failure localised to one path |
 
 ### What this repo adds on top of P02
 
-P02 requires naming which representation is meant. It does **not** rank them.
+Two things here are this repo's, not P02's, and should not be attributed to it:
 
-This document adds a **preference order with elimination**: the paths are not
-equivalent alternatives to be named and left standing — the worse one is
-deleted once the better one is proven. That ordering is a safari-browser rule,
-justified by the Non-Interference principle, and should not be attributed to
-P02 itself.
+**A preference order with elimination.** P02 requires naming which
+representation is meant; it does **not** rank them. This document treats the
+paths as ordered rather than as equivalent alternatives left standing, and
+deletes the worse one once the better is proven. That ordering is a
+safari-browser rule justified by the Non-Interference principle.
+
+**A widened notion of "representation".** P02's examples are representations of
+one *entity* — the same name denoting a concept, a file, a code symbol, a
+runtime object, a button. Execution paths are implementations of one *intent*,
+which is an extension of that taxonomy rather than an instance of it. The
+mapping above holds, but it holds by analogy at the second and third rows.
 
 ---
 
 ## See also
 
 - [`openspec/specs/non-interference/spec.md`](../openspec/specs/non-interference/spec.md) — the principle this document expands along the execution-path axis
-- **#101** — file selection: no non-HID path found (blocks retiring `upload`'s keystrokes)
-- **#102** — PDF export: non-HID feasibility untested
+- **#101** — choosing a file in the open panel: one non-HID attempt failed, an untried route named (blocks retiring `upload`'s keystrokes)
+- **#102** — naming the save destination for a PDF: non-HID feasibility untested. Note the export *invocation* is already non-HID; only the save panel needs a route
 - **#103** — `dialog list` / `dialog dismiss`: proven non-HID, no opt-in command yet
 - **#67** — stuck native file dialog; the failure family that lives on the HID path
 - **#98** — `setup`: the other command that deliberately raises a system dialog, and why that is not a contradiction

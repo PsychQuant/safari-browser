@@ -77,7 +77,7 @@ Key decision: **`browser-harness` is cited by URL, not bundled locally** (#36). 
 新增指令前須分類 interference level（Non-interfering / Passively interfering / Actively interfering）。
 完整規範：`openspec/specs/non-interference/spec.md`
 
-**選哪條執行路徑**：同一個操作通常有 HID（合成鍵盤滑鼠事件）與非 HID（AppleScript / Accessibility `AXPress`）兩條路。判準、逐操作盤點（含哪些已證實、哪些實測失敗）、以及「非 HID 已證實可行時就刪掉 HID 路徑」的紀律，見 [`docs/operation-paths.md`](docs/operation-paths.md)。注意 `AXPress` **不是** HID —— 它不碰輸入裝置，但會改變狀態，兩者是不同性質。
+**選哪條執行路徑**：同一個操作通常有 HID（合成鍵盤滑鼠事件）與非 HID（AppleScript / Accessibility `AXPress`）兩條路。判準、逐操作盤點、以及「非 HID **已證實**可行時就刪掉 HID 路徑」的紀律，見 [`docs/operation-paths.md`](docs/operation-paths.md)。三件事別搞混：(a) `AXPress` **不是** HID —— 它不合成輸入事件，但**會**改變狀態、甚至拉起搶焦點的 sheet，非 HID ≠ 不干擾；(b) `AXPress` 與 keystroke 走同一個 System Events 通道、**需要同一個 Accessibility 授權**，換到非 HID 路徑不會降低要求的權限；(c) **目前盤點表授權的刪除數是零** —— upload 的選檔是 `disproven`、pdf 的存檔目的地是 `untested`，這兩處的 HID 都還沒有替代品，不要照規則去刪。
 
 ## Design Principle: Human Emulation (tab-targeting-v2)
 
