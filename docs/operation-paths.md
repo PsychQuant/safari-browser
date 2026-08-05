@@ -55,8 +55,9 @@ and every mechanism in the table above can cause it:
 - `AXPress` can raise a sheet, and a sheet takes keyboard focus. `pdf` opens its
   export sheet with `click menu item "Export as PDF…"` — non-HID by the table
   above — and by the time the first keystroke fires, that sheet is already up and
-  holding focus. `PdfCommand` warns *"Controlling keyboard for PDF export. Do not
-  type until complete"* at the very start of the command, before any of it runs.
+  holding focus. `PdfCommand` does warn *"Controlling keyboard for PDF export"*
+  before any keystroke, though not before the command has done anything: target
+  resolution and, on a targeting flag, a tab switch both run first.
 
 So "non-HID" is a statement about one mechanism, not a safety certificate for the
 operation built on it.
@@ -107,7 +108,7 @@ rule in §3 is correctly vacuous over them.
 | Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | JS-from-Apple-Events for this step; `upload --native` as a whole needs Accessibility for the steps after it | already non-HID |
 | **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | none found yet | Accessibility | **disproven** — see §4.1 |
 | **Name the save destination for a PDF** | same keystrokes, via `SafariBridge.navigateFileDialog` | none found yet | Accessibility | **untested** — see §4.2 |
-| Open the PDF export sheet | `click menu item "Export as PDF…"` | same | Accessibility | already non-HID |
+| Open the PDF export sheet | `click menu item "Export as PDF…"` | same | Accessibility | already non-HID — **only where Safari's menus are English**; see §4.2 |
 
 ### Permissions do not track the HID split
 
@@ -121,8 +122,10 @@ path either.
 Three prerequisites appear in the column, and one deliberately does not:
 
 - **Accessibility** — every System Events operation, `AXPress` and keystroke
-  alike. `safari-browser setup` (#98) reports and requests it; the user-facing
-  account is in [`README.md`](../README.md) under *Permissions*.
+  alike, *and* the direct `AXUIElement` SPI that `screenshot` uses to read window
+  bounds without System Events at all. `safari-browser setup` (#98) reports and
+  requests it; the user-facing account is in [`README.md`](../README.md) under
+  *Permissions*.
 - **Screen Recording** — the pixel capture in `screenshot`, and nothing else.
 - **JS-from-Apple-Events** — Safari's *Develop → Allow JavaScript from Apple
   Events* toggle, which `do JavaScript` requires and a plain AppleScript command
@@ -130,8 +133,12 @@ Three prerequisites appear in the column, and one deliberately does not:
   that splits the rows this table would otherwise mark `—`, and it is currently
   documented nowhere else in this repository — so a reader on a fresh machine
   meets a `do JavaScript` failure with no pointer. Worth fixing in `README.md`.
-- **Apple events to Safari** is *not* recorded per row: every row here needs it,
-  so it does not discriminate between paths.
+- **Apple events to Safari** is *not* recorded per row. Most rows need it, and
+  the exceptions are not the interesting ones: a pure `AXPress` on an already-open
+  dialog addresses its Apple event to *System Events*, which then drives Safari
+  through Accessibility, and `screencapture` does not talk to Safari at all. It
+  is a poor discriminator either way, so the column leaves it out rather than
+  repeating it eleven times.
 
 Rows marked `—` need none of the three.
 
@@ -213,20 +220,26 @@ alone:
 - **A retained path becomes a fallback, and a fallback that fires silently is
   worse than no fallback.** The caller believes they took the safe route; the
   tool quietly took the other one, and the substitution only shows up as a stolen
-  keystroke minutes later. This repo does not currently make that mistake where it
-  counts — when `upload` *substitutes* the JS route for the native one it prints
-  `ℹ️ Using JS DataTransfer` (an explicit `--js` prints nothing, and needs to
-  print nothing: no substitution occurred), the daemon prints
-  `[daemon fallback: <reason>]`, and `screenshot` refuses a background tab rather
-  than capturing the wrong one. Announcing the substitution is the mitigation,
+  keystroke minutes later. This repo mostly announces its substitutions — when
+  `upload` swaps the JS route for the native one it prints `ℹ️ Using JS
+  DataTransfer` (an explicit `--js` prints nothing, and needs to print nothing: no
+  substitution occurred), the daemon prints `[daemon fallback: <reason>]`, and
+  `screenshot` refuses a background tab rather than capturing the wrong one. It
+  does not announce all of them: `screenshot`'s choice between the AX and legacy
+  window resolvers is silent (§5). Announcing the substitution is the mitigation,
   and it is why this bullet argues against *silence* rather than against every
-  second path.
+  second path — but "mostly" is the honest word, and the exception is in this
+  repo, not a hypothetical one.
 - **HID conflicts with Non-Interference directly.** It moves the cursor, takes
   focus, and races whatever the user is doing. A path that does this is not a
   peer of one that doesn't.
-- **`--allow-hid` is a false choice when a proven alternative exists.** The flag
-  offers "dangerous" or "unavailable" — and when there is a third option, making
-  the user pick between the first two is a design failure, not a safety feature.
+- **`--allow-hid` is a false choice when a proven alternative exists.** Where the
+  flag is a real gate it offers "dangerous" or "unavailable", and when a third
+  option exists, making the user pick between the first two is a design failure
+  rather than a safety feature. Note it is only a gate on `pdf`, which hard-fails
+  without it. On `upload` the flag gates nothing — with Accessibility granted the
+  keystroke path is already the default and no flag is involved, which is the
+  inversion §2 records.
 
 ### The one live case: why `upload` keeps both paths
 
@@ -318,10 +331,14 @@ export is already on the preferred side of this document's own rule.
 taken; it is a warning that the implemented route is locale-dependent: *"Menu
 labels are English. On non-English macOS, use keyboard shortcut instead. `Cmd+P`
 → 'PDF' dropdown → 'Save as PDF' is locale-independent but more complex."* There
-is no fallback in the code — on a localised system `click menu item "Export as
-PDF…"` simply does not match, and the wait loop times out after 10 seconds. So
-the non-HID invocation is conditional, and the locale-independent alternative the
-code itself names is the HID one.
+is no fallback in the code. On a system where Safari's menus are not in English,
+`click menu item "Export as PDF…"` cannot resolve its object specifier, and since
+nothing wraps that statement the script aborts there with an AppleScript `-1728`
+— immediately, not after a wait. (The 10-second timeout in the same block guards
+a *different* failure: the menu item resolved but no sheet appeared. The two are
+mutually exclusive.) So the non-HID invocation is conditional on Safari's UI
+language, and the locale-independent alternative the code itself names is the HID
+one.
 
 The largest HID residue is one step later: `PdfCommand` calls
 `SafariBridge.navigateFileDialog`, which enters the save destination with
@@ -332,13 +349,24 @@ carry the same `keystroke return` fallback when clicking the default button
 throws. Retiring `--allow-hid` means clearing **all** of them, not just the path
 entry.
 
-This matters for how the remaining work is scoped. It is the *save panel* that
-needs a route, not the export menu — an `AXPress` on the print sheet's PDF popup
-would reach "Save as PDF" and, on the face of it, land in the same save panel,
-having removed no keystroke. That is a prediction, not a measurement: nobody has
-enumerated the print sheet's accessibility tree, and this row is `untested`
-precisely because that work has not been done. A route that stops at the save
-panel would not retire `--allow-hid`.
+This matters for how the remaining work is scoped, and there are two separate
+open questions rather than one:
+
+- **Can the save panel's destination be entered without keystrokes?** This is the
+  one that gates `--allow-hid`, and it is measurable *today* — the shipping
+  `Export as PDF…` route already opens that panel, so nothing has to be built or
+  routed around first. It is `untested` because nobody has enumerated that
+  panel's accessibility tree, not because it is blocked on anything.
+- **Is there a locale-independent way to open the export sheet?** Separate
+  problem, separate motivation: the current menu-item route is English-only (see
+  above), so this one is about `pdf` working at all on a localised system, not
+  about retiring the flag.
+
+The route #102 originally proposed — an `AXPress` on the print sheet's PDF popup
+to reach "Save as PDF" — belongs to the second question, not the first. On the
+face of it, it would land in the same save panel and remove no keystroke. That is
+a prediction, not a measurement: nobody has enumerated the print sheet's
+accessibility tree either.
 
 Two further notes on the scripting-definition argument, since it is what makes
 `print` look promising:
@@ -368,10 +396,11 @@ Two further notes on the scripting-definition argument, since it is what makes
 Tracked in **#102**. Note that this row and §4.1 share the *keystroke sequence*
 but not necessarily the *problem*: `upload` drives an **open** panel and needs to
 select an existing file, whereas `pdf` drives a **save** panel and needs to name
-a destination, where the "Save As:" field is a first-class control. Techniques
-for the former do not automatically transfer to the latter, and the save panel
-may well be the easier of the two. Solving #101 does not automatically retire
-this row.
+a destination, which a save panel would normally expose as an editable field
+rather than something to be navigated to — though that, too, is unmeasured.
+Techniques for the former do not automatically transfer to the latter, and the
+save panel may well be the easier of the two. Solving #101 does not automatically
+retire this row.
 
 ---
 
@@ -393,7 +422,7 @@ three disciplines map directly onto this file:
 | P02 discipline | Here |
 |---|---|
 | **Name the representation** | §2 records, per operation, which path is taken — "clicked the button" is not a complete statement |
-| **Document transitions** | where one command can run as more than one representation, the choice is announced rather than silent — `upload` decides between the native and JS routes on the Accessibility grant and prints which one it took. (It decides *once*, at entry; there is no runtime fallback from one to the other, and the code says so: "Note: --js (DataTransfer) is capped at 10 MB (#24), so it is not a fallback for large files.") |
+| **Document transitions** | the discipline this repo keeps unevenly. `upload` keeps it: it decides between the native and JS routes on the Accessibility grant and prints which one it took. (It decides *once*, at entry; there is no runtime fallback from one to the other, and the code says so: "Note: --js (DataTransfer) is capped at 10 MB (#24), so it is not a fallback for large files.") `screenshot` does **not**: `resolveWindowForCapture` picks between the AX resolver and the legacy CG name-match on `AXIsProcessTrusted()`, the two differ in the permission they need and in their known failure modes, and nothing is printed either way. |
 | **Debug along the chain** | locating *which path* failed is half the diagnosis — #67 is precisely a failure localised to one path |
 
 ### What this repo adds on top of P02
@@ -406,11 +435,13 @@ paths as ordered rather than as equivalent alternatives left standing, and
 deletes the worse one once the better is proven. That ordering is a
 safari-browser rule justified by the Non-Interference principle.
 
-**A widened notion of "representation".** P02's examples are representations of
-one *entity* — the same name denoting a concept, a file, a code symbol, a
-runtime object, a button. Execution paths are implementations of one *intent*,
-which is an extension of that taxonomy rather than an instance of it. The
-mapping above holds, but it holds by analogy at the second and third rows.
+That is the only addition. An earlier draft of this section also claimed that
+treating execution paths as representations *widened* P02's notion — that P02
+covered representations of one entity while this covers implementations of one
+intent. That was wrong, and wrong in the direction of false modesty: P02's own
+taxonomy already carries a row for the several renderings of a single operation,
+and its second discipline speaks of them as the *same request* in more than one
+representation. Execution paths are an instance of P02, not an extension of it.
 
 ---
 
