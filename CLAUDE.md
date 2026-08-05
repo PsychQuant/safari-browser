@@ -77,6 +77,8 @@ Key decision: **`browser-harness` is cited by URL, not bundled locally** (#36). 
 新增指令前須分類 interference level（Non-interfering / Passively interfering / Actively interfering）。
 完整規範：`openspec/specs/non-interference/spec.md`
 
+**選哪條執行路徑**：同一個操作通常有 HID（合成鍵盤滑鼠事件）與非 HID（AppleScript / Accessibility `AXPress`）兩條路。判準、逐操作盤點（含哪些已證實、哪些實測失敗）、以及「非 HID 已證實可行時就刪掉 HID 路徑」的紀律，見 [`docs/operation-paths.md`](docs/operation-paths.md)。注意 `AXPress` **不是** HID —— 它不碰輸入裝置，但會改變狀態，兩者是不同性質。
+
 ## Design Principle: Human Emulation (tab-targeting-v2)
 
 safari-browser 預設行為應貼近人類用 Safari 的心智模型 — 與 Non-Interference 同級 principle，衝突時透過 spatial gradient 調和。四條衍生規則：
