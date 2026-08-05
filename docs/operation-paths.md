@@ -220,16 +220,19 @@ alone:
 - **A retained path becomes a fallback, and a fallback that fires silently is
   worse than no fallback.** The caller believes they took the safe route; the
   tool quietly took the other one, and the substitution only shows up as a stolen
-  keystroke minutes later. This repo mostly announces its substitutions — when
-  `upload` swaps the JS route for the native one it prints `ℹ️ Using JS
-  DataTransfer` (an explicit `--js` prints nothing, and needs to print nothing: no
-  substitution occurred), the daemon prints `[daemon fallback: <reason>]`, and
-  `screenshot` refuses a background tab rather than capturing the wrong one. It
-  does not announce all of them: `screenshot`'s choice between the AX and legacy
-  window resolvers is silent (§5). Announcing the substitution is the mitigation,
-  and it is why this bullet argues against *silence* rather than against every
-  second path — but "mostly" is the honest word, and the exception is in this
-  repo, not a hypothetical one.
+  keystroke minutes later. Announcing the substitution is the mitigation, which is
+  why this bullet argues against *silence* rather than against every second path.
+  This repo does some of each, and **nobody has inventoried which is which** — so
+  take these as examples, not as a tally. Announced: `upload` swapping the JS
+  route for the native one (`ℹ️ Using JS DataTransfer` — an explicit `--js` prints
+  nothing and needs to print nothing, since no substitution occurred), and the
+  daemon's `[daemon fallback: <reason>]`. Silent: `screenshot` choosing between
+  the AX and the legacy window resolver (§5), and `keystroke return` standing in
+  for a default-button click that threw, in `pdf` and `upload` alike (§4.2) — the
+  keyboard warning does not cover that one, because it says the command will use
+  the keyboard, not that the accessible route failed. Until the inventory exists
+  this document should not claim the repo mostly keeps the discipline; it claims
+  only that the discipline is the right one.
 - **HID conflicts with Non-Interference directly.** It moves the cursor, takes
   focus, and races whatever the user is doing. A path that does this is not a
   peer of one that doesn't.
@@ -422,7 +425,7 @@ three disciplines map directly onto this file:
 | P02 discipline | Here |
 |---|---|
 | **Name the representation** | §2 records, per operation, which path is taken — "clicked the button" is not a complete statement |
-| **Document transitions** | the discipline this repo keeps unevenly. `upload` keeps it: it decides between the native and JS routes on the Accessibility grant and prints which one it took. (It decides *once*, at entry; there is no runtime fallback from one to the other, and the code says so: "Note: --js (DataTransfer) is capped at 10 MB (#24), so it is not a fallback for large files.") `screenshot` does **not**: `resolveWindowForCapture` picks between the AX resolver and the legacy CG name-match on `AXIsProcessTrusted()`, the two differ in the permission they need and in their known failure modes, and nothing is printed either way. |
+| **Document transitions** | the discipline this repo keeps unevenly, at different depths. `upload` keeps it at the **top level**: it decides between the native and JS routes on the Accessibility grant and prints which one it took. (It decides *once*, at entry; there is no runtime fallback from one to the other, and the code says so: "Note: --js (DataTransfer) is capped at 10 MB (#24), so it is not a fallback for large files.") Below that level it does not — nor does `pdf`: when a default-button click throws, both fall back to `keystroke return` without recording it. And `screenshot` does not keep it at the top level either: `resolveWindowForCapture` picks between the AX resolver and the legacy CG name-match on `AXIsProcessTrusted()`, the two differ in the permission they need and in their known failure modes, and nothing is printed either way. See §3 for why this is examples rather than an inventory. |
 | **Debug along the chain** | locating *which path* failed is half the diagnosis — #67 is precisely a failure localised to one path |
 
 ### What this repo adds on top of P02
