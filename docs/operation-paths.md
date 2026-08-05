@@ -27,7 +27,7 @@ indistinguishable from the user physically typing or clicking.
 | System Events `click <element>` | Accessibility `AXPress` action on that element | ❌ **no** |
 | `perform action "AXConfirm" of <element>` | Accessibility action | ❌ no |
 | `set value of <AXTextField> to "…"` | Accessibility attribute write | ❌ no |
-| `URL of document 1`, `close window 2` | Apple Event to Safari | ❌ no |
+| `URL of document 1`, `close window 2` | Apple Event to Safari | ❌ no — but see below; `activate` is also an Apple Event |
 
 **The two `click`s are the trap.** System Events exposes `click` for both an
 element reference and a screen coordinate. They share a name and mean opposite
@@ -45,13 +45,21 @@ button dismisses a dialog — that is a real state change. What it avoids is
 narrower than it first looks: it never *fabricates an input event*, so it cannot
 take a keystroke out of the user's hands mid-keypress.
 
-It does not follow that a non-HID action is invisible to the user. `AXPress` can
-raise a sheet, and a sheet takes keyboard focus. This repo does exactly that:
-`pdf` opens the export sheet with `click menu item "Export as PDF…"` — an
-`AXPress`, non-HID by the table above — and `PdfCommand` prints *"Controlling
-keyboard for PDF export. Do not type until complete"* **before** it sends any
-keystroke, because part of the takeover has already happened. Focus theft is a
-consequence of what the action does, not of which mechanism dispatched it.
+It does not follow that a non-HID action is invisible to the user. Focus theft
+is a consequence of what an action *does*, not of which mechanism dispatched it,
+and every mechanism in the table above can cause it:
+
+- A plain Apple Event is the bluntest of them. `tell application "Safari" to
+  activate` and `set index of window N to 1` take the foreground outright, and
+  they sit in the same row as the innocuous `URL of document 1`.
+- `AXPress` can raise a sheet, and a sheet takes keyboard focus. `pdf` opens its
+  export sheet with `click menu item "Export as PDF…"` — non-HID by the table
+  above — and by the time the first keystroke fires, that sheet is already up and
+  holding focus. `PdfCommand` warns *"Controlling keyboard for PDF export. Do not
+  type until complete"* at the very start of the command, before any of it runs.
+
+So "non-HID" is a statement about one mechanism, not a safety certificate for the
+operation built on it.
 
 So there are at least two independent properties:
 
@@ -88,15 +96,15 @@ rule in §3 is correctly vacuous over them.
 
 | Operation | Current implementation | Non-HID path | Permission | Status |
 |---|---|---|---|---|
-| Click a page element | `doJavaScript` `el.click()` | same | — | already non-HID |
-| Read / fill / scroll | `doJavaScript` | same | — | already non-HID |
-| Screenshot | AX bounds + `screencapture` | same | Accessibility (bounds) + Screen Recording (pixels) | already non-HID (#23) |
+| Click a page element | `doJavaScript` `el.click()` | same | JS-from-Apple-Events | already non-HID |
+| Read / fill / scroll | `doJavaScript` | same | JS-from-Apple-Events | already non-HID |
+| Screenshot | AX bounds + `screencapture` | same | Screen Recording always; Accessibility only for `--element` / `--content-only` / explicit targeting | already non-HID (#23) |
 | Switch tab / close window | AppleScript command | same | — | already non-HID |
-| Upload a file, no flags, AX **not** granted | `doJavaScript` DataTransfer, capped at 10 MB | same | — | already non-HID |
-| Upload a file, no flags, AX granted | the native dialog — see the *Open a native file dialog* and *Choose a file* rows | — | Accessibility | split, see those rows |
+| Upload a file, no flags, AX **not** granted | `doJavaScript` DataTransfer, capped at 10 MB | same | JS-from-Apple-Events | already non-HID |
+| Upload a file, no flags, AX granted | the native dialog — see the *Open a native file dialog* and *Choose a file* rows | — | Accessibility | *(pointer row — status lives on the two rows it names)* |
 | Dismiss a JavaScript dialog | *(no such command yet — #103)* | `AXPress` on its button | Accessibility | **proven** |
 | Cancel a native file dialog | *(no such command yet)* | `AXPress` on Cancel (nested inside the sheet; needs a recursive search) | Accessibility | **proven** |
-| Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | — | already non-HID |
+| Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | JS-from-Apple-Events for this step; `upload --native` as a whole needs Accessibility for the steps after it | already non-HID |
 | **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | none found yet | Accessibility | **disproven** — see §4.1 |
 | **Name the save destination for a PDF** | same keystrokes, via `SafariBridge.navigateFileDialog` | none found yet | Accessibility | **untested** — see §4.2 |
 | Open the PDF export sheet | `click menu item "Export as PDF…"` | same | Accessibility | already non-HID |
@@ -110,12 +118,22 @@ HID column to the non-HID column does not lower the privilege it asks of the
 user, and a reader who cannot take the non-HID path could not have taken the HID
 path either.
 
-Rows marked `—` need neither Accessibility nor Screen Recording; they reach
-Safari through `do JavaScript` or a plain AppleScript command. Sending Apple
-events to Safari at all is common to every row here, so it is not recorded per
-row — it does not discriminate between paths. The user-facing account of the two
-grants that do discriminate lives in [`README.md`](../README.md) under
-*Permissions*; `safari-browser setup` (#98) reports and requests them.
+Three prerequisites appear in the column, and one deliberately does not:
+
+- **Accessibility** — every System Events operation, `AXPress` and keystroke
+  alike. `safari-browser setup` (#98) reports and requests it; the user-facing
+  account is in [`README.md`](../README.md) under *Permissions*.
+- **Screen Recording** — the pixel capture in `screenshot`, and nothing else.
+- **JS-from-Apple-Events** — Safari's *Develop → Allow JavaScript from Apple
+  Events* toggle, which `do JavaScript` requires and a plain AppleScript command
+  (`close window 2`, `URL of document 1`) does not. It is the one prerequisite
+  that splits the rows this table would otherwise mark `—`, and it is currently
+  documented nowhere else in this repository — so a reader on a fresh machine
+  meets a `do JavaScript` failure with no pointer. Worth fixing in `README.md`.
+- **Apple events to Safari** is *not* recorded per row: every row here needs it,
+  so it does not discriminate between paths.
+
+Rows marked `—` need none of the three.
 
 The one place the privilege axis and the HID axis genuinely diverge is `upload`,
 and it runs **opposite** to intuition: with Accessibility granted it takes the
@@ -133,10 +151,11 @@ existing windows were never touched. The procedure is recorded in #97.
 question — which document reference form resolves correctly when the front
 window has no tabs (#96) or carries a modal sheet (#83). It performs no
 `AXPress`, enumerates no file-dialog accessibility tree, and probes no print
-verb, so it cannot re-derive the status of a single row above. Worse for anyone
-who reaches for it: with no dialog present it prints `skip:` notes and exits 0
-reporting "no failures", which reads like a green light for measurements it
-never took. Re-measuring today means repeating #97's manual procedure.
+verb, so it cannot re-derive the status of a single row above. It is honest about
+what it did not do — with no dialog present it prints `skip:` notes and ends with
+`no failures (conditions not present count as skipped, not passed)` — but a green
+exit is still what a reader following a "to re-measure" instruction would take
+away. Re-measuring today means repeating #97's manual procedure.
 
 **This table expires.** It describes one macOS and Safari version, and a status
 of `disproven` may become reachable while a `proven` one stops being true. Two
@@ -194,8 +213,10 @@ alone:
 - **A retained path becomes a fallback, and a fallback that fires silently is
   worse than no fallback.** The caller believes they took the safe route; the
   tool quietly took the other one, and the substitution only shows up as a stolen
-  keystroke minutes later. This repo does not currently make that mistake — the
-  JS upload route prints `ℹ️ Using JS DataTransfer`, the daemon prints
+  keystroke minutes later. This repo does not currently make that mistake where it
+  counts — when `upload` *substitutes* the JS route for the native one it prints
+  `ℹ️ Using JS DataTransfer` (an explicit `--js` prints nothing, and needs to
+  print nothing: no substitution occurred), the daemon prints
   `[daemon fallback: <reason>]`, and `screenshot` refuses a background tab rather
   than capturing the wrong one. Announcing the substitution is the mitigation,
   and it is why this bullet argues against *silence* rather than against every
@@ -281,42 +302,68 @@ that no non-HID path exists.
 Tracked in **#101**, which names an untried route: driving the dialog's file
 browser (`AXOutline` / `AXBrowser`) to select the target directly, never needing
 Go-to-Folder. Note also that `UploadCommand` carries its **own copy** of the
-keystroke sequence rather than calling the shared
-`SafariBridge.navigateFileDialog` that `pdf` uses — so a fix here has two call
-sites, not one.
+keystroke sequence. `SafariBridge.navigateFileDialog` looks like the shared entry
+point and is named as if it were one, but `pdf` is its only caller — so a fix here
+has two call sites, not one.
 
 ### 4.2 Naming a PDF's save destination — untested, and testing has side effects
 
 **`PdfCommand` does not drive `Cmd+P`.** It opens the export sheet with
 `click menu item "Export as PDF…" of menu "File" of menu bar 1` — a System Events
 element click, which by §1 is an `AXPress` and **not** HID. The only `Cmd+P` in
-this repository is a comment in `PdfCommand.swift` describing the route that was
-deliberately *not* taken. So the invocation leg of PDF export is already on the
-preferred side of this document's own rule.
+this repository is a comment in `PdfCommand.swift`. So the invocation leg of PDF
+export is already on the preferred side of this document's own rule.
 
-The HID residue is one step later: `PdfCommand` calls
+**But only on an English system.** That comment is not a note about a road not
+taken; it is a warning that the implemented route is locale-dependent: *"Menu
+labels are English. On non-English macOS, use keyboard shortcut instead. `Cmd+P`
+→ 'PDF' dropdown → 'Save as PDF' is locale-independent but more complex."* There
+is no fallback in the code — on a localised system `click menu item "Export as
+PDF…"` simply does not match, and the wait loop times out after 10 seconds. So
+the non-HID invocation is conditional, and the locale-independent alternative the
+code itself names is the HID one.
+
+The largest HID residue is one step later: `PdfCommand` calls
 `SafariBridge.navigateFileDialog`, which enters the save destination with
-`Cmd+Shift+G` → `Cmd+V` → `Return`. That is what `--allow-hid` is actually
-gating.
+`Cmd+Shift+G` → `Cmd+V` → `Return`. It is not the only one — `PdfCommand` also
+falls back to `keystroke return` in its "Replace?" confirmation branch, outside
+`navigateFileDialog` entirely, and both `navigateFileDialog` and `upload`'s copy
+carry the same `keystroke return` fallback when clicking the default button
+throws. Retiring `--allow-hid` means clearing **all** of them, not just the path
+entry.
 
 This matters for how the remaining work is scoped. It is the *save panel* that
-needs a non-HID route, not the export menu — an `AXPress` on the print sheet's
-PDF popup would reach "Save as PDF" and then land in the same save panel, having
-removed no keystroke. A route that stops there cannot retire `--allow-hid`.
+needs a route, not the export menu — an `AXPress` on the print sheet's PDF popup
+would reach "Save as PDF" and, on the face of it, land in the same save panel,
+having removed no keystroke. That is a prediction, not a measurement: nobody has
+enumerated the print sheet's accessibility tree, and this row is `untested`
+precisely because that work has not been done. A route that stops at the save
+panel would not retire `--allow-hid`.
 
 Two further notes on the scripting-definition argument, since it is what makes
 `print` look promising:
 
 - Safari's own scripting definition declares **ten** commands (five of them
-  `hidden="yes"`), none of which is `print`, `save`, or `export`. It inherits the
-  Cocoa Standard Suite via `xi:include`, and
-  `osacompile -e 'tell application "Safari" to print document 1'` **compiles**,
-  while a nonsense verb fails with `-2740` — so the probe discriminates and the
-  verb really does exist. `save` comes back the same way; only `export` does not.
-- What remains unknown is whether `print` can be aimed at a file rather than a
-  printer. **Testing has a real side effect**: wrong parameters may send an actual
-  print job. It needs a deliberate, isolated experiment, not a casual probe during
-  other work.
+  `hidden="yes"`), none of which is `print`, `save`, or `export`. It does inherit
+  the Cocoa Standard Suite via `xi:include`, which is where `print` would come
+  from.
+- **Do not read a successful `osacompile` as evidence for this.**
+  `osacompile -e 'tell application "Safari" to print document 1'` compiles — but
+  so does the same line addressed to `Dock`, which has no `print` command, and to
+  an application name that does not exist at all. `print` and `save` are global
+  Standard Suite terminology and compile against anything; only application-
+  specific terms discriminate (`do JavaScript` compiles against Safari and fails
+  against Dock with `-2740`). A nonsense verb failing proves only that the
+  identifier is unknown to AppleScript, which is a different question. The probe
+  is inert here.
+- Even the `xi:include` is weaker evidence than it looks: it inherits
+  *terminology*, not an implementation. An application can declare a Standard
+  Suite verb and still return `errAEEventNotHandled` at runtime. So "Safari has a
+  `print` verb" is a claim about its dictionary, not about its behaviour.
+- What remains unknown is therefore both whether `print` is handled at all and
+  whether it can be aimed at a file rather than a printer. **Testing has a real
+  side effect**: wrong parameters may send an actual print job. It needs a
+  deliberate, isolated experiment, not a casual probe during other work.
 
 Tracked in **#102**. Note that this row and §4.1 share the *keystroke sequence*
 but not necessarily the *problem*: `upload` drives an **open** panel and needs to
@@ -346,7 +393,7 @@ three disciplines map directly onto this file:
 | P02 discipline | Here |
 |---|---|
 | **Name the representation** | §2 records, per operation, which path is taken — "clicked the button" is not a complete statement |
-| **Document transitions** | where one command can run as more than one representation, the choice is announced rather than silent — `upload` decides between the native and JS routes on the Accessibility grant and prints which one it took. (It decides *once*, at entry; there is no runtime fallback from one to the other, and the code says so: "`--js` (DataTransfer) is capped at 10 MB, so it is **not** a fallback for large files.") |
+| **Document transitions** | where one command can run as more than one representation, the choice is announced rather than silent — `upload` decides between the native and JS routes on the Accessibility grant and prints which one it took. (It decides *once*, at entry; there is no runtime fallback from one to the other, and the code says so: "Note: --js (DataTransfer) is capped at 10 MB (#24), so it is not a fallback for large files.") |
 | **Debug along the chain** | locating *which path* failed is half the diagnosis — #67 is precisely a failure localised to one path |
 
 ### What this repo adds on top of P02
