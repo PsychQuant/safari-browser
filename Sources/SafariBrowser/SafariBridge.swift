@@ -3601,35 +3601,42 @@ enum SafariBridge {
 
     // MARK: - File Dialog Navigation
 
-    /// Navigate a macOS file dialog using System Events.
-    /// Uses clipboard paste (Cmd+V) for path input instead of keystroke.
-    /// Saves and restores the user's clipboard content.
-    /// Requires: a file dialog sheet to be already open on Safari's front window.
-    /// Note: uploadViaNativeDialog uses its own combined osascript (see #15).
-    /// This function is kept for other callers but now includes a frontmost safety check.
-    static func navigateFileDialog(path: String) async throws {
-        // #20: probe/restart System Events before touching the keyboard. Same
-        // rationale as `UploadCommand.uploadViaNativeDialog`.
-        try await ensureSystemEventsLive()
-
-        try await runShell("/usr/bin/osascript", ["-e", """
-            tell application "Safari" to activate
-            tell application "System Events"
-                tell process "Safari"
-                    -- Verify Safari is frontmost before sending any keystrokes
-                    if not frontmost then
-                        error "Safari is not frontmost — aborting to avoid sending keystrokes to wrong application"
-                    end if
-
+    /// The Go-to-Folder navigation sequence, as AppleScript **text** rather than
+    /// as something this type executes.
+    ///
+    /// #105. This body used to exist twice — here and inlined inside
+    /// `UploadCommand.uploadViaNativeDialog`. The duplication was deliberate:
+    /// #15 found that splitting the flow across two `osascript` invocations left
+    /// a window in which another application could steal focus between them, and
+    /// closed it by merging activate + wait + paste + click into one script,
+    /// which meant inlining this body. "Just call the shared function" would put
+    /// the race back.
+    ///
+    /// Sharing the text instead of the execution dissolves that trade: each
+    /// caller embeds this fragment in its own single invocation, so there is one
+    /// source of truth *and* no cross-process gap.
+    ///
+    /// The fragment assumes it is placed inside `tell process "Safari"`, with a
+    /// file dialog sheet already open on `front window`. It defines its own
+    /// `maxWait`, so a caller that also needs one may set its own beforehand.
+    static func fileDialogNavigationScript(path: String) -> String {
+        """
                     -- Save user's clipboard
                     set oldClip to the clipboard
+                    set maxWait to 10
 
                     try
+                        -- Re-check frontmost immediately before the first keystroke.
+                        -- A caller checks once up front, but may then wait for a
+                        -- sheet — focus can be lost during that wait (#15).
+                        if not frontmost then
+                            error "Safari lost focus before keystrokes — aborting to avoid sending keys to wrong application"
+                        end if
+
                         -- Open "Go to Folder" panel
                         keystroke "g" using {command down, shift down}
 
                         -- Wait for Go to Folder nested sheet to appear
-                        set maxWait to 10
                         set waited to 0
                         repeat until exists sheet 1 of sheet 1 of front window
                             delay 0.2
@@ -3670,9 +3677,42 @@ enum SafariBridge {
                         set the clipboard to oldClip
                         error errMsg
                     end try
-                end tell
+        """
+    }
+
+    /// The complete script `navigateFileDialog` runs. Pure, so the sharing
+    /// invariant with `UploadCommand` is testable without a Safari.
+    static func fileDialogNavigationOuterScript(path: String) -> String {
+        """
+        tell application "Safari" to activate
+        tell application "System Events"
+            tell process "Safari"
+                -- Verify Safari is frontmost before sending any keystrokes
+                if not frontmost then
+                    error "Safari is not frontmost — aborting to avoid sending keystrokes to wrong application"
+                end if
+
+        \(fileDialogNavigationScript(path: path))
             end tell
-            """])
+        end tell
+        """
+    }
+
+    /// Navigate a macOS file dialog using System Events.
+    /// Uses clipboard paste (Cmd+V) for path input instead of keystroke.
+    /// Saves and restores the user's clipboard content.
+    /// Requires: a file dialog sheet to be already open on Safari's front window.
+    ///
+    /// `pdf` is the only caller. `upload` embeds the same navigation fragment in
+    /// its own combined script rather than calling this, to keep its flow to a
+    /// single `osascript` (#15); see `fileDialogNavigationScript`.
+    static func navigateFileDialog(path: String) async throws {
+        // #20: probe/restart System Events before touching the keyboard. Same
+        // rationale as `UploadCommand.uploadViaNativeDialog`.
+        try await ensureSystemEventsLive()
+
+        try await runShell(
+            "/usr/bin/osascript", ["-e", fileDialogNavigationOuterScript(path: path)])
     }
 
     // MARK: - AppleScript Runner

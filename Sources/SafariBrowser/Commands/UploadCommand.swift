@@ -291,18 +291,34 @@ struct UploadCommand: AsyncParsableCommand {
             throw SafariBrowserError.elementNotFound(selector)
         }
 
-        // #23: when targeting a specific window, raise it to the front
-        // before activating Safari so the subsequent keystrokes land on
-        // `front window` = the requested window.
+        // Single combined osascript: activate, wait for dialog, navigate, click Upload.
+        // #15: the flow MUST stay one invocation. When it was two, another app
+        // could steal focus in the gap and the keystrokes landed in the wrong
+        // window. The navigation body is shared with `pdf` as text rather than
+        // as a call, so this stays atomic (#105).
+        //
+        // Subprocess-level timeout (#19) bounds the whole osascript invocation in case
+        // System Events or Safari's Apple Event dispatcher is blocked and the inner
+        // `maxWait to 10` repeat loops never make progress.
+        try await SafariBridge.runShell(
+            "/usr/bin/osascript",
+            ["-e", UploadCommand.nativeDialogScript(path: path, window: window)],
+            timeout: timeout)
+    }
+
+    /// The single combined script the native path runs. Pure, so both its
+    /// atomicity and its use of the shared navigation fragment are testable
+    /// without a Safari or a file dialog (#105).
+    ///
+    /// `window` raises that window first: keystrokes only ever reach the front
+    /// window, so an explicit target has to be brought forward before the
+    /// activate (#23).
+    static func nativeDialogScript(path: String, window: Int?) -> String {
         let raisePrelude = window.map { idx in
             "tell application \"Safari\" to set index of window \(idx) to 1\n"
         } ?? ""
 
-        // Single combined osascript: activate, wait for dialog, navigate, click Upload.
-        // Subprocess-level timeout (#19) bounds the whole osascript invocation in case
-        // System Events or Safari's Apple Event dispatcher is blocked and the inner
-        // `maxWait to 10` repeat loops never make progress.
-        try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
+        return """
             \(raisePrelude)tell application "Safari" to activate
             tell application "System Events"
                 tell process "Safari"
@@ -322,62 +338,10 @@ struct UploadCommand: AsyncParsableCommand {
                         end if
                     end repeat
 
-                    -- Save user's clipboard
-                    set oldClip to the clipboard
-
-                    try
-                        -- Re-check frontmost right before keystrokes
-                        if not frontmost then
-                            error "Safari lost focus before keystrokes — aborting to avoid sending keys to wrong application"
-                        end if
-
-                        -- Open "Go to Folder" panel
-                        keystroke "g" using {command down, shift down}
-
-                        -- Wait for Go to Folder nested sheet to appear
-                        set waited to 0
-                        repeat until exists sheet 1 of sheet 1 of front window
-                            delay 0.2
-                            set waited to waited + 0.2
-                            if waited >= maxWait then
-                                error "Go to Folder panel did not appear within " & maxWait & " seconds"
-                            end if
-                        end repeat
-
-                        -- Paste path via clipboard (fast, supports all characters)
-                        set the clipboard to "\(path.escapedForAppleScript)"
-                        keystroke "v" using command down
-                        delay 0.3
-                        keystroke return
-
-                        -- Wait for Go to Folder sheet to close (file selected)
-                        set waited to 0
-                        repeat until not (exists sheet 1 of sheet 1 of front window)
-                            delay 0.2
-                            set waited to waited + 0.2
-                            if waited >= maxWait then
-                                error "Go to Folder did not close within " & maxWait & " seconds"
-                            end if
-                        end repeat
-
-                        -- Click the default button (Upload/Open/Save) — locale-independent
-                        delay 0.3
-                        try
-                            click (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
-                        on error
-                            keystroke return
-                        end try
-
-                        -- Restore user's clipboard
-                        set the clipboard to oldClip
-                    on error errMsg
-                        -- Always restore clipboard, even on unexpected errors
-                        set the clipboard to oldClip
-                        error errMsg
-                    end try
+            \(SafariBridge.fileDialogNavigationScript(path: path))
                 end tell
             end tell
-            """], timeout: timeout)
+            """
     }
 
     // MARK: - JS DataTransfer (--js flag)
