@@ -3628,7 +3628,10 @@ enum SafariBridge {
                     try
                         -- Re-check frontmost immediately before the first keystroke.
                         -- A caller checks once up front, but may then wait for a
-                        -- sheet — focus can be lost during that wait (#15).
+                        -- sheet — focus can be lost during that wait (#15). Even
+                        -- where the caller checked moments ago this is not dead
+                        -- weight: another process can take focus between any two
+                        -- statements. It narrows the window; it does not close it.
                         if not frontmost then
                             error "Safari lost focus before keystrokes — aborting to avoid sending keys to wrong application"
                         end if
@@ -3706,13 +3709,27 @@ enum SafariBridge {
     /// `pdf` is the only caller. `upload` embeds the same navigation fragment in
     /// its own combined script rather than calling this, to keep its flow to a
     /// single `osascript` (#15); see `fileDialogNavigationScript`.
-    static func navigateFileDialog(path: String) async throws {
+    ///
+    /// `runner` exists so a test can observe the invocation this actually makes
+    /// — how many, and with what. Asserting on `fileDialogNavigationOuterScript`
+    /// alone would not notice this function drifting back to a private copy of
+    /// the script while the generator stayed behind for the tests to pass.
+    static func navigateFileDialog(
+        path: String,
+        runner: ((String, [String]) async throws -> Void)? = nil
+    ) async throws {
         // #20: probe/restart System Events before touching the keyboard. Same
         // rationale as `UploadCommand.uploadViaNativeDialog`.
-        try await ensureSystemEventsLive()
+        if runner == nil {
+            try await ensureSystemEventsLive()
+        }
 
-        try await runShell(
-            "/usr/bin/osascript", ["-e", fileDialogNavigationOuterScript(path: path)])
+        let args = ["-e", fileDialogNavigationOuterScript(path: path)]
+        if let runner {
+            try await runner("/usr/bin/osascript", args)
+        } else {
+            try await runShell("/usr/bin/osascript", args)
+        }
     }
 
     // MARK: - AppleScript Runner

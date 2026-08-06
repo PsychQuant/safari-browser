@@ -37,12 +37,21 @@ final class FileDialogScriptSharingTests: XCTestCase {
         let s = SafariBridge.fileDialogNavigationScript(path: path)
         XCTAssertTrue(s.contains("set oldClip to the clipboard"),
                       "must capture the clipboard before overwriting it")
-        // Restored on both the happy path and the error path — losing a user's
-        // clipboard because an upload failed is not an acceptable side effect.
-        let restores = s.components(separatedBy: "set the clipboard to oldClip").count - 1
-        XCTAssertGreaterThanOrEqual(restores, 2,
-                                    "clipboard must be restored on the error path too, not just on success")
-        XCTAssertTrue(s.contains("on error errMsg"), "must have an error handler that restores")
+
+        // Counting restores is not enough: two restores both sitting on the
+        // success path would satisfy a count, and losing a user's clipboard
+        // because an upload failed is exactly the case that matters. Check that
+        // one of them is inside the error handler.
+        guard let handler = s.range(of: "on error errMsg") else {
+            return XCTFail("must have an error handler")
+        }
+        let afterHandler = s[handler.upperBound...]
+        XCTAssertTrue(afterHandler.contains("set the clipboard to oldClip"),
+                      "the error handler must restore the clipboard before rethrowing")
+        XCTAssertTrue(afterHandler.contains("error errMsg"),
+                      "…and must rethrow rather than swallow")
+        XCTAssertTrue(s[..<handler.lowerBound].contains("set the clipboard to oldClip"),
+                      "the success path must restore too")
     }
 
     func testFragmentClicksTheDefaultButtonBeforeFallingBackToReturn() {
@@ -72,32 +81,52 @@ final class FileDialogScriptSharingTests: XCTestCase {
         XCTAssertFalse(s.contains("\"\(nasty)\""), "must not embed the raw unescaped path")
     }
 
-    // MARK: - Both callers share it (the actual regression guard)
+    // MARK: - What the callers actually do
 
-    func testUploadEmbedsTheSharedFragment() {
-        let script = UploadCommand.nativeDialogScript(path: path, window: nil)
+    /// `navigateFileDialog` runs its script through an injected runner here, so
+    /// this observes the real invocation rather than a factory the function
+    /// might have stopped calling.
+    func testBridgeNavigationMakesExactlyOneOsascriptCallCarryingTheFragment() async throws {
+        var calls: [(String, [String])] = []
+        try await SafariBridge.navigateFileDialog(
+            path: path, runner: { cmd, args in calls.append((cmd, args)) })
+
+        XCTAssertEqual(calls.count, 1, "one invocation — a second opens a focus-stealing gap (#15)")
+        XCTAssertEqual(calls.first?.0, "/usr/bin/osascript")
+        XCTAssertEqual(calls.first?.1.first, "-e")
+        let script = calls.first?.1.last ?? ""
         XCTAssertTrue(script.contains(SafariBridge.fileDialogNavigationScript(path: path)),
-                      "upload must embed the shared fragment verbatim, not keep a private copy")
+                      "the script actually executed must contain the shared fragment")
     }
 
-    func testBridgeNavigationEmbedsTheSharedFragment() {
-        let script = SafariBridge.fileDialogNavigationOuterScript(path: path)
-        XCTAssertTrue(script.contains(SafariBridge.fileDialogNavigationScript(path: path)),
-                      "navigateFileDialog's script must embed the same fragment")
+    /// Upload is reached through its effect plan, which #104's tests prove the
+    /// interpreter reads verbatim and runs one script per `.runCombinedScript`.
+    /// Asserting here that the plan carries exactly one script, and that the
+    /// script embeds the fragment, chains onto that: a private copy or a second
+    /// invocation would break one link or the other.
+    func testUploadPlanCarriesOneScriptContainingTheFragment() {
+        let plan = UploadCommand.nativeUploadEffects(
+            selector: "input[type=file]", path: path, window: nil)
+
+        let scripts: [String] = plan.compactMap {
+            if case .runCombinedScript(let s) = $0 { return s }
+            return nil
+        }
+        XCTAssertEqual(scripts.count, 1, "splitting the script reintroduces the #15 focus race")
+        XCTAssertTrue(scripts[0].contains(SafariBridge.fileDialogNavigationScript(path: path)),
+                      "upload must embed the shared fragment, not keep a private copy")
+        XCTAssertTrue(scripts[0].contains("tell application \"Safari\" to activate"),
+                      "the one script must do its own activate…")
+        XCTAssertTrue(scripts[0].contains("repeat until exists sheet 1 of front window"),
+                      "…and its own wait for the dialog, since it cannot rely on a second call")
     }
 
-    /// The point of #15: upload's flow is ONE osascript. If a future change
-    /// splits it again the focus-stealing race comes back, and no unit test
-    /// would notice unless it asserts on the structure.
-    func testUploadScriptIsSelfContainedAndAtomic() {
-        let script = UploadCommand.nativeDialogScript(path: path, window: nil)
-        XCTAssertTrue(script.contains("tell application \"Safari\" to activate"),
-                      "the single script must do its own activate")
-        XCTAssertTrue(script.contains("repeat until exists sheet 1 of front window"),
-                      "the single script must do its own wait for the dialog")
-        XCTAssertTrue(script.contains("keystroke \"g\" using {command down, shift down}"),
-                      "…and the navigation, all in one invocation")
-    }
+    // Boundary of what the tests above can see: they reach `navigateFileDialog`
+    // and upload's effect plan. They do not reach `uploadViaNativeDialog` —
+    // whether it builds the plan at all, and what it does with it, is untested
+    // here (stated the same way in `InterferenceWarningTests`). And no
+    // output-string test can prove text *came from* the generator rather than
+    // being a verbatim copy of it; that needs a source or architecture check.
 
     func testUploadRaisesTheTargetWindowWhenOneIsGiven() {
         let none = UploadCommand.nativeDialogScript(path: path, window: nil)
