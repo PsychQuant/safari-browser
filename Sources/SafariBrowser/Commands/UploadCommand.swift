@@ -40,6 +40,37 @@ struct UploadCommand: AsyncParsableCommand {
     /// MUST use `--native` for large files — it mimics human upload and
     /// is the canonical path.
     private static let jsHardCapBytes = 10 * 1_048_576   // 10 MB
+
+    /// The stderr warning emitted before the native path takes the keyboard.
+    ///
+    /// Extracted from the call site and pinned by a test (#104) because of what
+    /// it is load-bearing for. The `non-interference` spec normally requires an
+    /// explicit opt-in flag before any interference; `upload` is the one command
+    /// allowed to substitute a macOS Accessibility grant for that flag, and the
+    /// exception holds only while this warning is still emitted. Soften it or
+    /// drop it and the exception becomes what the spec exists to forbid —
+    /// interference the user was never told about.
+    ///
+    /// The spec asks the warning to say two things: which kind of interference,
+    /// and that the user's input is unavailable meanwhile. Both are asserted.
+    static let keyboardControlWarning =
+        "⚠️  Controlling keyboard for file dialog (~1s). Do not type in Safari until complete.\n"
+
+    /// Whether a run takes the native file-dialog path (keystrokes) or the JS
+    /// DataTransfer path (no interference).
+    ///
+    /// Pure so the routing can be tested without a Safari or a TCC grant. Note
+    /// the third argument is what makes this the spec's grant exception rather
+    /// than ordinary flag handling — and note the direction, which surprises
+    /// people: holding the grant moves you *onto* the interfering path, not off
+    /// it. Callers without the grant get the JS path, which is why the exception
+    /// is defensible at all (spec condition 3: absence of the grant degrades the
+    /// command rather than breaking it).
+    static func wantsNativePath(
+        native: Bool, allowHid: Bool, accessibilityGranted: Bool
+    ) -> Bool {
+        native || allowHid || accessibilityGranted
+    }
     private static let jsSoftWarnBytes = 5 * 1_048_576   // 5 MB
 
     func validate() throws {
@@ -124,7 +155,10 @@ struct UploadCommand: AsyncParsableCommand {
         // In both cases, #26 routes through the resolver so --url /
         // --tab / --document all land on a concrete (window, tab) pair
         // before keystroke dispatch.
-        let wantNative = native || allowHid || SafariBridge.isAccessibilityPermitted()
+        let wantNative = UploadCommand.wantsNativePath(
+            native: native,
+            allowHid: allowHid,
+            accessibilityGranted: SafariBridge.isAccessibilityPermitted())
         if wantNative {
             try await runNativeWithResolver(expandedPath: expandedPath)
             return
@@ -240,7 +274,7 @@ struct UploadCommand: AsyncParsableCommand {
         // command, and System Events being down is by far the most common cause.
         try await SafariBridge.ensureSystemEventsLive()
 
-        FileHandle.standardError.write(Data("⚠️  Controlling keyboard for file dialog (~1s). Do not type in Safari until complete.\n".utf8))
+        FileHandle.standardError.write(Data(UploadCommand.keyboardControlWarning.utf8))
 
         // Click the file input to open dialog. When --window N is set, the
         // click must land on that window's current tab — thread the window
