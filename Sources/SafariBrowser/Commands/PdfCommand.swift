@@ -63,64 +63,74 @@ struct PdfCommand: AsyncParsableCommand {
 
         FileHandle.standardError.write(Data("⚠️  Controlling keyboard for PDF export. Do not type until complete.\n".utf8))
 
-        // The resolved window index always raises explicitly — even
-        // when the user passed no targeting flag (resolved windowIndex
-        // is 1, corresponding to front window / document 1), the raise
-        // AppleScript is a no-op for an already-frontmost window, so
-        // we keep the code path uniform.
-        let raisePrelude = """
-            tell application "Safari" to set index of window \(resolved.windowIndex) to 1
-            """
+        // The resolved window index always raises explicitly — even when the
+        // user passed no targeting flag (resolved windowIndex is 1, the front
+        // window), because the raise is a no-op for an already-frontmost window
+        // and keeping one code path is worth more than skipping it.
+        //
+        // One osascript for the whole flow. It used to be three, with the gaps
+        // between them open to another app taking focus — the race #15 closed
+        // for `upload` and #106 for this command. The navigation body is the
+        // fragment `upload` embeds too (#105), so there is one source of truth
+        // without either caller giving up atomicity.
+        try await SafariBridge.runShell(
+            "/usr/bin/osascript",
+            ["-e", PdfCommand.exportScript(path: fullPath, windowIndex: resolved.windowIndex)])
+    }
 
-        // Step 1: Activate Safari and open the Export as PDF dialog
-        try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
-            \(raisePrelude)
-            tell application "Safari" to activate
-            delay 0.5
-            tell application "System Events"
-                tell process "Safari"
-                    -- NOTE: Menu labels are English. On non-English macOS, use keyboard shortcut instead.
-                    -- Cmd+P → "PDF" dropdown → "Save as PDF" is locale-independent but more complex.
-                    click menu item "Export as PDF…" of menu "File" of menu bar 1
-                    set maxWait to 10
-                    set waited to 0
-                    repeat until exists sheet 1 of front window
-                        delay 0.2
-                        set waited to waited + 0.2
-                        if waited >= maxWait then
-                            error "Save dialog did not appear within " & maxWait & " seconds"
-                        end if
-                    end repeat
-                end tell
-            end tell
-            """])
+    /// The single combined script the export runs. Pure, so its atomicity and
+    /// its use of the shared navigation fragment are testable without opening a
+    /// save dialog (#106).
+    ///
+    /// What cannot be tested that way is whether it *works* — that needs a real
+    /// save panel, and a failure there wedges every later Safari command (#67).
+    /// The issue records that limitation rather than implying the unit tests
+    /// cover it.
+    static func exportScript(path: String, windowIndex: Int) -> String {
+        """
+        tell application "Safari" to set index of window \(windowIndex) to 1
+        tell application "Safari" to activate
+        delay 0.5
+        tell application "System Events"
+            tell process "Safari"
+                -- Verify Safari is frontmost before touching menus or keys
+                if not frontmost then
+                    error "Safari lost focus after activate — aborting to avoid acting on the wrong application"
+                end if
 
-        // Step 2: Navigate to path and click Save via shared helper
-        try await SafariBridge.navigateFileDialog(path: fullPath)
+                -- NOTE: Menu labels are English. On non-English macOS this cannot
+                -- resolve, and the script aborts here rather than hanging — the
+                -- wait loop below is never reached. See docs/operation-paths.md §4.2.
+                click menu item "Export as PDF…" of menu "File" of menu bar 1
 
-        // Step 3: Handle "Replace" confirmation if file already exists
-        try await SafariBridge.runShell("/usr/bin/osascript", ["-e", """
-            tell application "System Events"
-                tell process "Safari"
-                    delay 0.5
-                    if exists sheet 1 of sheet 1 of front window then
-                        -- #107: this sheet is almost always "<file> already exists.
-                        -- Replace?", and pressing its default button confirms an
-                        -- overwrite the caller never saw. Announce which button, and
-                        -- announce the silent swap to a synthetic keystroke when the
-                        -- press is unavailable. --allow-hid authorized a keyboard
-                        -- takeover; it did not authorize overwriting a file unseen.
-                        try
-                            set replaceBtn to (first button of sheet 1 of sheet 1 of front window whose value of attribute "AXDefault" is true)
-                            log "confirming replace sheet: pressing default button \\"" & (title of replaceBtn) & "\\""
-                            click replaceBtn
-                        on error
-                            log "confirming replace sheet: default-button press unavailable, falling back to Return keystroke"
-                            keystroke return
-                        end try
+                set maxWait to 10
+                set waited to 0
+                repeat until exists sheet 1 of front window
+                    delay 0.2
+                    set waited to waited + 0.2
+                    if waited >= maxWait then
+                        error "Save dialog did not appear within " & maxWait & " seconds"
                     end if
-                end tell
+                end repeat
+
+        \(SafariBridge.fileDialogNavigationScript(path: path))
+
+                -- "<file> already exists. Replace?" — only present when it is.
+                -- #107: announced, because pressing it confirms an overwrite the
+                -- caller never saw.
+                delay 0.5
+                if exists sheet 1 of sheet 1 of front window then
+                    try
+                        set replaceBtn to (first button of sheet 1 of sheet 1 of front window whose value of attribute "AXDefault" is true)
+                        log "confirming replace sheet: pressing default button \\"" & (title of replaceBtn) & "\\""
+                        click replaceBtn
+                    on error
+                        log "confirming replace sheet: default-button press unavailable, falling back to Return keystroke"
+                        keystroke return
+                    end try
+                end if
             end tell
-            """])
+        end tell
+        """
     }
 }

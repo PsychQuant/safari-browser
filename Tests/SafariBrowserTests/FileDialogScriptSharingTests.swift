@@ -138,6 +138,46 @@ final class FileDialogScriptSharingTests: XCTestCase {
                       "…and its own wait for the dialog, since it cannot rely on a second call")
     }
 
+    // MARK: - pdf, after #106
+
+    /// #106. `pdf` used to run three osascript invocations — menu click, then
+    /// the shared navigation, then the Replace? confirmation — with the gaps
+    /// between them open to another app taking focus. That is the race #15
+    /// closed for `upload`, left open here because #15's scope was upload.
+    /// Sharing the navigation as *text* (#105) is what made merging possible
+    /// without either caller giving up its single invocation.
+    func testPdfExportIsOneScriptCarryingTheSharedFragment() {
+        let s = PdfCommand.exportScript(path: path, windowIndex: 2)
+
+        XCTAssertTrue(s.contains(SafariBridge.fileDialogNavigationScript(path: path)),
+                      "pdf must embed the shared fragment, not a private copy")
+        // All three phases in the one script: if any had stayed behind, it would
+        // need its own invocation and the gap would be back.
+        XCTAssertTrue(s.contains("click menu item \"Export as PDF…\""), "phase 1: open the sheet")
+        XCTAssertTrue(s.contains("repeat until exists sheet 1 of front window"), "phase 1: wait for it")
+        XCTAssertTrue(s.contains("keystroke \"g\" using {command down, shift down}"), "phase 2: navigate")
+        XCTAssertTrue(s.contains("sheet 1 of sheet 1 of front window"), "phase 3: the Replace? sheet")
+    }
+
+    func testPdfChecksFrontmostBeforeTouchingMenus() {
+        XCTAssertTrue(PdfCommand.exportScript(path: path, windowIndex: 1).contains("if not frontmost then"),
+                      "a menu click on the wrong app is as bad as a keystroke on the wrong app")
+    }
+
+    func testPdfRaisesTheResolvedWindow() {
+        XCTAssertTrue(PdfCommand.exportScript(path: path, windowIndex: 3)
+            .contains("set index of window 3 to 1"),
+            "keystrokes and menu clicks reach the front window, so the target must be raised")
+    }
+
+    /// #107 rides along: the Replace? sheet confirms an overwrite the caller
+    /// never saw, so both the press and the keystroke fallback must be logged.
+    func testPdfAnnouncesTheReplaceConfirmation() {
+        let s = PdfCommand.exportScript(path: path, windowIndex: 1)
+        XCTAssertTrue(s.contains("log \"confirming replace sheet: pressing default button"))
+        XCTAssertTrue(s.contains("falling back to Return keystroke"))
+    }
+
     // Boundary of what the tests above can see: they reach `navigateFileDialog`
     // and upload's effect plan. They do not reach `uploadViaNativeDialog` —
     // whether it builds the plan at all, and what it does with it, is untested
