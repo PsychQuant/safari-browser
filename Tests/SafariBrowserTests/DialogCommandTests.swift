@@ -154,34 +154,73 @@ final class DialogCommandTests: XCTestCase {
 
     // MARK: - The discipline itself
 
-    /// The flags a command *accepts*, which is USAGE plus OPTIONS. Deliberately
-    /// excludes the overview prose: explaining why a flag is absent is good
-    /// documentation, and an assertion that punished it would push the docs
-    /// toward saying less.
-    private func acceptedFlagsSection() -> String {
-        let help = DialogDismissCommand.helpMessage()
-        guard let usage = help.range(of: "USAGE:") else { return help }
-        return String(help[usage.lowerBound...])
+    /// Asserted by *parsing*, not by reading help. ArgumentParser can hide a
+    /// flag from help (`.private` is documented "Never show help for this
+    /// argument") while still accepting it — so a help-text oracle would let
+    /// exactly the flag these tests forbid slip in behind it. Parsing sees what
+    /// the command actually takes.
+    private func rejectsFlag(_ flag: String) -> Bool {
+        do {
+            _ = try DialogDismissCommand.parse(["--button", "OK", flag])
+            return false
+        } catch {
+            return true
+        }
     }
 
     /// If a `--default` / `--yes` style affordance ever appears, #89's whole
     /// argument is gone: the user would be confirming something unread again,
     /// just with an extra flag.
     func testThereIsNoPressTheDefaultButtonShortcut() {
-        let flags = acceptedFlagsSection()
         for shortcut in ["--default", "--yes", "--accept", "--confirm", "--first"] {
-            XCTAssertFalse(flags.contains(shortcut),
-                           "\(shortcut) would re-create the unread-confirmation hazard #89 refused")
+            XCTAssertTrue(rejectsFlag(shortcut),
+                          "\(shortcut) would re-create the unread-confirmation hazard #89 refused")
         }
-        XCTAssertTrue(flags.contains("--button"), "naming the button is the only way in")
+        XCTAssertNoThrow(try DialogDismissCommand.parse(["--button", "OK"]),
+                         "naming the button is the only way in, and it must work")
     }
 
     /// The path is `AXPress`, which by `docs/operation-paths.md` is not HID, so
-    /// requiring the flag would be wrong and offering it would misdescribe the
-    /// mechanism. The overview may still *mention* it — saying "this does not
-    /// need --allow-hid" is exactly the kind of thing that belongs in help.
+    /// requiring the flag would be wrong and accepting it would misdescribe the
+    /// mechanism. Help may still *mention* it — "this does not need --allow-hid"
+    /// is exactly what belongs in help, and an assertion that forbade the string
+    /// would push the docs toward saying less.
     func testDismissDoesNotAcceptAnAllowHidFlag() {
-        XCTAssertFalse(acceptedFlagsSection().contains("--allow-hid"),
-                       "AXPress sends no synthetic input; accepting the flag would misdescribe it")
+        XCTAssertTrue(rejectsFlag("--allow-hid"),
+                      "AXPress sends no synthetic input; accepting the flag would misdescribe it")
+    }
+
+    /// `dialog` must not grow a sibling that presses without naming. Asserted
+    /// on the configuration rather than on help, for the same reason.
+    func testDialogHasOnlyListAndDismiss() {
+        let names = DialogCommand.configuration.subcommands.compactMap {
+            $0.configuration.commandName
+        }.sorted()
+        XCTAssertEqual(names, ["dismiss", "list"],
+                       "a new subcommand that dismisses without naming a button would route "
+                       + "around every guarantee these tests pin")
+    }
+
+    // MARK: - A title that names nothing
+
+    /// `selectButton` trims both sides, so `--button ""` matches a button whose
+    /// title is whitespace — and Foundation's whitespace set includes U+00A0 and
+    /// U+200B, which render as an ordinary blank. `dialog list` shows such a
+    /// button as `""`, so the user could not see what they were pressing.
+    func testEmptyOrWhitespaceButtonIsRejectedAtParseTime() {
+        for empty in ["", " ", "\u{00A0}", "\t"] {
+            XCTAssertThrowsError(
+                try DialogDismissCommand.parse(["--button", empty]),
+                "--button \(empty.debugDescription) names no button and must not be accepted")
+        }
+    }
+
+    /// The hole the validation closes, stated as the property it protects: a
+    /// trimmed-empty title must never resolve to a button.
+    func testWhitespaceTitleWouldOtherwiseHaveMatched() {
+        XCTAssertEqual(
+            DialogDismissCommand.selectButton(titled: "", from: [" ", "OK"]),
+            .found(index: 0),
+            "documents why validate() exists — without it this press would happen")
     }
 }

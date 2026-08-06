@@ -54,6 +54,31 @@ enum SafariBrowserError: LocalizedError {
     case elementSelectorInvalid(selector: String, reason: String)
     case elementHasNoSrc(selector: String, tagName: String)
     case unsupportedElement(selector: String, tagName: String)
+
+    // MARK: - Dialog (#103)
+
+    /// No blocking dialog is present. The normal state, not a usage error —
+    /// which is why it is here and not a `ValidationError`: those exit 64 and
+    /// print a usage block, telling a script its arguments were wrong when the
+    /// world simply had no dialog in it.
+    case noBlockingDialog
+    /// More than one window is showing a dialog. Fail-closed per the repo's
+    /// multi-match rule: silently taking the first is the silent-wrong-target
+    /// failure that rule exists to forbid, and here it would press a button on
+    /// a dialog the user cannot see.
+    case ambiguousBlockingDialog(messages: [String])
+    /// The named button is not on the dialog.
+    case dialogButtonNotFound(titled: String, available: [String])
+    /// Two or more buttons carry the named title.
+    case dialogButtonAmbiguous(titled: String, count: Int)
+    /// The dialog changed between being read and being pressed.
+    case dialogChangedBeforePress(nowMessage: String, nowButtons: [String])
+    /// `AXUIElementPerformAction` did not return success. `delivered` is
+    /// deliberately three-valued: `kAXErrorCannotComplete` means messaging
+    /// failed *or the application has not yet responded*, and a non-responding
+    /// Safari is this command's whole premise — so it cannot be reported as a
+    /// no-op.
+    case dialogPressUnconfirmed(axError: Int32, certainlyNotDelivered: Bool)
     case downloadFailed(url: String, statusCode: Int?, reason: String)
     case downloadSizeCapExceeded(url: String, capBytes: Int, actualBytes: Int)
     case unsupportedURLScheme(url: String, scheme: String)
@@ -200,6 +225,56 @@ enum SafariBrowserError: LocalizedError {
                 """
         case .noSafariWindow:
             return "No Safari window found"
+
+        // MARK: Dialog (#103)
+
+        case .noBlockingDialog:
+            return "no blocking dialog found"
+
+        case .ambiguousBlockingDialog(let messages):
+            return """
+                \(messages.count) windows are showing a dialog; refusing to guess which one you meant.
+                \(messages.enumerated().map { "  [\($0.offset + 1)] \($0.element.isEmpty ? "(no readable text)" : $0.element)" }.joined(separator: "\n"))
+                Pressing a button on a dialog you are not looking at is the hazard this command
+                exists to avoid. Dismiss them from Safari, or close the extra window first.
+                """
+
+        case .dialogButtonNotFound(let titled, let available):
+            return """
+                no button titled "\(titled)" on this dialog.
+                Present: \(available.isEmpty ? "(none exposed)" : available.map { "\"\($0)\"" }.joined(separator: ", "))
+                Titles are localized — copy one from `safari-browser dialog list`.
+                """
+
+        case .dialogButtonAmbiguous(let titled, let count):
+            return """
+                this dialog has \(count) buttons titled "\(titled)"; refusing to guess which one you meant.
+                Pressing an arbitrary one is the un-asked-for action this command exists to avoid.
+                """
+
+        case .dialogChangedBeforePress(let nowMessage, let nowButtons):
+            return """
+                the dialog changed between reading it and pressing — nothing was clicked.
+                It now reads: \(nowMessage.isEmpty ? "(no readable text)" : nowMessage)
+                Buttons: \(nowButtons.isEmpty ? "(none exposed)" : nowButtons.map { "\"\($0)\"" }.joined(separator: ", "))
+                Re-run `dialog list` and decide again — pressing a button on a dialog you have
+                not read is the thing this command exists to avoid.
+                """
+
+        case .dialogPressUnconfirmed(let axError, let certainlyNotDelivered):
+            if certainlyNotDelivered {
+                return """
+                    Accessibility rejected the press (AXError \(axError)) — nothing was clicked
+                    and the dialog is unchanged.
+                    """
+            }
+            return """
+                the press was not confirmed (AXError \(axError)). It may or may not have been
+                delivered: this error also means "Safari has not answered yet", and a
+                non-responding Safari is exactly what a blocking dialog produces.
+                Run `safari-browser dialog list` to see whether the dialog is still there
+                before deciding to try again — a second press could land on a different dialog.
+                """
         case .elementNotFound(let selector):
             // #30 enriched: this case is shared by many commands
             // (click, fill, screenshot, etc.); the richer message helps

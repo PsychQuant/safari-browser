@@ -3081,15 +3081,82 @@ enum SafariBridge {
     }
 
     /// Outcome of asking a dialog's button to activate itself.
+    /// What a strict scan found. Distinguishes "no dialog" from "cannot look"
+    /// and from "more than one" — #89's own note forbids reporting the absence
+    /// of a probe as the absence of a dialog, and #103 additionally must not
+    /// pick between dialogs the user cannot see.
+    enum DialogScan: Sendable, Equatable {
+        case none
+        case one(BlockingDialog)
+        /// Messages of every window carrying a dialog, for a fail-closed error.
+        case many(messages: [String])
+        case accessibilityDenied
+    }
+
     enum DialogPressOutcome: Sendable, Equatable {
         case pressed
         case noDialogFound
+        case accessibilityDenied
+        case ambiguous(messages: [String])
         /// The decision function declined once it saw the dialog as it now
         /// reads — carried back so the caller can say *why* rather than only
         /// that nothing happened.
         case refused(current: BlockingDialog)
         case indexOutOfRange(buttonCount: Int)
-        case pressFailed(axError: Int32)
+        /// `certainlyNotDelivered` is false for `kAXErrorCannotComplete`, which
+        /// Apple documents as "messaging has failed in some way **or the
+        /// application has not yet responded**". A non-responding Safari is what
+        /// a blocking dialog produces, so that error cannot be reported as
+        /// proof that nothing happened.
+        case pressUnconfirmed(axError: Int32, certainlyNotDelivered: Bool)
+    }
+
+    /// Every window carrying a dialog, paired with its element.
+    ///
+    /// Separate from `detectBlockingDialog()` on purpose. That one answers "is
+    /// something blocking?" for #89's diagnostics, where the first hit is enough.
+    /// This one is for acting, where taking the first of several would be the
+    /// silent-wrong-target the repo's multi-match rule forbids — and here the
+    /// wrong target is a button on a dialog the user is not looking at.
+    /// Returns `nil` when Accessibility is unavailable — distinct from an empty
+    /// array, which means "looked, found none". #89's note forbids collapsing
+    /// the two.
+    private static func collectDialogs() -> [(element: AXUIElement, dialog: BlockingDialog)]? {
+        guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else {
+            return nil
+        }
+        var windowsValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+              let windows = windowsValue as? [AXUIElement] else { return [] }
+
+        var found: [(element: AXUIElement, dialog: BlockingDialog)] = []
+        for window in windows {
+            // The timeout set in safariAXApplication() applies to that element
+            // alone — Apple's header is explicit that it does not propagate to
+            // equal-but-distinct refs. Every element the walk below touches came
+            // back from a copy call, so without this the walk runs on the 6s
+            // process default while something is already stuck.
+            AXUIElementSetMessagingTimeout(window, 2.0)
+            guard let element = findDialogElement(in: window, depth: 0) else { continue }
+            let buttons = axCollectButtons(element)
+            found.append((element, BlockingDialog(
+                message: axCollectStaticText(element)
+                    .joined(separator: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                buttons: buttons.map(\.title))))
+        }
+        return found
+    }
+
+    /// Strict scan for the `dialog` command: refuses to collapse several
+    /// dialogs into one, and reports missing permission as missing permission.
+    static func scanBlockingDialogs() -> DialogScan {
+        guard let found = collectDialogs() else { return .accessibilityDenied }
+        switch found.count {
+        case 0: return .none
+        case 1: return .one(found[0].dialog)
+        default: return .many(messages: found.map { $0.dialog.message })
+        }
     }
 
     /// Press a dialog button via `AXPress`, but only after re-reading the dialog
@@ -3110,32 +3177,32 @@ enum SafariBridge {
     static func pressDialogButton(
         deciding decide: (BlockingDialog) -> Int?
     ) -> DialogPressOutcome {
-        guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else {
-            return .noDialogFound
+        guard let found = collectDialogs() else { return .accessibilityDenied }
+        guard !found.isEmpty else { return .noDialogFound }
+        guard found.count == 1 else {
+            // Same rule as the read side. A second dialog may have appeared in
+            // between, and pressing "the first one" would act on whichever
+            // window happens to sort first — not the one that was read.
+            return .ambiguous(messages: found.map { $0.dialog.message })
         }
-        var windowsValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
-              let windows = windowsValue as? [AXUIElement] else { return .noDialogFound }
 
-        for window in windows {
-            guard let dialog = findDialogElement(in: window, depth: 0) else { continue }
-            let buttons = axCollectButtons(dialog)
-            let current = BlockingDialog(
-                message: axCollectStaticText(dialog)
-                    .joined(separator: " ")
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                buttons: buttons.map(\.title))
-
-            guard let index = decide(current) else { return .refused(current: current) }
-            guard index >= 0, index < buttons.count else {
-                // decide() ruled on this very reading, so an out-of-range index
-                // means the decision logic disagrees with the list it was given.
-                return .indexOutOfRange(buttonCount: buttons.count)
-            }
-            let err = AXUIElementPerformAction(buttons[index].element, kAXPressAction as CFString)
-            return err == .success ? .pressed : .pressFailed(axError: err.rawValue)
+        let (element, current) = found[0]
+        guard let index = decide(current) else { return .refused(current: current) }
+        let buttons = axCollectButtons(element)
+        guard index >= 0, index < buttons.count else {
+            // decide() ruled on this very reading, so an out-of-range index
+            // means the decision logic disagrees with the list it was given.
+            return .indexOutOfRange(buttonCount: buttons.count)
         }
-        return .noDialogFound
+
+        let err = AXUIElementPerformAction(buttons[index].element, kAXPressAction as CFString)
+        if err == .success { return .pressed }
+        // Only these two prove the action did not happen. `cannotComplete`
+        // explicitly also means "has not yet responded", which is the state a
+        // blocking dialog puts Safari in — reporting that as a no-op would tell
+        // the user to retry, and a retry is what can land on a different dialog.
+        let provesNoOp = (err == .actionUnsupported || err == .invalidUIElement)
+        return .pressUnconfirmed(axError: err.rawValue, certainlyNotDelivered: provesNoOp)
     }
 
     private static func safariAXApplication() throws -> AXUIElement {

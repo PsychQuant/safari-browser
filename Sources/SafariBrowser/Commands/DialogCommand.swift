@@ -53,14 +53,19 @@ struct DialogListCommand: AsyncParsableCommand {
     static let noDialogMessage = "no blocking dialog found"
 
     func run() async throws {
-        guard AXIsProcessTrusted() else {
+        switch SafariBridge.scanBlockingDialogs() {
+        case .accessibilityDenied:
             throw SafariBrowserError.accessibilityRequired(flag: "dialog list")
-        }
-        guard let dialog = SafariBridge.detectBlockingDialog() else {
+        case .none:
             print(DialogListCommand.noDialogMessage)
-            return
+        case .one(let dialog):
+            print(DialogListCommand.describe(dialog))
+        case .many(let messages):
+            // Fail-closed rather than showing one of several: the next step is
+            // `dismiss`, and a listing that silently picked one would send the
+            // user to press a button on a dialog they were not shown.
+            throw SafariBrowserError.ambiguousBlockingDialog(messages: messages)
         }
-        print(DialogListCommand.describe(dialog))
     }
 }
 
@@ -152,28 +157,38 @@ struct DialogDismissCommand: AsyncParsableCommand {
             """
     }
 
-    func run() async throws {
-        guard AXIsProcessTrusted() else {
-            throw SafariBrowserError.accessibilityRequired(flag: "dialog dismiss")
+    /// A title that trims to nothing names no button — but `selectButton`
+    /// trims both sides, so `--button ""` would match a button whose title is
+    /// whitespace, and Foundation's whitespace set includes characters like
+    /// U+00A0 and U+200B that render as an ordinary-looking blank. `dialog list`
+    /// shows such a button as `""`, so the user cannot even see what they would
+    /// be pressing. Rejected at parse time rather than handled later.
+    func validate() throws {
+        if button.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw ValidationError(
+                "--button needs the button's title. An empty or whitespace-only value names "
+                + "nothing, and this command never presses a button you did not name.")
         }
-        guard let dialog = SafariBridge.detectBlockingDialog() else {
-            throw ValidationError(DialogListCommand.noDialogMessage)
+    }
+
+    func run() async throws {
+        let dialog: SafariBridge.BlockingDialog
+        switch SafariBridge.scanBlockingDialogs() {
+        case .accessibilityDenied:
+            throw SafariBrowserError.accessibilityRequired(flag: "dialog dismiss")
+        case .none:
+            throw SafariBrowserError.noBlockingDialog
+        case .many(let messages):
+            throw SafariBrowserError.ambiguousBlockingDialog(messages: messages)
+        case .one(let d):
+            dialog = d
         }
 
         switch DialogDismissCommand.selectButton(titled: button, from: dialog.buttons) {
         case .notFound(let available):
-            throw ValidationError("""
-                no button titled "\(button)" on this dialog.
-                Present: \(available.isEmpty ? "(none exposed)" : available.map { "\"\($0)\"" }.joined(separator: ", "))
-                Titles are localized — copy one from `safari-browser dialog list`.
-                """)
-
+            throw SafariBrowserError.dialogButtonNotFound(titled: button, available: available)
         case .ambiguous(let title, let count):
-            throw ValidationError("""
-                this dialog has \(count) buttons titled "\(title)"; refusing to guess which one you meant.
-                Pressing an arbitrary one is the un-asked-for action this command exists to avoid.
-                """)
-
+            throw SafariBrowserError.dialogButtonAmbiguous(titled: title, count: count)
         case .found:
             print(DialogDismissCommand.preamble(for: dialog, pressing: button))
 
@@ -192,35 +207,44 @@ struct DialogDismissCommand: AsyncParsableCommand {
 
             switch outcome {
             case .pressed:
-                print("pressed")
+                // AXPress success means the action was dispatched, not that the
+                // dialog closed — a page that queues several alerts puts the
+                // next one up immediately. Say which happened rather than
+                // letting "pressed" imply "gone".
+                switch SafariBridge.scanBlockingDialogs() {
+                case .none:
+                    print("pressed; no dialog remains")
+                case .one(let still):
+                    print("pressed; a dialog is still present: "
+                          + (still.message.isEmpty ? "(no readable text)" : still.message))
+                case .many:
+                    print("pressed; more than one dialog is now present — run `dialog list`")
+                case .accessibilityDenied:
+                    print("pressed; could not re-check (Accessibility no longer available)")
+                }
+            case .accessibilityDenied:
+                throw SafariBrowserError.accessibilityRequired(flag: "dialog dismiss")
             case .noDialogFound:
-                throw ValidationError(
-                    "the dialog disappeared before it could be pressed — nothing was clicked")
+                throw SafariBrowserError.dialogChangedBeforePress(nowMessage: "", nowButtons: [])
+            case .ambiguous(let messages):
+                throw SafariBrowserError.ambiguousBlockingDialog(messages: messages)
             case .refused(let current):
                 switch refusal {
                 case .refuseButtonGone(let available):
-                    throw ValidationError("""
-                        the dialog no longer has a button titled "\(button)" — nothing was clicked.
-                        It now offers: \(available.isEmpty ? "(none exposed)" : available.map { "\"\($0)\"" }.joined(separator: ", "))
-                        """)
+                    throw SafariBrowserError.dialogButtonNotFound(titled: button, available: available)
                 case .refuseAmbiguous(let title, let count):
-                    throw ValidationError(
-                        "the dialog now has \(count) buttons titled \"\(title)\" — nothing was clicked")
+                    throw SafariBrowserError.dialogButtonAmbiguous(titled: title, count: count)
                 default:
-                    throw ValidationError("""
-                        the dialog changed between reading it and pressing — nothing was clicked.
-                        It now reads: \(current.message.isEmpty ? "(no readable text)" : current.message)
-                        Buttons: \(current.buttons.isEmpty ? "(none exposed)" : current.buttons.map { "\"\($0)\"" }.joined(separator: ", "))
-                        Re-run `dialog list` and decide again — pressing a button on a dialog you have
-                        not read is the thing this command exists to avoid.
-                        """)
+                    throw SafariBrowserError.dialogChangedBeforePress(
+                        nowMessage: current.message, nowButtons: current.buttons)
                 }
             case .indexOutOfRange(let count):
-                throw ValidationError(
-                    "internal: resolved button index is outside the dialog's \(count) buttons — nothing was clicked")
-            case .pressFailed(let axError):
-                throw ValidationError(
-                    "Accessibility refused the press (AXError \(axError)) — the dialog is unchanged")
+                throw SafariBrowserError.dialogChangedBeforePress(
+                    nowMessage: "resolved index outside the dialog's \(count) buttons",
+                    nowButtons: [])
+            case .pressUnconfirmed(let axError, let certainlyNotDelivered):
+                throw SafariBrowserError.dialogPressUnconfirmed(
+                    axError: axError, certainlyNotDelivered: certainlyNotDelivered)
             }
         }
     }

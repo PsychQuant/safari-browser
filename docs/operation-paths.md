@@ -103,11 +103,20 @@ rule in §3 is correctly vacuous over them.
 | Upload a file, no flags, AX **not** granted | `doJavaScript` DataTransfer, capped at 10 MB | same | JS-from-Apple-Events | already non-HID |
 | Upload a file, no flags, AX granted | the native dialog — see the *Open a native file dialog* and *Choose a file* rows | — | Accessibility | *(pointer row — status lives on the two rows it names)* |
 | Dismiss a JavaScript dialog | `dialog dismiss --button` — `AXPress` (#103) | same | Accessibility | already non-HID |
-| Cancel a native file dialog | `dialog dismiss --button` — same command; Cancel is nested inside the sheet, found by recursive search | same | Accessibility | already non-HID |
+| Cancel a native file dialog | `dialog dismiss --button` — same command | same | Accessibility | already non-HID, **but unverified against the shipped search** — see note |
 | Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | JS-from-Apple-Events for this step; `upload --native` as a whole needs Accessibility for the steps after it | already non-HID |
 | **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | none found yet | Accessibility | **disproven** — see §4.1 |
 | **Name the save destination for a PDF** | same keystrokes, via `SafariBridge.navigateFileDialog` | none found yet | Accessibility | **untested** — see §4.2 |
 | Open the PDF export sheet | `click menu item "Export as PDF…"` | same | Accessibility | already non-HID — **only where Safari's menus are English**; see §4.2 |
+
+> **One row is inherited rather than measured.** #100 proved `AXPress` on a native
+> picker's Cancel using an ad-hoc recursive walk. What shipped in #103 is a walk
+> bounded at `depth < 4` with `prefix(30)` per level, and the only live exercise of
+> `dialog dismiss` was against a JavaScript alert, whose dialog sits shallower. So
+> the file-dialog row records a capability that has not been re-measured against the
+> code that would provide it. §2's own rule applies to it: an assigned stamp is worth
+> less than a recorded one. The failure direction is safe — too shallow a walk finds
+> no button and presses nothing — but the row currently claims more than was checked.
 
 ### Permissions do not track the HID split
 
