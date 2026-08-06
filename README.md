@@ -251,6 +251,11 @@ never saw. The dialog's full text is printed before the press so your log record
 what was dismissed. A title that matches nothing presses nothing and lists the
 real buttons instead — they are localized.
 
+If the page swaps the dialog out between `list` and `dismiss`, the press is
+refused rather than aimed at whatever is there now, and the new dialog's text is
+printed so you can decide against it. Same reason: a button you named on one
+dialog is not consent for the button in that position on another.
+
 The press uses the Accessibility action, not synthetic input, so the cursor never
 moves and `--allow-hid` is neither needed nor accepted. It does need the
 Accessibility grant (see below), and it does change state, which is why it is a
