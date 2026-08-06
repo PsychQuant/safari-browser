@@ -19,21 +19,28 @@ import XCTest
 /// tests run the real `runNativeUploadEffects` and `resolveNativeRouting` and
 /// watch what they do.
 ///
-/// **What is still not pinned** — stated in full this time, because the previous
-/// version of this note was itself incomplete and a partial disclosure reads as
-/// a complete one:
+/// **The boundary of what these tests can see.** Two earlier attempts at this
+/// note enumerated the gaps and were incomplete both times — and a list that
+/// looks exhaustive but isn't is worse than no list, because it invites the
+/// reader to stop checking. So this states the boundary instead of itemising
+/// what falls outside it:
 ///
-/// 1. That `uploadViaNativeDialog` binds `warn` to **stderr** rather than
-///    stdout. It is one closure literal at the call site.
-/// 2. That `uploadViaNativeDialog` calls `nativeUploadEffects` at all, rather
-///    than hand-rolling an equivalent sequence.
-/// 3. That `run()` routes through `resolveNativeRouting` rather than deciding
-///    inline.
+/// > These tests execute `nativeUploadEffects`, `runNativeUploadEffects` and
+/// > `resolveNativeRouting` directly. **Nothing about how `UploadCommand.run()`
+/// > and `uploadViaNativeDialog` use them is tested at all** — not whether they
+/// > call these functions, not what they pass, not what they bind the closures
+/// > to, not what they do with the results.
 ///
-/// (2) and (3) are the regress inherent in testing a function rather than its
-/// caller; closing them means executing `run()` itself with every dependency
-/// injected, which is a larger seam than this issue warranted. What is closed is
-/// the part that silently rots: the interpreter and the routing themselves.
+/// Concretely, that means the production path could still filter `.warnOnStderr`
+/// out of the plan before handing it over, bind `warn` to stdout, build the plan
+/// from the wrong selector, pass an eagerly-evaluated `{ granted }` instead of
+/// the probe itself, or ignore the routing result — and everything here would
+/// stay green. Closing that needs `run()` itself executed with every dependency
+/// injected, which is a larger seam than this issue warranted.
+///
+/// What *is* closed is the part that rots quietly once written: these three
+/// functions' own behavior, including that the interpreter reads the plan it is
+/// given rather than performing a fixed sequence.
 final class InterferenceWarningTests: XCTestCase {
 
     /// Records what the real interpreter did, in order.
@@ -153,20 +160,100 @@ final class InterferenceWarningTests: XCTestCase {
     }
 
     /// A missing file input must stop the flow — not fall through to keystrokes
-    /// aimed at a dialog that never opened.
-    func testInterpreterStopsWhenTheFileInputIsMissing() async throws {
+    /// aimed at a dialog that never opened. The error has to be the specific
+    /// one, carrying the selector: "it threw something" would also be satisfied
+    /// by an implementation that throws unconditionally.
+    func testInterpreterStopsWithElementNotFoundWhenTheFileInputIsMissing() async throws {
         let r = Recorder()
         do {
             try await UploadCommand.runNativeUploadEffects(
-                effects(),
+                [.openDialogByClickingFileInput(selector: "#chooser", js: "js"),
+                 .runCombinedScript("script")],
                 jsTarget: .frontWindow,
                 warn: { _ in },
                 runJS: { _, _ in "NOT_FOUND" },
                 runScript: { _ in r.log("keystrokes") })
             XCTFail("expected elementNotFound")
-        } catch {
-            XCTAssertTrue(r.events.isEmpty, "no keystrokes may be sent after the chooser failed to open")
+        } catch let e as SafariBrowserError {
+            guard case .elementNotFound(let sel) = e else {
+                return XCTFail("expected .elementNotFound, got \(e)")
+            }
+            XCTAssertEqual(sel, "#chooser", "the error must name the selector from the plan")
+            XCTAssertTrue(r.events.isEmpty, "no keystrokes after the chooser failed to open")
         }
+    }
+
+    /// An error from a runner must propagate rather than be swallowed and the
+    /// remaining effects skipped silently.
+    func testInterpreterPropagatesRunnerFailures() async throws {
+        struct Boom: Error {}
+        do {
+            try await UploadCommand.runNativeUploadEffects(
+                [.runCombinedScript("s"), .warnOnStderr("unreachable")],
+                jsTarget: .frontWindow,
+                warn: { _ in XCTFail("must not continue past a failed script") },
+                runJS: { _, _ in "OK" },
+                runScript: { _ in throw Boom() })
+            XCTFail("expected the runner's error to propagate")
+        } catch is Boom {
+            // expected
+        }
+    }
+
+    // MARK: - The interpreter reads the plan, rather than performing a fixed sequence
+
+    /// Without this, an interpreter that ignored its argument and hard-coded
+    /// warn → click → script would pass every other test in this file.
+    func testInterpreterForwardsThePlansOwnPayloads() async throws {
+        var warned: [String] = []
+        var jsCalls: [String] = []
+        var scripts: [String] = []
+        var targetWasWindow7 = false
+
+        try await UploadCommand.runNativeUploadEffects(
+            [.warnOnStderr("SENTINEL-WARN"),
+             .openDialogByClickingFileInput(selector: "SENTINEL-SEL", js: "SENTINEL-JS"),
+             .runCombinedScript("SENTINEL-SCRIPT")],
+            jsTarget: .windowIndex(7),
+            warn: { warned.append($0) },
+            runJS: { js, target in
+                jsCalls.append(js)
+                if case .windowIndex(7) = target { targetWasWindow7 = true }
+                return "OK"
+            },
+            runScript: { scripts.append($0) })
+
+        XCTAssertEqual(warned, ["SENTINEL-WARN"], "must emit the plan's text, not a constant of its own")
+        XCTAssertEqual(jsCalls, ["SENTINEL-JS"], "must run the plan's JS verbatim")
+        XCTAssertEqual(scripts, ["SENTINEL-SCRIPT"], "must run the plan's script verbatim")
+        XCTAssertTrue(targetWasWindow7, "must pass the caller's jsTarget through unchanged")
+    }
+
+    func testInterpreterFollowsThePlansOrderRatherThanAFixedOne() async throws {
+        let r = Recorder()
+        try await UploadCommand.runNativeUploadEffects(
+            [.runCombinedScript("s"), .warnOnStderr("w")],   // deliberately inverted
+            jsTarget: .frontWindow,
+            warn: { _ in r.log("warn") },
+            runJS: { _, _ in "OK" },
+            runScript: { _ in r.log("script") })
+        XCTAssertEqual(r.events, ["script", "warn"],
+                       "the order must come from the plan — a hard-coded sequence would give warn first")
+    }
+
+    func testInterpreterHonoursRepeatsAndDoesNothingOnAnEmptyPlan() async throws {
+        let r = Recorder()
+        try await UploadCommand.runNativeUploadEffects(
+            [], jsTarget: .frontWindow,
+            warn: { _ in r.log("warn") }, runJS: { _, _ in "OK" }, runScript: { _ in })
+        XCTAssertEqual(r.events, [], "an empty plan must do nothing")
+
+        let r2 = Recorder()
+        try await UploadCommand.runNativeUploadEffects(
+            [.warnOnStderr("a"), .warnOnStderr("b")],
+            jsTarget: .frontWindow,
+            warn: { r2.log($0) }, runJS: { _, _ in "OK" }, runScript: { _ in })
+        XCTAssertEqual(r2.events, ["a", "b"], "each effect must be interpreted, including repeats")
     }
 
     // MARK: - Routing: truth table and short-circuit
