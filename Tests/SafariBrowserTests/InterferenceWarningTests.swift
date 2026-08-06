@@ -1,80 +1,136 @@
 import XCTest
 @testable import SafariBrowser
 
-/// #104 — the `non-interference` spec lets a macOS TCC grant stand in for a
-/// per-invocation opt-in flag, but only under three conditions. Condition 2 is
-/// that the command still warns on stderr before it interferes:
+/// #104 — the `non-interference` spec normally requires an explicit opt-in flag
+/// before any interference. `upload` has one named exemption: with the macOS
+/// Accessibility grant present it may take the native path with no flag. The
+/// exemption's first condition is that the user is still warned, on stderr,
+/// *before* the interference begins.
 ///
-///   > The command emits the `Interference warning on stderr` required below,
-///   > on the interfering path, before the interference begins.
+/// An earlier version of this file asserted only on the warning's wording and
+/// on a routing predicate. That was too weak to be worth much: deleting the
+/// stderr write, sending it to stdout, moving it after the first keystroke, or
+/// simply not calling the predicate would all have left every assertion green.
+/// The Codex review of the first cut said so, and it was right.
 ///
-/// That condition is what keeps the exception honest — it is the whole reason a
-/// grant is allowed to substitute for a flag. `upload` is the only command that
-/// currently exercises the exception, and its warning had no test, so nothing
-/// stopped someone from deleting or softening it and quietly turning the
-/// exception into silent interference.
+/// What is pinned now: the ordered effects of the native path (so "warned before
+/// interfering" is a property of a value, not of prose), the warning's content
+/// against what the spec requires it to say, and the complete routing truth
+/// table.
 ///
-/// The emission itself needs a real Safari and a real file dialog, so these
-/// tests pin the *wording* — which is what actually regresses — against the two
-/// things the spec's `Interference warning on stderr` requirement demands it say.
+/// **What is still not pinned, stated so nobody reads more safety into this than
+/// it has**: that the interpreter in `uploadViaNativeDialog` actually writes the
+/// `.warnOnStderr` payload to stderr rather than stdout, and actually executes
+/// the effects in the order given. That is a `switch` with one case per effect
+/// and no branching, so the surface is small — but it is untested, and closing
+/// it needs an injectable sink and script runner.
 final class InterferenceWarningTests: XCTestCase {
 
-    /// Requirement item 1: "What type of interference will occur (e.g.,
-    /// 'keyboard control', 'file dialog')".
+    private let selector = "input[type=file]"
+    private let path = "/tmp/example.mp3"
+
+    private func effects(window: Int? = nil) -> [UploadCommand.NativeUploadEffect] {
+        UploadCommand.nativeUploadEffects(selector: selector, path: path, window: window)
+    }
+
+    // MARK: - Order: warned before anything interferes
+
+    /// The spec's condition is "before the interference begins", and interference
+    /// begins when the file chooser opens — not when the first keystroke lands.
+    /// A warning emitted between the dialog and the keystrokes would satisfy a
+    /// naive reading and still surprise the user with a dialog they never asked for.
+    func testWarningIsTheVeryFirstEffect() {
+        guard case .warnOnStderr(let text)? = effects().first else {
+            return XCTFail("the first effect must be the stderr warning; got \(effects())")
+        }
+        XCTAssertEqual(text, UploadCommand.keyboardControlWarning,
+                       "the warning emitted must be the pinned constant, not an ad-hoc string")
+    }
+
+    func testDialogOpensAfterTheWarningAndKeystrokesAfterThat() {
+        let e = effects()
+        guard e.count == 3 else { return XCTFail("expected warn → open dialog → run script; got \(e)") }
+        guard case .warnOnStderr = e[0] else { return XCTFail("effect 0 must warn") }
+        guard case .openDialogByClickingFileInput = e[1] else {
+            return XCTFail("effect 1 must open the chooser — interference #1")
+        }
+        guard case .runCombinedScript = e[2] else {
+            return XCTFail("effect 2 must run the keystroke script — interference #2")
+        }
+    }
+
+    /// #15: the keystroke flow must stay a single invocation. Two would let
+    /// another app steal focus in the gap.
+    func testExactlyOneScriptIsRun() {
+        let scripts = effects().filter { if case .runCombinedScript = $0 { return true }; return false }
+        XCTAssertEqual(scripts.count, 1, "splitting the script reintroduces the #15 focus race")
+    }
+
+    func testDialogIsOpenedByClickingRatherThanByKeystroke() {
+        guard case .openDialogByClickingFileInput(let sel, let js)? = effects().dropFirst().first else {
+            return XCTFail("expected the chooser to be opened by a click")
+        }
+        XCTAssertEqual(sel, selector)
+        XCTAssertTrue(js.contains("el.click()"),
+                      "the chooser is opened via JS, which is non-HID — only the navigation needs keystrokes")
+        XCTAssertTrue(js.contains("NOT_FOUND"), "must be able to report a missing input")
+    }
+
+    // MARK: - Content: what the spec requires the warning to say
+
+    /// Requirement item 1: "What type of interference will occur".
     func testWarningNamesTheInterferenceType() {
         let w = UploadCommand.keyboardControlWarning
-        XCTAssertTrue(
-            w.localizedCaseInsensitiveContains("keyboard"),
-            "warning must name keyboard control as the interference type; got: \(w)")
-        XCTAssertTrue(
-            w.localizedCaseInsensitiveContains("file dialog"),
-            "warning must name the file dialog as the interference type; got: \(w)")
+        XCTAssertTrue(w.localizedCaseInsensitiveContains("keyboard"), "got: \(w)")
+        XCTAssertTrue(w.localizedCaseInsensitiveContains("file dialog"), "got: \(w)")
     }
 
     /// Requirement item 2: "That the user's input devices will be temporarily
-    /// unavailable". Wording is free, but it has to actually tell the user not
-    /// to type — a warning that only says "controlling keyboard" leaves them
-    /// guessing whether their own typing is safe.
+    /// unavailable". A warning that only says "controlling keyboard" leaves the
+    /// user guessing whether their own typing is safe.
     func testWarningTellsTheUserNotToType() {
-        let w = UploadCommand.keyboardControlWarning
         XCTAssertTrue(
-            w.localizedCaseInsensitiveContains("do not type"),
-            "warning must tell the user their input is unavailable; got: \(w)")
+            UploadCommand.keyboardControlWarning.localizedCaseInsensitiveContains("do not type"),
+            "got: \(UploadCommand.keyboardControlWarning)")
     }
 
-    /// The spec requires the warning on stderr specifically, "to avoid polluting
-    /// command output". A trailing newline is part of that contract — stderr
-    /// lines that run together are the reason interleaved output is unreadable.
-    func testWarningIsASingleCompleteLine() {
-        let w = UploadCommand.keyboardControlWarning
-        XCTAssertTrue(w.hasSuffix("\n"), "warning must terminate its line")
-        XCTAssertEqual(
-            w.filter { $0 == "\n" }.count, 1,
-            "warning should be one line — multi-line stderr noise buries the signal")
+    func testWarningTerminatesItsLine() {
+        // Not a spec requirement — a practical one. Unterminated stderr writes
+        // run into whatever is printed next.
+        XCTAssertTrue(UploadCommand.keyboardControlWarning.hasSuffix("\n"))
     }
 
-    /// Guards the exception's precondition rather than its consequence: the
-    /// grant substitution is only defensible because a caller *without* the
-    /// grant still gets a working command (condition 3). If this ever inverts —
-    /// no grant meaning no upload — the exception's justification collapses and
-    /// the spec has to be revisited, not just the code.
-    func testFlaglessRoutingPrefersNativeOnlyWhenGranted() {
-        XCTAssertTrue(
-            UploadCommand.wantsNativePath(native: false, allowHid: false, accessibilityGranted: true),
-            "with the grant, a flagless upload takes the native path (the #104 exception)")
+    // MARK: - Routing: the complete truth table
+
+    /// All eight combinations, because the earlier version tested four and left
+    /// the flag-plus-grant cases open — an implementation that inverted on
+    /// `native && granted` would have passed.
+    func testRoutingTruthTableIsComplete() {
+        let cases: [(native: Bool, allowHid: Bool, granted: Bool, native_: Bool, why: String)] = [
+            (false, false, false, false, "no flag, no grant → the non-interfering JS path"),
+            (false, false, true,  true,  "no flag, grant present → the #104 exemption"),
+            (false, true,  false, true,  "--allow-hid alone forces native"),
+            (false, true,  true,  true,  "--allow-hid with a grant is still native"),
+            (true,  false, false, true,  "--native alone forces native"),
+            (true,  false, true,  true,  "--native with a grant is still native"),
+            (true,  true,  false, true,  "both flags, no grant → native"),
+            (true,  true,  true,  true,  "both flags and a grant → native"),
+        ]
+        for c in cases {
+            XCTAssertEqual(
+                UploadCommand.wantsNativePath(
+                    native: c.native, allowHid: c.allowHid, accessibilityGranted: c.granted),
+                c.native_,
+                "native=\(c.native) allowHid=\(c.allowHid) granted=\(c.granted): \(c.why)")
+        }
+    }
+
+    /// The exemption is only defensible because a caller without the grant still
+    /// has a path (spec condition 2). If this row ever flips to `true`, the
+    /// no-grant caller is being pushed onto the interfering path by default and
+    /// the spec has to be revisited — not just the code.
+    func testWithoutGrantOrFlagsTheRouteIsNonInterfering() {
         XCTAssertFalse(
-            UploadCommand.wantsNativePath(native: false, allowHid: false, accessibilityGranted: false),
-            "without the grant, a flagless upload must fall to the non-interfering JS path")
-    }
-
-    /// Explicit flags keep working regardless of the grant — the exception adds
-    /// a way to authorize, it does not remove the existing one.
-    func testExplicitFlagsStillForceNative() {
-        XCTAssertTrue(
-            UploadCommand.wantsNativePath(native: true, allowHid: false, accessibilityGranted: false),
-            "--native forces the native path even with no grant")
-        XCTAssertTrue(
-            UploadCommand.wantsNativePath(native: false, allowHid: true, accessibilityGranted: false),
-            "--allow-hid forces the native path even with no grant")
+            UploadCommand.wantsNativePath(native: false, allowHid: false, accessibilityGranted: false))
     }
 }

@@ -48,29 +48,40 @@ The following opt-in flags are defined:
 
 Future commands that introduce new categories of interference MUST define a new opt-in flag or reuse an existing one if the interference category matches.
 
-#### Exception: a system-level grant may stand in for the flag
+#### Exception: `upload`'s native path under an Accessibility grant
 
-A command MAY treat an existing macOS TCC grant as the authorization for interference of the category that grant covers, and take the interfering path with no flag — but only when **all three** hold:
+This is a **single named exception**, not a general rule. It applies to `upload` and to no other command. Any other command that wants to substitute a system grant for a flag MUST amend this spec first — "`upload` already does it" is not an argument that carries.
 
-1. The grant is specific to the interference category being performed. The Accessibility grant authorizes System Events keyboard and mouse control; it does not authorize, say, raising a system dialog.
-2. The command emits the `Interference warning on stderr` required below, on the interfering path, before the interference begins.
-3. There is a working non-interfering path for callers without the grant, so that absence of the grant degrades the command rather than breaking it.
+**What is exempted.** When the macOS Accessibility grant is present, `upload` MAY take its native path with no flag. That path is a composite, and the exemption covers the whole of it: opening the file chooser, and driving it with System Events keystrokes. Both are interference under the `MUST NOT` above; the exemption names them together because they are not separable in this path — the chooser is what the keystrokes navigate.
 
-**What this trades away, stated plainly.** A TCC grant is given once, to the whole CLI, in System Settings. A flag is given per invocation. Treating the first as consent for the second is not an identity — a user who granted Accessibility so that `screenshot` could resolve windows did not thereby ask `upload` to take their keyboard. The exception buys a materially better default (the native path is faster and has no size ceiling) and pays for it with that gap. Condition 2 is what keeps the gap visible: the user is told, every time, at the moment it happens.
+**Conditions.** The exemption holds only while all of these hold:
 
-**Currently exercised by**: `upload` only. With Accessibility granted, a flagless `safari-browser upload <sel> <file>` takes the native file-dialog path; without it, the same command falls to JS DataTransfer (capped at 10 MB). `pdf` does **not** use this exception — it hard-fails without `--allow-hid`.
+1. `upload` emits the `Interference warning on stderr` required below, on the native path, before the interference begins.
+2. A caller without the grant still gets a non-interfering path for the ordinary case — JS DataTransfer, which handles files up to its 10 MB cap.
+3. Explicit `--native` / `--allow-hid` continue to work regardless of the grant. The exemption adds a way to authorize; it does not remove the existing one.
 
-> **Provenance.** This exception documents behavior that shipped in `7e6062a` (change `clipboard-path-input`, #14) without a corresponding spec delta. That change listed `non-interference` in its Impact but characterized the effect as "鍵盤控制時間大幅縮短" — shorter keyboard control — rather than as a change to *what triggers* the interference. The conflict with the `MUST NOT` above went unrecorded until #104. It is written down here as a deliberate exception, with its cost, rather than left as drift.
+**Where condition 2 stops.** Above 10 MB the JS path cannot do the job, so a caller without the grant does not get a slower upload — they get a failed one. For files over the cap the command is genuinely unavailable without either the grant or an explicit flag. That is a real hole in the "degrades rather than breaks" story, and it is written down rather than smoothed over.
 
-#### Scenario: Upload without flags and without Accessibility uses JS injection
+**What this trades away, stated plainly.** A TCC grant is given once, to the whole CLI, in System Settings. A flag is given per invocation. Treating the first as consent for the second is not an identity — a user who granted Accessibility so that `screenshot` could resolve windows did not thereby ask `upload` to take their keyboard. The exemption buys a materially better default and pays for it with that gap. Condition 1 is what keeps the gap visible: the user is told, every time, at the moment it happens.
 
-- **WHEN** a user runs `safari-browser upload "input[type=file]" /path/to/file.pdf` without flags **and** the Accessibility grant is absent
+`pdf` does **not** use this exemption — it hard-fails without `--allow-hid`, even with Accessibility granted.
+
+> **Provenance.** This documents behavior that shipped in `7e6062a` (change `clipboard-path-input`, #14) without a corresponding spec delta. That change listed `non-interference` in its Impact but characterized the effect as "鍵盤控制時間大幅縮短" — shorter keyboard control — rather than as a change to *what triggers* the interference. The conflict with the `MUST NOT` above went unrecorded until #104. It is written down here as a deliberate, narrow exemption with its cost, rather than left as drift or generalized into a rule nobody decided on.
+
+#### Scenario: Upload without flags, no Accessibility, file within the JS cap
+
+- **WHEN** a user runs `safari-browser upload "input[type=file]" /path/to/file.pdf` without flags, the Accessibility grant is absent, **and** the file is at or under the 10 MB JS cap
 - **THEN** the file is injected via JavaScript DataTransfer API without opening a file dialog or controlling the keyboard, and the command notes on stderr that granting Accessibility would enable the faster native path
+
+#### Scenario: Upload without flags, no Accessibility, file over the JS cap
+
+- **WHEN** the same command runs on a file larger than 10 MB
+- **THEN** the command fails rather than falling back to interference — the size cap is enforced, no dialog is opened and no keystroke is sent, and the error points at `--native` and states that it needs the Accessibility grant
 
 #### Scenario: Upload without flags but with Accessibility uses the native dialog
 
 - **WHEN** a user runs `safari-browser upload "input[type=file]" /path/to/file.pdf` without flags **and** the Accessibility grant is present
-- **THEN** the command takes the native file-dialog path under the system-grant exception above, and emits the keyboard-control warning to stderr before any keystroke
+- **THEN** the command takes the native file-dialog path under the `upload` exemption above, and emits the keyboard-control warning to stderr before any keystroke
 
 #### Scenario: Upload with --native uses file dialog
 

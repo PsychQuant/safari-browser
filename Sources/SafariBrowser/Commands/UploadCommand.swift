@@ -155,10 +155,17 @@ struct UploadCommand: AsyncParsableCommand {
         // In both cases, #26 routes through the resolver so --url /
         // --tab / --document all land on a concrete (window, tab) pair
         // before keystroke dispatch.
+        // Preserve the original short-circuit: an explicit flag decides the
+        // route on its own, so the TCC probe is not run at all in that case.
+        // Folding the probe into the call's argument list would make it eager,
+        // which changes how often the permission API is consulted even though
+        // the routing result is identical.
+        let accessibilityGranted =
+            !native && !allowHid && SafariBridge.isAccessibilityPermitted()
         let wantNative = UploadCommand.wantsNativePath(
             native: native,
             allowHid: allowHid,
-            accessibilityGranted: SafariBridge.isAccessibilityPermitted())
+            accessibilityGranted: accessibilityGranted)
         if wantNative {
             try await runNativeWithResolver(expandedPath: expandedPath)
             return
@@ -274,36 +281,64 @@ struct UploadCommand: AsyncParsableCommand {
         // command, and System Events being down is by far the most common cause.
         try await SafariBridge.ensureSystemEventsLive()
 
-        FileHandle.standardError.write(Data(UploadCommand.keyboardControlWarning.utf8))
-
-        // Click the file input to open dialog. When --window N is set, the
-        // click must land on that window's current tab — thread the window
-        // through doJavaScript via the centralized `.forWindow` helper
-        // (enforces `--window N` → `.windowIndex(N)`, never
-        // `.documentIndex(N)`). A single unit test guards this invariant
-        // against regression (#23 verify R1→R2).
+        // The native path's effects, in order, taken from a pure description so
+        // the ORDER is testable and not just the wording (#104). Everything
+        // below this line is the interpreter — one case per effect, no decisions.
         let jsTarget = SafariBridge.TargetDocument.forWindow(window)
-        let clickResult = try await SafariBridge.doJavaScript(
-            "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()",
-            target: jsTarget
-        )
-        if clickResult == "NOT_FOUND" {
-            throw SafariBrowserError.elementNotFound(selector)
-        }
+        for effect in UploadCommand.nativeUploadEffects(
+            selector: selector, path: path, window: window
+        ) {
+            switch effect {
+            case .warnOnStderr(let text):
+                FileHandle.standardError.write(Data(text.utf8))
 
-        // Single combined osascript: activate, wait for dialog, navigate, click Upload.
-        // #15: the flow MUST stay one invocation. When it was two, another app
-        // could steal focus in the gap and the keystrokes landed in the wrong
-        // window. The navigation body is shared with `pdf` as text rather than
-        // as a call, so this stays atomic (#105).
-        //
-        // Subprocess-level timeout (#19) bounds the whole osascript invocation in case
-        // System Events or Safari's Apple Event dispatcher is blocked and the inner
-        // `maxWait to 10` repeat loops never make progress.
-        try await SafariBridge.runShell(
-            "/usr/bin/osascript",
-            ["-e", UploadCommand.nativeDialogScript(path: path, window: window)],
-            timeout: timeout)
+            case .openDialogByClickingFileInput(let sel, let js):
+                // When --window N is set, the click must land on that window's
+                // current tab — `.forWindow` enforces `--window N` →
+                // `.windowIndex(N)`, never `.documentIndex(N)` (#23 verify R1→R2).
+                if try await SafariBridge.doJavaScript(js, target: jsTarget) == "NOT_FOUND" {
+                    throw SafariBrowserError.elementNotFound(sel)
+                }
+
+            case .runCombinedScript(let script):
+                // Subprocess-level timeout (#19) bounds the whole invocation in
+                // case System Events or Safari's Apple Event dispatcher is
+                // blocked and the inner `maxWait to 10` loops never progress.
+                try await SafariBridge.runShell(
+                    "/usr/bin/osascript", ["-e", script], timeout: timeout)
+            }
+        }
+    }
+
+    /// What the native path does, in order, as data.
+    ///
+    /// #104. The spec's `upload` exemption rests on the user being warned
+    /// *before* the interference starts — and interference here begins when the
+    /// file chooser opens, not when the first keystroke lands. A test that only
+    /// asserts on the warning's wording cannot see whether it is emitted at all,
+    /// or when. Describing the sequence as a value puts both under test and
+    /// leaves only a mechanical interpreter above.
+    enum NativeUploadEffect: Equatable {
+        /// Text that MUST go to stderr — never stdout — before anything below.
+        case warnOnStderr(String)
+        /// Opening the chooser. Interference in its own right, per the spec's
+        /// "Display system dialogs, file choosers, or modal windows".
+        case openDialogByClickingFileInput(selector: String, js: String)
+        /// The one combined osascript. Must stay one (#15).
+        case runCombinedScript(String)
+    }
+
+    static func nativeUploadEffects(
+        selector: String, path: String, window: Int?
+    ) -> [NativeUploadEffect] {
+        [
+            .warnOnStderr(keyboardControlWarning),
+            .openDialogByClickingFileInput(
+                selector: selector,
+                js: "(function(){ var el = \(selector.resolveRefJS); "
+                    + "if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()"),
+            .runCombinedScript(nativeDialogScript(path: path, window: window)),
+        ]
     }
 
     /// The single combined script the native path runs. Pure, so both its
