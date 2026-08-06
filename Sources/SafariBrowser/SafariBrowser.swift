@@ -38,6 +38,7 @@ struct SafariBrowser: AsyncParsableCommand {
             ConsoleCommand.self,
             ErrorsCommand.self,
             SetupCommand.self,
+            DialogCommand.self,
             TabsCommand.self,
             TabCommand.self,
             DocumentsCommand.self,

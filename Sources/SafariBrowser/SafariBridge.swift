@@ -3051,20 +3051,73 @@ enum SafariBridge {
     }
 
     private static func axCollectButtonTitles(_ element: AXUIElement, depth: Int = 0) -> [String] {
+        axCollectButtons(element, depth: depth).map(\.title)
+    }
+
+    /// Buttons paired with their titles, in Safari's own order.
+    ///
+    /// #103 needs to press a button the caller named, which means the titles it
+    /// was shown and the elements it can press have to be the *same* list in the
+    /// same order. Collecting them together rather than in two passes is what
+    /// guarantees an index means the same thing in both — filtering untitled
+    /// buttons out of one list but not the other would silently shift it.
+    private static func axCollectButtons(
+        _ element: AXUIElement, depth: Int = 0
+    ) -> [(element: AXUIElement, title: String)] {
         guard depth < 4 else { return [] }
-        var collected: [String] = []
+        var collected: [(element: AXUIElement, title: String)] = []
         if axRole(of: element) == kAXButtonRole,
            let title = axStringAttribute(element, kAXTitleAttribute), !title.isEmpty {
-            collected.append(title)
+            collected.append((element, title))
         }
         var childrenValue: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
            let children = childrenValue as? [AXUIElement] {
             for child in children.prefix(30) {
-                collected.append(contentsOf: axCollectButtonTitles(child, depth: depth + 1))
+                collected.append(contentsOf: axCollectButtons(child, depth: depth + 1))
             }
         }
         return collected
+    }
+
+    /// Outcome of asking a dialog's button to activate itself.
+    enum DialogPressOutcome: Sendable, Equatable {
+        case pressed
+        case noDialogFound
+        case indexOutOfRange(buttonCount: Int)
+        case pressFailed(axError: Int32)
+    }
+
+    /// Press the dialog button at `index` via `AXPress`.
+    ///
+    /// `AXPress` asks the element to activate itself; it synthesises no key or
+    /// mouse event, so the cursor does not move and this is not HID (see
+    /// `docs/operation-paths.md`). It is still a real state change — which is
+    /// why the only caller is a subcommand the user typed.
+    ///
+    /// The dialog is re-found here rather than passed in: between listing and
+    /// pressing, the page may have dismissed it or replaced it. Re-finding means
+    /// the index is resolved against whatever is on screen *now*, and a caller
+    /// that names a button no longer present gets a miss rather than a press on
+    /// something else.
+    static func pressDialogButton(atIndex index: Int) -> DialogPressOutcome {
+        guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else {
+            return .noDialogFound
+        }
+        var windowsValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+              let windows = windowsValue as? [AXUIElement] else { return .noDialogFound }
+
+        for window in windows {
+            guard let dialog = findDialogElement(in: window, depth: 0) else { continue }
+            let buttons = axCollectButtons(dialog)
+            guard index >= 0, index < buttons.count else {
+                return .indexOutOfRange(buttonCount: buttons.count)
+            }
+            let err = AXUIElementPerformAction(buttons[index].element, kAXPressAction as CFString)
+            return err == .success ? .pressed : .pressFailed(axError: err.rawValue)
+        }
+        return .noDialogFound
     }
 
     private static func safariAXApplication() throws -> AXUIElement {

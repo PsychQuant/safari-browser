@@ -68,7 +68,7 @@ safari-browser get text "h1"
 TOKEN=$(safari-browser js "localStorage.getItem('token')")
 ```
 
-## Commands (37)
+## Commands (42)
 
 ### Navigation
 
@@ -233,6 +233,28 @@ safari-browser tab <n>                 # switch to tab
 safari-browser tab new                 # new tab
 safari-browser tab new --window 2      # new tab in window 2
 ```
+
+### Blocking Dialogs
+
+```bash
+safari-browser dialog list                     # show the dialog's text and buttons
+safari-browser dialog dismiss --button "取消"   # press the button you named
+```
+
+A JavaScript `alert` / `confirm` blocks `js`, `get text` and anything else that
+runs script in that document — and it may be on a Space you are not looking at,
+so `dialog list` is often the fastest way to find out why a command hung.
+
+Dismissal deliberately makes you name the button, and there is no
+press-the-default shortcut: clicking an unread dialog can confirm an action you
+never saw. The dialog's full text is printed before the press so your log records
+what was dismissed. A title that matches nothing presses nothing and lists the
+real buttons instead — they are localized.
+
+The press uses the Accessibility action, not synthetic input, so the cursor never
+moves and `--allow-hid` is neither needed nor accepted. It does need the
+Accessibility grant (see below), and it does change state, which is why it is a
+command you type rather than something that happens automatically.
 
 ### Permissions
 

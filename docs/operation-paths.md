@@ -59,10 +59,9 @@ and every mechanism in the table above can cause it:
   before any keystroke, though not before the command has done anything: target
   resolution and, on a targeting flag, a tab switch both run first.
 
-So "non-HID" is a statement about one mechanism, not a safety certificate for the
-operation built on it.
-
-So there are at least two independent properties:
+"Non-HID" is therefore a statement about one mechanism, not a safety certificate
+for the operation built on it. There are at least two independent properties in
+play:
 
 | Property | Meaning | `AXPress` |
 |---|---|---|
@@ -103,8 +102,8 @@ rule in §3 is correctly vacuous over them.
 | Switch tab / close window | AppleScript command | same | — | already non-HID |
 | Upload a file, no flags, AX **not** granted | `doJavaScript` DataTransfer, capped at 10 MB | same | JS-from-Apple-Events | already non-HID |
 | Upload a file, no flags, AX granted | the native dialog — see the *Open a native file dialog* and *Choose a file* rows | — | Accessibility | *(pointer row — status lives on the two rows it names)* |
-| Dismiss a JavaScript dialog | *(no such command yet — #103)* | `AXPress` on its button | Accessibility | **proven** |
-| Cancel a native file dialog | *(no such command yet)* | `AXPress` on Cancel (nested inside the sheet; needs a recursive search) | Accessibility | **proven** |
+| Dismiss a JavaScript dialog | `dialog dismiss --button` — `AXPress` (#103) | same | Accessibility | already non-HID |
+| Cancel a native file dialog | `dialog dismiss --button` — same command; Cancel is nested inside the sheet, found by recursive search | same | Accessibility | already non-HID |
 | Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | JS-from-Apple-Events for this step; `upload --native` as a whole needs Accessibility for the steps after it | already non-HID |
 | **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | none found yet | Accessibility | **disproven** — see §4.1 |
 | **Name the save destination for a PDF** | same keystrokes, via `SafariBridge.navigateFileDialog` | none found yet | Accessibility | **untested** — see §4.2 |
@@ -195,12 +194,19 @@ records that one attempt failed, which is not the same as establishing that no
 non-HID path exists. §4.1 is `disproven` and still names an untried route.
 
 **Applied to the table as it stands today, this rule licenses zero deletions.**
-Every `already non-HID` row has nothing to displace; both `proven` rows describe
-commands that do not exist yet (#103); `Choose a file` is `disproven`; the PDF
-save destination is `untested`. That is worth stating plainly, because it bounds
-every worry in this section to the future: no capability can be lost by this
-document standing as written. The first row that becomes genuinely deletable is
-the one to argue carefully about.
+Every `already non-HID` row has nothing to displace; `Choose a file` is
+`disproven`; the PDF save destination is `untested`. That is worth stating
+plainly, because it bounds every worry in this section to the future: no
+capability can be lost by this document standing as written. The first row that
+becomes genuinely deletable is the one to argue carefully about.
+
+The two dialog rows are worth a note, because they moved. They were `proven`
+while no command existed to act on them; #103 then shipped `dialog dismiss`,
+which uses the proven `AXPress` route from the start. So they are now
+`already non-HID` rather than newly deletable — the rule never fired on them,
+because there was never an HID implementation to displace. A row reaching
+`proven` is not by itself an event; what matters is whether an HID path exists
+on the other side of it.
 
 **Deletion is the one step this document cannot take back.** §2's expiry warning
 tells you to re-measure before *relying* on a row. Nothing tells you what to do
