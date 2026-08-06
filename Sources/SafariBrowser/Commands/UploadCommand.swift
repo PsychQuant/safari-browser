@@ -59,17 +59,21 @@ struct UploadCommand: AsyncParsableCommand {
     /// Whether a run takes the native file-dialog path (keystrokes) or the JS
     /// DataTransfer path (no interference).
     ///
-    /// Pure so the routing can be tested without a Safari or a TCC grant. Note
-    /// the third argument is what makes this the spec's grant exception rather
-    /// than ordinary flag handling — and note the direction, which surprises
-    /// people: holding the grant moves you *onto* the interfering path, not off
-    /// it. Callers without the grant get the JS path, which is why the exception
-    /// is defensible at all (spec condition 3: absence of the grant degrades the
-    /// command rather than breaking it).
-    static func wantsNativePath(
-        native: Bool, allowHid: Bool, accessibilityGranted: Bool
+    /// The probe is a parameter rather than a `Bool` for two reasons. It keeps
+    /// the routing testable without a TCC grant, and it makes the short-circuit
+    /// *observable*: an explicit flag decides on its own, so the permission API
+    /// is never consulted in that case. Passing a pre-computed `Bool` would have
+    /// hidden an eager probe behind an identical truth table.
+    ///
+    /// Note the direction, which surprises people: holding the grant moves you
+    /// *onto* the interfering path, not off it. A caller without it gets the JS
+    /// path — which is the only reason the spec's `upload` exemption is
+    /// defensible, and the reason it stops being defensible above the 10 MB cap.
+    static func resolveNativeRouting(
+        native: Bool, allowHid: Bool, accessibilityProbe: () -> Bool
     ) -> Bool {
-        native || allowHid || accessibilityGranted
+        if native || allowHid { return true }
+        return accessibilityProbe()
     }
     private static let jsSoftWarnBytes = 5 * 1_048_576   // 5 MB
 
@@ -155,17 +159,10 @@ struct UploadCommand: AsyncParsableCommand {
         // In both cases, #26 routes through the resolver so --url /
         // --tab / --document all land on a concrete (window, tab) pair
         // before keystroke dispatch.
-        // Preserve the original short-circuit: an explicit flag decides the
-        // route on its own, so the TCC probe is not run at all in that case.
-        // Folding the probe into the call's argument list would make it eager,
-        // which changes how often the permission API is consulted even though
-        // the routing result is identical.
-        let accessibilityGranted =
-            !native && !allowHid && SafariBridge.isAccessibilityPermitted()
-        let wantNative = UploadCommand.wantsNativePath(
+        let wantNative = UploadCommand.resolveNativeRouting(
             native: native,
             allowHid: allowHid,
-            accessibilityGranted: accessibilityGranted)
+            accessibilityProbe: SafariBridge.isAccessibilityPermitted)
         if wantNative {
             try await runNativeWithResolver(expandedPath: expandedPath)
             return
@@ -281,31 +278,55 @@ struct UploadCommand: AsyncParsableCommand {
         // command, and System Events being down is by far the most common cause.
         try await SafariBridge.ensureSystemEventsLive()
 
-        // The native path's effects, in order, taken from a pure description so
-        // the ORDER is testable and not just the wording (#104). Everything
-        // below this line is the interpreter — one case per effect, no decisions.
-        let jsTarget = SafariBridge.TargetDocument.forWindow(window)
-        for effect in UploadCommand.nativeUploadEffects(
-            selector: selector, path: path, window: window
-        ) {
+        // Everything below is the injectable interpreter, wired to its real
+        // implementations. The wiring is the only part a test cannot reach.
+        try await UploadCommand.runNativeUploadEffects(
+            UploadCommand.nativeUploadEffects(selector: selector, path: path, window: window),
+            // `.forWindow` enforces `--window N` → `.windowIndex(N)`, never
+            // `.documentIndex(N)` (#23 verify R1→R2).
+            jsTarget: SafariBridge.TargetDocument.forWindow(window),
+            warn: { FileHandle.standardError.write(Data($0.utf8)) },
+            runJS: { js, target in try await SafariBridge.doJavaScript(js, target: target) },
+            // Subprocess-level timeout (#19) bounds the whole invocation in case
+            // System Events or Safari's Apple Event dispatcher is blocked and
+            // the inner `maxWait to 10` loops never progress.
+            runScript: { script in
+                try await SafariBridge.runShell(
+                    "/usr/bin/osascript", ["-e", script], timeout: timeout)
+            })
+    }
+
+    /// Executes the native path's effects in order.
+    ///
+    /// #104 round 2. The previous cut described the sequence as data and tested
+    /// the description — which could not see the interpreter drifting away from
+    /// it. An interpreter that skipped the warning, ran it after the chooser, or
+    /// ignored the plan entirely would have left every test green. Injecting the
+    /// three side effects lets a test run *this* function and watch what it
+    /// actually does.
+    ///
+    /// What remains beyond reach is the wiring in `uploadViaNativeDialog` that
+    /// binds `warn` to stderr and the runners to `SafariBridge` — three closure
+    /// literals with no branching.
+    static func runNativeUploadEffects(
+        _ effects: [NativeUploadEffect],
+        jsTarget: SafariBridge.TargetDocument,
+        warn: (String) -> Void,
+        runJS: (String, SafariBridge.TargetDocument) async throws -> String,
+        runScript: (String) async throws -> Void
+    ) async throws {
+        for effect in effects {
             switch effect {
             case .warnOnStderr(let text):
-                FileHandle.standardError.write(Data(text.utf8))
+                warn(text)
 
             case .openDialogByClickingFileInput(let sel, let js):
-                // When --window N is set, the click must land on that window's
-                // current tab — `.forWindow` enforces `--window N` →
-                // `.windowIndex(N)`, never `.documentIndex(N)` (#23 verify R1→R2).
-                if try await SafariBridge.doJavaScript(js, target: jsTarget) == "NOT_FOUND" {
+                if try await runJS(js, jsTarget) == "NOT_FOUND" {
                     throw SafariBrowserError.elementNotFound(sel)
                 }
 
             case .runCombinedScript(let script):
-                // Subprocess-level timeout (#19) bounds the whole invocation in
-                // case System Events or Safari's Apple Event dispatcher is
-                // blocked and the inner `maxWait to 10` loops never progress.
-                try await SafariBridge.runShell(
-                    "/usr/bin/osascript", ["-e", script], timeout: timeout)
+                try await runScript(script)
             }
         }
     }

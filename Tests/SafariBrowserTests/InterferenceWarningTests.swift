@@ -13,18 +13,34 @@ import XCTest
 /// simply not calling the predicate would all have left every assertion green.
 /// The Codex review of the first cut said so, and it was right.
 ///
-/// What is pinned now: the ordered effects of the native path (so "warned before
-/// interfering" is a property of a value, not of prose), the warning's content
-/// against what the spec requires it to say, and the complete routing truth
-/// table.
+/// A second review round found the first fix still too weak: it described the
+/// sequence as data and tested the description, so an interpreter that ignored
+/// the plan would have passed. The side effects are now injected, and these
+/// tests run the real `runNativeUploadEffects` and `resolveNativeRouting` and
+/// watch what they do.
 ///
-/// **What is still not pinned, stated so nobody reads more safety into this than
-/// it has**: that the interpreter in `uploadViaNativeDialog` actually writes the
-/// `.warnOnStderr` payload to stderr rather than stdout, and actually executes
-/// the effects in the order given. That is a `switch` with one case per effect
-/// and no branching, so the surface is small — but it is untested, and closing
-/// it needs an injectable sink and script runner.
+/// **What is still not pinned** — stated in full this time, because the previous
+/// version of this note was itself incomplete and a partial disclosure reads as
+/// a complete one:
+///
+/// 1. That `uploadViaNativeDialog` binds `warn` to **stderr** rather than
+///    stdout. It is one closure literal at the call site.
+/// 2. That `uploadViaNativeDialog` calls `nativeUploadEffects` at all, rather
+///    than hand-rolling an equivalent sequence.
+/// 3. That `run()` routes through `resolveNativeRouting` rather than deciding
+///    inline.
+///
+/// (2) and (3) are the regress inherent in testing a function rather than its
+/// caller; closing them means executing `run()` itself with every dependency
+/// injected, which is a larger seam than this issue warranted. What is closed is
+/// the part that silently rots: the interpreter and the routing themselves.
 final class InterferenceWarningTests: XCTestCase {
+
+    /// Records what the real interpreter did, in order.
+    private final class Recorder: @unchecked Sendable {
+        private(set) var events: [String] = []
+        func log(_ e: String) { events.append(e) }
+    }
 
     private let selector = "input[type=file]"
     private let path = "/tmp/example.mp3"
@@ -100,13 +116,66 @@ final class InterferenceWarningTests: XCTestCase {
         XCTAssertTrue(UploadCommand.keyboardControlWarning.hasSuffix("\n"))
     }
 
-    // MARK: - Routing: the complete truth table
+    // MARK: - The real interpreter, not a description of it
 
-    /// All eight combinations, because the earlier version tested four and left
-    /// the flag-plus-grant cases open — an implementation that inverted on
+    func testInterpreterWarnsBeforeItInterferes() async throws {
+        let r = Recorder()
+        try await UploadCommand.runNativeUploadEffects(
+            effects(),
+            jsTarget: .frontWindow,
+            warn: { _ in r.log("warn") },
+            runJS: { _, _ in r.log("open-chooser"); return "OK" },
+            runScript: { _ in r.log("keystrokes") })
+        XCTAssertEqual(r.events, ["warn", "open-chooser", "keystrokes"],
+                       "the warning must precede BOTH interfering effects, not just the keystrokes")
+    }
+
+    func testInterpreterPassesThePinnedWarningText() async throws {
+        let r = Recorder()
+        try await UploadCommand.runNativeUploadEffects(
+            effects(),
+            jsTarget: .frontWindow,
+            warn: { r.log($0) },
+            runJS: { _, _ in "OK" },
+            runScript: { _ in })
+        XCTAssertEqual(r.events.first, UploadCommand.keyboardControlWarning)
+    }
+
+    func testInterpreterRunsExactlyOneScript() async throws {
+        let r = Recorder()
+        try await UploadCommand.runNativeUploadEffects(
+            effects(),
+            jsTarget: .frontWindow,
+            warn: { _ in },
+            runJS: { _, _ in "OK" },
+            runScript: { _ in r.log("script") })
+        XCTAssertEqual(r.events.count, 1, "two invocations reintroduce the #15 focus race")
+    }
+
+    /// A missing file input must stop the flow — not fall through to keystrokes
+    /// aimed at a dialog that never opened.
+    func testInterpreterStopsWhenTheFileInputIsMissing() async throws {
+        let r = Recorder()
+        do {
+            try await UploadCommand.runNativeUploadEffects(
+                effects(),
+                jsTarget: .frontWindow,
+                warn: { _ in },
+                runJS: { _, _ in "NOT_FOUND" },
+                runScript: { _ in r.log("keystrokes") })
+            XCTFail("expected elementNotFound")
+        } catch {
+            XCTAssertTrue(r.events.isEmpty, "no keystrokes may be sent after the chooser failed to open")
+        }
+    }
+
+    // MARK: - Routing: truth table and short-circuit
+
+    /// All eight combinations. The earlier version tested four and left the
+    /// flag-plus-grant cases open, so an implementation that inverted on
     /// `native && granted` would have passed.
     func testRoutingTruthTableIsComplete() {
-        let cases: [(native: Bool, allowHid: Bool, granted: Bool, native_: Bool, why: String)] = [
+        let cases: [(native: Bool, allowHid: Bool, granted: Bool, wantsNative: Bool, why: String)] = [
             (false, false, false, false, "no flag, no grant → the non-interfering JS path"),
             (false, false, true,  true,  "no flag, grant present → the #104 exemption"),
             (false, true,  false, true,  "--allow-hid alone forces native"),
@@ -118,19 +187,32 @@ final class InterferenceWarningTests: XCTestCase {
         ]
         for c in cases {
             XCTAssertEqual(
-                UploadCommand.wantsNativePath(
-                    native: c.native, allowHid: c.allowHid, accessibilityGranted: c.granted),
-                c.native_,
+                UploadCommand.resolveNativeRouting(
+                    native: c.native, allowHid: c.allowHid, accessibilityProbe: { c.granted }),
+                c.wantsNative,
                 "native=\(c.native) allowHid=\(c.allowHid) granted=\(c.granted): \(c.why)")
         }
     }
 
-    /// The exemption is only defensible because a caller without the grant still
-    /// has a path (spec condition 2). If this row ever flips to `true`, the
-    /// no-grant caller is being pushed onto the interfering path by default and
-    /// the spec has to be revisited — not just the code.
-    func testWithoutGrantOrFlagsTheRouteIsNonInterfering() {
-        XCTAssertFalse(
-            UploadCommand.wantsNativePath(native: false, allowHid: false, accessibilityGranted: false))
+    /// An explicit flag decides on its own, so the TCC permission API must not
+    /// be consulted at all. Folding the probe into an argument list once made it
+    /// eager — same truth table, different number of system calls.
+    func testExplicitFlagShortCircuitsThePermissionProbe() {
+        for (native, allowHid) in [(true, false), (false, true), (true, true)] {
+            var probes = 0
+            _ = UploadCommand.resolveNativeRouting(
+                native: native, allowHid: allowHid,
+                accessibilityProbe: { probes += 1; return false })
+            XCTAssertEqual(probes, 0,
+                           "native=\(native) allowHid=\(allowHid): the flag already decided")
+        }
+    }
+
+    func testProbeIsConsultedExactlyOnceWhenNoFlagIsGiven() {
+        var probes = 0
+        _ = UploadCommand.resolveNativeRouting(
+            native: false, allowHid: false,
+            accessibilityProbe: { probes += 1; return true })
+        XCTAssertEqual(probes, 1, "the grant decides the flagless case, and one check is enough")
     }
 }
