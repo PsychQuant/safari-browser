@@ -68,6 +68,30 @@ This is a **single named exception**, not a general rule. It applies to `upload`
 
 > **Provenance.** This documents behavior that shipped in `7e6062a` (change `clipboard-path-input`, #14) without a corresponding spec delta. That change listed `non-interference` in its Impact but characterized the effect as "鍵盤控制時間大幅縮短" — shorter keyboard control — rather than as a change to *what triggers* the interference. The conflict with the `MUST NOT` above went unrecorded until #104. It is written down here as a deliberate, narrow exemption with its cost, rather than left as drift or generalized into a rule nobody decided on.
 
+#### Exception: confirming a native sheet the caller did not read
+
+`upload --native` and `pdf` finish a file dialog by pressing its default button — and when the `AXDefault` lookup throws, by sending `Return`. Both act on a sheet the caller never saw, which is otherwise the thing this spec's dialog rules exist to prevent.
+
+This is exempted, narrowly and with its own conditions, because the alternative is worse: the dialog was opened *by the command the user ran*, and leaving it open blocks every subsequent Safari command in that document (#67's failure family). Refusing to confirm would turn a completed upload into a wedged Safari.
+
+The exemption holds only while:
+
+1. The command already warned about keyboard control before the interference began — so the user knows a takeover is in progress when the sheet appears.
+2. **Both** the press and the keystroke fallback are announced on stderr, naming the button pressed. A confirmation nobody can reconstruct afterwards is indistinguishable from one that never happened.
+3. The confirmation is limited to the dialog the command itself opened. It is not a general licence to dismiss dialogs found on screen — `dialog dismiss` (#103) is that path, and it deliberately makes the user name the button.
+
+**What this does not cover.** The "Replace?" sheet is a distinct decision from finishing a file dialog: it confirms overwriting an existing file. `--allow-hid` authorized a keyboard takeover, not that. It is exempted here only because the same reasoning applies — the sheet exists because of the command the user ran, and leaving it up wedges Safari — and condition 2 is what keeps the overwrite from being invisible. Tracked in #107.
+
+#### Scenario: The file-dialog confirmation is announced
+
+- **WHEN** `upload --native` or `pdf` presses a native sheet's default button
+- **THEN** the button's title is written to stderr before the dialog closes
+
+#### Scenario: The keystroke fallback is announced as a mechanism change
+
+- **WHEN** the `AXDefault` lookup throws and the command falls back to `Return`
+- **THEN** stderr records that an accessible press was replaced by a synthetic keystroke — a path classified non-HID has become HID, and that must not be silent
+
 #### Scenario: Upload without flags, no Accessibility, file within the JS cap
 
 - **WHEN** a user runs `safari-browser upload "input[type=file]" /path/to/file.pdf` without flags, the Accessibility grant is absent, **and** the file is at or under the 10 MB JS cap
