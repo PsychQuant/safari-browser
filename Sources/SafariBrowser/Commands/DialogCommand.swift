@@ -106,6 +106,40 @@ struct DialogDismissCommand: AsyncParsableCommand {
         }
     }
 
+    /// Whether to press, decided against the dialog *as it is at press time*.
+    ///
+    /// The command reads the dialog once to show its buttons and to resolve the
+    /// title the user named, then presses. Those are two separate Accessibility
+    /// lookups, and between them the page can dismiss the dialog and put up
+    /// another one. Deciding by *position* would then press a button on a dialog
+    /// the user never saw — #89's hazard, arriving through the back door, and
+    /// caught only when the replacement happened to have fewer buttons.
+    ///
+    /// So the decision is made against the current dialog and refuses unless it
+    /// is still the one that was read. The fingerprint is message plus button
+    /// titles in order: not a true identity, but a dialog matching both is the
+    /// one the user read for any purpose that matters here. Every mismatch
+    /// presses nothing, which is the only acceptable direction for this to fail.
+    enum PressDecision: Equatable {
+        case press(index: Int)
+        case refuseDialogChanged
+        case refuseButtonGone(available: [String])
+        case refuseAmbiguous(title: String, count: Int)
+    }
+
+    static func decidePress(
+        title: String,
+        expected: SafariBridge.BlockingDialog,
+        current: SafariBridge.BlockingDialog
+    ) -> PressDecision {
+        guard current == expected else { return .refuseDialogChanged }
+        switch selectButton(titled: title, from: current.buttons) {
+        case .found(let index): return .press(index: index)
+        case .notFound(let available): return .refuseButtonGone(available: available)
+        case .ambiguous(let t, let count): return .refuseAmbiguous(title: t, count: count)
+        }
+    }
+
     /// Printed before the press, so the log records *what* was dismissed rather
     /// than only that something was. Reconstructing that afterwards is
     /// impossible — the dialog is gone.
@@ -140,17 +174,50 @@ struct DialogDismissCommand: AsyncParsableCommand {
                 Pressing an arbitrary one is the un-asked-for action this command exists to avoid.
                 """)
 
-        case .found(let index):
+        case .found:
             print(DialogDismissCommand.preamble(for: dialog, pressing: button))
-            switch SafariBridge.pressDialogButton(atIndex: index) {
+
+            // The press re-reads the dialog and asks `decidePress` to rule on
+            // what it now says. A dialog that changed in between gets nothing
+            // pressed — deciding by position here is what would let a
+            // replacement dialog absorb the click (#89's hazard).
+            var refusal: DialogDismissCommand.PressDecision?
+            let outcome = SafariBridge.pressDialogButton { current in
+                let decision = DialogDismissCommand.decidePress(
+                    title: button, expected: dialog, current: current)
+                if case .press(let index) = decision { return index }
+                refusal = decision
+                return nil
+            }
+
+            switch outcome {
             case .pressed:
                 print("pressed")
             case .noDialogFound:
                 throw ValidationError(
                     "the dialog disappeared before it could be pressed — nothing was clicked")
+            case .refused(let current):
+                switch refusal {
+                case .refuseButtonGone(let available):
+                    throw ValidationError("""
+                        the dialog no longer has a button titled "\(button)" — nothing was clicked.
+                        It now offers: \(available.isEmpty ? "(none exposed)" : available.map { "\"\($0)\"" }.joined(separator: ", "))
+                        """)
+                case .refuseAmbiguous(let title, let count):
+                    throw ValidationError(
+                        "the dialog now has \(count) buttons titled \"\(title)\" — nothing was clicked")
+                default:
+                    throw ValidationError("""
+                        the dialog changed between reading it and pressing — nothing was clicked.
+                        It now reads: \(current.message.isEmpty ? "(no readable text)" : current.message)
+                        Buttons: \(current.buttons.isEmpty ? "(none exposed)" : current.buttons.map { "\"\($0)\"" }.joined(separator: ", "))
+                        Re-run `dialog list` and decide again — pressing a button on a dialog you have
+                        not read is the thing this command exists to avoid.
+                        """)
+                }
             case .indexOutOfRange(let count):
                 throw ValidationError(
-                    "the dialog changed while resolving the button (now \(count) buttons) — nothing was clicked")
+                    "internal: resolved button index is outside the dialog's \(count) buttons — nothing was clicked")
             case .pressFailed(let axError):
                 throw ValidationError(
                     "Accessibility refused the press (AXError \(axError)) — the dialog is unchanged")

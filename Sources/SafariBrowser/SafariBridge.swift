@@ -3084,23 +3084,32 @@ enum SafariBridge {
     enum DialogPressOutcome: Sendable, Equatable {
         case pressed
         case noDialogFound
+        /// The decision function declined once it saw the dialog as it now
+        /// reads — carried back so the caller can say *why* rather than only
+        /// that nothing happened.
+        case refused(current: BlockingDialog)
         case indexOutOfRange(buttonCount: Int)
         case pressFailed(axError: Int32)
     }
 
-    /// Press the dialog button at `index` via `AXPress`.
+    /// Press a dialog button via `AXPress`, but only after re-reading the dialog
+    /// and letting `decide` rule on what it now says.
     ///
     /// `AXPress` asks the element to activate itself; it synthesises no key or
     /// mouse event, so the cursor does not move and this is not HID (see
     /// `docs/operation-paths.md`). It is still a real state change — which is
     /// why the only caller is a subcommand the user typed.
     ///
-    /// The dialog is re-found here rather than passed in: between listing and
-    /// pressing, the page may have dismissed it or replaced it. Re-finding means
-    /// the index is resolved against whatever is on screen *now*, and a caller
-    /// that names a button no longer present gets a miss rather than a press on
-    /// something else.
-    static func pressDialogButton(atIndex index: Int) -> DialogPressOutcome {
+    /// The dialog is re-found here rather than carried in from the listing,
+    /// because the page can replace it in between. An earlier version resolved a
+    /// *position* against whatever was found now, which meant a replacement
+    /// dialog with at least as many buttons got one pressed — #89's
+    /// unread-confirmation hazard, reintroduced. `decide` receives the dialog as
+    /// it currently reads and returns an index only if it still matches what the
+    /// caller saw; every other answer presses nothing.
+    static func pressDialogButton(
+        deciding decide: (BlockingDialog) -> Int?
+    ) -> DialogPressOutcome {
         guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else {
             return .noDialogFound
         }
@@ -3111,7 +3120,16 @@ enum SafariBridge {
         for window in windows {
             guard let dialog = findDialogElement(in: window, depth: 0) else { continue }
             let buttons = axCollectButtons(dialog)
+            let current = BlockingDialog(
+                message: axCollectStaticText(dialog)
+                    .joined(separator: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                buttons: buttons.map(\.title))
+
+            guard let index = decide(current) else { return .refused(current: current) }
             guard index >= 0, index < buttons.count else {
+                // decide() ruled on this very reading, so an out-of-range index
+                // means the decision logic disagrees with the list it was given.
                 return .indexOutOfRange(buttonCount: buttons.count)
             }
             let err = AXUIElementPerformAction(buttons[index].element, kAXPressAction as CFString)

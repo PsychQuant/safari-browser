@@ -61,6 +61,69 @@ final class DialogCommandTests: XCTestCase {
             .found(index: 1))
     }
 
+    // MARK: - The dialog may change between reading it and pressing
+
+    /// The hazard this guards is #89's, arriving through the back door. The
+    /// command reads the dialog once to show its buttons, then presses. If the
+    /// press resolved a *position* against a freshly-found dialog, a dialog that
+    /// swapped in between — with at least as many buttons — would get one
+    /// pressed. The user would have confirmed something they never saw, which is
+    /// the exact thing #89 refused to build.
+    ///
+    /// So the press re-checks that the dialog is still the one that was read.
+    private let read = SafariBridge.BlockingDialog(
+        message: "Leave site?", buttons: ["Stay", "Leave"])
+
+    func testPressesWhenTheDialogIsUnchanged() {
+        XCTAssertEqual(
+            DialogDismissCommand.decidePress(title: "Leave", expected: read, current: read),
+            .press(index: 1))
+    }
+
+    func testRefusesWhenTheMessageChanged() {
+        let other = SafariBridge.BlockingDialog(
+            message: "Delete everything?", buttons: ["Stay", "Leave"])
+        XCTAssertEqual(
+            DialogDismissCommand.decidePress(title: "Leave", expected: read, current: other),
+            .refuseDialogChanged,
+            "same button layout, different question — pressing would confirm something unread")
+    }
+
+    func testRefusesWhenTheButtonsChanged() {
+        let other = SafariBridge.BlockingDialog(
+            message: "Leave site?", buttons: ["Stay", "Leave", "Save"])
+        XCTAssertEqual(
+            DialogDismissCommand.decidePress(title: "Leave", expected: read, current: other),
+            .refuseDialogChanged,
+            "a dialog that gained a button is not the dialog that was read")
+    }
+
+    /// The failure has to be "nothing pressed". Any outcome that presses
+    /// *something* on an unrecognised dialog defeats the whole design.
+    func testEveryMismatchRefusesRatherThanPressingAnything() {
+        let mismatches = [
+            SafariBridge.BlockingDialog(message: "x", buttons: ["Stay", "Leave"]),
+            SafariBridge.BlockingDialog(message: "Leave site?", buttons: ["Leave", "Stay"]),
+            SafariBridge.BlockingDialog(message: "", buttons: []),
+        ]
+        for m in mismatches {
+            let d = DialogDismissCommand.decidePress(title: "Leave", expected: read, current: m)
+            if case .press = d {
+                XCTFail("pressed on a dialog that did not match what was read: \(m)")
+            }
+        }
+    }
+
+    /// Button order matters: the same titles in a different order is a different
+    /// dialog for this purpose, because position is what ultimately gets pressed.
+    func testReorderedButtonsCountAsChanged() {
+        let reordered = SafariBridge.BlockingDialog(
+            message: "Leave site?", buttons: ["Leave", "Stay"])
+        XCTAssertEqual(
+            DialogDismissCommand.decidePress(title: "Leave", expected: read, current: reordered),
+            .refuseDialogChanged)
+    }
+
     // MARK: - Reporting
 
     func testListDescribesMessageAndButtons() {
