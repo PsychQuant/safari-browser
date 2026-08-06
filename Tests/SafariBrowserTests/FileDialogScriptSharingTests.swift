@@ -66,6 +66,23 @@ final class FileDialogScriptSharingTests: XCTestCase {
                       "the fallback after a failed AXDefault click must still confirm")
     }
 
+    /// #107. The fragment confirms a sheet the caller never read, and when the
+    /// accessible press is unavailable it silently swaps in a synthetic
+    /// keystroke. Both are the hazard #89/#103 organise themselves around, in a
+    /// command that does not observe it — so at minimum the log has to be able
+    /// to reconstruct what was confirmed and by which mechanism.
+    func testFragmentAnnouncesTheConfirmationAndTheKeystrokeFallback() {
+        let s = SafariBridge.fileDialogNavigationScript(path: path)
+        XCTAssertTrue(s.contains("log \"confirming file dialog: pressing default button"),
+                      "must record which button confirmed the dialog — afterwards it is gone")
+        XCTAssertTrue(s.contains("falling back to Return keystroke"),
+                      "must record the silent swap from an accessible press to a synthetic keystroke")
+        // `log` in osascript writes to stderr, which is where interference
+        // notices belong (stdout carries command output).
+        XCTAssertFalse(s.contains("display dialog"),
+                       "the announcement must not itself raise a dialog")
+    }
+
     func testFragmentRechecksFrontmostImmediatelyBeforeKeystrokes() {
         let s = SafariBridge.fileDialogNavigationScript(path: path)
         XCTAssertTrue(s.contains("if not frontmost then"),

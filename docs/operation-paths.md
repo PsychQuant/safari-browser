@@ -108,6 +108,7 @@ rule in §3 is correctly vacuous over them.
 | **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | none found yet | Accessibility | **disproven** — see §4.1 |
 | **Name the save destination for a PDF** | same keystrokes, via `SafariBridge.navigateFileDialog` | none found yet | Accessibility | **untested** — see §4.2 |
 | Open the PDF export sheet | `click menu item "Export as PDF…"` | same | Accessibility | already non-HID — **only where Safari's menus are English**; see §4.2 |
+| Confirm a native dialog sheet (Open / Save / "Replace?") | `AXPress` on the `AXDefault` button, `keystroke return` if that query throws | the press half already; the fallback half — see note | Accessibility | **untested** — see #107 |
 
 > **One row is inherited rather than measured.** #100 proved `AXPress` on a native
 > picker's Cancel using an ad-hoc recursive walk. What shipped in #103 is a walk
@@ -202,12 +203,40 @@ replacement, removes a working capability and replaces it with nothing.
 records that one attempt failed, which is not the same as establishing that no
 non-HID path exists. §4.1 is `disproven` and still names an untried route.
 
-**Applied to the table as it stands today, this rule licenses zero deletions.**
-Every `already non-HID` row has nothing to displace; `Choose a file` is
-`disproven`; the PDF save destination is `untested`. That is worth stating
-plainly, because it bounds every worry in this section to the future: no
-capability can be lost by this document standing as written. The first row that
-becomes genuinely deletable is the one to argue carefully about.
+**Applied to the table as it stands today, this rule licenses zero deletions** —
+and the reason is one line rather than a walk: the rule fires only on a row
+marked `proven`, and **no row is**. Every row is `already non-HID` (nothing to
+displace), `disproven`, `untested`, or a pointer to other rows.
+
+Stated that way on purpose. An earlier version enumerated the rows instead, and
+went stale the first time one was added — which is the failure mode of any list
+that has to stay exhaustive to stay true. The check that matters is mechanical:
+grep the Status column for `proven`. If it returns nothing, this paragraph holds.
+
+That bounds every worry in this section to the future: no capability can be lost
+by this document standing as written. The first row that reaches `proven` while
+an HID path still exists on the other side of it is the one to argue carefully
+about.
+
+The confirm-sheet row was missing entirely until #107 pointed it out, and it is
+the one place where this document's own rule looks closest to firing. `pdf` and
+`upload` confirm a native sheet by pressing its default button, falling back to a
+`Return` keystroke when the `AXDefault` query throws. #103 proved that a *named*
+button on a dialog can be pressed with `AXPress` and no keystroke — so it is
+tempting to call the fallback deletable.
+
+It is not, and the reason is worth stating because it is easy to get wrong. The
+fallback fires precisely when the button **cannot be found**. #103 proved you can
+press a button you have located; it says nothing about the case where the
+accessibility query failed. Replacing the fallback needs a route that works when
+the default-button lookup does not, and no such route has been measured. So the
+row is `untested`, not `proven`, and the rule still licenses nothing.
+
+What #107 tracks is separate and does not need that measurement: both the press
+and the fallback now announce themselves on stderr, because confirming a sheet
+the caller never read — and silently swapping an accessible press for a synthetic
+keystroke — are the hazards #89 and #103 are built around, occurring in the two
+commands that did not observe them.
 
 The two dialog rows are worth a note, because they moved. They were `proven`
 while no command existed to act on them; #103 then shipped `dialog dismiss`,

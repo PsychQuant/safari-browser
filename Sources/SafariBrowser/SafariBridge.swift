@@ -3803,11 +3803,19 @@ enum SafariBridge {
                             end if
                         end repeat
 
-                        -- Click the default button (Upload/Open/Save) — locale-independent
+                        -- Click the default button (Upload/Open/Save) — locale-independent.
+                        -- #107: both the press and the keystroke fallback are announced.
+                        -- This confirms a sheet the caller never read, which is the hazard
+                        -- #89/#103 organise themselves around, and the fallback silently
+                        -- swaps a non-HID press for a synthetic keystroke. Neither should
+                        -- be reconstructable only by reading the source afterwards.
                         delay 0.3
                         try
-                            click (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
+                            set defaultBtn to (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
+                            log "confirming file dialog: pressing default button \\"" & (title of defaultBtn) & "\\""
+                            click defaultBtn
                         on error
+                            log "confirming file dialog: default-button press unavailable, falling back to Return keystroke"
                             keystroke return
                         end try
 

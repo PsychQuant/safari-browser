@@ -104,9 +104,18 @@ struct PdfCommand: AsyncParsableCommand {
                 tell process "Safari"
                     delay 0.5
                     if exists sheet 1 of sheet 1 of front window then
+                        -- #107: this sheet is almost always "<file> already exists.
+                        -- Replace?", and pressing its default button confirms an
+                        -- overwrite the caller never saw. Announce which button, and
+                        -- announce the silent swap to a synthetic keystroke when the
+                        -- press is unavailable. --allow-hid authorized a keyboard
+                        -- takeover; it did not authorize overwriting a file unseen.
                         try
-                            click (first button of sheet 1 of sheet 1 of front window whose value of attribute "AXDefault" is true)
+                            set replaceBtn to (first button of sheet 1 of sheet 1 of front window whose value of attribute "AXDefault" is true)
+                            log "confirming replace sheet: pressing default button \\"" & (title of replaceBtn) & "\\""
+                            click replaceBtn
                         on error
+                            log "confirming replace sheet: default-button press unavailable, falling back to Return keystroke"
                             keystroke return
                         end try
                     end if
