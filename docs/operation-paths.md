@@ -317,10 +317,15 @@ that no non-HID path exists.
 
 Tracked in **#101**, which names an untried route: driving the dialog's file
 browser (`AXOutline` / `AXBrowser`) to select the target directly, never needing
-Go-to-Folder. Note also that `UploadCommand` carries its **own copy** of the
-keystroke sequence. `SafariBridge.navigateFileDialog` looks like the shared entry
-point and is named as if it were one, but `pdf` is its only caller — so a fix here
-has two call sites, not one.
+Go-to-Folder.
+
+Note where a fix would have to land. The keystroke sequence is written once —
+`SafariBridge.fileDialogNavigationScript` returns it as AppleScript text — but it
+is *embedded* by two callers rather than *called* by them, because each has to
+keep its flow inside a single `osascript` invocation (#15: two invocations leave
+a window for another app to steal focus mid-sequence, and the keystrokes then
+land somewhere else). So replacing the sequence means changing one generator, and
+checking two embeddings still make sense around it (#105).
 
 ### 4.2 Naming a PDF's save destination — untested, and testing has side effects
 
