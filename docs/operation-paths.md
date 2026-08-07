@@ -103,21 +103,12 @@ rule in §3 is correctly vacuous over them.
 | Upload a file, no flags, AX **not** granted | `doJavaScript` DataTransfer, capped at 10 MB | same | JS-from-Apple-Events | already non-HID |
 | Upload a file, no flags, AX granted | the native dialog — see the *Open a native file dialog* and *Choose a file* rows | — | Accessibility | *(pointer row — status lives on the two rows it names)* |
 | Dismiss a JavaScript dialog | `dialog dismiss --button` — `AXPress` (#103) | same | Accessibility | already non-HID |
-| Cancel a native file dialog | `dialog dismiss --button` — same command | same | Accessibility | already non-HID, **but unverified against the shipped search** — see note |
+| Cancel a native file dialog | `dialog dismiss --button` — same command | same | Accessibility | already non-HID |
 | Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | JS-from-Apple-Events for this step; `upload --native` as a whole needs Accessibility for the steps after it | already non-HID |
-| **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | none found yet | Accessibility | **disproven** — see §4.1 |
+| **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | no AX interface for it — see §4.1 | Accessibility | **disproven** — see §4.1 |
 | **Name the save destination for a PDF** | same keystrokes, via `SafariBridge.navigateFileDialog` | none found yet | Accessibility | **untested** — see §4.2 |
 | Open the PDF export sheet | `click menu item "Export as PDF…"` | same | Accessibility | already non-HID — **only where Safari's menus are English**; see §4.2 |
 | Confirm a native dialog sheet (Open / Save / "Replace?") | `AXPress` on the `AXDefault` button, `keystroke return` if that query throws | the press half already; the fallback half — see note | Accessibility | **untested** — see #107 |
-
-> **One row is inherited rather than measured.** #100 proved `AXPress` on a native
-> picker's Cancel using an ad-hoc recursive walk. What shipped in #103 is a walk
-> bounded at `depth < 4` with `prefix(30)` per level, and the only live exercise of
-> `dialog dismiss` was against a JavaScript alert, whose dialog sits shallower. So
-> the file-dialog row records a capability that has not been re-measured against the
-> code that would provide it. §2's own rule applies to it: an assigned stamp is worth
-> less than a recorded one. The failure direction is safe — too shallow a walk finds
-> no button and presses nothing — but the row currently claims more than was checked.
 
 ### Permissions do not track the HID split
 
@@ -325,7 +316,7 @@ of historical curiosities.
 
 ## 4. Exceptions and open questions
 
-### 4.1 Choosing a file — no non-HID path found
+### 4.1 Choosing a file — the accessibility interface for it does not exist
 
 `upload --native` uses `Cmd+Shift+G` → `Cmd+V` → `Return`
 (`SafariBridge.swift`, `UploadCommand.swift`). This is **not** an oversight that
@@ -337,39 +328,45 @@ full path into it **succeeded** (the value read back correctly), `AXConfirm`
 **succeeded**, and pressing the Upload button **succeeded** — yet the page saw
 `input.files.length === 0` and the sheet stayed open.
 
-The working hypothesis is that the text field is the sidebar's search box, and
-that the real path-entry field belongs to the **nested sheet `Cmd+Shift+G`
-creates** — a sheet that does not exist until the keystroke is sent. If that is
-right, the HID here is not laziness: the element being driven has to be summoned
-by HID first. It would also fit the shape of #67 (`Go to Folder panel did not
-appear within 10 seconds`), where the thing failing to appear is that same
-nested sheet.
+**Measured 2026-08-07, and the hypothesis held — but it was not the whole story.**
+The sheet has exactly one `AXTextField`, and its description is *"搜尋文字欄位"* —
+the search box. So the earlier attempt did write a path successfully, into the
+wrong field, which is why the value read back correctly while the page saw
+nothing.
 
-**It is a hypothesis, and the measurement does not single it out.** At least
-three other readings fit the same evidence: an AX value write can be accepted and
-stored by the accessibility layer without ever firing the control's action, so
-"the value read back correctly" discriminates nothing; `AXConfirm` returning
-success reports that the action was dispatched, not that it produced a
-navigation; and the open panel runs out of process, so even a correct selection
-need not yield a file URL the web content process can consume. The sheet staying
-open is consistent with all of them. The check that would separate these is
-read-only and cheap — the `AXRoleDescription`, placeholder, and parent chain of
-that one `AXTextField` — and it has not been run.
+The deeper finding is that the file browser cannot be driven at all. Its
+structure is legible:
 
-What the status records is therefore narrow and exact: this attempt failed. Not
-that no non-HID path exists.
+```
+AXBrowser                    actions: AXShowMenu   (no AXPress)
+  AXScrollArea × 4           one per column
+    AXList
+      AXGroup × N            one per entry — the value is the filename
+```
 
-Tracked in **#101**, which names an untried route: driving the dialog's file
-browser (`AXOutline` / `AXBrowser`) to select the target directly, never needing
-Go-to-Folder.
+Entries are *readable*: the walk returns `CLAUDE.md`, `photo.jpg`, and so on. But
 
-Note where a fix would have to land. The keystroke sequence is written once —
-`SafariBridge.fileDialogNavigationScript` returns it as AppleScript text — but it
-is *embedded* by two callers rather than *called* by them, because each has to
-keep its flow inside a single `osascript` invocation (#15: two invocations leave
-a window for another app to steal focus mid-sequence, and the keystrokes then
-land somewhere else). So replacing the sequence means changing one generator, and
-checking two embeddings still make sense around it (#105).
+- an entry has **no actions at all** — no `AXPress`, nothing;
+- an entry has **no `AXSelected`** attribute;
+- its `AXCustomActions` reads as `missing value`;
+- the enclosing `AXList` does expose `AXSelectedChildren`, and it is **not
+  writable** — the attempt aborts.
+
+Selection lives on the list rather than on the entries, and the list will not
+accept one. So there is no accessibility interface for *choosing* a file, and
+`#101`'s proposed route — drive the browser to select the target directly — is
+not blocked by the nested sheet at all. It is blocked one level earlier.
+
+That makes this row's `disproven` stronger than the label's definition. The
+status means "one attempt failed"; what was measured is that the interface an
+attempt would need is absent. Still not "impossible forever" — macOS can widen
+what it exposes — but a re-measurement should look for a *new* API rather than a
+better way to use the current one.
+
+Tracked in **#101**, which now carries the measurement.
+
+Note also that `UploadCommand` embeds the shared navigation fragment rather than
+calling it (#105), so a replacement changes one generator and two embeddings.
 
 ### 4.2 Naming a PDF's save destination — untested, and testing has side effects
 
@@ -445,6 +442,31 @@ Two further notes on the scripting-definition argument, since it is what makes
   side effect**: wrong parameters may send an actual print job. It needs a
   deliberate, isolated experiment, not a casual probe during other work.
 
+**Measured 2026-08-07 on the print panel** (raised with `print … with print
+dialog`, which shows the panel without printing). The panel exposes an
+`AXMenuButton` for PDF whose menu — opened with `AXShowMenu` — contains
+*"儲存為PDF⋯"* with `AXPress` and `AXPick` among its actions. So that step is
+reachable without a keystroke.
+
+It does not retire `--allow-hid`, and the reason is the one predicted before the
+measurement: pressing it opens a **save panel**, and entering the destination
+there is the step that currently needs keystrokes. The route ends one step short
+of the problem.
+
+> **A caution earned the hard way.** The measurement that produced the menu
+> listing also sent a print job. `AXShowMenu` opened the menu, the `osascript`
+> process then exited, and the menu could not survive the process boundary —
+> whatever tore it down appears to have triggered the panel's default button. No
+> keystroke was sent and nothing pressed *"列印"* deliberately. The lesson
+> generalises past this row: opening a modal through Accessibility is not a
+> read-only act, and it must be closed inside the same script that opened it —
+> the same cross-invocation gap that #15 and #106 are about.
+
+What is still untested is the save panel's own destination field. Unlike §4.1
+that is not obviously hopeless: naming a destination is a text field's job,
+whereas choosing an existing file needs a selection API the browser does not
+expose.
+
 Tracked in **#102**. Note that this row and §4.1 share the *keystroke sequence*
 but not necessarily the *problem*: `upload` drives an **open** panel and needs to
 select an existing file, whereas `pdf` drives a **save** panel and needs to name
@@ -500,7 +522,7 @@ representation. Execution paths are an instance of P02, not an extension of it.
 ## See also
 
 - [`openspec/specs/non-interference/spec.md`](../openspec/specs/non-interference/spec.md) — the principle this document expands along the execution-path axis
-- **#101** — choosing a file in the open panel: one non-HID attempt failed, an untried route named (blocks retiring `upload`'s keystrokes)
+- **#101** — choosing a file in the open panel: measured, and the AX interface a non-HID route would need is absent (blocks retiring `upload`'s keystrokes)
 - **#102** — naming the save destination for a PDF: non-HID feasibility untested. Note the export *invocation* is already non-HID; only the save panel needs a route
 - **#103** — `dialog list` / `dialog dismiss`: proven non-HID, no opt-in command yet
 - **#67** — stuck native file dialog; the failure family that lives on the HID path
