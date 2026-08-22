@@ -68,7 +68,7 @@ safari-browser get text "h1"
 TOKEN=$(safari-browser js "localStorage.getItem('token')")
 ```
 
-## Commands (42)
+## Commands (46)
 
 ### Navigation
 
@@ -261,6 +261,32 @@ moves and `--allow-hid` is neither needed nor accepted. It does need the
 Accessibility grant (see below), and it does change state, which is why it is a
 command you type rather than something that happens automatically.
 
+### Local Safari Data (#109)
+
+Four read-only commands that query Safari's on-disk data rather than the
+running browser. They answer "what did I look at before" — the one question no
+other command in this tool can, since everything else only sees what is
+currently open. Safari does not need to be running.
+
+```bash
+safari-browser history --search "agent" --since 2026-01-01   # visited pages
+safari-browser bookmarks --folder AI                         # bookmarks + Reading List
+safari-browser cloud-tabs                                    # tabs open on your other devices
+safari-browser downloads --limit 20                          # download history
+```
+
+All four take `--json`. Explanatory text goes to stderr and data rows to
+stdout, so `safari-browser history 2>/dev/null` is directly parseable.
+
+`history` and `downloads` default to **50 rows** (override with `--limit`)
+because they expose a long-term record of behavior; `bookmarks` and
+`cloud-tabs` have no limit because they show curated or currently-open state.
+
+A source file that does not exist is not an error — `cloud-tabs` on a Mac that
+never enabled iCloud tab syncing exits 0 with an empty result and a note on
+stderr. These commands require **Full Disk Access**, which `setup` does not
+handle; see below.
+
 ### Permissions
 
 ```bash
@@ -269,12 +295,27 @@ safari-browser setup --check          # status only, never raises a dialog (exit
 safari-browser setup --open-settings  # also open the relevant System Settings panes
 ```
 
-Two macOS permissions gate part of the CLI:
+Three macOS permissions gate part of the CLI:
 
-| Permission | Needed for | Without it |
-|---|---|---|
-| **Accessibility** | window resolution for `screenshot` / `pdf` / `upload --native`, blocked-dialog detection | those paths refuse; front-window resolution falls back to a heuristic and says so |
-| **Screen Recording** | the pixel capture inside `screenshot` | `screenshot` refuses with guidance |
+| Permission | Needed for | Without it | Handled by `setup`? |
+|---|---|---|---|
+| **Accessibility** | window resolution for `screenshot` / `pdf` / `upload --native`, blocked-dialog detection | those paths refuse; front-window resolution falls back to a heuristic and says so | yes |
+| **Screen Recording** | the pixel capture inside `screenshot` | `screenshot` refuses with guidance | yes |
+| **Full Disk Access** | reading `~/Library/Safari/` for `history` / `bookmarks` / `cloud-tabs` / `downloads` | those four refuse with guidance specific to how this binary is signed | **no** — see below |
+
+**Full Disk Access is deliberately not part of `setup`** (#109). It cannot be
+requested programmatically the way Accessibility can — you add the binary by
+hand in System Settings — and it is a far broader grant than the other two, so
+requiring it up front would tax everyone who never runs the four local-data
+commands. Those commands ask for it only when you actually run one.
+
+Which subject should hold that grant depends on how the binary is signed, and
+the four commands say which case you are in when they refuse. An ad-hoc build
+(what `make install` produces by default) is identified by its code hash, so a
+grant given to it can stop applying after a rebuild; a Developer ID signed
+build is identified by its designated requirement and keeps the grant. Granting
+to the terminal app instead always works but hands the terminal read access to
+every file on the system.
 
 `setup` is the **only** command that raises a permission dialog. Every other
 command detects and refuses with guidance instead, because a background

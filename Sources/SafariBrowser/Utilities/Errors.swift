@@ -50,6 +50,11 @@ enum SafariBrowserError: LocalizedError {
     /// permission error: this is a normal configuration state and the caller
     /// exits 0 on it.
     case safariDataFileNotFound(path: String)
+    /// #109: the file is present and readable but its contents did not
+    /// parse. Names the file and the layer that failed, because these are
+    /// Apple-internal formats with no cross-version stability guarantee —
+    /// a future macOS reshaping them should be diagnosable in one read.
+    case safariDataParseFailed(path: String, detail: String)
     case screenRecordingRequired(postPreflight: Bool, underlying: String?)
     case webAreaNotFound(reason: String)
     case imageCroppingFailed(reason: String)
@@ -386,6 +391,9 @@ enum SafariBrowserError: LocalizedError {
 
         case .safariDataFileNotFound(let path):
             return "Safari data file not found: \(path)"
+
+        case .safariDataParseFailed(let path, let detail):
+            return "Could not parse Safari data file \(path): \(detail)"
 
         case .elementAmbiguous(let selector, let matches):
             let lines = matches.enumerated().map { (i, m) -> String in

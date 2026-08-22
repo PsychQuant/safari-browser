@@ -7,25 +7,25 @@
 
 ## 2. history 指令
 
-- [ ] 2.1 撰寫 Core Data epoch 轉換的獨立單元測試，以 spec 中的三組已知值（`0` → 2001-01-01T00:00:00Z、`1` → 2001-01-01T00:00:01Z、`788918400` → 2026-01-01T00:00:00Z）斷言轉換結果，不依賴實機資料（滿足 `Core Data epoch conversion for history timestamps`）。驗證：`swift test --filter HistoryCommandTests` 中該測試由紅轉綠。
-- [ ] 2.2 實作 `HistoryCommand`，使 `safari-browser history` 能從複製後的 `History.db` 讀出造訪紀錄並依時間新到舊排序，預設輸出 50 筆、可用 `--limit` 覆寫，且 `--search` 對網址與標題做大小寫不敏感比對、`--since YYYY-MM-DD` 篩選該日起的造訪；無命中時 exit 0 且無資料列（滿足 `Read-only query commands for local Safari data`、`Default result limits reflect data sensitivity`、`Filtering options for history and bookmarks`）。驗證：`safari-browser history --limit 5` 印出 ≤5 行且時間落在當前世紀；`safari-browser history --search zzzzznomatchzzzzz` exit 0 且無輸出。
-- [ ] 2.3 使 `history` 的說明文字（legend、通知、權限指引）一律走 stderr、資料列與 `--json` 一律走 stdout，且無結果時 `--json` 輸出 `[]`（滿足 `Explanatory text is separated from parseable output`、`JSON output for local data query commands`）。驗證：`safari-browser history --limit 3 2>/dev/null` 僅得三行資料列；`safari-browser history --limit 2 --json | python3 -m json.tool` 不報錯。
+- [x] 2.1 撰寫 Core Data epoch 轉換的獨立單元測試，以 spec 中的三組已知值（`0` → 2001-01-01T00:00:00Z、`1` → 2001-01-01T00:00:01Z、`788918400` → 2026-01-01T00:00:00Z）斷言轉換結果，不依賴實機資料（滿足 `Core Data epoch conversion for history timestamps`）。驗證：`swift test --filter HistoryCommandTests` 中該測試由紅轉綠。
+- [x] 2.2 實作 `HistoryCommand`，使 `safari-browser history` 能從複製後的 `History.db` 讀出造訪紀錄並依時間新到舊排序，預設輸出 50 筆、可用 `--limit` 覆寫，且 `--search` 對網址與標題做大小寫不敏感比對、`--since YYYY-MM-DD` 篩選該日起的造訪；無命中時 exit 0 且無資料列（滿足 `Read-only query commands for local Safari data`、`Default result limits reflect data sensitivity`、`Filtering options for history and bookmarks`）。驗證：`safari-browser history --limit 5` 印出 ≤5 行且時間落在當前世紀；`safari-browser history --search zzzzznomatchzzzzz` exit 0 且無輸出。
+- [x] 2.3 使 `history` 的說明文字（legend、通知、權限指引）一律走 stderr、資料列與 `--json` 一律走 stdout，且無結果時 `--json` 輸出 `[]`（滿足 `Explanatory text is separated from parseable output`、`JSON output for local data query commands`）。驗證：`safari-browser history --limit 3 2>/dev/null` 僅得三行資料列；`safari-browser history --limit 2 --json | python3 -m json.tool` 不報錯。
 
 ## 3. 其餘三個來源指令
 
-- [ ] 3.1 [P] 實作 `BookmarksCommand`，使 `safari-browser bookmarks` 以 plist 解析器（非 `plutil -convert json`，該路徑實測會失敗）讀出書籤樹與閱讀列表，輸出含所屬資料夾路徑並以 `reading_list` 區分兩者，不設預設筆數上限，`--folder` 對資料夾路徑做大小寫不敏感比對（滿足 `Read-only query commands for local Safari data`、`Default result limits reflect data sensitivity`、`Filtering options for history and bookmarks`）。驗證：`safari-browser bookmarks --json` 為合法 JSON 且項目數等於實機書籤總數（不被截斷）。
-- [ ] 3.2 [P] 實作 `CloudTabsCommand`，使 `safari-browser cloud-tabs` 在 `CloudTabs.db` 存在時列出各裝置的分頁，在檔案不存在時以 exit code 0 結束、stdout 無資料列（`--json` 為 `[]`）、stderr 印出說明（滿足 `Read-only query commands for local Safari data`、`Full Disk Access failure is distinguished from missing data files`）。驗證：於開發機（實測無此檔）執行 `safari-browser cloud-tabs; echo $?` 得 0，`safari-browser cloud-tabs --json 2>/dev/null` 得 `[]`。
-- [ ] 3.3 [P] 實作 `DownloadsCommand`，使 `safari-browser downloads` 讀出下載檔名與來源網址，預設 50 筆、可用 `--limit` 覆寫（滿足 `Read-only query commands for local Safari data`、`Default result limits reflect data sensitivity`）。**此來源為四者中唯一未經實測者**：實作時須先確認 `Downloads.plist` 實際結構，若與 design.md 預期不符，以實測為準並回頭更新 design.md 的 Open Questions 段。驗證：`safari-browser downloads --limit 3 --json | python3 -m json.tool` 不報錯且每筆含 `filename` 與 `source_url`。
+- [x] 3.1 [P] 實作 `BookmarksCommand`，使 `safari-browser bookmarks` 以 plist 解析器（非 `plutil -convert json`，該路徑實測會失敗）讀出書籤樹與閱讀列表，輸出含所屬資料夾路徑並以 `reading_list` 區分兩者，不設預設筆數上限，`--folder` 對資料夾路徑做大小寫不敏感比對（滿足 `Read-only query commands for local Safari data`、`Default result limits reflect data sensitivity`、`Filtering options for history and bookmarks`）。驗證：`safari-browser bookmarks --json` 為合法 JSON 且項目數等於實機書籤總數（不被截斷）。
+- [x] 3.2 [P] 實作 `CloudTabsCommand`，使 `safari-browser cloud-tabs` 在 `CloudTabs.db` 存在時列出各裝置的分頁，在檔案不存在時以 exit code 0 結束、stdout 無資料列（`--json` 為 `[]`）、stderr 印出說明（滿足 `Read-only query commands for local Safari data`、`Full Disk Access failure is distinguished from missing data files`）。驗證：於開發機（實測無此檔）執行 `safari-browser cloud-tabs; echo $?` 得 0，`safari-browser cloud-tabs --json 2>/dev/null` 得 `[]`。
+- [x] 3.3 [P] 實作 `DownloadsCommand`，使 `safari-browser downloads` 讀出下載檔名與來源網址，預設 50 筆、可用 `--limit` 覆寫（滿足 `Read-only query commands for local Safari data`、`Default result limits reflect data sensitivity`）。**此來源為四者中唯一未經實測者**：實作時須先確認 `Downloads.plist` 實際結構，若與 design.md 預期不符，以實測為準並回頭更新 design.md 的 Open Questions 段。驗證：`safari-browser downloads --limit 3 --json | python3 -m json.tool` 不報錯且每筆含 `filename` 與 `source_url`。
 
 ## 4. 註冊與文件
 
-- [ ] 4.1 使四個指令出現在 `safari-browser --help` 的 subcommand 清單中並可被呼叫（滿足 `Read-only query commands for local Safari data`）。註記：此處動到的 `subcommands:` 陣列與 #110 共享，Conflict Class 為 `C_shared_module_coord`，不可與其交錯合併。驗證：`safari-browser --help` 同時含 `history`、`bookmarks`、`cloud-tabs`、`downloads` 四字串。
-- [ ] 4.2 將四個指令的 interference level 分級（Non-interfering）與其資料敏感度差異寫入 `non-interference` spec，使日後新增讀取持久化資料的指令有先例可循（滿足 `Local data query commands are non-interfering`、`Data sensitivity is recorded separately from interference level`）。驗證：`spectra validate local-safari-data-query` 通過，且 spec 內文同時載明分級與敏感度兩件事。
-- [ ] 4.3 使 `README.md` 的指令表涵蓋四個新指令並載明其需要「完全取用磁碟」而非 `setup` 處理的三種權限。驗證：內容審查——四個指令名稱與 FDA 需求皆出現，且未宣稱 `setup` 會處理 FDA。
+- [x] 4.1 使四個指令出現在 `safari-browser --help` 的 subcommand 清單中並可被呼叫（滿足 `Read-only query commands for local Safari data`）。註記：此處動到的 `subcommands:` 陣列與 #110 共享，Conflict Class 為 `C_shared_module_coord`，不可與其交錯合併。驗證：`safari-browser --help` 同時含 `history`、`bookmarks`、`cloud-tabs`、`downloads` 四字串。
+- [x] 4.2 將四個指令的 interference level 分級（Non-interfering）與其資料敏感度差異寫入 `non-interference` spec，使日後新增讀取持久化資料的指令有先例可循（滿足 `Local data query commands are non-interfering`、`Data sensitivity is recorded separately from interference level`）。驗證：`spectra validate local-safari-data-query` 通過，且 spec 內文同時載明分級與敏感度兩件事。
+- [x] 4.3 使 `README.md` 的指令表涵蓋四個新指令並載明其需要「完全取用磁碟」而非 `setup` 處理的三種權限。驗證：內容審查——四個指令名稱與 FDA 需求皆出現，且未宣稱 `setup` 會處理 FDA。
 
 ## 5. 驗收
 
-- [ ] 5.1 逐項確認 design.md `Implementation Contract` 的八條 acceptance criteria 全部成立，並確認既有測試未因 subcommand 註冊變動而失敗。驗證：`make test-unit` 全綠，八條逐條手動核對並記錄結果。
+- [x] 5.1 逐項確認 design.md `Implementation Contract` 的八條 acceptance criteria 全部成立，並確認既有測試未因 subcommand 註冊變動而失敗。驗證：`make test-unit` 全綠，八條逐條手動核對並記錄結果。
 
 ## 6. 設計決策追溯
 

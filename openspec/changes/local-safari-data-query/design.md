@@ -214,4 +214,6 @@ enum SafariDataStore {
 
 ## Open Questions
 
-- `Downloads.plist` 的實際結構尚未實測（四個來源中唯一）。實作時若發現其結構與預期不符，以實測為準並更新本文件；不因此擴大或縮減其他三個指令的範圍。
+- ~~`Downloads.plist` 的實際結構尚未實測~~ — **已於實作階段實測，此問題已關閉。** 實際結構為：根層字典含單一 `DownloadHistory` 陣列，每筆帶 `DownloadEntryPath`（完整路徑，檔名取其 basename）、`DownloadEntryURL`（來源網址）、`DownloadEntryDateAddedKey` 與 `DownloadEntryDateFinishedKey`。
+
+  **一項與預期不同、值得記錄的差異**：這兩個日期欄位是**原生 plist `Date` 物件**，不是 `History.db` 那種 Core Data reference time 整數——因此 `downloads` **不套用** `+978307200` 偏移。若當初照 `history` 的模式類推，會得到全部偏移 31 年且不報錯的時間戳。實作採 `DownloadEntryDateAddedKey`（下載開始時間），實測樣本中兩個欄位皆 100% 存在。
