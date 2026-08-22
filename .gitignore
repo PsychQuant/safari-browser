@@ -7,3 +7,11 @@ references/
 
 # IDD tree-lock (idd-tree-lock.sh #183) — per-machine session state, not tracked
 .claude/.idd/tree-lock
+
+# IDD per-machine state (target repo config, attachments, routing stats).
+# Glob form `.idd/*` rather than bare `.idd/` is deliberate: git cannot
+# re-include a path whose parent DIRECTORY is excluded, so the run-log
+# carve-out below would silently do nothing under the bare form.
+.claude/.idd/*
+!.claude/.idd/issue-runs/
+.claude/issue-driven-dev.local.json
