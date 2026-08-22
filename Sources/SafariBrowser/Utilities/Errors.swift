@@ -41,6 +41,15 @@ enum SafariBrowserError: LocalizedError {
     case elementNotFound(String)
     case accessibilityNotGranted
     case accessibilityRequired(flag: String)
+    /// #109: `~/Library/Safari/` is TCC-protected. Carries the binary's
+    /// signing state because ad-hoc and Developer ID builds need different
+    /// remediation — see `CodeSigningState.fullDiskAccessGuidance`.
+    case fullDiskAccessRequired(path: String, signing: CodeSigningState)
+    /// #109: a Safari data file that simply is not there — e.g. `CloudTabs.db`
+    /// on a machine that never enabled iCloud tab syncing. Deliberately NOT a
+    /// permission error: this is a normal configuration state and the caller
+    /// exits 0 on it.
+    case safariDataFileNotFound(path: String)
     case screenRecordingRequired(postPreflight: Bool, underlying: String?)
     case webAreaNotFound(reason: String)
     case imageCroppingFailed(reason: String)
@@ -368,6 +377,16 @@ enum SafariBrowserError: LocalizedError {
 
                 \(alternative)
                 """
+        case .fullDiskAccessRequired(let path, let signing):
+            return """
+                Full Disk Access required to read \(path)
+
+                \(signing.fullDiskAccessGuidance)
+                """
+
+        case .safariDataFileNotFound(let path):
+            return "Safari data file not found: \(path)"
+
         case .elementAmbiguous(let selector, let matches):
             let lines = matches.enumerated().map { (i, m) -> String in
                 let text = m.textSnippet.map { "    text=\"\($0)\"" } ?? ""
