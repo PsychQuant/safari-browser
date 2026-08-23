@@ -9,8 +9,9 @@ BINARY_NAME = safari-browser
 SAFARI_BROWSER_BIN ?= .build/debug/$(BINARY_NAME)
 export SAFARI_BROWSER_BIN
 
-.PHONY: build build-debug install clean \
-        test test-unit test-smoke test-all \
+.PHONY: build build-debug install install-signed clean \
+        sign-developer-id verify-developer-id verify-install-signature \
+        test test-unit test-smoke test-all test-install-signature \
         test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-exec-script test-mark-tab test-csp test-target-identity test-reference-edges
 
 build:
@@ -19,29 +20,81 @@ build:
 build-debug:
 	swift build
 
+# Local dev install, ad-hoc signed. Fast iteration for work that does not need
+# Full Disk Access.
+#
 # Re-signing after the copy matters: TCC keys a grant to the binary's code
 # signature, so an unsigned copy is a different subject and starts with no
-# permissions. The entitlements file only takes effect under a hardened-runtime
-# Developer ID signature (see `sign-developer-id`) but is passed here too so
-# both paths stay in step. (#98)
+# permissions. (#98)
+#
+# But an ad-hoc signature is not merely "weaker" — its designated requirement
+# IS the content hash (`designated => cdhash H"..."`), so EVERY rebuild
+# invalidates any Full Disk Access grant this binary was given, silently. For
+# `history` / `bookmarks` / `cloud-tabs` / `downloads` use `install-signed`
+# instead. (#119)
+#
+# `rm -f` forces a fresh inode: `cp` writes in place and macOS caches
+# code-signature validation per inode, so overwriting an inode still held open
+# by a running process (the persistent daemon holds one for up to its 600s idle
+# timeout) makes the next launch die with "load code signature error 2" —
+# SIGKILL, exit 137, no readable error. (#121)
 install: build
 	@mkdir -p $(INSTALL_DIR)
+	rm -f $(INSTALL_DIR)/$(BINARY_NAME)
 	cp .build/release/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
+	chmod +x $(INSTALL_DIR)/$(BINARY_NAME)
 	@codesign --force --sign - \
 	         --entitlements Sources/SafariBrowser/Entitlements.plist \
 	         $(INSTALL_DIR)/$(BINARY_NAME) 2>/dev/null \
 	  || codesign --force --sign - $(INSTALL_DIR)/$(BINARY_NAME) 2>/dev/null \
 	  || true
-	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME)"
+	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (ad-hoc)"
+	@echo "  ⚠ A Full Disk Access grant on this binary will NOT survive the next"
+	@echo "    rebuild. For history / bookmarks / cloud-tabs / downloads, use:"
+	@echo "      DEVELOPER_ID=<cert-sha1> make install-signed"
 	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
 
-# Developer ID + hardened runtime. Only needed if macOS starts refusing to
-# prompt an ad-hoc binary for these services the way it already does for
-# Calendar/Reminders (che-ical-mcp #154) — Accessibility and Screen Recording
-# still prompt for ad-hoc builds today, so this is not part of `install`.
-# Requires DEVELOPER_ID (certificate SHA-1) in the environment.
-sign-developer-id: build
+# Fail fast when DEVELOPER_ID is missing. Left-most dependency of the signed
+# targets on purpose, so a missing env var aborts before the ~30s release build
+# rather than after it.
+verify-developer-id:
 	@test -n "$(DEVELOPER_ID)" || { echo "DEVELOPER_ID is unset — see CLAUDE.md 'Apple Developer / Notarization Pipeline'"; exit 1; }
+
+# Install with a Developer ID signature. This is the path to a Full Disk Access
+# grant that SURVIVES rebuilds: the designated requirement names an identity
+# (`identifier ... and certificate leaf[subject.OU] = "<team>"`) rather than a
+# content hash, so re-running this target does not invalidate the grant. (#119)
+#
+# Notarization is deliberately NOT part of this. It is for distributing to OTHER
+# people; your own certificate launches fine on your own Mac, and requiring it
+# here would drag in NOTARY_PROFILE and a 2–10 minute round-trip.
+#
+# --identifier pins the CURRENT identifier. The requirement embeds it, so
+# changing this string would change the requirement and silently invalidate an
+# existing grant — do not "tidy" it to $(BINARY_NAME).
+install-signed: verify-developer-id build
+	@mkdir -p $(INSTALL_DIR)
+	rm -f $(INSTALL_DIR)/$(BINARY_NAME)
+	cp .build/release/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
+	chmod +x $(INSTALL_DIR)/$(BINARY_NAME)
+	codesign --force --options runtime \
+	         --identifier com.checheng.safari-browser \
+	         --sign $(DEVELOPER_ID) \
+	         --entitlements Sources/SafariBrowser/Entitlements.plist \
+	         $(INSTALL_DIR)/$(BINARY_NAME)
+	@codesign -dv --entitlements - $(INSTALL_DIR)/$(BINARY_NAME) 2>&1 | grep -q apple-events \
+	  && echo "✓ signed with apple-events entitlement" \
+	  || { echo "✗ entitlement missing from the signed binary"; exit 1; }
+	@$(MAKE) --no-print-directory verify-install-signature
+	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
+	@echo "    it then persists across rebuilds and version bumps."
+
+# Sign the build-directory binary without installing it. Kept for release
+# plumbing that needs a signed artifact in .build/release/. For a usable local
+# install use `install-signed` — this target does NOT copy to $(INSTALL_DIR),
+# and following it with `make install` would re-sign ad-hoc and undo the work.
+# Requires DEVELOPER_ID (certificate SHA-1) in the environment.
+sign-developer-id: verify-developer-id build
 	codesign --force --options runtime \
 	         --sign $(DEVELOPER_ID) \
 	         --entitlements Sources/SafariBrowser/Entitlements.plist \
@@ -49,6 +102,20 @@ sign-developer-id: build
 	@codesign -dv --entitlements - .build/release/$(BINARY_NAME) 2>&1 | grep -q apple-events \
 	  && echo "✓ signed with apple-events entitlement" \
 	  || { echo "✗ entitlement missing from the signed binary"; exit 1; }
+
+# Is the installed binary's grant rebuild-proof? Reads only — no certificate,
+# no Full Disk Access, no Safari.
+#
+# Note: make reports its own failure code (2) for any recipe error, so the
+# script's distinction between 1 (ad-hoc) and 2 (unsigned) does not survive
+# this wrapper. Non-zero still means "not rebuild-proof", which is what CI
+# needs; call ./scripts/verify-install-signature.sh directly to tell the two
+# failures apart.
+verify-install-signature:
+	@./scripts/verify-install-signature.sh
+
+test-install-signature:
+	./Tests/install-signature-test.sh
 
 # ── CI-safe tiers (no live Safari required) ──────────────────────────
 test:
