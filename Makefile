@@ -33,21 +33,28 @@ build-debug:
 # `history` / `bookmarks` / `cloud-tabs` / `downloads` use `install-signed`
 # instead. (#119)
 #
-# `rm -f` forces a fresh inode: `cp` writes in place and macOS caches
-# code-signature validation per inode, so overwriting an inode still held open
-# by a running process (the persistent daemon holds one for up to its 600s idle
-# timeout) makes the next launch die with "load code signature error 2" —
-# SIGKILL, exit 137, no readable error. (#121)
+# Installs through a temporary file and lands it with `mv`. Two reasons, both
+# learned the hard way:
+#
+#   - `cp` over the canonical path writes IN PLACE, reusing the inode, and
+#     macOS caches code-signature validation per inode. Overwriting an inode
+#     still held open by a running process (the persistent daemon holds one for
+#     up to its 600s idle timeout) makes the NEXT launch die with "load code
+#     signature error 2" — SIGKILL, exit 137, no readable error. `mv` is a
+#     rename: the destination gets a fresh inode. (#121)
+#   - Writing the canonical path first also means a failed signing leaves a
+#     broken binary on $PATH with the working one already gone.
 install: build
-	@mkdir -p $(INSTALL_DIR)
-	rm -f $(INSTALL_DIR)/$(BINARY_NAME)
-	cp .build/release/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
-	chmod +x $(INSTALL_DIR)/$(BINARY_NAME)
+	@mkdir -p "$(INSTALL_DIR)"
+	rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"
+	cp .build/release/$(BINARY_NAME) "$(INSTALL_DIR)/$(BINARY_NAME).new"
+	chmod +x "$(INSTALL_DIR)/$(BINARY_NAME).new"
 	@codesign --force --sign - \
 	         --entitlements Sources/SafariBrowser/Entitlements.plist \
-	         $(INSTALL_DIR)/$(BINARY_NAME) 2>/dev/null \
-	  || codesign --force --sign - $(INSTALL_DIR)/$(BINARY_NAME) 2>/dev/null \
-	  || true
+	         "$(INSTALL_DIR)/$(BINARY_NAME).new" 2>/dev/null \
+	  || codesign --force --sign - "$(INSTALL_DIR)/$(BINARY_NAME).new" 2>/dev/null \
+	  || { echo "✗ ad-hoc signing failed — refusing to install"; rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"; exit 1; }
+	@mv -f "$(INSTALL_DIR)/$(BINARY_NAME).new" "$(INSTALL_DIR)/$(BINARY_NAME)"
 	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (ad-hoc)"
 	@echo "  ⚠ A Full Disk Access grant on this binary will NOT survive the next"
 	@echo "    rebuild. For history / bookmarks / cloud-tabs / downloads, use:"
@@ -55,8 +62,11 @@ install: build
 	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
 
 # Fail fast when DEVELOPER_ID is missing. Left-most dependency of the signed
-# targets on purpose, so a missing env var aborts before the ~30s release build
-# rather than after it.
+# targets so a missing env var aborts before the ~30s release build.
+#
+# Serial make only. Under `make -j` the build runs concurrently with this check
+# and has already started by the time it fails — measured, not assumed. The
+# guard still aborts the target; it just no longer saves you the build.
 verify-developer-id:
 	@test -n "$(DEVELOPER_ID)" || { echo "DEVELOPER_ID is unset — see CLAUDE.md 'Apple Developer / Notarization Pipeline'"; exit 1; }
 
@@ -69,31 +79,52 @@ verify-developer-id:
 # people; your own certificate launches fine on your own Mac, and requiring it
 # here would drag in NOTARY_PROFILE and a 2–10 minute round-trip.
 #
-# --identifier pins the CURRENT identifier. The requirement embeds it, so
-# changing this string would change the requirement and silently invalidate an
-# existing grant — do not "tidy" it to $(BINARY_NAME).
+# The identifier comes from Sources/SafariBrowser/Info.plist — Package.swift
+# links it in with `-sectcreate __TEXT __info_plist`, and codesign reads
+# CFBundleIdentifier from there. Changing THAT string changes the designated
+# requirement and silently invalidates existing grants; the filename does not.
+# An earlier version of this recipe passed `--identifier` to "pin the current
+# value", which was both redundant and harmful: it made this target's identifier
+# a second source of truth that sign-developer-id did not share, so editing
+# Info.plist would have made the two targets emit different requirements from
+# one source tree — the exact silent invalidation the pin claimed to prevent.
+#
+# Installs through a temporary file in $(INSTALL_DIR) and only replaces the
+# existing binary once signing AND verification have passed. Writing to the
+# canonical path first meant a failed signing (cert missing, keychain locked,
+# entitlement check failing) left an unsigned binary on $PATH with the
+# known-good one already deleted — and macOS SIGKILLs unsigned binaries that
+# call osascript, so the failure mode was not "no FDA" but "the CLI is dead".
 install-signed: verify-developer-id build
-	@mkdir -p $(INSTALL_DIR)
-	rm -f $(INSTALL_DIR)/$(BINARY_NAME)
-	cp .build/release/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
-	chmod +x $(INSTALL_DIR)/$(BINARY_NAME)
+	@mkdir -p "$(INSTALL_DIR)"
+	rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"
+	cp .build/release/$(BINARY_NAME) "$(INSTALL_DIR)/$(BINARY_NAME).new"
+	chmod +x "$(INSTALL_DIR)/$(BINARY_NAME).new"
 	codesign --force --options runtime \
-	         --identifier com.checheng.safari-browser \
-	         --sign $(DEVELOPER_ID) \
+	         --sign "$(DEVELOPER_ID)" \
 	         --entitlements Sources/SafariBrowser/Entitlements.plist \
-	         $(INSTALL_DIR)/$(BINARY_NAME)
-	@codesign -dv --entitlements - $(INSTALL_DIR)/$(BINARY_NAME) 2>&1 | grep -q apple-events \
-	  && echo "✓ signed with apple-events entitlement" \
-	  || { echo "✗ entitlement missing from the signed binary"; exit 1; }
-	@$(MAKE) --no-print-directory verify-install-signature
+	         "$(INSTALL_DIR)/$(BINARY_NAME).new"
+	@codesign -dv --entitlements - "$(INSTALL_DIR)/$(BINARY_NAME).new" 2>&1 | grep -q apple-events \
+	  || { echo "✗ entitlement missing from the signed binary"; rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"; exit 1; }
+	@echo "✓ signed with apple-events entitlement"
+	@./scripts/verify-install-signature.sh "$(INSTALL_DIR)/$(BINARY_NAME).new" \
+	  || { echo "✗ refusing to install — see above"; rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"; exit 1; }
+	@mv -f "$(INSTALL_DIR)/$(BINARY_NAME).new" "$(INSTALL_DIR)/$(BINARY_NAME)"
+	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (Developer ID)"
 	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
 	@echo "    it then persists across rebuilds and version bumps."
+	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
 
 # Sign the build-directory binary WITHOUT installing it.
 #
-# Nothing in this repo calls this target — there is no CI workflow and no
-# release script. It is kept only because removing a target is a separate
-# decision from #119, and it predates install-signed.
+# No AUTOMATION calls this target — there is no CI workflow and no release
+# script. It is not free-standing, though, and #123 should not be read as
+# saying so: the shipped binary tells users to run it
+# (Sources/SafariBrowser/Utilities/CodeSigningState.swift), three assertions in
+# CodeSigningStateTests.swift pin the string, and task 1.4 of the in-flight
+# openspec change local-safari-data-query names it as the remediation. Deleting
+# it without touching those leaves the product pointing at a make target that
+# does not exist.
 #
 # It is also the target whose existence made this bug hard to see: it looks
 # like "the signed install path" and is not one. It does NOT copy to
@@ -119,7 +150,7 @@ sign-developer-id: verify-developer-id build
 # needs; call ./scripts/verify-install-signature.sh directly to tell the two
 # failures apart.
 verify-install-signature:
-	@./scripts/verify-install-signature.sh
+	@./scripts/verify-install-signature.sh "$(INSTALL_DIR)/$(BINARY_NAME)"
 
 test-install-signature:
 	./Tests/install-signature-test.sh
@@ -138,8 +169,8 @@ test-smoke: build-debug
 	./Tests/smoke-test.sh
 
 # Everything that can run unattended in CI.
-test-all: test-unit test-smoke
-	@echo "✓ unit + smoke green"
+test-all: test-unit test-smoke test-install-signature
+	@echo "✓ unit + smoke + install-signature green"
 
 # ── Live-Safari tiers (local only — Safari must be running) ──────────
 # Each depends on build-debug + runs against $SAFARI_BROWSER_BIN (the fresh
