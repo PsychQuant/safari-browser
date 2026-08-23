@@ -113,9 +113,38 @@ enum SafariDataStore {
                 // Absent sidecars are the normal steady state: Safari
                 // checkpoints and removes them on a clean close.
                 guard fm.fileExists(atPath: sidecar.path) else { continue }
-                try? fm.copyItem(
-                    at: sidecar,
-                    to: tempDir.appendingPathComponent(sidecar.lastPathComponent))
+                do {
+                    try fm.copyItem(
+                        at: sidecar,
+                        to: tempDir.appendingPathComponent(sidecar.lastPathComponent))
+                } catch {
+                    // The two sidecars are NOT interchangeable here.
+                    //
+                    // `-wal` holds committed transactions that have not been
+                    // checkpointed into the main file yet. Reading without it
+                    // silently returns a database missing the most recent
+                    // activity — the exact failure `hasWALSidecars` exists to
+                    // prevent — so a copy failure has to be fatal. Swallowing
+                    // it with `try?` reintroduced that silence.
+                    //
+                    // `-shm` is only the shared-memory index into `-wal`.
+                    // SQLite rebuilds it on open when it is missing and the
+                    // directory is writable, which the temp dir always is. A
+                    // failure there costs nothing but is worth saying aloud.
+                    if suffix == "-wal" {
+                        throw SafariBrowserError.safariDataParseFailed(
+                            path: sourceURL.path,
+                            detail: """
+                                the write-ahead log (\(sidecar.lastPathComponent)) exists but \
+                                could not be copied: \(error.localizedDescription). Reading \
+                                without it would silently omit recently recorded entries, so \
+                                the command stopped instead of returning incomplete results.
+                                """)
+                    }
+                    LocalDataOutput.writeStderr(
+                        "note: could not copy \(sidecar.lastPathComponent) "
+                            + "(\(error.localizedDescription)); SQLite will rebuild it.\n")
+                }
             }
         }
 

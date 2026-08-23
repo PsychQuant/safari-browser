@@ -68,7 +68,18 @@ enum SQLiteReader {
         defer { sqlite3_finalize(stmt) }
 
         var results: [T] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        // The step code is kept rather than folded into the loop condition.
+        // `while sqlite3_step(stmt) == SQLITE_ROW` exits on *any* non-ROW
+        // result, so SQLITE_CORRUPT / SQLITE_IOERR / SQLITE_BUSY all look
+        // exactly like a clean end-of-results: the caller gets whatever rows
+        // happened to arrive before the failure, and a zero exit status. For
+        // a tool whose whole job is answering "what did I visit", silently
+        // returning a truncated answer is worse than returning none.
+        var stepResult: Int32 = SQLITE_DONE
+        while true {
+            stepResult = sqlite3_step(stmt)
+            guard stepResult == SQLITE_ROW else { break }
+
             let columnCount = Int(sqlite3_column_count(stmt))
             var row: [Value] = []
             row.reserveCapacity(columnCount)
@@ -88,6 +99,18 @@ enum SQLiteReader {
             if let mapped = rowMapper(row) {
                 results.append(mapped)
             }
+        }
+
+        guard stepResult == SQLITE_DONE else {
+            let message = String(cString: sqlite3_errmsg(handle))
+            let extended = sqlite3_extended_errcode(handle)
+            throw SafariBrowserError.safariDataParseFailed(
+                path: url.path,
+                detail: """
+                    query stopped after \(results.count) row(s): \(message) \
+                    (sqlite code \(stepResult), extended \(extended)). The result would \
+                    have been silently incomplete, so it was discarded.
+                    """)
         }
         return results
     }

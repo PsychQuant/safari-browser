@@ -79,9 +79,14 @@ enum CodeSigningState: Equatable {
                 already given it. Two ways forward:
 
                   1. Install a Developer ID signed build (the grant then survives rebuilds):
-                       DEVELOPER_ID=<cert-sha1> make sign-developer-id && make install
-                     then add the binary in
+                       DEVELOPER_ID=<cert-sha1> make sign-developer-id
+                       cp .build/release/safari-browser ~/bin/safari-browser
+                     then add ~/bin/safari-browser in
                        System Settings → Privacy & Security → Full Disk Access
+
+                     Copy the binary yourself rather than running `make install` — that
+                     target re-signs whatever it copies with `codesign --sign -`, which
+                     would put you straight back to an ad-hoc binary.
 
                   2. Grant Full Disk Access to your terminal application instead.
                      Simpler, but far broader — the terminal can then read every file

@@ -124,6 +124,65 @@ final class SafariDataStoreTests: XCTestCase {
         XCTAssertNotEqual(first, second, "concurrent invocations must not share a directory")
     }
 
+    // MARK: - Sidecar copy failure (#109 verify HIGH-2)
+
+    /// `-wal` holds committed rows not yet checkpointed into the main file.
+    /// The original code copied it with `try?`, so a copy failure silently
+    /// produced a database missing the most recent activity — the exact
+    /// silence `hasWALSidecars` was introduced to prevent.
+    func testWALCopyFailureIsFatalRatherThanSilent() throws {
+        try XCTSkipIf(getuid() == 0, "root bypasses the mode-000 read denial this test needs")
+
+        let main = try write("X.db", "main")
+        // Present to `fileExists` but unreadable to `copyItem` — the shape of
+        // a real mid-copy failure (I/O error, race with Safari's checkpoint,
+        // permission change) without having to provoke one.
+        let wal = try write("X.db-wal", "wal")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: wal.path)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: wal.path)
+        }
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: wal.path),
+            "precondition: the guard in withCopy must see the sidecar as present")
+
+        XCTAssertThrowsError(
+            try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: true) { _ in }
+        ) { error in
+            guard case SafariBrowserError.safariDataParseFailed(_, let detail) = error else {
+                return XCTFail("expected safariDataParseFailed, got \(error)")
+            }
+            XCTAssertTrue(
+                detail.contains("write-ahead log"),
+                "the error must say the WAL is the problem, not just 'copy failed' — got: \(detail)")
+        }
+    }
+
+    /// `-shm` is only the shared-memory index; SQLite rebuilds it. Its loss
+    /// must NOT abort the command — only `-wal` carries data.
+    func testSHMCopyFailureIsNotFatal() throws {
+        try XCTSkipIf(getuid() == 0, "root bypasses the mode-000 read denial this test needs")
+
+        let main = try write("X.db", "main")
+        _ = try write("X.db-wal", "wal")
+        let shm = try write("X.db-shm", "shm")
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: shm.path)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: shm.path)
+        }
+
+        var ran = false
+        try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: true) { copied in
+            ran = true
+            let dir = copied.deletingLastPathComponent()
+            let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+            XCTAssertTrue(names.contains("X.db-wal"), "the data-bearing sidecar must still land")
+        }
+        XCTAssertTrue(ran, "a -shm problem must not prevent the body from running")
+    }
+
     // MARK: - Missing source
 
     func testMissingSourceThrowsDataFileNotFound() throws {
