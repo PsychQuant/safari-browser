@@ -48,7 +48,10 @@ install: build
 	@mkdir -p "$(INSTALL_DIR)"
 	@set -e; \
 	 STAGE=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).XXXXXX"); \
-	 trap 'rm -f "$$STAGE"' EXIT; \
+	 LOCKDIR="$(INSTALL_DIR)/.$(BINARY_NAME).lock"; \
+	 for i in $$(seq 1 60); do mkdir "$$LOCKDIR" 2>/dev/null && break || sleep 1; done; \
+	 [ -d "$$LOCKDIR" ] || { echo "✗ could not acquire the install lock at $$LOCKDIR"; exit 1; }; \
+	 trap 'rm -f "$$STAGE"; rmdir "$$LOCKDIR" 2>/dev/null' EXIT; \
 	 cp .build/release/$(BINARY_NAME) "$$STAGE"; \
 	 chmod +x "$$STAGE"; \
 	 { codesign --force --sign - \
@@ -57,8 +60,9 @@ install: build
 	   || codesign --force --sign - "$$STAGE" 2>/dev/null; } \
 	   || { echo "✗ ad-hoc signing failed — refusing to install"; exit 1; }; \
 	 mv -f "$$STAGE" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
+	 echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (ad-hoc)"; \
+	 rmdir "$$LOCKDIR" 2>/dev/null; \
 	 trap - EXIT
-	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (ad-hoc)"
 	@echo "  ⚠ A Full Disk Access grant on this binary will NOT survive the next"
 	@echo "    rebuild. For history / bookmarks / cloud-tabs / downloads, use:"
 	@echo "      DEVELOPER_ID=<cert-sha1> make install-signed"
@@ -102,7 +106,10 @@ install-signed: verify-developer-id build
 	@mkdir -p "$(INSTALL_DIR)"
 	@set -e; \
 	 STAGE=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).XXXXXX"); \
-	 trap 'rm -f "$$STAGE"' EXIT; \
+	 LOCKDIR="$(INSTALL_DIR)/.$(BINARY_NAME).lock"; \
+	 for i in $$(seq 1 60); do mkdir "$$LOCKDIR" 2>/dev/null && break || sleep 1; done; \
+	 [ -d "$$LOCKDIR" ] || { echo "✗ could not acquire the install lock at $$LOCKDIR"; exit 1; }; \
+	 trap 'rm -f "$$STAGE"; rmdir "$$LOCKDIR" 2>/dev/null' EXIT; \
 	 cp .build/release/$(BINARY_NAME) "$$STAGE"; \
 	 chmod +x "$$STAGE"; \
 	 codesign --force --options runtime \
@@ -121,8 +128,11 @@ install-signed: verify-developer-id build
 	 ./scripts/verify-install-signature.sh "$$STAGE" \
 	   || { echo "✗ refusing to install — see above"; exit 1; }; \
 	 mv -f "$$STAGE" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
+	 ./scripts/verify-install-signature.sh "$(INSTALL_DIR)/$(BINARY_NAME)" >/dev/null \
+	   || { echo "✗ landed binary does not verify — another process may have overwritten it"; exit 1; }; \
+	 echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (Developer ID)"; \
+	 rmdir "$$LOCKDIR" 2>/dev/null; \
 	 trap - EXIT
-	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (Developer ID)"
 	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
 	@echo "    it then persists across rebuilds and version bumps."
 	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
@@ -157,10 +167,10 @@ sign-developer-id: verify-developer-id build
 # no Full Disk Access, no Safari.
 #
 # Note: make reports its own failure code (2) for any recipe error, so the
-# script's distinction between 1 (ad-hoc) and 2 (unsigned) does not survive
-# this wrapper. Non-zero still means "not rebuild-proof", which is what CI
-# needs; call ./scripts/verify-install-signature.sh directly to tell the two
-# failures apart.
+# script's distinct codes (1 ad-hoc, 2 unreadable, 3 broken seal, 4 cannot
+# satisfy its own requirement, 5 unrecognised shape) do not survive this
+# wrapper. Non-zero still means "not provably durable", which is what CI
+# needs; call ./scripts/verify-install-signature.sh directly to tell them apart.
 verify-install-signature:
 	@./scripts/verify-install-signature.sh "$(INSTALL_DIR)/$(BINARY_NAME)"
 

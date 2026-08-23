@@ -80,13 +80,26 @@ make verify-install-signature
 # or against any path:  ./scripts/verify-install-signature.sh <path>
 ```
 
-It answers with four distinct exit codes, because "cannot hold a durable grant"
-has more than one cause and they need different fixes: `0` identity-bound with
-a valid seal, `1` ad-hoc, `2` no signature at all, `3` **seal broken** — the
-signature no longer covers the bytes, so macOS SIGKILLs the binary on launch
-and the Full Disk Access question never arises. (`make verify-install-signature`
-collapses all failures to make's own exit 2; call the script directly to tell
-them apart.)
+"Cannot hold a durable grant" has several causes and they need different
+fixes, so the answer is an exit code rather than a yes/no:
+
+| | meaning | what to do |
+|---|---|---|
+| `0` | the requirement names an identity and the binary satisfies it | nothing |
+| `1` | the requirement **is** the content hash (what ad-hoc signing produces) | `make install-signed` |
+| `2` | no readable signature — or the check could not run at all | see the message; a `TMPDIR` problem reports itself as one |
+| `3` | **seal broken** — the signature no longer covers the bytes, so macOS SIGKILLs the binary and the grant question never arises | reinstall |
+| `4` | valid seal, but the binary **cannot satisfy the requirement it advertises**, so a grant recorded against it never applies | `make install-signed` |
+| `5` | a requirement shape the tool does not recognise — it **cannot tell** | inspect it yourself |
+
+`5` is deliberate. The tool vouches only for requirements that name an
+`anchor` or a `certificate`; anything else gets "I don't know" rather than an
+optimistic guess. Three rounds of review each constructed a requirement that
+slipped past a previous version's exclusion list, so the check now asks what
+the requirement *contains* instead of what it lacks.
+
+(`make verify-install-signature` collapses every failure to make's own exit 2;
+call the script directly to tell them apart.)
 
 Without a Developer ID certificate, `make install` is still the right choice —
 the other three permissions are unaffected. You will simply need to re-grant
