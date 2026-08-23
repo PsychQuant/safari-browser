@@ -89,10 +89,17 @@ install-signed: verify-developer-id build
 	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
 	@echo "    it then persists across rebuilds and version bumps."
 
-# Sign the build-directory binary without installing it. Kept for release
-# plumbing that needs a signed artifact in .build/release/. For a usable local
-# install use `install-signed` — this target does NOT copy to $(INSTALL_DIR),
-# and following it with `make install` would re-sign ad-hoc and undo the work.
+# Sign the build-directory binary WITHOUT installing it.
+#
+# Nothing in this repo calls this target — there is no CI workflow and no
+# release script. It is kept only because removing a target is a separate
+# decision from #119, and it predates install-signed.
+#
+# It is also the target whose existence made this bug hard to see: it looks
+# like "the signed install path" and is not one. It does NOT copy to
+# $(INSTALL_DIR), and following it with `make install` re-signs ad-hoc and
+# undoes the work. For a usable local install, use `install-signed`.
+#
 # Requires DEVELOPER_ID (certificate SHA-1) in the environment.
 sign-developer-id: verify-developer-id build
 	codesign --force --options runtime \
