@@ -86,17 +86,25 @@ fixes, so the answer is an exit code rather than a yes/no:
 | | meaning | what to do |
 |---|---|---|
 | `0` | the requirement names an identity and the binary satisfies it | nothing |
-| `1` | the requirement **is** the content hash (what ad-hoc signing produces) | `make install-signed` |
-| `2` | no readable signature — or the check could not run at all | see the message; a `TMPDIR` problem reports itself as one |
+| `1` | the signature is ad-hoc, so the requirement is the content hash | `make install-signed` |
+| `2` | no signature — or the check could not run at all | see the message; an environment failure says it is one |
 | `3` | **seal broken** — the signature no longer covers the bytes, so macOS SIGKILLs the binary and the grant question never arises | reinstall |
 | `4` | valid seal, but the binary **cannot satisfy the requirement it advertises**, so a grant recorded against it never applies | `make install-signed` |
 | `5` | a requirement shape the tool does not recognise — it **cannot tell** | inspect it yourself |
 
-`5` is deliberate. The tool vouches only for requirements that name an
-`anchor` or a `certificate`; anything else gets "I don't know" rather than an
-optimistic guess. Three rounds of review each constructed a requirement that
-slipped past a previous version's exclusion list, so the check now asks what
-the requirement *contains* instead of what it lacks.
+`5` is deliberate, and it is the part worth explaining. The tool decides in
+two steps: observable signature facts first (is the seal intact, is it
+ad-hoc — fields, not prose), then the designated requirement matched
+*whole-line* against the shapes a standard `codesign` invocation emits.
+Anything outside that set gets "I don't know".
+
+That narrowness is the lesson of four review rounds. Earlier versions tried to
+judge arbitrary requirements by searching their text, and each round produced
+a new requirement that walked past the previous rule — a keyword inside a
+quoted identifier, a negated clause, an extra conjunct. The requirement
+language has string literals, boolean operators and negation; grep does not
+see any of them. So the tool no longer claims to read requirements it was not
+taught, and says so instead of guessing.
 
 (`make verify-install-signature` collapses every failure to make's own exit 2;
 call the script directly to tell them apart.)
