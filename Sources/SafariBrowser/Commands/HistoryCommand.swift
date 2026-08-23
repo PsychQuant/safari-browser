@@ -45,11 +45,24 @@ struct HistoryCommand: ParsableCommand {
     }
 
     static func parseSinceDate(_ text: String) -> Date? {
+        // `DateFormatter` alone is looser than the `YYYY-MM-DD` the flag help
+        // advertises: it accepts unpadded components and tolerates trailing
+        // junk, so `2026-2-3` or `2026-01-01xyz` would quietly parse as
+        // something the user did not write. Shape-check first, then confirm by
+        // formatting the result back and requiring it to match the input.
+        let shape = #/^\d{4}-\d{2}-\d{2}$/#
+        guard text.wholeMatch(of: shape) != nil else { return nil }
+
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone.current
-        return formatter.date(from: text)
+        formatter.isLenient = false
+
+        guard let parsed = formatter.date(from: text),
+            formatter.string(from: parsed) == text
+        else { return nil }
+        return parsed
     }
 
     // MARK: - Formatting
@@ -91,8 +104,14 @@ struct HistoryCommand: ParsableCommand {
     static func visits(
         inDatabaseAt url: URL, search: String?, since: Date?, limit: Int
     ) throws -> [HistoryVisit] {
-        // Ordering and limiting happen in SQL so a large history does not get
-        // fully materialised just to throw most of it away.
+        // Ordering happens in SQL; limiting and filtering do NOT — they run in
+        // the row mapper below. So this walks and sorts the whole visit table
+        // even for `--limit 1`: measured ~1.1s against 273k visits, which is
+        // tolerable but is a full scan, not the cheap query the shape suggests.
+        // Pushing `--since` and `--limit` into SQL is tracked separately; the
+        // reason it is not free is `--search`, which needs Swift-side
+        // case-insensitive matching that SQLite's default LIKE will not do
+        // correctly for non-ASCII.
         let sql = """
             SELECT i.url, v.title, v.visit_time, i.visit_count
             FROM history_visits v

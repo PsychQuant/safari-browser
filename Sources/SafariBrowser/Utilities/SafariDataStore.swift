@@ -92,7 +92,13 @@ enum SafariDataStore {
 
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("safari-data-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        // `withIntermediateDirectories: false` on purpose. With `true` the call
+        // succeeds when the path already exists — including when it exists as a
+        // symlink into somewhere else, which would silently redirect the copy.
+        // A v4 UUID makes that unguessable today, but then the defence is name
+        // entropy rather than the API, and nothing says so. `false` throws on a
+        // pre-existing path and costs nothing here: the parent always exists.
+        try fm.createDirectory(at: tempDir, withIntermediateDirectories: false)
         defer { try? fm.removeItem(at: tempDir) }
 
         let destination = tempDir.appendingPathComponent(sourceURL.lastPathComponent)

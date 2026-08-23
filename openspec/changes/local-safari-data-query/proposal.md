@@ -42,14 +42,18 @@ Non-Goals 記錄於 `design.md` 的 Goals / Non-Goals 段落。
 - `Sources/SafariBrowser/Commands/CloudTabsCommand.swift`
 - `Sources/SafariBrowser/Commands/DownloadsCommand.swift`
 - `Sources/SafariBrowser/Utilities/SafariDataStore.swift`
+- `Sources/SafariBrowser/Utilities/CodeSigningState.swift`
+- `Sources/SafariBrowser/Utilities/LocalDataOutput.swift`
+- `Sources/SafariBrowser/Utilities/SQLiteReader.swift`
 - `Tests/SafariBrowserTests/SafariDataStoreTests.swift`
 - `Tests/SafariBrowserTests/HistoryCommandTests.swift`
-- `Tests/SafariBrowserTests/BookmarksCommandTests.swift`
+- `Tests/SafariBrowserTests/CodeSigningStateTests.swift`
+- `Tests/SafariBrowserTests/SQLiteReaderTests.swift`
 
 **修改檔案**
 
 - `Sources/SafariBrowser/SafariBrowser.swift` — `subcommands:` 陣列註冊四個新指令
-- `Sources/SafariBrowser/Utilities/Errors.swift` — 新增 `fullDiskAccessRequired` 與 `safariDataFileNotFound`
+- `Sources/SafariBrowser/Utilities/Errors.swift` — 新增 `fullDiskAccessRequired`、`safariDataFileNotFound` 與 `safariDataParseFailed`
 - `README.md` — 指令表補四個新項
 
 **不修改**

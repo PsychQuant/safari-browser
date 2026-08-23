@@ -6,6 +6,11 @@ The system SHALL output results as a JSON array when the `--json` flag is provid
 
 Timestamps in JSON output SHALL be formatted as ISO 8601 strings including a time zone offset.
 
+The `downloads` command's `date` key MAY be `null`: `Downloads.plist` entries are not
+guaranteed to carry `DownloadEntryDateAddedKey`, and dropping an otherwise-valid download
+record because it lacks a date would lose data the user asked for. Every other timestamp
+key is non-null.
+
 Each command emits objects with the following keys:
 
 | Command | Keys |
@@ -24,6 +29,12 @@ Each command emits objects with the following keys:
 
 - **WHEN** a user runs `safari-browser bookmarks --json`
 - **THEN** entries originating from the Reading List carry `"reading_list": true` and ordinary bookmarks carry `"reading_list": false`
+
+#### Scenario: A download without a recorded date emits null
+
+- **GIVEN** a `Downloads.plist` entry that carries no `DownloadEntryDateAddedKey`
+- **WHEN** a user runs `safari-browser downloads --json`
+- **THEN** that entry appears with `"date": null` rather than being omitted
 
 #### Scenario: Empty result emits an empty array
 

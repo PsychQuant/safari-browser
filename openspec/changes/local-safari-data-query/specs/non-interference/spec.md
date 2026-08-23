@@ -37,3 +37,28 @@ New commands that read persisted user data SHALL state their data sensitivity al
 
 - **WHEN** a command exposes a long-term behavioral record
 - **THEN** it applies a default result limit so that an unqualified invocation does not dump the entire record
+
+---
+
+### Requirement: The non-interfering definition covers read-only local file access
+
+The conformance classification for new commands SHALL treat reading a file from disk,
+without writing to it and without any HID, dialog, sound, or focus effect, as
+**Non-interfering**.
+
+The existing definition enumerates "JS, AppleScript property access, or silent utilities",
+which names the mechanisms that existed before any command read the filesystem. A command
+that reads a file is non-interfering for the same reason those are: it does nothing the
+user can perceive while they work. Leaving the definition unamended would classify these
+four commands by assertion while giving the next filesystem-reading command no rule to
+apply.
+
+Requiring a permission does not affect the classification. Interference level describes
+what a command does to the user's concurrent activity, not what it needs permission to do.
+
+#### Scenario: A new file-reading command is classified from the definition
+
+- **WHEN** a developer proposes a command that reads a file under `~/Library/` and neither
+  writes to it nor touches input devices, dialogs, sound, or window focus
+- **THEN** the classification table yields **Non-interfering** directly, with no opt-in flag,
+  and the developer states the command's data sensitivity separately

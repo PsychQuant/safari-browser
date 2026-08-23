@@ -160,7 +160,9 @@ enum SafariDataStore {
 
 沿用 `documents` 的既有慣例：說明性文字寫 **stderr**、可解析的資料列寫 **stdout**，使 `| grep` 這類用法不被裝飾文字污染。
 
-資料列格式為 `[N]  <欄位…>`，欄位間以兩個空格分隔。無資料時 stdout 為空。
+資料列格式為 `[N]  <欄位…>`，欄位間以兩個空格分隔；**標題以 ` — `（空格 + em dash + 空格）接在其他欄位之後**。
+
+**這個文字格式是給人看的，不是可靠的機器介面。** 實測真實資料中標題本身就可能含 ` — `（例：`… — 龔美娟 — 量表開發工作坊`），所以消費端無法只靠分隔符還原 url/title 邊界。需要解析請用 `--json`——那是本功能為程式消費提供的路徑，且欄位邊界明確。
 
 ### Failure modes
 
@@ -178,7 +180,7 @@ enum SafariDataStore {
 1. 四個指令都出現在 `safari-browser --help` 的 subcommand 清單中。
 2. `safari-browser history --limit 5` 印出 5 行以內的資料列，時間為當前世紀（驗證 Core Data epoch 轉換）。
 3. 針對 epoch 轉換有獨立的單元測試，以已知輸入驗證已知輸出，不依賴實機資料。
-4. `SafariDataStore.copyForReading(.history)` 複製後的暫存目錄同時含有 `History.db` 與其存在的 sidecar 檔。
+4. `SafariDataStore.withCopy(.history)` 交給 body 的暫存目錄同時含有 `History.db` 與其存在的 sidecar 檔。
 5. 在 `CloudTabs.db` 不存在的機器上，`safari-browser cloud-tabs` 以 exit code 0 結束、stdout 無輸出、stderr 有說明。
 6. 四個指令的 `--json` 輸出皆為合法 JSON（`| python3 -m json.tool` 不報錯），無資料時為 `[]`。
 7. 非 `--json` 模式下，stdout **不含**任何說明性文字（`2>/dev/null` 後仍可直接解析）。
@@ -186,7 +188,7 @@ enum SafariDataStore {
 
 ### Scope boundaries
 
-**In scope**：四個指令、`SafariDataStore` 工具層、兩個新錯誤類型、subcommand 註冊、`non-interference` 與 `json-output` 兩份 spec 的 delta、新增 `local-data-query` spec、README 指令表、上述單元測試。
+**In scope**：四個指令、`SafariDataStore` 工具層、三個新錯誤類型（`fullDiskAccessRequired` / `safariDataFileNotFound` / `safariDataParseFailed`——第三個是上方 Failure modes 表中「資料檔存在但無法解析」那一列所需，初稿漏數）、subcommand 註冊、`non-interference` 與 `json-output` 兩份 spec 的 delta、新增 `local-data-query` spec、README 指令表、上述單元測試。
 
 **Out of scope**：跨來源搜尋策略、daemon 路徑支援、`setup` 的任何變動、`Makefile` 的任何變動、寫入能力、其他瀏覽器。
 

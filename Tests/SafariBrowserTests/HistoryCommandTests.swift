@@ -68,6 +68,21 @@ final class HistoryCommandTests: XCTestCase {
         XCTAssertNil(HistoryCommand.parseSinceDate(""))
     }
 
+    /// #109 verify LOW-19: DateFormatter alone accepts more than the flag help
+    /// advertises, so a user typing something slightly wrong would silently get
+    /// a filter they did not ask for rather than an error.
+    func testRejectsInputsDateFormatterWouldOtherwiseAccept() {
+        XCTAssertNil(HistoryCommand.parseSinceDate("2026-2-3"), "unpadded components")
+        XCTAssertNil(HistoryCommand.parseSinceDate("2026-01-01xyz"), "trailing junk")
+        XCTAssertNil(HistoryCommand.parseSinceDate(" 2026-01-01"), "leading space")
+        XCTAssertNil(HistoryCommand.parseSinceDate("2026-01-01 "), "trailing space")
+        XCTAssertNil(HistoryCommand.parseSinceDate("2026-13-01"), "month out of range")
+        XCTAssertNil(HistoryCommand.parseSinceDate("2026-01-32"), "day out of range")
+        // Still accepts the documented shape.
+        XCTAssertNotNil(HistoryCommand.parseSinceDate("2026-01-01"))
+        XCTAssertNotNil(HistoryCommand.parseSinceDate("2026-12-31"))
+    }
+
     // MARK: - Text row formatting
 
     func testTextRowKeepsStdoutParseable() {
