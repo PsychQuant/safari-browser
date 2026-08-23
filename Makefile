@@ -46,15 +46,18 @@ build-debug:
 #     broken binary on $PATH with the working one already gone.
 install: build
 	@mkdir -p "$(INSTALL_DIR)"
-	rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"
-	cp .build/release/$(BINARY_NAME) "$(INSTALL_DIR)/$(BINARY_NAME).new"
-	chmod +x "$(INSTALL_DIR)/$(BINARY_NAME).new"
-	@codesign --force --sign - \
-	         --entitlements Sources/SafariBrowser/Entitlements.plist \
-	         "$(INSTALL_DIR)/$(BINARY_NAME).new" 2>/dev/null \
-	  || codesign --force --sign - "$(INSTALL_DIR)/$(BINARY_NAME).new" 2>/dev/null \
-	  || { echo "✗ ad-hoc signing failed — refusing to install"; rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"; exit 1; }
-	@mv -f "$(INSTALL_DIR)/$(BINARY_NAME).new" "$(INSTALL_DIR)/$(BINARY_NAME)"
+	@set -e; \
+	 STAGE=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).XXXXXX"); \
+	 trap 'rm -f "$$STAGE"' EXIT; \
+	 cp .build/release/$(BINARY_NAME) "$$STAGE"; \
+	 chmod +x "$$STAGE"; \
+	 { codesign --force --sign - \
+	       --entitlements Sources/SafariBrowser/Entitlements.plist \
+	       "$$STAGE" 2>/dev/null \
+	   || codesign --force --sign - "$$STAGE" 2>/dev/null; } \
+	   || { echo "✗ ad-hoc signing failed — refusing to install"; exit 1; }; \
+	 mv -f "$$STAGE" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
+	 trap - EXIT
 	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (ad-hoc)"
 	@echo "  ⚠ A Full Disk Access grant on this binary will NOT survive the next"
 	@echo "    rebuild. For history / bookmarks / cloud-tabs / downloads, use:"
@@ -97,19 +100,28 @@ verify-developer-id:
 # call osascript, so the failure mode was not "no FDA" but "the CLI is dead".
 install-signed: verify-developer-id build
 	@mkdir -p "$(INSTALL_DIR)"
-	rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"
-	cp .build/release/$(BINARY_NAME) "$(INSTALL_DIR)/$(BINARY_NAME).new"
-	chmod +x "$(INSTALL_DIR)/$(BINARY_NAME).new"
-	codesign --force --options runtime \
-	         --sign "$(DEVELOPER_ID)" \
-	         --entitlements Sources/SafariBrowser/Entitlements.plist \
-	         "$(INSTALL_DIR)/$(BINARY_NAME).new"
-	@codesign -dv --entitlements - "$(INSTALL_DIR)/$(BINARY_NAME).new" 2>&1 | grep -q apple-events \
-	  || { echo "✗ entitlement missing from the signed binary"; rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"; exit 1; }
-	@echo "✓ signed with apple-events entitlement"
-	@./scripts/verify-install-signature.sh "$(INSTALL_DIR)/$(BINARY_NAME).new" \
-	  || { echo "✗ refusing to install — see above"; rm -f "$(INSTALL_DIR)/$(BINARY_NAME).new"; exit 1; }
-	@mv -f "$(INSTALL_DIR)/$(BINARY_NAME).new" "$(INSTALL_DIR)/$(BINARY_NAME)"
+	@set -e; \
+	 STAGE=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).XXXXXX"); \
+	 trap 'rm -f "$$STAGE"' EXIT; \
+	 cp .build/release/$(BINARY_NAME) "$$STAGE"; \
+	 chmod +x "$$STAGE"; \
+	 codesign --force --options runtime \
+	          --sign "$(DEVELOPER_ID)" \
+	          --entitlements Sources/SafariBrowser/Entitlements.plist \
+	          "$$STAGE"; \
+	 codesign -dv --entitlements - "$$STAGE" 2>&1 | grep -q apple-events \
+	   || { echo "✗ entitlement missing from the signed binary"; exit 1; }; \
+	 echo "✓ signed with apple-events entitlement"; \
+	 codesign -dvv "$$STAGE" 2>&1 | grep -q "Authority=Developer ID Application" \
+	   || { echo "✗ DEVELOPER_ID is not a Developer ID Application certificate:"; \
+	        codesign -dvv "$$STAGE" 2>&1 | grep -E "^Authority=" | head -1 | sed "s/^/    /"; \
+	        echo "    \`security find-identity -v -p codesigning\` often lists an Apple"; \
+	        echo "    Development identity FIRST; this target needs the Developer ID one."; \
+	        exit 1; }; \
+	 ./scripts/verify-install-signature.sh "$$STAGE" \
+	   || { echo "✗ refusing to install — see above"; exit 1; }; \
+	 mv -f "$$STAGE" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
+	 trap - EXIT
 	@echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (Developer ID)"
 	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
 	@echo "    it then persists across rebuilds and version bumps."
