@@ -114,10 +114,15 @@ enum SafariDataStore {
         }
 
         if includeWALSidecars {
+            var copiedWAL = false
             for suffix in walSuffixes {
                 let sidecar = URL(fileURLWithPath: sourceURL.path + suffix)
-                // Absent sidecars are the normal steady state: Safari
-                // checkpoints and removes them on a clean close.
+                // An absent sidecar is rare, not the steady state. Apple's
+                // SQLite ships with WAL persistence on, so `-wal` and `-shm`
+                // survive a clean last-connection close — measured, and both
+                // are present next to the live History.db right now. Skipping
+                // is still correct when one is genuinely gone; see the
+                // stand-in below for why that case is not benign.
                 guard fm.fileExists(atPath: sidecar.path) else { continue }
                 do {
                     try fm.copyItem(
@@ -149,8 +154,32 @@ enum SafariDataStore {
                     }
                     LocalDataOutput.writeStderr(
                         "note: could not copy \(sidecar.lastPathComponent) "
-                            + "(\(error.localizedDescription)); SQLite will rebuild it.\n")
+                            + "(\(error.localizedDescription)); SQLite can rebuild it from "
+                            + "the WAL. If it cannot, the query stops with an error rather "
+                            + "than returning a partial answer.\n")
                 }
+                if suffix == "-wal" { copiedWAL = true }
+            }
+
+            // A database whose header says WAL cannot be opened read-only when
+            // no -wal file is present: SQLite returns SQLITE_CANTOPEN rather
+            // than treating the main file as complete. It will happily create a
+            // missing -shm, but it will not create a missing -wal on a
+            // read-only connection.
+            //
+            // That state is not exotic — it is what the guard above calls the
+            // normal steady state, because Safari checkpoints and deletes the
+            // -wal on a clean quit. Without this, `history` and `cloud-tabs`
+            // report the user's data file as unparseable whenever Safari has
+            // been closed cleanly, which is the opposite of true.
+            //
+            // An empty -wal is the fix SQLite itself expects: a zero-length WAL
+            // has no valid header, so recovery treats it as "no frames to
+            // replay" and reads the main file, which by then holds everything.
+            // Verified against libsqlite3 3.54.0: main-only fails to open,
+            // main + zero-length -wal returns every row.
+            if !copiedWAL {
+                fm.createFile(atPath: destination.path + "-wal", contents: nil)
             }
         }
 

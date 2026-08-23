@@ -4,8 +4,9 @@ import Foundation
 ///
 /// The rule it enforces is the one `documents` established in #46: explanatory
 /// text goes to stderr, parseable rows go to stdout. That is what makes
-/// `safari-browser history 2>/dev/null | cut -f2` work without anyone having
-/// to strip a banner first.
+/// `safari-browser history 2>/dev/null` yield only data rows, with no banner
+/// to strip first. Fields are separated by two spaces, not tabs, so `cut -f`
+/// does not apply — `--json` is the path for programmatic consumption.
 enum LocalDataOutput {
 
     static func writeStderr(_ text: String) {
