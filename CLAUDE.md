@@ -306,3 +306,38 @@ V1 wires marker 到 `ClickCommand` 作為 reference integration。其他 30+ com
 
 - `openspec/specs/tab-ownership-marker/spec.md`（archive 後生成）
 - `openspec/changes/tab-ownership-marker/`（while in-flight）
+
+## Local Safari data (`history` / `bookmarks` / `cloud-tabs` / `downloads`, #109)
+
+其餘三十多個指令都驅動**正在跑的** Safari。這四個不是——它們讀 `~/Library/Safari/` 底下的
+磁碟檔案，是本 repo **唯一**能回答「我之前看過什麼」的路徑，也是唯一的 filesystem read path。
+
+| 指令 | 來源檔 | 備註 |
+|---|---|---|
+| `history` | `History.db` (SQLite, WAL) | 長期行為紀錄 → **有預設筆數上限** |
+| `bookmarks` | `Bookmarks.plist` (binary plist) | 含 Reading List（`reading_list` 欄位區分） |
+| `cloud-tabs` | `CloudTabs.db` (SQLite, WAL) | 其他裝置的分頁；沒開 iCloud 同步時檔案不存在 |
+| `downloads` | `Downloads.plist` (binary plist) | 日期是**原生 plist `Date`**，見下方 epoch 警告 |
+
+### 四個容易安靜出錯的地方
+
+1. **Full Disk Access 綁在 code signature 上，不是綁在路徑上。** 「裸 CLI 拿不到自己的 FDA」
+   是錯的——Developer ID 簽章的 binary 放在 `~/bin` 一樣持有自己的 grant。`CodeSigningState`
+   就是為此存在：ad-hoc 簽章的 binary 叫使用者去系統設定加 FDA 是**錯的建議**，那筆授權綁不住。
+   TCC 拒絕 `open()` 但**不**拒絕 `stat()`，所以 `fileExists` 仍回 true。
+2. **Core Data epoch = 2001-01-01**，與 Unix epoch 差 `978307200` 秒。`History.db` /
+   `CloudTabs.db` 要加這個 offset；**`Downloads.plist` 不要**（它是原生 plist `Date`）。
+   搞錯不報錯，只讓時間安靜偏移 31 年。
+3. **WAL 兩個方向都會咬人。** 只複製主檔 → 安靜掉掉未 checkpoint 的列；主檔 header 說 WAL
+   而 `-wal` 不存在 → `SQLITE_OPEN_READONLY` 回 `SQLITE_CANTOPEN`（SQLite 肯重建 `-shm`，
+   不肯在唯讀連線生 `-wal`），而那正是 Safari 乾淨結束後的常態。修法是補一個**零長度**
+   `-wal` stand-in。**絕不原地讀 live 檔**——一律 copy-then-read，清理走 scope-based `defer`。
+4. **需要權限 ≠ 有干擾。** 四個指令都是 **Non-interfering**：干擾等級講的是「對使用者當下的
+   操作做了什麼」，不是「需要什麼權限」。但它們另有一個正交維度——**資料敏感度**：`history`
+   與 `downloads` 暴露長期行為紀錄，因此帶預設上限，不讓裸呼叫傾倒整份紀錄。
+
+輸出紀律沿用 `documents`（#46）：說明文字走 stderr、可解析的列走 stdout，所以
+`safari-browser history 2>/dev/null` 直接就是乾淨資料。
+
+完整 spec：`openspec/specs/local-data-query/spec.md`、`non-interference/spec.md`、
+`json-output/spec.md`（`local-safari-data-query` archive 後生成）。
