@@ -56,6 +56,14 @@ The choice is not "dev vs release" — it is **whether you will use `history`,
 | Full Disk Access grant | **dies on the next rebuild**, silently | survives rebuilds and version bumps |
 | Everything else (Accessibility, Screen Recording, all other commands) | works | works |
 
+**Switching between the two re-grants everything, once.** TCC keys every grant
+to the signature, so moving a binary from ad-hoc to Developer ID (or back)
+makes it a different subject: the Accessibility and Screen Recording grants you
+already gave do not carry over, and macOS may leave the stale entry visible in
+System Settings while the new subject has nothing. Remove the old entry and add
+it again after switching. This is a one-time cost — after that, the Developer
+ID side stops re-asking on every rebuild, which is the whole point.
+
 ```bash
 DEVELOPER_ID=<cert-sha1> make install-signed
 ```
@@ -69,7 +77,16 @@ Check which state you are in at any time:
 
 ```bash
 make verify-install-signature
+# or against any path:  ./scripts/verify-install-signature.sh <path>
 ```
+
+It answers with four distinct exit codes, because "cannot hold a durable grant"
+has more than one cause and they need different fixes: `0` identity-bound with
+a valid seal, `1` ad-hoc, `2` no signature at all, `3` **seal broken** — the
+signature no longer covers the bytes, so macOS SIGKILLs the binary on launch
+and the Full Disk Access question never arises. (`make verify-install-signature`
+collapses all failures to make's own exit 2; call the script directly to tell
+them apart.)
 
 Without a Developer ID certificate, `make install` is still the right choice —
 the other three permissions are unaffected. You will simply need to re-grant
@@ -367,11 +384,15 @@ Three things regularly look like bugs and are not:
 
 Both install targets re-sign the copied binary, because TCC keys a grant to the
 code signature — an unsigned copy is a different subject with no permissions.
-Both also delete the destination before copying: `cp` writes in place, and
-macOS caches signature validation per inode, so overwriting an inode still held
-open by a running process (the persistent daemon holds one for up to its 600s
-idle timeout) makes the *next* launch die with `load code signature error 2` —
-SIGKILL, exit 137, no readable error at the point of failure (#121).
+Both also stage the new binary alongside the destination and land it with `mv`,
+never writing the canonical path directly. Two reasons: `cp` writes in place and
+reuses the inode, and macOS caches signature validation per inode, so
+overwriting an inode still held open by a running process (the persistent daemon
+holds one for up to its 600s idle timeout) makes the *next* launch die with
+`load code signature error 2` — SIGKILL, exit 137, no readable error at the
+point of failure (#121). And writing the canonical path first would mean a
+failed signing leaves a broken binary on your `$PATH` with the working one
+already deleted.
 
 ### Multi-window Targeting (#17 #18 #21 #23 #79)
 
