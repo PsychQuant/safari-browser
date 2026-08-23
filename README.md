@@ -43,6 +43,38 @@ Binary installs to `~/bin/safari-browser`. Ensure `~/bin` is in your `$PATH`.
 
 **Requirements:** macOS 15+, Safari, Swift 6.0+
 
+### Which install target? (#119)
+
+The choice is not "dev vs release" — it is **whether you will use `history`,
+`bookmarks`, `cloud-tabs`, or `downloads`**, the four commands that read
+`~/Library/Safari/` and therefore need Full Disk Access.
+
+| | `make install` | `make install-signed` |
+|---|---|---|
+| Signature | ad-hoc | Developer ID (needs `DEVELOPER_ID`, a certificate SHA-1) |
+| Designated requirement | `cdhash H"…"` — the content hash | `identifier … and certificate leaf[subject.OU] = "…"` |
+| Full Disk Access grant | **dies on the next rebuild**, silently | survives rebuilds and version bumps |
+| Everything else (Accessibility, Screen Recording, all other commands) | works | works |
+
+```bash
+DEVELOPER_ID=<cert-sha1> make install-signed
+```
+
+TCC stores the *designated requirement*, not the path. An ad-hoc signature's
+requirement **is** the content hash, so rebuilding produces a binary the old
+grant no longer matches — not revoked, not an error, just no longer applying to
+anything. There is no warning at the moment it breaks.
+
+Check which state you are in at any time:
+
+```bash
+make verify-install-signature
+```
+
+Without a Developer ID certificate, `make install` is still the right choice —
+the other three permissions are unaffected. You will simply need to re-grant
+Full Disk Access after each rebuild if you use the four local-data commands.
+
 ## Quick Start
 
 ```bash
@@ -311,11 +343,12 @@ commands. Those commands ask for it only when you actually run one.
 
 Which subject should hold that grant depends on how the binary is signed, and
 the four commands say which case you are in when they refuse. An ad-hoc build
-(what `make install` produces by default) is identified by its code hash, so a
-grant given to it can stop applying after a rebuild; a Developer ID signed
-build is identified by its designated requirement and keeps the grant. Granting
-to the terminal app instead always works but hands the terminal read access to
-every file on the system.
+(what `make install` produces) is identified by its code hash, so a grant given
+to it stops applying after a rebuild; a Developer ID signed build (`make
+install-signed`, see [Which install target?](#which-install-target-119)) is
+identified by an identity and keeps the grant. Granting to the terminal app
+instead always works but hands the terminal read access to every file on the
+system.
 
 `setup` is the **only** command that raises a permission dialog. Every other
 command detects and refuses with guidance instead, because a background
@@ -332,8 +365,13 @@ Three things regularly look like bugs and are not:
 - macOS offers the Screen Recording prompt **once per app, ever**. If it never
   appears, use `--open-settings` and add the binary with `+`.
 
-`make install` re-signs the copied binary, because TCC keys a grant to the code
-signature — an unsigned copy is a different subject with no permissions.
+Both install targets re-sign the copied binary, because TCC keys a grant to the
+code signature — an unsigned copy is a different subject with no permissions.
+Both also delete the destination before copying: `cp` writes in place, and
+macOS caches signature validation per inode, so overwriting an inode still held
+open by a running process (the persistent daemon holds one for up to its 600s
+idle timeout) makes the *next* launch die with `load code signature error 2` —
+SIGKILL, exit 137, no readable error at the point of failure (#121).
 
 ### Multi-window Targeting (#17 #18 #21 #23 #79)
 
