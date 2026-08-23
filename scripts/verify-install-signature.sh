@@ -16,39 +16,40 @@
 #   2  no readable signature at all (unsigned, missing, or not code)
 #   3  seal is broken — macOS will SIGKILL this binary
 #   4  signed, valid seal, but CANNOT SATISFY ITS OWN DR — grant never applies
+#   5  a requirement shape this tool does not recognise — cannot tell
 #
-# Check 2 is the one that took two verify rounds to arrive at, and it is worth
-# saying why the two earlier versions were wrong:
+# What this tool will and will not answer (narrowed in round 3):
 #
-#   v1 asked whether the DR *looked* identity-bound (no `cdhash` substring).
-#      `codesign --force --sign - --preserve-metadata=requirements` copies an
-#      identity-bound DR onto a signature with no certificate chain, so the
-#      binary prints a DR it can never satisfy. v1 passed it.
+#   It recognises the designated requirements that a standard `codesign`
+#   invocation produces — an identifier plus an `anchor` and/or `certificate`
+#   clause, or a bare cdhash. For those it gives a verdict. For anything else
+#   it says it CANNOT TELL (exit 5) rather than guessing.
 #
-#   v2 added the seal check and `Signature=adhoc`, which caught that specific
-#      input — but the SUCCESS branch was still negative ("not ad-hoc and not
-#      cdhash"). Sign with a real certificate while preserving a DIFFERENT
-#      certificate's DR and every negative check passes. v2 passed that too.
+#   The narrowing is the point. Three rounds of review each constructed a new
+#   requirement shape that walked between the previous round's exclusions:
 #
-# The fix is not another exclusion. `codesign --verify` given any `-R` also
-# reports whether the code satisfies its designated requirement, so feeding
-# the binary its OWN DR turns the question into a positive one and closes the
-# whole family at once — including variants nobody has constructed yet.
+#     v1  success = "the DR does not contain cdhash".
+#         Broken by --preserve-metadata: an ad-hoc signature carrying someone
+#         else's identity-bound DR.
+#     v2  success = that, and "the signature is not ad-hoc".
+#         Broken by signing with a real certificate while preserving a
+#         DIFFERENT certificate's DR.
+#     v3  success = that, and "the binary satisfies its own DR".
+#         Broken twice: a DR naming only an identifier (satisfiable by an
+#         ad-hoc signature, and by anything else claiming that identifier),
+#         and a DR pinning info[CFBundleVersion] (stable across a rebuild,
+#         not across a version bump).
 #
-# Note what is deliberately NOT required: a Developer ID authority. `/bin/ls`
-# is Apple-signed, not Developer ID, and its grant is perfectly durable. The
-# question is whether the DR is stable and satisfiable, not who issued it.
-# `install-signed` separately asserts Developer ID, because that is ITS
-# contract — not this script's.
+#   Each version added an exclusion and each time the next input walked
+#   between them, because success was still decided by what was ABSENT.
+#   Success is now decided by what is PRESENT: the DR must name an anchor or
+#   a certificate. A shape this tool has not been taught gets exit 5, so the
+#   residual error is "refuses to vouch for something durable" rather than
+#   "vouches for something that is not".
 #
-# Known boundary, stated rather than guarded: a DR of the bare form
-# `identifier "x"`, with no anchor or certificate clause, is stable across
-# rebuilds AND satisfiable by an ad-hoc signature, so it would exit 0 here.
-# Such a grant really would survive a rebuild — it would also be satisfied by
-# any other binary claiming that identifier, which is a different problem and
-# not one this script is asked about. codesign does not produce that shape on
-# its own; it takes an explicit `-r`. Left unguarded deliberately: a check for
-# it would be a check for something nothing in this repo can emit.
+#   Notably NOT required: a Developer ID authority. /bin/ls is Apple-signed
+#   and its grant is durable. Whether the certificate is specifically
+#   Developer ID is `install-signed`'s contract, asserted there.
 set -u
 
 TARGET="${1:-$HOME/bin/safari-browser}"
@@ -101,7 +102,7 @@ if [ -z "$REQUIREMENT" ]; then
     exit 2
 fi
 
-# ── 3. Is the requirement stable across rebuilds? ────────────────────────
+# ── 3. Is the requirement a shape we recognise as stable? ───────────────
 if printf '%s' "$REQUIREMENT" | grep -q 'cdhash'; then
     echo "✗ cdhash-bound requirement: $TARGET" >&2
     printf '%s\n' "$REQUIREMENT" | sed 's/^/  /' >&2
@@ -114,10 +115,45 @@ if printf '%s' "$REQUIREMENT" | grep -q 'cdhash'; then
     exit 1
 fi
 
+# Positive recognition. Absence of `cdhash` is not evidence of durability —
+# `identifier "x"` alone has none, and `info[CFBundleVersion] = "1"` breaks at
+# the next version bump. Both were constructed by review after earlier
+# versions decided success by exclusion. An anchor or certificate clause is
+# what actually ties the requirement to an identity rather than to bytes.
+if ! printf '%s' "$REQUIREMENT" | grep -qE '(^|[^[:alnum:]_])(anchor|certificate)([^[:alnum:]_]|$)'; then
+    echo "✗ cannot tell whether this grant is durable: $TARGET" >&2
+    printf '%s\n' "$REQUIREMENT" | sed 's/^/  DR: /' >&2
+    echo >&2
+    echo "  The requirement names no anchor and no certificate, so there is no" >&2
+    echo "  identity tying it to a signer. This tool only vouches for shapes it" >&2
+    echo "  recognises, and it does not recognise this one — the honest answer" >&2
+    echo "  is that it does not know, not that the grant is durable." >&2
+    echo >&2
+    echo "  Two ways a requirement like this bites: an ad-hoc signature can" >&2
+    echo "  satisfy it (so the grant is no more durable than the bytes), and so" >&2
+    echo "  can any other binary claiming the same identifier." >&2
+    echo >&2
+    echo "  Fix:  DEVELOPER_ID=<cert-sha1> make install-signed" >&2
+    exit 5
+fi
+
 # ── 4. Does the binary satisfy its OWN requirement? ──────────────────────
-REQ_FILE=$(mktemp "${TMPDIR:-/tmp}/verify-install-dr.XXXXXX")
+# An unchecked mktemp made every temp-dir problem look like a signature
+# defect: the redirect failed, `-R ""` failed, and the binary was reported as
+# unable to satisfy its own requirement. install-signed gates on this script,
+# so a broken TMPDIR refused correctly-signed binaries. Infrastructure
+# failures must not be reported as verdicts about the binary.
+REQ_FILE=$(mktemp "${TMPDIR:-/tmp}/verify-install-dr.XXXXXX") || {
+    echo "✗ could not create a temporary file (TMPDIR=${TMPDIR:-/tmp})" >&2
+    echo "  This is an environment problem, not a verdict about $TARGET." >&2
+    exit 2
+}
 trap 'rm -f "$REQ_FILE"' EXIT
-printf '%s\n' "$REQUIREMENT" > "$REQ_FILE"
+printf '%s\n' "$REQUIREMENT" > "$REQ_FILE" || {
+    echo "✗ could not write the requirement file: $REQ_FILE" >&2
+    echo "  This is an environment problem, not a verdict about $TARGET." >&2
+    exit 2
+}
 
 SATISFIES=$(codesign --verify -R "$REQ_FILE" "$TARGET" 2>&1)
 if [ $? -ne 0 ]; then
@@ -140,16 +176,3 @@ echo "✓ durable: valid seal, satisfies its own requirement, identity-bound"
 echo "  $TARGET"
 printf '%s\n' "$REQUIREMENT" | sed 's/^/  /'
 echo "  A Full Disk Access grant on this binary survives rebuilds."
-
-# Informational only — not a failure. The grant is durable regardless of who
-# issued the certificate, but the CLI's own CodeSigningState classifier keys
-# on `Authority=Developer ID Application` and reports anything else as
-# .unknown, so its FDA guidance will be the generic one.
-if ! codesign -dvv "$TARGET" 2>&1 | grep -q 'Authority=Developer ID Application'; then
-    AUTH=$(codesign -dvv "$TARGET" 2>&1 | grep -E '^Authority=' | head -1)
-    echo
-    echo "  note: signed by ${AUTH#Authority=} — not a Developer ID certificate."
-    echo "  The grant is still durable, but safari-browser's own signing-state"
-    echo "  classifier reports this build as 'unknown', so its permission"
-    echo "  guidance will be generic rather than tailored."
-fi

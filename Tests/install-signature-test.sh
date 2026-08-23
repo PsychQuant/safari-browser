@@ -138,7 +138,39 @@ if [[ -n "$NON_DEVID" && -n "$DEVID_ANY" ]]; then
 
     cp /bin/ls "$FIXTURES/other-identity"
     codesign --force --sign "$NON_DEVID" "$FIXTURES/other-identity" >/dev/null 2>&1
+    # This fixture exists to prove the verifier does NOT demand Developer ID.
+    # Without the assertion it silently degrades into a duplicate of
+    # identity-bound whenever the signing did not take — which is the very
+    # failure (R2-B5) the round that added it was fixing. Found by round 3.
+    codesign -dvv "$FIXTURES/other-identity" 2>&1 | grep -q 'Authority=Developer ID Application' \
+      && fixture_fail "other-identity is Developer ID signed — it cannot prove non-Developer-ID identities pass"
+    codesign -dvv "$FIXTURES/other-identity" 2>&1 | grep -q '^Authority=' \
+      || fixture_fail "other-identity has no Authority line — signing with the non-Developer-ID identity did not take"
 fi
+
+# Constructed by round 3's devil's advocate. Both pass every check the round-3
+# verifier had, and neither can hold what this tool means by a durable grant.
+#
+#   bare-identifier: a DR naming ONLY an identifier — no anchor, no
+#     certificate. Satisfiable by an ad-hoc signature, and by any other binary
+#     claiming the same identifier. "identity-bound" is false of it.
+#   version-bound: a DR that pins info[CFBundleVersion]. Stable across a
+#     rebuild, NOT stable across a version bump — which install-signed's own
+#     message promises ("persists across rebuilds and version bumps").
+cp /bin/ls "$FIXTURES/bare-identifier"
+printf 'designated => identifier "com.checheng.safari-browser"\n' > "$FIXTURES/bare.req"
+codesign --force --sign - --identifier com.checheng.safari-browser \
+    -r "$FIXTURES/bare.req" "$FIXTURES/bare-identifier" >/dev/null 2>&1
+codesign -d -r- "$FIXTURES/bare-identifier" 2>&1 | grep -qE 'anchor|certificate' \
+  && fixture_fail "bare-identifier's DR gained an anchor/certificate clause — it no longer represents the unprovable case"
+
+cp /bin/ls "$FIXTURES/version-bound"
+printf 'designated => identifier "com.apple.ls" and info[CFBundleShortVersionString] = "1.0"\n' \
+    > "$FIXTURES/ver.req"
+codesign --force --sign - -r "$FIXTURES/ver.req" "$FIXTURES/version-bound" >/dev/null 2>&1
+HAVE_VERSION_BOUND=0
+codesign -d -r- "$FIXTURES/version-bound" 2>&1 | grep -q 'CFBundleShortVersionString' \
+  && HAVE_VERSION_BOUND=1
 
 echo "Install-signature tests ($VERIFIER)"
 echo
@@ -197,9 +229,27 @@ echo "── durable but not Developer ID (must PASS, with a note) ──"
 # is whether the requirement is stable and satisfiable, not who issued it.
 if [[ -n "${NON_DEVID:-}" && -f "$FIXTURES/other-identity" ]]; then
     assert_exit "non-Developer-ID identity still passes" 0 "$FIXTURES/other-identity"
-    assert_says "but says the classifier will call it unknown" "$FIXTURES/other-identity" "unknown"
+    # The note this used to assert on has been removed: it claimed
+    # CodeSigningState would classify such a build as .unknown, which is false
+    # for an ad-hoc binary (parse() returns .adHoc on the first branch), and it
+    # printed an empty authority because ad-hoc signatures have no Authority
+    # line. A claim about another file's behaviour that nobody had checked.
 else
     echo "  ⊘ SKIPPED — no non-Developer-ID signing identity available."
+fi
+
+echo
+echo "── satisfiable but unprovable (#119 verify R3) ──"
+# The verifier answers one question: will a Full Disk Access grant on this
+# binary still apply later? For these it cannot tell, and says so (5) rather
+# than guessing in the optimistic direction.
+assert_exit "bare identifier, no anchor or certificate, is not provable" 5 "$FIXTURES/bare-identifier"
+assert_says "and says which clause it wanted" "$FIXTURES/bare-identifier" "anchor"
+if [[ "$HAVE_VERSION_BOUND" == "1" ]]; then
+    assert_exit "version-pinned requirement is not provable" 5 "$FIXTURES/version-bound"
+else
+    echo "  ⊘ SKIPPED — codesign did not retain the version-pinned requirement."
+    echo "    NOT a pass: the version-bound case is unverified in this run."
 fi
 
 echo
@@ -228,7 +278,7 @@ echo "── default target ──"
 # verify-install-signature` needs no path.
 "$VERIFIER" >/dev/null 2>&1
 rc=$?
-if [[ "$rc" =~ ^[0-4]$ ]]; then
+if [[ "$rc" =~ ^[0-5]$ ]]; then
     pass "no-argument form resolves a default target (exit $rc)"
 else
     fail "no-argument form resolves a default target" "got exit $rc"
