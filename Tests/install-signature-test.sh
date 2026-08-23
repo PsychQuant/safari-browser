@@ -70,6 +70,28 @@ codesign --force --sign - "$FIXTURES/adhoc" >/dev/null 2>&1
 cp /bin/ls "$FIXTURES/unsigned"
 codesign --remove-signature "$FIXTURES/unsigned" >/dev/null 2>&1
 
+# An ad-hoc signature that KEPT the previous requirement. `--preserve-metadata`
+# copies the old designated requirement into a signature that has no
+# certificate chain behind it, so the binary prints an identity-bound
+# requirement it can never satisfy. Verifying by the SHAPE of the requirement
+# passes this; verifying by the signature itself does not. (#119 verify B1b)
+cp ~/bin/safari-browser "$FIXTURES/adhoc-preserved" 2>/dev/null \
+  || cp /bin/ls "$FIXTURES/adhoc-preserved"
+codesign --force --sign - --preserve-metadata=requirements,entitlements \
+    "$FIXTURES/adhoc-preserved" >/dev/null 2>&1
+
+# A binary whose seal is broken: correct requirement metadata, invalid
+# signature. macOS SIGKILLs it on launch. (#119 verify B1a)
+cp /bin/ls "$FIXTURES/tampered"
+python3 - "$FIXTURES/tampered" <<'PY' >/dev/null 2>&1
+import sys
+p = sys.argv[1]
+b = bytearray(open(p, 'rb').read())
+off = len(b) // 2                 # somewhere inside __TEXT, past the header
+b[off] ^= 0xFF
+open(p, 'wb').write(bytes(b))
+PY
+
 echo "Install-signature tests ($VERIFIER)"
 echo
 
@@ -81,6 +103,23 @@ echo "── ad-hoc signature (the state #119 exists to catch) ──"
 assert_exit "cdhash-bound requirement is rejected" 1 "$FIXTURES/adhoc"
 assert_says "rejection names the rebuild consequence" "$FIXTURES/adhoc" "rebuild"
 assert_says "rejection points at the fix" "$FIXTURES/adhoc" "install-signed"
+
+echo
+echo "── ad-hoc that kept the old requirement (#119 verify B1b) ──"
+# The requirement SHAPE is identity-bound; the signature behind it is not.
+# Judging by shape alone reports this as the good state, which is how the
+# first version of this verifier shipped.
+assert_exit "ad-hoc with a preserved requirement is still rejected" 1 "$FIXTURES/adhoc-preserved"
+
+echo
+echo "── broken seal (#119 verify B1a) ──"
+# Distinct from both: the metadata is fine, the signature is not, and macOS
+# SIGKILLs the binary on launch. Reporting this as "grant survives rebuilds"
+# is a claim about a binary that cannot start.
+assert_exit "tampered binary is rejected distinctly" 3 "$FIXTURES/tampered"
+# "signature" alone would also match the SUCCESS line ("identity-bound
+# signature"), so this asserts on a word only the broken-seal branch prints.
+assert_says "tampered rejection names the seal, not the requirement" "$FIXTURES/tampered" "seal"
 
 echo
 echo "── unsigned / unreadable (must NOT be mistaken for the good state) ──"

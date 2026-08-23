@@ -10,46 +10,101 @@
 #                                certificate leaf[subject.OU] = "6W377FS7BS"
 #
 # The first IS the content hash, so any rebuild changes it and an existing
-# grant silently stops applying — not revoked, not an error, just no longer
-# matching anything. The second names an identity and survives.
+# grant silently stops applying. The second names an identity and survives.
 #
 # Reads only. No Full Disk Access, no certificate, no Safari.
 #
-# Exit codes are distinct on purpose — see the unsigned branch below:
-#   0  requirement is identity-bound (grant survives rebuilds)
-#   1  requirement is cdhash-bound (ad-hoc; grant dies on the next rebuild)
+#   0  identity-bound signature with a valid seal (grant survives rebuilds)
+#   1  ad-hoc (grant dies on the next rebuild)
 #   2  no readable signature at all (unsigned, missing, or not code)
+#   3  seal is broken (signature invalid — macOS will SIGKILL this binary)
+#
+# The checks run in this order for a reason, and the order is the fix for two
+# ways the first version of this script reported green on binaries that could
+# not hold a grant at all (#119 verify B1):
+#
+#   1. The SEAL first. `codesign -d` only prints stored metadata; it says
+#      nothing about whether the signature still covers the bytes. A binary
+#      with a perfect identity-bound requirement and one flipped byte prints
+#      exactly what a good one prints, and dies with SIGKILL on launch.
+#
+#   2. Then `Signature=adhoc`, NOT the shape of the requirement.
+#      `codesign --force --sign - --preserve-metadata=requirements` produces a
+#      genuinely ad-hoc binary that has kept the old identity-bound
+#      requirement — it prints a requirement it can never satisfy, because
+#      there is no certificate chain behind it. Judging by the requirement's
+#      shape passes it.
+#
+#      This is the same criterion `CodeSigningState.parse()` uses
+#      (Sources/SafariBrowser/Utilities/CodeSigningState.swift). Deliberately
+#      the same: the first version of this script invented a weaker one, and
+#      the two implementations then disagreed about the same binary — the CLI
+#      told the user "ad-hoc, your grant will not survive" while
+#      `make verify-install-signature` said it would.
 set -u
 
 TARGET="${1:-$HOME/bin/safari-browser}"
 
-REQUIREMENT=$(codesign -d -r- "$TARGET" 2>&1)
-CODESIGN_RC=$?
-
-# This branch must come FIRST, and it must not fall through to the cdhash test.
-# `codesign -d -r-` on an unsigned binary exits non-zero AND prints no
-# requirement, so "no cdhash in the output" is true there as well — a verifier
-# that only greps would report the unsigned binary as fine. Unsigned is its own
-# exit code so the two failures stay distinguishable to a caller.
-if [ "$CODESIGN_RC" -ne 0 ]; then
-    echo "✗ no readable code signature: $TARGET" >&2
-    echo "  codesign said: $(printf '%s' "$REQUIREMENT" | head -1)" >&2
-    echo "  An unsigned binary cannot hold a Full Disk Access grant at all." >&2
-    exit 2
+# ── 1. Is the signature intact? ──────────────────────────────────────────
+SEAL=$(codesign --verify --strict "$TARGET" 2>&1)
+SEAL_RC=$?
+if [ "$SEAL_RC" -ne 0 ]; then
+    # Distinguish "no signature at all" from "signature present but broken".
+    # Both are failures, but only the second means a binary that looks fine
+    # in every metadata dump and still gets killed on launch.
+    if printf '%s' "$SEAL" | grep -q 'not signed at all'; then
+        echo "✗ no code signature: $TARGET" >&2
+        echo "  An unsigned binary cannot hold a Full Disk Access grant." >&2
+        exit 2
+    fi
+    if [ ! -e "$TARGET" ]; then
+        echo "✗ no such file: $TARGET" >&2
+        exit 2
+    fi
+    echo "✗ broken seal: $TARGET" >&2
+    echo "  codesign said: $(printf '%s' "$SEAL" | head -1)" >&2
+    echo >&2
+    echo "  The signature no longer covers the bytes. macOS refuses to run this" >&2
+    echo "  binary — it dies with SIGKILL (exit 137) and no readable error. The" >&2
+    echo "  Full Disk Access question does not arise: TCC never evaluates the" >&2
+    echo "  requirement of code whose seal is invalid." >&2
+    echo >&2
+    echo "  Fix:  rm -f \"$TARGET\" && DEVELOPER_ID=<cert-sha1> make install-signed" >&2
+    exit 3
 fi
 
-if printf '%s' "$REQUIREMENT" | grep -q 'cdhash'; then
+# ── 2. Is it ad-hoc? ─────────────────────────────────────────────────────
+DETAILS=$(codesign -dvv "$TARGET" 2>&1)
+if printf '%s' "$DETAILS" | grep -q 'Signature=adhoc'; then
     echo "✗ ad-hoc signature: $TARGET" >&2
-    printf '%s\n' "$REQUIREMENT" | grep -v '^Executable' | sed 's/^/  /' >&2
+    printf '%s\n' "$DETAILS" | grep -E '^Signature=|^TeamIdentifier=' | sed 's/^/  /' >&2
     echo >&2
-    echo "  The designated requirement IS the content hash, so a rebuild changes" >&2
-    echo "  it and any Full Disk Access grant you gave this binary stops applying" >&2
-    echo "  — silently, with no error at the moment it breaks." >&2
+    echo "  An ad-hoc signature has no certificate behind it, so its designated" >&2
+    echo "  requirement is the binary's own content hash. A rebuild changes the" >&2
+    echo "  hash, and any Full Disk Access grant you gave this binary stops" >&2
+    echo "  applying — silently, with no error at the moment it breaks." >&2
+    echo >&2
+    echo "  (An ad-hoc signature can be made to PRINT an identity-bound" >&2
+    echo "   requirement via --preserve-metadata. It still cannot satisfy it.)" >&2
     echo >&2
     echo "  Fix:  DEVELOPER_ID=<cert-sha1> make install-signed" >&2
     exit 1
 fi
 
-echo "✓ identity-bound signature: $TARGET"
-printf '%s\n' "$REQUIREMENT" | grep -v '^Executable' | sed 's/^/  /'
+# ── 3. Report the requirement ────────────────────────────────────────────
+# Drop the `Executable=<path>` line before looking at the requirement: an
+# install path that happens to contain the string would otherwise be read as
+# part of the answer.
+REQUIREMENT=$(codesign -d -r- "$TARGET" 2>&1 | grep -v '^Executable=')
+
+if printf '%s' "$REQUIREMENT" | grep -q 'cdhash'; then
+    echo "✗ cdhash-bound requirement: $TARGET" >&2
+    printf '%s\n' "$REQUIREMENT" | sed 's/^/  /' >&2
+    echo >&2
+    echo "  Fix:  DEVELOPER_ID=<cert-sha1> make install-signed" >&2
+    exit 1
+fi
+
+echo "✓ identity-bound signature, valid seal: $TARGET"
+printf '%s\n' "$REQUIREMENT" | sed 's/^/  /'
 echo "  A Full Disk Access grant on this binary survives rebuilds."
