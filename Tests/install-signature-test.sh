@@ -56,7 +56,14 @@ if [[ ! -x "$VERIFIER" ]]; then
     exit 1
 fi
 
-FIXTURES=$(mktemp -d "${TMPDIR:-/tmp}/install-signature-fixtures.XXXXXX")
+FIXTURES=$(mktemp -d "${TMPDIR:-/tmp}/install-signature-fixtures.XXXXXX") || {
+    echo "✗ could not create a fixture directory (TMPDIR=${TMPDIR:-/tmp})" >&2
+    exit 1
+}
+[[ -n "$FIXTURES" && -d "$FIXTURES" ]] || {
+    echo "✗ fixture directory is empty or missing — refusing to continue" >&2
+    exit 1
+}
 trap 'rm -rf "$FIXTURES"' EXIT
 
 # Every fixture below ASSERTS ITS OWN PRECONDITION before the suite uses it.
@@ -172,6 +179,43 @@ HAVE_VERSION_BOUND=0
 codesign -d -r- "$FIXTURES/version-bound" 2>&1 | grep -q 'CFBundleShortVersionString' \
   && HAVE_VERSION_BOUND=1
 
+# Round 4 constructed these against the round-3 criterion, which was a
+# substring search over a language that has string literals, boolean
+# operators, negation and parens. Each defeats "the DR must contain the word
+# anchor or certificate" using a different feature of that language.
+# Custom-requirement fixtures MUST be signed with a real identity. Built
+# ad-hoc they never reach the shape matcher at all — the observable-fact check
+# answers first — so they would pass while testing nothing, which is the same
+# defect (a fixture that does not exercise what it claims) that R2-B5 was
+# about. Signed, they exercise exactly the path the round-4 attacks used.
+SHAPE_ID="${DEVID_ANY:-${NON_DEVID:-}}"
+HAVE_SHAPE_FIXTURES=0
+if [[ -n "$SHAPE_ID" ]]; then
+    make_dr_fixture() {  # <name> <requirement text>
+        cp /bin/ls "$FIXTURES/$1"
+        printf 'designated => %s\n' "$2" > "$FIXTURES/$1.req"
+        codesign --force --sign "$SHAPE_ID" -r "$FIXTURES/$1.req" \
+            "$FIXTURES/$1" >/dev/null 2>&1
+        codesign -dvv "$FIXTURES/$1" 2>&1 | grep -q '^Signature=adhoc' \
+          && fixture_fail "$1 came out ad-hoc — it would never reach the shape check"
+    }
+    make_dr_fixture anchor-in-string 'identifier "com.foo.anchor"'
+    make_dr_fixture negated          'identifier "com.foo.neg" and !(anchor apple)'
+    make_dr_fixture version-pinned   'identifier "com.foo.ver" and anchor apple generic and info[CFBundleVersion] = "1"'
+    HAVE_SHAPE_FIXTURES=1
+fi
+
+# `codesign -d -r-` can emit a requirement SET, not just one line. Real
+# Developer ID applications on this machine do (round 4 found three under
+# /Applications). Taking every line and feeding the lot to -R produces a
+# syntax error, which the round-3 script reported as a verdict about the
+# binary.
+REQSET=""
+for cand in /Applications/*/Contents/MacOS/*; do
+    [ -f "$cand" ] || continue
+    if codesign -d -r- "$cand" 2>&1 | grep -q '^host =>'; then REQSET="$cand"; break; fi
+done
+
 echo "Install-signature tests ($VERIFIER)"
 echo
 
@@ -196,7 +240,11 @@ echo "── ad-hoc that kept the old requirement (#119 verify B1b) ──"
 # would not merely die at the next rebuild (1), it would never apply at all
 # (4). The earlier expectation of 1 came from classifying by signature type;
 # the answer now comes from asking what the binary can actually satisfy.
-assert_exit "ad-hoc with a preserved requirement cannot satisfy it" 4 "$FIXTURES/adhoc-preserved"
+# Answered by the signature field, not by the preserved requirement it
+# advertises. Round 2 expected 4 here (cannot satisfy); with the observable
+# fact checked first the answer is 1, and the two verdicts agree on what
+# matters — do not trust this binary's grant.
+assert_exit "ad-hoc with a preserved requirement is ad-hoc" 1 "$FIXTURES/adhoc-preserved"
 
 echo
 echo "── broken seal (#119 verify B1a) ──"
@@ -239,14 +287,43 @@ else
 fi
 
 echo
+echo "── the requirement language is not a bag of words (#119 verify R4) ──"
+# Each of these defeats a substring test using a different feature of the
+# requirement language: a keyword inside a string literal, a negation, an
+# extra conjunct. None is a shape this tool was taught, so each must get
+# "cannot tell" rather than a guess in either direction.
+if [[ "$HAVE_SHAPE_FIXTURES" == "1" ]]; then
+    assert_exit "a keyword inside a quoted identifier is not a clause" 5 "$FIXTURES/anchor-in-string"
+    assert_exit "a negated anchor is not an anchor" 5 "$FIXTURES/negated"
+    assert_exit "an anchored requirement with a version pin is not a known shape" 5 "$FIXTURES/version-pinned"
+else
+    echo "  ⊘ SKIPPED — no signing identity available to build custom-requirement"
+    echo "    fixtures. Ad-hoc ones would be answered by the signature check before"
+    echo "    ever reaching the shape matcher."
+    echo "    NOT a pass: the round-4 attacks are unverified in this run."
+fi
+
+# The observable-fact check answers first for an ad-hoc binary, and the
+# contents of its requirement are never examined. That is the point: an
+# identifier containing the word `cdhash` cannot change the verdict, because
+# nothing greps for that word any more.
+assert_exit "an ad-hoc binary is ad-hoc whatever its requirement says" 1 "$FIXTURES/adhoc-preserved"
+
+if [[ -n "$REQSET" ]]; then
+    assert_exit "a requirement SET is read, not mangled into a false verdict" 0 "$REQSET"
+else
+    echo "  ⊘ SKIPPED — no binary with a requirement set found under /Applications."
+    echo "    NOT a pass: the requirement-set case is unverified in this run."
+fi
+
+echo
 echo "── satisfiable but unprovable (#119 verify R3) ──"
 # The verifier answers one question: will a Full Disk Access grant on this
 # binary still apply later? For these it cannot tell, and says so (5) rather
 # than guessing in the optimistic direction.
-assert_exit "bare identifier, no anchor or certificate, is not provable" 5 "$FIXTURES/bare-identifier"
-assert_says "and says which clause it wanted" "$FIXTURES/bare-identifier" "anchor"
+assert_exit "a bare-identifier ad-hoc binary is answered as ad-hoc" 1 "$FIXTURES/bare-identifier"
 if [[ "$HAVE_VERSION_BOUND" == "1" ]]; then
-    assert_exit "version-pinned requirement is not provable" 5 "$FIXTURES/version-bound"
+    assert_exit "version-pinned ad-hoc binary is answered as ad-hoc" 1 "$FIXTURES/version-bound"
 else
     echo "  ⊘ SKIPPED — codesign did not retain the version-pinned requirement."
     echo "    NOT a pass: the version-bound case is unverified in this run."

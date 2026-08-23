@@ -49,9 +49,18 @@ install: build
 	@set -e; \
 	 STAGE=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).XXXXXX"); \
 	 LOCKDIR="$(INSTALL_DIR)/.$(BINARY_NAME).lock"; \
-	 for i in $$(seq 1 60); do mkdir "$$LOCKDIR" 2>/dev/null && break || sleep 1; done; \
-	 [ -d "$$LOCKDIR" ] || { echo "✗ could not acquire the install lock at $$LOCKDIR"; exit 1; }; \
-	 trap 'rm -f "$$STAGE"; rmdir "$$LOCKDIR" 2>/dev/null' EXIT; \
+	 ACQUIRED=0; \
+	 for i in $$(seq 1 60); do \
+	   if mkdir "$$LOCKDIR" 2>/dev/null; then ACQUIRED=1; echo $$$$ > "$$LOCKDIR/pid"; break; fi; \
+	   HOLDER=$$(cat "$$LOCKDIR/pid" 2>/dev/null); \
+	   if [ -n "$$HOLDER" ] && ! kill -0 "$$HOLDER" 2>/dev/null; then \
+	     echo "note: reclaiming a lock left by dead pid $$HOLDER"; \
+	     rm -rf "$$LOCKDIR"; continue; \
+	   fi; \
+	   sleep 1; \
+	 done; \
+	 [ "$$ACQUIRED" = 1 ] || { echo "✗ another install holds $$LOCKDIR — not proceeding"; exit 1; }; \
+	 trap 'rm -f "$$STAGE"; [ "$$ACQUIRED" = 1 ] && rm -rf "$$LOCKDIR"; true' EXIT; \
 	 cp .build/release/$(BINARY_NAME) "$$STAGE"; \
 	 chmod +x "$$STAGE"; \
 	 { codesign --force --sign - \
@@ -61,8 +70,7 @@ install: build
 	   || { echo "✗ ad-hoc signing failed — refusing to install"; exit 1; }; \
 	 mv -f "$$STAGE" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
 	 echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (ad-hoc)"; \
-	 rmdir "$$LOCKDIR" 2>/dev/null; \
-	 trap - EXIT
+	 true
 	@echo "  ⚠ A Full Disk Access grant on this binary will NOT survive the next"
 	@echo "    rebuild. For history / bookmarks / cloud-tabs / downloads, use:"
 	@echo "      DEVELOPER_ID=<cert-sha1> make install-signed"
@@ -107,9 +115,18 @@ install-signed: verify-developer-id build
 	@set -e; \
 	 STAGE=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).XXXXXX"); \
 	 LOCKDIR="$(INSTALL_DIR)/.$(BINARY_NAME).lock"; \
-	 for i in $$(seq 1 60); do mkdir "$$LOCKDIR" 2>/dev/null && break || sleep 1; done; \
-	 [ -d "$$LOCKDIR" ] || { echo "✗ could not acquire the install lock at $$LOCKDIR"; exit 1; }; \
-	 trap 'rm -f "$$STAGE"; rmdir "$$LOCKDIR" 2>/dev/null' EXIT; \
+	 ACQUIRED=0; \
+	 for i in $$(seq 1 60); do \
+	   if mkdir "$$LOCKDIR" 2>/dev/null; then ACQUIRED=1; echo $$$$ > "$$LOCKDIR/pid"; break; fi; \
+	   HOLDER=$$(cat "$$LOCKDIR/pid" 2>/dev/null); \
+	   if [ -n "$$HOLDER" ] && ! kill -0 "$$HOLDER" 2>/dev/null; then \
+	     echo "note: reclaiming a lock left by dead pid $$HOLDER"; \
+	     rm -rf "$$LOCKDIR"; continue; \
+	   fi; \
+	   sleep 1; \
+	 done; \
+	 [ "$$ACQUIRED" = 1 ] || { echo "✗ another install holds $$LOCKDIR — not proceeding"; exit 1; }; \
+	 trap 'rm -f "$$STAGE"; [ "$$ACQUIRED" = 1 ] && rm -rf "$$LOCKDIR"; true' EXIT; \
 	 cp .build/release/$(BINARY_NAME) "$$STAGE"; \
 	 chmod +x "$$STAGE"; \
 	 codesign --force --options runtime \
@@ -127,12 +144,19 @@ install-signed: verify-developer-id build
 	        exit 1; }; \
 	 ./scripts/verify-install-signature.sh "$$STAGE" \
 	   || { echo "✗ refusing to install — see above"; exit 1; }; \
+	 PREV=""; \
+	 if [ -e "$(INSTALL_DIR)/$(BINARY_NAME)" ]; then \
+	   PREV=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).prev.XXXXXX"); \
+	   cp -p "$(INSTALL_DIR)/$(BINARY_NAME)" "$$PREV"; \
+	 fi; \
 	 mv -f "$$STAGE" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
 	 ./scripts/verify-install-signature.sh "$(INSTALL_DIR)/$(BINARY_NAME)" >/dev/null \
-	   || { echo "✗ landed binary does not verify — another process may have overwritten it"; exit 1; }; \
+	   || { echo "✗ landed binary does not verify"; \
+	        if [ -n "$$PREV" ]; then mv -f "$$PREV" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
+	          echo "  restored the previous binary"; fi; exit 1; }; \
+	 [ -n "$$PREV" ] && rm -f "$$PREV"; \
 	 echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (Developer ID)"; \
-	 rmdir "$$LOCKDIR" 2>/dev/null; \
-	 trap - EXIT
+	 true
 	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
 	@echo "    it then persists across rebuilds and version bumps."
 	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
