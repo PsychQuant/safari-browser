@@ -77,7 +77,7 @@ Check which state you are in at any time:
 
 ```bash
 make verify-install-signature
-# or against any path:  ./scripts/verify-install-signature.sh <path>
+# or against any path:  swift scripts/verify-install-signature.swift <path>
 ```
 
 "Cannot hold a durable grant" has several causes and they need different
@@ -88,26 +88,43 @@ fixes, so the answer is an exit code rather than a yes/no:
 | `0` | the requirement names an identity and the binary satisfies it | nothing |
 | `1` | the signature is ad-hoc, so the requirement is the content hash | `make install-signed` |
 | `2` | no signature — or the check could not run at all | see the message; an environment failure says it is one |
-| `3` | **seal broken** — the signature no longer covers the bytes, so macOS SIGKILLs the binary and the grant question never arises | reinstall |
+| `3` | **the signature does not validate**, so TCC will not honour a grant on it. The message carries macOS's own description of the fault and only prescribes a reinstall for paths this project installs | reinstall (ours); investigate (anyone else's) |
 | `4` | valid seal, but the binary **cannot satisfy the requirement it advertises**, so a grant recorded against it never applies | `make install-signed` |
 | `5` | a requirement shape the tool does not recognise — it **cannot tell** | inspect it yourself |
 
-`5` is deliberate, and it is the part worth explaining. The tool decides in
-two steps: observable signature facts first (is the seal intact, is it
-ad-hoc — fields, not prose), then the designated requirement matched
-*whole-line* against the shapes a standard `codesign` invocation emits.
-Anything outside that set gets "I don't know".
+`5` is deliberate, and it is the part worth explaining. The tool answers from
+the Security framework rather than from `codesign`'s printed output: validity
+is an `OSStatus`, and the designated requirement is a `SecRequirement`
+*object*, handed straight back to the API to ask whether this binary satisfies
+it. Text appears in one place only — deciding whether the requirement is one
+of the shapes a standard `codesign` invocation emits. Anything outside that
+set gets "I don't know".
 
-That narrowness is the lesson of four review rounds. Earlier versions tried to
-judge arbitrary requirements by searching their text, and each round produced
-a new requirement that walked past the previous rule — a keyword inside a
+Both halves of that are the lesson of five review rounds. The first four tried
+to judge arbitrary requirements by searching their text, and each round
+produced a requirement that walked past the previous rule — a keyword inside a
 quoted identifier, a negated clause, an extra conjunct. The requirement
-language has string literals, boolean operators and negation; grep does not
-see any of them. So the tool no longer claims to read requirements it was not
-taught, and says so instead of guessing.
+language has string literals, boolean operators and negation; grep sees none
+of them.
+
+The fifth round broke the replacement without constructing anything exotic at
+all. `codesign --verify` describes a bundle's unsigned *subcomponent* with the
+words "not signed at all", so a properly Developer ID signed application came
+back as unsigned. It describes bundle resource damage as "a sealed resource is
+missing or invalid", which says nothing about the executable's own seal — two
+applications that run fine were declared SIGKILL-bound, with a `rm -f`
+prescription attached. And `codesign -d -r-` writes `Executable=<path>` into
+the same stream the requirement is read from, so a filename containing a
+newline injects a `designated =>` line of the caller's choosing: two
+byte-identical copies of `/bin/ls`, opposite verdicts.
+
+None of those were failures of pattern-writing. They were failures of treating
+a human-readable diagnostic as a data interface. Hence Swift, and hence the
+narrowness: the tool no longer reads requirements it was not taught, and says
+so instead of guessing.
 
 (`make verify-install-signature` collapses every failure to make's own exit 2;
-call the script directly to tell them apart.)
+run `swift scripts/verify-install-signature.swift <path>` directly to tell them apart.)
 
 Without a Developer ID certificate, `make install` is still the right choice —
 the other three permissions are unaffected. You will simply need to re-grant

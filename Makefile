@@ -17,6 +17,14 @@ export SAFARI_BROWSER_BIN
 build:
 	swift build -c release
 
+# The signature guard. Swift, not shell: it reads the Security framework
+# directly, so the designated requirement is an OBJECT rather than text
+# scraped out of codesign's human-readable diagnostics. Five rounds of review
+# broke five successive text-parsing versions — the last two with nothing more
+# exotic than a real third-party app and a filename containing a newline. See
+# the header of the script for the full history. (#119)
+VERIFY_SIG = swift scripts/verify-install-signature.swift
+
 build-debug:
 	swift build
 
@@ -48,19 +56,7 @@ install: build
 	@mkdir -p "$(INSTALL_DIR)"
 	@set -e; \
 	 STAGE=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).XXXXXX"); \
-	 LOCKDIR="$(INSTALL_DIR)/.$(BINARY_NAME).lock"; \
-	 ACQUIRED=0; \
-	 for i in $$(seq 1 60); do \
-	   if mkdir "$$LOCKDIR" 2>/dev/null; then ACQUIRED=1; echo $$$$ > "$$LOCKDIR/pid"; break; fi; \
-	   HOLDER=$$(cat "$$LOCKDIR/pid" 2>/dev/null); \
-	   if [ -n "$$HOLDER" ] && ! kill -0 "$$HOLDER" 2>/dev/null; then \
-	     echo "note: reclaiming a lock left by dead pid $$HOLDER"; \
-	     rm -rf "$$LOCKDIR"; continue; \
-	   fi; \
-	   sleep 1; \
-	 done; \
-	 [ "$$ACQUIRED" = 1 ] || { echo "✗ another install holds $$LOCKDIR — not proceeding"; exit 1; }; \
-	 trap 'rm -f "$$STAGE"; [ "$$ACQUIRED" = 1 ] && rm -rf "$$LOCKDIR"; true' EXIT; \
+	 trap 'rm -f "$$STAGE"' EXIT; \
 	 cp .build/release/$(BINARY_NAME) "$$STAGE"; \
 	 chmod +x "$$STAGE"; \
 	 { codesign --force --sign - \
@@ -68,7 +64,16 @@ install: build
 	       "$$STAGE" 2>/dev/null \
 	   || codesign --force --sign - "$$STAGE" 2>/dev/null; } \
 	   || { echo "✗ ad-hoc signing failed — refusing to install"; exit 1; }; \
+	 WANT=$$(shasum -a 256 < "$$STAGE" | awk '{print $$1}'); \
 	 mv -f "$$STAGE" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
+	 GOT=$$(shasum -a 256 < "$(INSTALL_DIR)/$(BINARY_NAME)" | awk '{print $$1}'); \
+	 [ "$$WANT" = "$$GOT" ] || { \
+	   echo "✗ another install landed a different binary at the same moment."; \
+	   echo "  What is on \$$PATH is not what this run built. Nothing was rolled"; \
+	   echo "  back: the other binary may well be the one you want, and deleting"; \
+	   echo "  someone else's completed install would be the worse mistake."; \
+	   echo "  Re-run this target if you did want this one."; \
+	   exit 1; }; \
 	 echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (ad-hoc)"; \
 	 true
 	@echo "  ⚠ A Full Disk Access grant on this binary will NOT survive the next"
@@ -114,47 +119,27 @@ install-signed: verify-developer-id build
 	@mkdir -p "$(INSTALL_DIR)"
 	@set -e; \
 	 STAGE=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).XXXXXX"); \
-	 LOCKDIR="$(INSTALL_DIR)/.$(BINARY_NAME).lock"; \
-	 ACQUIRED=0; \
-	 for i in $$(seq 1 60); do \
-	   if mkdir "$$LOCKDIR" 2>/dev/null; then ACQUIRED=1; echo $$$$ > "$$LOCKDIR/pid"; break; fi; \
-	   HOLDER=$$(cat "$$LOCKDIR/pid" 2>/dev/null); \
-	   if [ -n "$$HOLDER" ] && ! kill -0 "$$HOLDER" 2>/dev/null; then \
-	     echo "note: reclaiming a lock left by dead pid $$HOLDER"; \
-	     rm -rf "$$LOCKDIR"; continue; \
-	   fi; \
-	   sleep 1; \
-	 done; \
-	 [ "$$ACQUIRED" = 1 ] || { echo "✗ another install holds $$LOCKDIR — not proceeding"; exit 1; }; \
-	 trap 'rm -f "$$STAGE"; [ "$$ACQUIRED" = 1 ] && rm -rf "$$LOCKDIR"; true' EXIT; \
+	 trap 'rm -f "$$STAGE"' EXIT; \
 	 cp .build/release/$(BINARY_NAME) "$$STAGE"; \
 	 chmod +x "$$STAGE"; \
 	 codesign --force --options runtime \
 	          --sign "$(DEVELOPER_ID)" \
 	          --entitlements Sources/SafariBrowser/Entitlements.plist \
 	          "$$STAGE"; \
-	 codesign -dv --entitlements - "$$STAGE" 2>&1 | grep -q apple-events \
-	   || { echo "✗ entitlement missing from the signed binary"; exit 1; }; \
-	 echo "✓ signed with apple-events entitlement"; \
-	 codesign -dvv "$$STAGE" 2>&1 | grep -q "Authority=Developer ID Application" \
-	   || { echo "✗ DEVELOPER_ID is not a Developer ID Application certificate:"; \
-	        codesign -dvv "$$STAGE" 2>&1 | grep -E "^Authority=" | head -1 | sed "s/^/    /"; \
-	        echo "    \`security find-identity -v -p codesigning\` often lists an Apple"; \
-	        echo "    Development identity FIRST; this target needs the Developer ID one."; \
-	        exit 1; }; \
-	 ./scripts/verify-install-signature.sh "$$STAGE" \
+	 $(VERIFY_SIG) --require-shape "Developer ID" \
+	               --require-entitlement com.apple.security.automation.apple-events \
+	               "$$STAGE" \
 	   || { echo "✗ refusing to install — see above"; exit 1; }; \
-	 PREV=""; \
-	 if [ -e "$(INSTALL_DIR)/$(BINARY_NAME)" ]; then \
-	   PREV=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).prev.XXXXXX"); \
-	   cp -p "$(INSTALL_DIR)/$(BINARY_NAME)" "$$PREV"; \
-	 fi; \
+	 WANT=$$(shasum -a 256 < "$$STAGE" | awk '{print $$1}'); \
 	 mv -f "$$STAGE" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
-	 ./scripts/verify-install-signature.sh "$(INSTALL_DIR)/$(BINARY_NAME)" >/dev/null \
-	   || { echo "✗ landed binary does not verify"; \
-	        if [ -n "$$PREV" ]; then mv -f "$$PREV" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
-	          echo "  restored the previous binary"; fi; exit 1; }; \
-	 [ -n "$$PREV" ] && rm -f "$$PREV"; \
+	 GOT=$$(shasum -a 256 < "$(INSTALL_DIR)/$(BINARY_NAME)" | awk '{print $$1}'); \
+	 [ "$$WANT" = "$$GOT" ] || { \
+	   echo "✗ another install landed a different binary at the same moment."; \
+	   echo "  What is on \$$PATH is not what this run verified. Nothing was"; \
+	   echo "  rolled back: the other binary may well be the one you want, and"; \
+	   echo "  deleting someone else's completed install would be the worse"; \
+	   echo "  mistake. Re-run this target if you did want this one."; \
+	   exit 1; }; \
 	 echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (Developer ID)"; \
 	 true
 	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
@@ -194,9 +179,9 @@ sign-developer-id: verify-developer-id build
 # script's distinct codes (1 ad-hoc, 2 unreadable, 3 broken seal, 4 cannot
 # satisfy its own requirement, 5 unrecognised shape) do not survive this
 # wrapper. Non-zero still means "not provably durable", which is what CI
-# needs; call ./scripts/verify-install-signature.sh directly to tell them apart.
+# needs; run $(VERIFY_SIG) <path> directly to tell them apart.
 verify-install-signature:
-	@./scripts/verify-install-signature.sh "$(INSTALL_DIR)/$(BINARY_NAME)"
+	@$(VERIFY_SIG) "$(INSTALL_DIR)/$(BINARY_NAME)"
 
 test-install-signature:
 	./Tests/install-signature-test.sh

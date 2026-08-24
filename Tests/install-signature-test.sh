@@ -20,10 +20,23 @@
 # Exit 0 = all green, 1 = at least one failure.
 set -u
 
-VERIFIER="${VERIFY_INSTALL_SIGNATURE:-scripts/verify-install-signature.sh}"
+VERIFIER="${VERIFY_INSTALL_SIGNATURE:-scripts/verify-install-signature.swift}"
 
 PASS=0
 FAIL=0
+SKIPPED=0
+
+# A skipped case is not a passing case. Round 5 found that on any machine with
+# no codesigning identity — a plain `git clone` by anyone without an Apple
+# Developer account — every fixture exercising the shape matcher skipped, and
+# the suite still printed green. The words "NOT a pass" were in the output and
+# in nothing else: they did not touch the exit status.
+#
+# So skips are counted and, by default, fatal. Set ALLOW_INCOMPLETE=1 to run
+# what this machine can and accept a partial result knowingly; the summary
+# still names every case that did not run. There is no CI here to appease, and
+# a suite that cannot test the thing must not claim it did.
+skip() { SKIPPED=$((SKIPPED + 1)); printf "  %s SKIPPED — %s\n" "⊘" "$1"; }
 pass() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      $2"; }
 
@@ -254,7 +267,7 @@ echo "── broken seal (#119 verify B1a) ──"
 assert_exit "tampered binary is rejected distinctly" 3 "$FIXTURES/tampered"
 # "signature" alone would also match the SUCCESS line ("identity-bound
 # signature"), so this asserts on a word only the broken-seal branch prints.
-assert_says "tampered rejection names the seal, not the requirement" "$FIXTURES/tampered" "seal"
+assert_says "tampered rejection names the signature, not the requirement" "$FIXTURES/tampered" "code or signature have been modified"
 
 echo
 echo "── real certificate, foreign requirement (#119 verify R2-B1) ──"
@@ -265,7 +278,7 @@ if [[ "$HAVE_CROSSED" == "1" ]]; then
     assert_exit "signature that cannot satisfy its own requirement is rejected" 4 "$FIXTURES/crossed"
     assert_says "rejection names the requirement, not the seal" "$FIXTURES/crossed" "own designated requirement"
 else
-    echo "  ⊘ SKIPPED — needs both a Developer ID and a non-Developer-ID identity"
+    skip "needs both a Developer ID and a non-Developer-ID identity"
     echo "    in the keychain. This machine has: $(security find-identity -v -p codesigning 2>/dev/null | grep -c 'valid identities\|)') entries."
     echo "    NOT a pass: the R2-B1 regression is unverified in this run."
 fi
@@ -283,7 +296,7 @@ if [[ -n "${NON_DEVID:-}" && -f "$FIXTURES/other-identity" ]]; then
     # printed an empty authority because ad-hoc signatures have no Authority
     # line. A claim about another file's behaviour that nobody had checked.
 else
-    echo "  ⊘ SKIPPED — no non-Developer-ID signing identity available."
+    skip "no non-Developer-ID signing identity available."
 fi
 
 echo
@@ -297,7 +310,7 @@ if [[ "$HAVE_SHAPE_FIXTURES" == "1" ]]; then
     assert_exit "a negated anchor is not an anchor" 5 "$FIXTURES/negated"
     assert_exit "an anchored requirement with a version pin is not a known shape" 5 "$FIXTURES/version-pinned"
 else
-    echo "  ⊘ SKIPPED — no signing identity available to build custom-requirement"
+    skip "no signing identity available to build custom-requirement"
     echo "    fixtures. Ad-hoc ones would be answered by the signature check before"
     echo "    ever reaching the shape matcher."
     echo "    NOT a pass: the round-4 attacks are unverified in this run."
@@ -312,7 +325,7 @@ assert_exit "an ad-hoc binary is ad-hoc whatever its requirement says" 1 "$FIXTU
 if [[ -n "$REQSET" ]]; then
     assert_exit "a requirement SET is read, not mangled into a false verdict" 0 "$REQSET"
 else
-    echo "  ⊘ SKIPPED — no binary with a requirement set found under /Applications."
+    skip "no binary with a requirement set found under /Applications."
     echo "    NOT a pass: the requirement-set case is unverified in this run."
 fi
 
@@ -325,7 +338,7 @@ assert_exit "a bare-identifier ad-hoc binary is answered as ad-hoc" 1 "$FIXTURES
 if [[ "$HAVE_VERSION_BOUND" == "1" ]]; then
     assert_exit "version-pinned ad-hoc binary is answered as ad-hoc" 1 "$FIXTURES/version-bound"
 else
-    echo "  ⊘ SKIPPED — codesign did not retain the version-pinned requirement."
+    skip "codesign did not retain the version-pinned requirement."
     echo "    NOT a pass: the version-bound case is unverified in this run."
 fi
 
@@ -353,7 +366,7 @@ echo
 echo "── default target ──"
 # With no argument the verifier checks the installed binary, so `make
 # verify-install-signature` needs no path.
-"$VERIFIER" >/dev/null 2>&1
+swift "$VERIFIER" >/dev/null 2>&1
 rc=$?
 if [[ "$rc" =~ ^[0-5]$ ]]; then
     pass "no-argument form resolves a default target (exit $rc)"
@@ -363,4 +376,16 @@ fi
 
 echo
 echo "Passed: $PASS  Failed: $FAIL"
+if [[ "$SKIPPED" -gt 0 ]]; then
+    echo
+    echo "  $SKIPPED case(s) did not run on this machine (see ⊘ above)."
+    if [[ -n "${ALLOW_INCOMPLETE:-}" ]]; then
+        echo "  ALLOW_INCOMPLETE=1 — accepting a partial result."
+    else
+        echo "  This is not a pass. Re-run with ALLOW_INCOMPLETE=1 to accept it"
+        echo "  knowingly, or provide a codesigning identity so they can run."
+        FAIL=$((FAIL + 1))
+    fi
+fi
+
 [[ "$FAIL" -eq 0 ]]
