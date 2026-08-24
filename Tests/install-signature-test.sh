@@ -53,6 +53,22 @@ assert_exit() {
 }
 
 # assert_says "<label>" <path> "<needle>"
+# Some cases have more than one legitimate answer — see the requirement-set
+# case below. Pinning those to a single code tests the machine, not the tool.
+assert_exit_in() {
+    local label="$1" allowed="$2" target="$3"
+    local out rc
+    out=$("$VERIFIER" "$target" 2>&1); rc=$?
+    for want in $allowed; do
+        # pass(), not a bare echo: the first draft of this helper printed its
+        # own ✓ and never touched $PASS, so the summary undercounted by one
+        # while the transcript looked right. That is the same shape as the
+        # skip bug above — a visible line standing in for a tallied result.
+        if [[ "$rc" == "$want" ]]; then pass "$label (exit $rc)"; return 0; fi
+    done
+    fail "$label" "expected one of [$allowed], got $rc — output: $(echo "$out" | head -2 | tr '\n' '⏎')"
+}
+
 assert_says() {
     local label="$1" target="$2" needle="$3"
     local out
@@ -223,10 +239,17 @@ fi
 # /Applications). Taking every line and feeding the lot to -R produces a
 # syntax error, which the round-3 script reported as a verdict about the
 # binary.
+# Discovery filters on an intact seal. Without that, this picks whatever
+# /Applications happens to offer first — and some real applications are
+# genuinely damaged (Anki on the development machine has a modified
+# Info.plist). Asserting exit 0 on an arbitrary neighbour makes the suite go
+# red for a fault that is not ours.
 REQSET=""
 for cand in /Applications/*/Contents/MacOS/*; do
     [ -f "$cand" ] || continue
-    if codesign -d -r- "$cand" 2>&1 | grep -q '^host =>'; then REQSET="$cand"; break; fi
+    codesign -d -r- "$cand" 2>&1 | grep -q '^host =>' || continue
+    codesign --verify --strict "$cand" >/dev/null 2>&1 || continue
+    REQSET="$cand"; break
 done
 
 echo "Install-signature tests ($VERIFIER)"
@@ -323,7 +346,13 @@ fi
 assert_exit "an ad-hoc binary is ad-hoc whatever its requirement says" 1 "$FIXTURES/adhoc-preserved"
 
 if [[ -n "$REQSET" ]]; then
-    assert_exit "a requirement SET is read, not mangled into a false verdict" 0 "$REQSET"
+    # The regression is a mangled READ, not a particular verdict: round 3 fed
+    # every line of the set to -R, got a syntax error, and printed that as
+    # "this binary cannot satisfy the requirement it advertises". So this
+    # asserts the tool reached a real answer about the requirement — 0 if the
+    # shape is one it knows, 5 if not — and never a fault verdict, which for a
+    # seal-verified binary could now only come from misreading the set.
+    assert_exit_in "a requirement SET is read, not mangled into a false verdict" "0 5" "$REQSET"
 else
     skip "no binary with a requirement set found under /Applications."
     echo "    NOT a pass: the requirement-set case is unverified in this run."
@@ -366,7 +395,7 @@ echo
 echo "── default target ──"
 # With no argument the verifier checks the installed binary, so `make
 # verify-install-signature` needs no path.
-swift "$VERIFIER" >/dev/null 2>&1
+"$VERIFIER" >/dev/null 2>&1
 rc=$?
 if [[ "$rc" =~ ^[0-5]$ ]]; then
     pass "no-argument form resolves a default target (exit $rc)"
