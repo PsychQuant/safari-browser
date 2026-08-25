@@ -12,6 +12,7 @@ export SAFARI_BROWSER_BIN
 .PHONY: build build-debug install install-signed clean \
         sign-developer-id verify-developer-id verify-install-signature \
         test test-unit test-smoke test-all test-install-signature \
+        test-install-signature-strict \
         test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-exec-script test-mark-tab test-csp test-target-identity test-reference-edges
 
 build:
@@ -23,7 +24,22 @@ build:
 # broke five successive text-parsing versions — the last two with nothing more
 # exotic than a real third-party app and a filename containing a newline. See
 # the header of the script for the full history. (#119)
-VERIFY_SIG = swift scripts/verify-install-signature.swift
+# Compiled, not `swift scripts/...`. Round 6: when the swift driver could not
+# compile the script — which happens on this machine whenever swiftly's
+# toolchain leads PATH and .build was made by another — the driver exits 1,
+# and 1 is the documented verdict "this binary is ad-hoc, run install-signed".
+# A user with the wrong PATH order was told their Developer ID binary was
+# ad-hoc. Compiling separates the two: a compile failure is a build failure
+# here, loudly, and never reaches the exit-code contract. It also stops the
+# test suite recompiling the same file twenty times.
+VERIFY_BIN = .build/verify-install-signature
+VERIFY_SIG = $(VERIFY_BIN)
+
+$(VERIFY_BIN): scripts/verify-install-signature.swift
+	@mkdir -p .build
+	@swiftc -O -o $@ $< || { echo "✗ could not compile the signature guard — this is a build"; \
+	  echo "  failure, not a verdict about any binary. Check that swift can compile:"; \
+	  echo "    swiftc -o /dev/null scripts/verify-install-signature.swift"; exit 1; }
 
 build-debug:
 	swift build
@@ -115,7 +131,7 @@ verify-developer-id:
 # entitlement check failing) left an unsigned binary on $PATH with the
 # known-good one already deleted — and macOS SIGKILLs unsigned binaries that
 # call osascript, so the failure mode was not "no FDA" but "the CLI is dead".
-install-signed: verify-developer-id build
+install-signed: verify-developer-id build $(VERIFY_BIN)
 	@mkdir -p "$(INSTALL_DIR)"
 	@set -e; \
 	 STAGE=$$(mktemp "$(INSTALL_DIR)/$(BINARY_NAME).XXXXXX"); \
@@ -133,12 +149,17 @@ install-signed: verify-developer-id build
 	 WANT=$$(shasum -a 256 < "$$STAGE" | awk '{print $$1}'); \
 	 mv -f "$$STAGE" "$(INSTALL_DIR)/$(BINARY_NAME)"; \
 	 GOT=$$(shasum -a 256 < "$(INSTALL_DIR)/$(BINARY_NAME)" | awk '{print $$1}'); \
-	 [ "$$WANT" = "$$GOT" ] || { \
-	   echo "✗ another install landed a different binary at the same moment."; \
-	   echo "  What is on \$$PATH is not what this run verified. Nothing was"; \
-	   echo "  rolled back: the other binary may well be the one you want, and"; \
-	   echo "  deleting someone else's completed install would be the worse"; \
-	   echo "  mistake. Re-run this target if you did want this one."; \
+	 [ "$$WANT" = "$$GOT" ] && LANDED_OURS=1 || LANDED_OURS=0; \
+	 $(VERIFY_SIG) --require-shape "Developer ID" \
+	               --require-entitlement com.apple.security.automation.apple-events \
+	               "$(INSTALL_DIR)/$(BINARY_NAME)" >/dev/null \
+	   || { echo "✗ the binary now on \$$PATH does not meet install-signed's contract."; \
+	        echo "  Nothing was rolled back — see the diagnosis above and decide."; \
+	        exit 1; }; \
+	 [ "$$LANDED_OURS" = 1 ] || { \
+	   echo "✗ another install landed at the same moment. What is on \$$PATH is not"; \
+	   echo "  what this run built — it does meet the contract, so it was left alone."; \
+	   echo "  Re-run this target if you wanted this build specifically."; \
 	   exit 1; }; \
 	 echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (Developer ID)"; \
 	 true
@@ -180,10 +201,10 @@ sign-developer-id: verify-developer-id build
 # satisfy its own requirement, 5 unrecognised shape) do not survive this
 # wrapper. Non-zero still means "not provably durable", which is what CI
 # needs; run $(VERIFY_SIG) <path> directly to tell them apart.
-verify-install-signature:
+verify-install-signature: $(VERIFY_BIN)
 	@$(VERIFY_SIG) "$(INSTALL_DIR)/$(BINARY_NAME)"
 
-test-install-signature:
+test-install-signature: $(VERIFY_BIN)
 	./Tests/install-signature-test.sh
 
 # ── CI-safe tiers (no live Safari required) ──────────────────────────
@@ -199,8 +220,31 @@ test-unit:
 test-smoke: build-debug
 	./Tests/smoke-test.sh
 
-# Everything that can run unattended in CI.
-test-all: test-unit test-smoke test-install-signature
+# The same suite, refusing to pass on a partial run. Use this on a machine that
+# holds both a Developer ID and a non-Developer-ID identity; it is what this
+# repo's own verification runs, and what a change to the guard must be checked
+# against. `make test-all` deliberately does not gate on it — see below.
+test-install-signature-strict: $(VERIFY_BIN)
+	@bash Tests/install-signature-test.sh
+
+# Everything that runs on any machine, with or without a signing identity.
+#
+# ALLOW_INCOMPLETE is set here on purpose. The signature suite needs BOTH a
+# Developer ID and a non-Developer-ID identity in the keychain to run every
+# case; with one it skips two, with none it skips three. Round 6 measured
+# `make test-all` going red on a machine holding only a Developer ID — which
+# is exactly the configuration #119 tells you to have — and on a plain clone
+# by anyone without an Apple Developer account, for whom README says `make
+# install` is the right target. That is round 1's defect verbatim: the fix for
+# a review finding turned the green-build gate red for the population the
+# change serves.
+#
+# The suite still names every case it could not run, and `make
+# test-install-signature-strict` refuses to pass on a partial run — that is
+# the target to use on a machine that has both identities, and the one this
+# repo's own verification uses.
+test-all: test-unit test-smoke
+	@ALLOW_INCOMPLETE=1 $(MAKE) --no-print-directory test-install-signature
 	@echo "✓ unit + smoke + install-signature green"
 
 # ── Live-Safari tiers (local only — Safari must be running) ──────────

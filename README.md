@@ -77,20 +77,43 @@ Check which state you are in at any time:
 
 ```bash
 make verify-install-signature
-# or against any path:  swift scripts/verify-install-signature.swift <path>
+# or against any path:  make .build/verify-install-signature && \
+#                       .build/verify-install-signature <path>
 ```
 
 "Cannot hold a durable grant" has several causes and they need different
 fixes, so the answer is an exit code rather than a yes/no:
 
+Codes `0`–`7` are statements about the binary. Anything else is a failure to
+make one, and is deliberately kept outside that range:
+
 | | meaning | what to do |
 |---|---|---|
 | `0` | the requirement names an identity and the binary satisfies it | nothing |
 | `1` | the signature is ad-hoc, so the requirement is the content hash | `make install-signed` |
-| `2` | no signature — or the check could not run at all | see the message; an environment failure says it is one |
+| `2` | no code signature at all | `make install-signed` |
 | `3` | **the signature does not validate**, so TCC will not honour a grant on it. The message carries macOS's own description of the fault and only prescribes a reinstall for paths this project installs | reinstall (ours); investigate (anyone else's) |
 | `4` | valid seal, but the binary **cannot satisfy the requirement it advertises**, so a grant recorded against it never applies | `make install-signed` |
 | `5` | a requirement shape the tool does not recognise — it **cannot tell** | inspect it yourself |
+| `6` | `--require-shape` was given and the shape is a **different, also durable** one — install-signed's contract, not a fault in the binary | sign with the identity that target expects |
+| `7` | `--require-entitlement` was given and the signature does not carry it | re-sign with the entitlements plist |
+| `64` | **usage error** — bad flags. Nothing was inspected | fix the command |
+| `70` | **the check could not run** — unreadable file, API failure, no `HOME`. Not a verdict | fix the environment |
+
+That last split is the sixth round's doing. `2` used to mean both "this binary
+is unsigned" and "the check could not run", `4` absorbed two contract failures
+whose documented meaning is the opposite of what happened, and a flag missing
+its value reached `fatalError` — which the shebang form surfaced as `5`,
+"unrecognised shape, inspect it yourself", about a binary that was never
+opened. A caller cannot act on a code that means three things.
+
+The guard is **compiled** (`make .build/verify-install-signature`) rather than
+run as `swift scripts/...` for the same reason: the swift driver exits `1` when
+it cannot compile the script, and `1` is the verdict "this binary is ad-hoc".
+On a machine where `swiftly` leads `PATH` and `.build` was made by another
+toolchain — this one, as it happens — that told the user their Developer ID
+binary was ad-hoc. A compile failure is now a build failure, loudly, and never
+reaches the exit-code contract.
 
 `5` is deliberate, and it is the part worth explaining. The tool answers from
 the Security framework rather than from `codesign`'s printed output: validity
@@ -122,6 +145,26 @@ None of those were failures of pattern-writing. They were failures of treating
 a human-readable diagnostic as a data interface. Hence Swift, and hence the
 narrowness: the tool no longer reads requirements it was not taught, and says
 so instead of guessing.
+
+### Running the signature suite
+
+`make test-all` runs it with `ALLOW_INCOMPLETE=1`, because the suite needs
+**two** signing identities in the keychain — a Developer ID and a
+non-Developer-ID one — to exercise every case. With one it skips two cases;
+with none it skips five. It always names each case it could not run.
+
+```bash
+make test-all                          # green anywhere; partial runs allowed, and announced
+make test-install-signature-strict     # refuses to pass on a partial run
+```
+
+Use the strict target when changing the guard. `make test-all` deliberately
+does not gate on it: round 6 measured the non-strict suite going red on a
+machine holding **only** a Developer ID — the exact configuration this section
+tells you to have — and on a plain clone by anyone without an Apple Developer
+account, for whom `make install` is the right target. A green-build gate that
+fails the people the feature serves is worse than one that tells them what it
+skipped.
 
 (`make verify-install-signature` collapses every failure to make's own exit 2;
 run `swift scripts/verify-install-signature.swift <path>` directly to tell them apart.)

@@ -5,12 +5,30 @@
 // the grant is durable exactly when the DR names an identity the binary keeps
 // across rebuilds — rather than its bytes, which change every build.
 //
+// Verdicts about the binary — 0-7, and nothing else in this range:
+//
 //   0  durable: a recognised identity-bound shape, and the binary satisfies it
 //   1  ad-hoc signature — the DR is the content hash, so a rebuild kills it
-//   2  no signature, or the check could not run (environment, not a verdict)
+//   2  no code signature at all
 //   3  the signature does not validate — TCC will not honour a grant on it
 //   4  recognised shape, but this binary cannot satisfy it — grant never applies
 //   5  a requirement shape this tool does not recognise — it cannot tell
+//   6  --require-shape given, and the shape is a different (durable) one
+//   7  --require-entitlement given, and the signature does not carry it
+//
+// NOT verdicts — deliberately outside that range, so a caller can tell a
+// statement about the binary from a failure to make one (sysexits.h):
+//
+//  64  usage error — bad flags. Nothing was inspected.
+//  70  the check could not run: unreadable file, API failure, no HOME.
+//
+// Round 6 found three separate collisions in the older numbering. `2` meant
+// both "this binary is unsigned" (a verdict) and "the check could not run"
+// (not one). A missing flag value hit `fatalError`, which the shebang form
+// turned into exit 5 — "unrecognised shape, inspect it yourself" — for a
+// binary that was never opened. And `--require-shape` mismatch and a missing
+// entitlement both returned 4, whose documented meaning is that the binary
+// cannot satisfy its OWN requirement — which in both cases it can.
 //
 // ── Why this is Swift and not shell ──────────────────────────────────────
 //
@@ -82,21 +100,64 @@ var requiredShape: String?
 var requiredEntitlement: String?
 var positional: [String] = []
 var rest = Array(CommandLine.arguments.dropFirst())
+
+/// Usage errors exit 64, never a verdict code. Round 6: `--require-shape`
+/// with no value reached `fatalError`, and under the shebang form that
+/// surfaced as exit 5 — a documented verdict ("cannot tell, inspect it
+/// yourself") about a binary this process never opened.
+func usage(_ problem: String) -> Never {
+    FileHandle.standardError.write(("""
+    ✗ \(problem)
+
+      usage: verify-install-signature.swift [--require-shape NAME]
+                                            [--require-entitlement KEY] [path]
+
+      Exits 0-7 with a verdict about the binary; 64 for a usage error like this
+      one, 70 when the check could not run. Nothing was inspected.
+
+    """ + "\n").data(using: .utf8)!)
+    exit(64)
+}
+
 while let head = rest.first {
     rest.removeFirst()
     switch head {
     case "--require-shape":
-        guard let v = rest.first else { fatalError("--require-shape needs a value") }
+        guard let v = rest.first else { usage("--require-shape needs a value") }
         requiredShape = v; rest.removeFirst()
     case "--require-entitlement":
-        guard let v = rest.first else { fatalError("--require-entitlement needs a value") }
+        guard let v = rest.first else { usage("--require-entitlement needs a value") }
         requiredEntitlement = v; rest.removeFirst()
+    case let f where f.hasPrefix("-"):
+        // Round 6: unknown flags fell through to `positional`, and every
+        // positional after the first was dropped. So `verify <path>
+        // --require-shapee X` — one typo — silently ran with no gate at all
+        // and exited 0. A gate you can turn off by misspelling it is not one.
+        usage("unknown option: \(f)")
     default:
         positional.append(head)
     }
 }
-let target = positional.first
-    ?? (ProcessInfo.processInfo.environment["HOME"] ?? "") + "/bin/safari-browser"
+
+if positional.count > 1 {
+    usage("expected at most one path, got \(positional.count): \(positional.joined(separator: " "))")
+}
+
+guard let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty else {
+    FileHandle.standardError.write("✗ HOME is unset — cannot resolve the default target.\n".data(using: .utf8)!)
+    exit(70)
+}
+let target = positional.first ?? home + "/bin/safari-browser"
+
+/// POSIX single-quoting, for any path this tool puts inside a command it
+/// expects a human to run. Round 6: the path was interpolated into
+/// `rm -f "\(target)"`, and double quotes do not disable `$(...)` — so a
+/// filename could smuggle a command into a destructive line the tool itself
+/// told the user to paste. That is round 5's defect exactly, one channel over:
+/// the requirement stopped being text, the path never did.
+func sh(_ s: String) -> String {
+    "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+}
 
 func out(_ s: String) { print(s) }
 func err(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
@@ -104,7 +165,7 @@ func err(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .u
 func envProblem(_ what: String) -> Never {
     err("✗ \(what)")
     err("  This is an environment problem, not a verdict about \(target).")
-    exit(2)
+    exit(70)
 }
 
 // ── 1. Get a handle on the code ──────────────────────────────────────────
@@ -115,7 +176,7 @@ let createStatus = SecStaticCodeCreateWithPath(url, [], &code)
 if createStatus != errSecSuccess {
     if !FileManager.default.fileExists(atPath: target) {
         err("✗ no such file: \(target)")
-        exit(2)
+        exit(70)
     }
     if createStatus == errSecCSUnsigned {
         err("✗ no code signature: \(target)")
@@ -157,10 +218,19 @@ func describe(_ status: OSStatus) -> String {
 /// handed a destructive prescription — round 5 told the user to `rm -f` the
 /// executable of a working copy of Anki.
 let isOurInstall: Bool = {
-    let home = ProcessInfo.processInfo.environment["HOME"] ?? ""
     let canonical = URL(fileURLWithPath: target).standardizedFileURL.path
-    return canonical == home + "/bin/safari-browser"
-        || canonical.hasPrefix(home + "/bin/safari-browser.")   // mktemp staging
+    let installed = home + "/bin/safari-browser"
+    if canonical == installed { return true }
+    // The staging file `install-signed` verifies before landing. Round 6:
+    // this was a bare `hasPrefix(installed + ".")`, which any suffix
+    // satisfied — so `~/bin/safari-browser.$(...)` was treated as ours and
+    // handed the destructive prescription. The check that existed to keep
+    // `rm -f` away from other people's software was the thing that let it
+    // through. Now it demands mktemp's actual shape: exactly six characters
+    // from its alphabet, and nothing else.
+    guard canonical.hasPrefix(installed + ".") else { return false }
+    let suffix = canonical.dropFirst(installed.count + 1)
+    return suffix.count == 6 && suffix.allSatisfy { $0.isLetter && $0.isASCII || $0.isNumber && $0.isASCII }
 }()
 
 if sealStatus != errSecSuccess {
@@ -187,7 +257,7 @@ if sealStatus != errSecSuccess {
     }
     err("")
     if isOurInstall {
-        err("  Fix:  rm -f \"\(target)\" && DEVELOPER_ID=<cert-sha1> make install-signed")
+        err("  Fix:  rm -f \(sh(target)) && DEVELOPER_ID=<cert-sha1> make install-signed")
     } else {
         err("  This is not a path this project installs, so no fix is offered here:")
         err("  re-installing or re-signing someone else's software is their call,")
@@ -211,7 +281,10 @@ if let want = requiredEntitlement {
         err("  \(target)")
         err("  The signature carries \(ents?.count ?? 0) entitlement(s); this is read from")
         err("  the signature itself, not from codesign's printed output.")
-        exit(4)
+        err("")
+        err("  This is install-signed's own contract, not a fault in the binary's")
+        err("  designated requirement — hence 7 rather than 4.")
+        exit(7)
     }
 }
 
@@ -287,7 +360,7 @@ guard let matchedShape = shape else {
     err("  that reading them as text gets the answer wrong in both directions,")
     err("  so the honest answer here is that it does not know.")
     err("")
-    err("  Inspect it yourself:  codesign -d -r- \"\(target)\"")
+    err("  Inspect it yourself:  codesign -d -r- \(sh(target))")
     err("  Or reinstall onto known ground:  DEVELOPER_ID=<cert-sha1> make install-signed")
     exit(5)
 }
@@ -318,9 +391,14 @@ if let want = requiredShape, matchedShape != want {
     err("  actual shape:   \(matchedShape)")
     err("  DR: \(drText)")
     err("")
-    err("  `security find-identity -v -p codesigning` often lists an Apple")
-    err("  Development identity FIRST; install-signed needs the Developer ID one.")
-    exit(4)
+    err("")
+    err("  Both shapes are durable; this one is simply not the one asked for.")
+    err("  That is install-signed's contract, not a fault in the binary — hence 6")
+    err("  rather than 4, whose documented meaning is that a binary cannot satisfy")
+    err("  its OWN requirement. `security find-identity -v -p codesigning` often")
+    err("  lists an Apple Development identity FIRST; install-signed needs the")
+    err("  Developer ID one.")
+    exit(6)
 }
 
 out("✓ durable: \(matchedShape) requirement, valid seal, and this binary satisfies it")

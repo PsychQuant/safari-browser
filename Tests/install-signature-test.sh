@@ -20,7 +20,14 @@
 # Exit 0 = all green, 1 = at least one failure.
 set -u
 
-VERIFIER="${VERIFY_INSTALL_SIGNATURE:-scripts/verify-install-signature.swift}"
+# The compiled guard, not `swift scripts/...`. Round 6: the driver's own exit 1
+# on a compile failure is indistinguishable from the verdict "ad-hoc", and this
+# suite would have reported that as a passing assertion.
+VERIFIER="${VERIFY_INSTALL_SIGNATURE:-.build/verify-install-signature}"
+if [[ ! -x "$VERIFIER" ]]; then
+    swiftc -O -o "$VERIFIER" scripts/verify-install-signature.swift 2>/dev/null \
+      || { echo "✗ could not compile the guard — build failure, not a test result" >&2; exit 2; }
+fi
 
 PASS=0
 FAIL=0
@@ -42,13 +49,16 @@ fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      $
 
 # assert_exit "<label>" "<expected-code>" <path>
 assert_exit() {
-    local label="$1" want="$2" target="$3"
+    # Variadic on purpose: the flag cases below need to pass more than a path,
+    # and a helper that quietly drops argument 4 would make every one of them
+    # test the same thing while reading as though it tested four.
+    local label="$1" want="$2"; shift 2
     local out rc
-    out=$("$VERIFIER" "$target" 2>&1); rc=$?
+    out=$("$VERIFIER" "$@" 2>&1); rc=$?
     if [[ "$rc" == "$want" ]]; then
         pass "$label"
     else
-        fail "$label" "expected exit $want, got $rc — output: $(echo "$out" | head -2 | tr '\n' '⏎')"
+        fail "$label" "expected exit $want, got $rc — args: $* — output: $(echo "$out" | head -2 | tr '\n' '⏎')"
     fi
 }
 
@@ -239,18 +249,58 @@ fi
 # /Applications). Taking every line and feeding the lot to -R produces a
 # syntax error, which the round-3 script reported as a verdict about the
 # binary.
-# Discovery filters on an intact seal. Without that, this picks whatever
-# /Applications happens to offer first — and some real applications are
-# genuinely damaged (Anki on the development machine has a modified
-# Info.plist). Asserting exit 0 on an arbitrary neighbour makes the suite go
-# red for a fault that is not ours.
+# A requirement SET, built here rather than scavenged from /Applications.
+#
+# Round 6: this used to walk /Applications for the first binary whose
+# `codesign -d -r-` mentioned `host =>`. On the development machine 10 of 228
+# apps qualified and every one of them was a Google Drive web shortcut or a
+# Parallels wrapper — all shell scripts. Not one Apple application qualified.
+# So the only assertion claiming to cover "a requirement SET is read
+# correctly" was running a shell script through a tool written for a single
+# Mach-O, on machines that happened to have Google Drive installed, and
+# skipping — fatally, after this round made skips fatal — on machines that did
+# not. The test data was whatever the developer had installed.
+#
+# `codesign -r` accepts a requirement SET, so the fixture can simply be built.
+# It needs a real identity for the same reason the shape fixtures do: an
+# ad-hoc binary is answered by the signature flags before the requirement is
+# ever read.
 REQSET=""
-for cand in /Applications/*/Contents/MacOS/*; do
-    [ -f "$cand" ] || continue
-    codesign -d -r- "$cand" 2>&1 | grep -q '^host =>' || continue
-    codesign --verify --strict "$cand" >/dev/null 2>&1 || continue
-    REQSET="$cand"; break
-done
+DEVID_ENT=""
+if [[ -n "${DEVID_ANY:-}" ]]; then
+    # Sign FIRST, then read back the requirement codesign generated for THIS
+    # identity, then re-sign carrying that plus a `host =>` line. Reading the
+    # requirement before signing gives the requirement of whatever the file
+    # used to be — which is how the first draft of this fixture ended up
+    # advertising an Apple requirement on a Developer ID signature, i.e. the
+    # `crossed` fixture by accident.
+    cp /bin/ls "$FIXTURES/reqset"
+    if codesign --force --sign "$DEVID_ANY" "$FIXTURES/reqset" >/dev/null 2>&1 \
+       && codesign -d -r- "$FIXTURES/reqset" 2>/dev/null \
+            | grep '^designated' > "$FIXTURES/reqset.designated" \
+       && [[ -s "$FIXTURES/reqset.designated" ]]; then
+        { echo 'host => anchor apple'; cat "$FIXTURES/reqset.designated"; } > "$FIXTURES/reqset.req"
+        if codesign --force --sign "$DEVID_ANY" -r "$FIXTURES/reqset.req" "$FIXTURES/reqset" 2>/dev/null \
+           && [[ "$(codesign -d -r- "$FIXTURES/reqset" 2>&1 | grep -c '^host =>')" == "1" ]]; then
+            REQSET="$FIXTURES/reqset"
+        else
+            fixture_fail "reqset" "codesign did not retain the requirement SET"
+        fi
+    fi
+
+    # A Developer ID signature carrying the entitlement install-signed demands.
+    # Both --require-* gates need a positive case, and neither /bin/ls nor the
+    # `identity-bound` fixture (a plain copy of it) is one: /bin/ls has the
+    # Apple system shape and no entitlements at all.
+    cp /bin/ls "$FIXTURES/devid-entitled"
+    if codesign --force --options runtime --sign "$DEVID_ANY" \
+         --entitlements Sources/SafariBrowser/Entitlements.plist \
+         "$FIXTURES/devid-entitled" >/dev/null 2>&1; then
+        DEVID_ENT="$FIXTURES/devid-entitled"
+    else
+        fixture_fail "devid-entitled" "could not sign a Developer ID fixture with entitlements"
+    fi
+fi
 
 echo "Install-signature tests ($VERIFIER)"
 echo
@@ -352,9 +402,12 @@ if [[ -n "$REQSET" ]]; then
     # asserts the tool reached a real answer about the requirement — 0 if the
     # shape is one it knows, 5 if not — and never a fault verdict, which for a
     # seal-verified binary could now only come from misreading the set.
-    assert_exit_in "a requirement SET is read, not mangled into a false verdict" "0 5" "$REQSET"
+    # 0, not "0 or 5": this fixture's designated requirement was copied from a
+    # binary whose shape the tool recognises, so the only way to miss is to
+    # read the set wrong — which is the regression.
+    assert_exit "a requirement SET is read, not mangled into a false verdict" 0 "$REQSET"
 else
-    skip "no binary with a requirement set found under /Applications."
+    skip "no signing identity — cannot build a requirement-SET fixture"
     echo "    NOT a pass: the requirement-set case is unverified in this run."
 fi
 
@@ -378,7 +431,7 @@ echo "── unsigned / unreadable (must NOT be mistaken for the good state) ─
 # sees a miss and reports success. Unsigned must be its OWN exit code, not 0
 # and not the ad-hoc code, or the two failures cannot be told apart.
 assert_exit "unsigned binary is rejected distinctly" 2 "$FIXTURES/unsigned"
-assert_exit "missing file is rejected distinctly" 2 "$FIXTURES/does-not-exist"
+assert_exit "missing file is an environment error, not a verdict" 70 "$FIXTURES/does-not-exist"
 
 echo
 echo "── real installed binary (informational) ──"
@@ -390,6 +443,49 @@ if [[ -e "$INSTALLED" ]]; then
 else
     echo "  ℹ $INSTALLED not present — skipped"
 fi
+
+echo
+echo "── install-signed's own gates (#119 verify R6) ──"
+# These two flags are the ONLY thing standing between `install-signed` and
+# landing a binary signed by the wrong identity or missing the entitlement.
+# Round 6 measured their coverage at zero: every assertion above calls the
+# verifier with no flags, so the round-5 change that replaced two greps with
+# them was shipped with no evidence either way.
+if [[ -n "$DEVID_ENT" ]]; then
+    assert_exit "--require-shape passes when the shape matches" 0 \
+        --require-shape "Developer ID" "$DEVID_ENT"
+    # 6, not 4: an Apple Development signature is perfectly durable and does
+    # satisfy its own requirement. It is simply not what install-signed asked
+    # for. Round 6 found both answers collapsed onto 4, whose documented
+    # meaning is the opposite.
+    if [[ -f "$FIXTURES/identity-bound" ]]; then
+        assert_exit "--require-shape rejects a different durable shape as 6, not 4" 6 \
+            --require-shape "Developer ID" "$FIXTURES/identity-bound"
+    fi
+    assert_exit "--require-entitlement passes when the signature carries it" 0 \
+        --require-entitlement com.apple.security.automation.apple-events "$DEVID_ENT"
+    # /bin/ls is durable and satisfies its own requirement; it just has no
+    # entitlements. 7, not 4.
+    assert_exit "--require-entitlement rejects a binary without it as 7, not 4" 7 \
+        --require-entitlement com.apple.security.automation.apple-events /bin/ls
+else
+    skip "no signing identity — install-signed's own gates are unverified"
+fi
+
+echo
+echo "── the argument parser cannot silently disarm a gate (#119 verify R6) ──"
+# Round 6: a flag placed after the path became a discarded positional, so one
+# typo turned the gate off and returned 0. And a flag missing its value hit
+# fatalError, which the shebang form surfaced as exit 5 — a documented verdict
+# about a binary that was never opened.
+assert_exit "a misspelled flag is a usage error, not a silent pass" 64 \
+    /bin/ls --require-shapee "Developer ID"
+assert_exit "a flag after the path is still parsed" 6 \
+    /bin/ls --require-shape "Developer ID"
+assert_exit "a flag with no value is a usage error, not a verdict" 64 \
+    --require-shape
+assert_exit "a second path is a usage error, not a silently dropped argument" 64 \
+    /bin/ls /bin/echo
 
 echo
 echo "── default target ──"
@@ -408,8 +504,11 @@ echo "Passed: $PASS  Failed: $FAIL"
 if [[ "$SKIPPED" -gt 0 ]]; then
     echo
     echo "  $SKIPPED case(s) did not run on this machine (see ⊘ above)."
-    if [[ -n "${ALLOW_INCOMPLETE:-}" ]]; then
-        echo "  ALLOW_INCOMPLETE=1 — accepting a partial result."
+    # Strictly "1". Round 6: `-n` accepted ALLOW_INCOMPLETE=0 and then printed
+    # a line that said "=1", so a run that was told NOT to accept a partial
+    # result accepted one and said so in words that were false.
+    if [[ "${ALLOW_INCOMPLETE:-0}" == "1" ]]; then
+        echo "  ALLOW_INCOMPLETE=1 — accepting a partial result knowingly."
     else
         echo "  This is not a pass. Re-run with ALLOW_INCOMPLETE=1 to accept it"
         echo "  knowingly, or provide a codesigning identity so they can run."
