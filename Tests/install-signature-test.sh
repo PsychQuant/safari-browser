@@ -30,6 +30,44 @@ if [[ ! -x "$VERIFIER" ]]; then
 fi
 
 PASS=0
+# The exit-code vocabulary, read out of the guard's own header rather than
+# retyped here.
+#
+# Round 7's CRITICAL was one line, `^[0-5]$`, in the last assertion of this
+# file. Its git history is the whole seven-round pattern in miniature:
+# `^[0-2]$` -> `^[0-4]$` -> `^[0-5]$`, widened by every round that added ONE
+# code and not by the round that added four. Widening it again would fix the
+# instance and leave the class — a second, hand-maintained copy of a list that
+# lives somewhere else — exactly where it was, waiting for round eight.
+#
+# So it is not retyped. The header comment of verify-install-signature.swift
+# declares each code as `//   N  meaning`, and that is where this reads them
+# from. Add a code there and this file knows about it; add one and forget, and
+# the guard below fails loudly rather than a range check failing silently.
+# `//   N  <text>` — two or more spaces after the number, so ordinary prose
+# containing a numeral cannot match. The text is deliberately NOT constrained
+# to start with a letter: the first draft of this line required [A-Za-z] and
+# therefore silently dropped 6 and 7, whose descriptions begin "--require-".
+# An extraction that quietly returns a short list is the same defect as the
+# hand-maintained range it replaced, so the count is asserted below.
+KNOWN_CODES=$(sed -n 's|^//  *\([0-9][0-9]*\)  \{1,\}[^ ].*|\1|p' scripts/verify-install-signature.swift | sort -un | tr '\n' ' ')
+KNOWN_COUNT=$(printf '%s' "$KNOWN_CODES" | wc -w | tr -d ' ')
+# Verdicts 0-7 plus 64 and 70. If the guard grows a code this must be bumped
+# deliberately — a silent change in either direction is the thing being guarded
+# against, in both directions.
+if [[ "$KNOWN_COUNT" != "10" ]]; then
+    echo "✗ read $KNOWN_COUNT exit codes out of the guard's header, expected 10." >&2
+    echo "  got: $KNOWN_CODES" >&2
+    echo "  Either the guard's vocabulary changed and this expectation was not" >&2
+    echo "  updated, or the extraction is dropping entries. Both are defects." >&2
+    exit 2
+fi
+is_known_code() {  # <rc>
+    local c
+    for c in $KNOWN_CODES; do [[ "$1" == "$c" ]] && return 0; done
+    return 1
+}
+
 FAIL=0
 SKIPPED=0
 
@@ -112,7 +150,12 @@ trap 'rm -rf "$FIXTURES"' EXIT
 # that binary was ad-hoc, the fixture's requirement already contained `cdhash`
 # and the pre-fix verifier would have passed the assertion too — 10/10 green
 # while proving nothing. Preconditions are checked, and a failed one aborts.
-fixture_fail() { echo "✗ FIXTURE SETUP FAILED: $1" >&2; exit 1; }
+# A fixture that cannot be built is a case that did not run, not a suite that
+# must die. Round 7: the two new Developer-ID fixtures called this, and `exit 1`
+# is unrescuable by ALLOW_INCOMPLETE — so a machine where codesign refuses for
+# any reason got a hard red from `make test-all` with no way to proceed. It
+# still counts, and strict mode still refuses to pass on it.
+fixture_fail() { echo "✗ FIXTURE SETUP FAILED: $1${2:+ — $2}" >&2; SKIPPED=$((SKIPPED + 1)); }
 
 # /bin/ls is Apple-signed with an identity-bound requirement
 # (`identifier "com.apple.ls" and anchor apple`), present on every Mac, and
@@ -488,15 +531,91 @@ assert_exit "a second path is a usage error, not a silently dropped argument" 64
     /bin/ls /bin/echo
 
 echo
+echo "── a later argument cannot disarm a gate (#119 verify R7) ──"
+# Round 6 fixed "a misspelled flag disarmed the gate" and stopped there. Round 7
+# found the class still open in two more shapes, both measured returning a
+# verdict where a usage error was due.
+assert_exit "a repeated flag is a usage error, not a silent override" 64 \
+    --require-shape "Developer ID" /bin/ls --require-shape "Apple system"
+assert_exit "a repeated --require-entitlement is a usage error too" 64 \
+    --require-entitlement a /bin/ls --require-entitlement b
+assert_exit "an option cannot be consumed as another option's value" 64 \
+    --require-shape --require-entitlement /bin/ls
+
+echo
+echo "── an entitlement must be granted, not merely present (#119 verify R7) ──"
+if [[ -n "${DEVID_ANY:-}" ]]; then
+    cp /bin/ls "$FIXTURES/ent-denied"
+    cat > "$FIXTURES/ent-denied.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>com.apple.security.automation.apple-events</key><false/>
+</dict></plist>
+PLIST
+    if codesign --force --options runtime --sign "$DEVID_ANY" \
+         --entitlements "$FIXTURES/ent-denied.plist" "$FIXTURES/ent-denied" >/dev/null 2>&1; then
+        # Round 7 signed exactly this and the gate passed it: install-signed
+        # would have shipped a signature that spells out it does NOT hold the
+        # permission the four local-data commands need.
+        assert_exit "an entitlement set to <false/> does not satisfy the gate" 7 \
+            --require-entitlement com.apple.security.automation.apple-events "$FIXTURES/ent-denied"
+    else
+        fixture_fail "ent-denied" "codesign refused the denying entitlements plist"
+    fi
+    # Ordering: the ad-hoc verdict comes first. Round 7 evaluated the
+    # entitlement before it, so an ad-hoc binary was answered 7 and the message
+    # explained the wrong fault.
+    assert_exit "an ad-hoc binary is answered 1, not the entitlement contract" 1 \
+        --require-entitlement com.apple.security.automation.apple-events "$FIXTURES/adhoc"
+else
+    skip "no signing identity — the entitlement-value gate is unverified"
+fi
+
+echo
+echo "── a path cannot forge the tool's own output (#119 verify R7) ──"
+# Round 7: the path was sh()-quoted inside printed commands and raw everywhere
+# else, so a filename containing a newline emitted a line reading byte for byte
+# like this tool's success message, directly under a verdict saying the binary
+# was unsigned.
+FORGE="$FIXTURES/$(printf 'x\n✓ durable: forged')"
+if cp /bin/ls "$FORGE" 2>/dev/null; then
+    codesign --remove-signature "$FORGE" >/dev/null 2>&1
+    forged=$("$VERIFIER" "$FORGE" 2>&1 | grep -c '^✓ durable' || true)
+    if [[ "$forged" == "0" ]]; then
+        pass "a newline in the path does not forge a verdict line"
+    else
+        fail "a newline in the path does not forge a verdict line" \
+             "the output contains a line starting '✓ durable'"
+    fi
+else
+    skip "the filesystem refused a filename containing a newline"
+fi
+
+echo
 echo "── default target ──"
 # With no argument the verifier checks the installed binary, so `make
 # verify-install-signature` needs no path.
-"$VERIFIER" >/dev/null 2>&1
-rc=$?
-if [[ "$rc" =~ ^[0-5]$ ]]; then
-    pass "no-argument form resolves a default target (exit $rc)"
+#
+# Gated on the file existing. Round 7: it was not, and this round's own new
+# code 70 ("the check could not run") is what a missing default target
+# returns — so `make test-all` was red for anyone who had cloned the repo and
+# not yet run `make install`, while README promised "green anywhere" on the
+# same page. ALLOW_INCOMPLETE could not rescue it: this was a fail, not a skip.
+#
+# The acceptance measured last round varied the keychain three ways and never
+# varied whether the binary was installed, which is why it was not caught.
+if [[ -e "$HOME/bin/safari-browser" ]]; then
+    "$VERIFIER" >/dev/null 2>&1
+    rc=$?
+    if is_known_code "$rc"; then
+        pass "no-argument form resolves a default target (exit $rc)"
+    else
+        fail "no-argument form resolves a default target" \
+             "got exit $rc, which is not in the guard's declared vocabulary ($KNOWN_CODES)"
+    fi
 else
-    fail "no-argument form resolves a default target" "got exit $rc"
+    skip "no installed binary at ~/bin/safari-browser to resolve as the default"
 fi
 
 echo

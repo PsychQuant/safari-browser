@@ -167,7 +167,7 @@ fails the people the feature serves is worse than one that tells them what it
 skipped.
 
 (`make verify-install-signature` collapses every failure to make's own exit 2;
-run `swift scripts/verify-install-signature.swift <path>` directly to tell them apart.)
+run `.build/verify-install-signature <path>` directly to tell them apart.)
 
 Without a Developer ID certificate, `make install` is still the right choice —
 the other three permissions are unaffected. You will simply need to re-grant

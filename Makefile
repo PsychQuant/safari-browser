@@ -197,9 +197,12 @@ sign-developer-id: verify-developer-id build
 # no Full Disk Access, no Safari.
 #
 # Note: make reports its own failure code (2) for any recipe error, so the
-# script's distinct codes (1 ad-hoc, 2 unreadable, 3 broken seal, 4 cannot
-# satisfy its own requirement, 5 unrecognised shape) do not survive this
-# wrapper. Non-zero still means "not provably durable", which is what CI
+# guard's distinct codes do not survive this wrapper — run $(VERIFY_SIG) <path>
+# directly to tell them apart, and read their meanings from the header of
+# scripts/verify-install-signature.swift, which is the one place they are
+# defined. This comment used to restate them and drifted: it still said
+# "2 unreadable" after round 7 moved unreadable to 70 and gave 2 to unsigned,
+# i.e. it had inverted. Non-zero still means "not provably durable", which is what CI
 # needs; run $(VERIFY_SIG) <path> directly to tell them apart.
 verify-install-signature: $(VERIFY_BIN)
 	@$(VERIFY_SIG) "$(INSTALL_DIR)/$(BINARY_NAME)"
@@ -224,8 +227,14 @@ test-smoke: build-debug
 # holds both a Developer ID and a non-Developer-ID identity; it is what this
 # repo's own verification runs, and what a change to the guard must be checked
 # against. `make test-all` deliberately does not gate on it — see below.
+# ALLOW_INCOMPLETE= is passed explicitly, not merely left unset. Round 7: this
+# target's entire strictness was "we do not set it" — but it is an environment
+# variable, so a shell that had exported it (which is what `test-all` does, one
+# target above) handed it straight through, and `strict` accepted a partial run
+# with rc=0. A target whose guarantee can be switched off by the caller's
+# environment does not have that guarantee.
 test-install-signature-strict: $(VERIFY_BIN)
-	@bash Tests/install-signature-test.sh
+	@ALLOW_INCOMPLETE= bash Tests/install-signature-test.sh
 
 # Everything that runs on any machine, with or without a signing identity.
 #

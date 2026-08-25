@@ -95,7 +95,25 @@ import Security
 // `codesign -dvv | grep -q "Authority=Developer ID Application"` and
 // `codesign -dv --entitlements - | grep -q apple-events` — unanchored
 // substring searches over a stream that also echoes the file's path. Those
-// greps are gone; both answers now come from the signature itself.
+// greps are gone FROM THIS FILE, and both answers here come from the
+// signature itself.
+//
+// That qualification is load-bearing, and round 7 is why. The sentence used to
+// end at "are gone", which is false about the product: CodeSigningState.parse
+// still classifies a signature with unanchored `contains()` over the stderr of
+// `codesign -dvv <path>` — the same stream codesign writes the path into. Put
+// an UNSIGNED file inside a directory named `Authority=Developer ID
+// Application` and the shipped classifier calls it .developerID, whose guidance
+// text does not mention that a rebuild invalidates the grant. That is round
+// five's "two byte-identical copies, opposite verdicts", still live in
+// Sources/, and it is tracked as #122.
+//
+// The deeper fault is not that bug. It is that this file became a second
+// source of truth for "is this signature durable" without the first one being
+// retired. Two answers to one question, one reading OSStatus and SecRequirement
+// objects and one reading English prose, is the defect — #122 is where they
+// get merged, and until then no comment in this repo may claim the greps are
+// gone without saying which ones.
 var requiredShape: String?
 var requiredEntitlement: String?
 var positional: [String] = []
@@ -119,20 +137,38 @@ func usage(_ problem: String) -> Never {
     exit(64)
 }
 
+/// Takes an option's value, refusing three things the hand-rolled loop got
+/// wrong twice. Round 6 fixed only "the value is missing from the end of
+/// argv"; round 7 found the other two still open, and both disarm the gate
+/// that is the entire point of these flags:
+///
+///   * a value that is itself an option — `--require-shape --require-entitlement
+///     /bin/ls` consumed the second flag as the first one's value and returned
+///     a verdict about a binary the caller never named;
+///   * a repeat — `--require-shape "Developer ID" /bin/ls --require-shape
+///     "Apple system"` silently overrode the first and exited 0.
+///
+/// A gate that a later argument can switch off is not a gate. Neither was one
+/// a typo could switch off, which is what round 6 said while leaving these.
+func takeValue(_ flag: String, into slot: inout String?) {
+    if slot != nil { usage("\(flag) given more than once") }
+    guard let v = rest.first else { usage("\(flag) needs a value") }
+    if v.hasPrefix("-") { usage("\(flag) needs a value, got the option \(v)") }
+    slot = v; rest.removeFirst()
+}
+
 while let head = rest.first {
     rest.removeFirst()
     switch head {
     case "--require-shape":
-        guard let v = rest.first else { usage("--require-shape needs a value") }
-        requiredShape = v; rest.removeFirst()
+        takeValue(head, into: &requiredShape)
     case "--require-entitlement":
-        guard let v = rest.first else { usage("--require-entitlement needs a value") }
-        requiredEntitlement = v; rest.removeFirst()
+        takeValue(head, into: &requiredEntitlement)
     case let f where f.hasPrefix("-"):
         // Round 6: unknown flags fell through to `positional`, and every
         // positional after the first was dropped. So `verify <path>
         // --require-shapee X` — one typo — silently ran with no gate at all
-        // and exited 0. A gate you can turn off by misspelling it is not one.
+        // and exited 0.
         usage("unknown option: \(f)")
     default:
         positional.append(head)
@@ -151,10 +187,38 @@ let target = positional.first ?? home + "/bin/safari-browser"
 
 /// POSIX single-quoting, for any path this tool puts inside a command it
 /// expects a human to run. Round 6: the path was interpolated into
-/// `rm -f "\(target)"`, and double quotes do not disable `$(...)` — so a
+/// `rm -f "\(display(target))"`, and double quotes do not disable `$(...)` — so a
 /// filename could smuggle a command into a destructive line the tool itself
 /// told the user to paste. That is round 5's defect exactly, one channel over:
 /// the requirement stopped being text, the path never did.
+/// Escapes control characters for display. Round 7: the path was sh()-quoted
+/// inside the commands this tool prints, and printed RAW everywhere else — so
+/// a filename containing a newline emitted a line reading, byte for byte,
+/// "✓ durable: Developer ID requirement, valid seal, and this binary satisfies
+/// it" while the verdict above it said the binary was unsigned. Round 5's
+/// forged-line attack, a third channel over: first the requirement, then the
+/// command, now the diagnostic itself.
+func display(_ s: String) -> String {
+    var out = ""
+    for u in s.unicodeScalars {
+        switch u {
+        case "\n": out += "\\n"
+        case "\r": out += "\\r"
+        case "\t": out += "\\t"
+        case let c where c.value < 0x20 || c.value == 0x7f:
+            out += String(format: "\\x%02x", c.value)
+        default: out.unicodeScalars.append(u)
+        }
+    }
+    return out
+}
+
+/// True when the path carries anything that would let it forge output or
+/// smuggle structure into a printed command. Such a path gets its escaped form
+/// and no paste-ready command: a command containing a literal newline is not
+/// paste-ready anyway, and printing one invites exactly the confusion above.
+let targetIsPrintable = target.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f }
+
 func sh(_ s: String) -> String {
     "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
@@ -164,7 +228,7 @@ func err(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .u
 
 func envProblem(_ what: String) -> Never {
     err("✗ \(what)")
-    err("  This is an environment problem, not a verdict about \(target).")
+    err("  This is an environment problem, not a verdict about \(display(target)).")
     exit(70)
 }
 
@@ -175,18 +239,18 @@ let createStatus = SecStaticCodeCreateWithPath(url, [], &code)
 
 if createStatus != errSecSuccess {
     if !FileManager.default.fileExists(atPath: target) {
-        err("✗ no such file: \(target)")
+        err("✗ no such file: \(display(target))")
         exit(70)
     }
     if createStatus == errSecCSUnsigned {
-        err("✗ no code signature: \(target)")
+        err("✗ no code signature: \(display(target))")
         err("  An unsigned binary cannot hold a Full Disk Access grant.")
         exit(2)
     }
-    envProblem("could not read \(target) as code (OSStatus \(createStatus))")
+    envProblem("could not read \(display(target)) as code (OSStatus \(createStatus))")
 }
 guard let staticCode = code else {
-    envProblem("could not read \(target) as code")
+    envProblem("could not read \(display(target)) as code")
 }
 
 // ── 2. Does the signature validate? ─────────────────────────────────────
@@ -235,7 +299,7 @@ let isOurInstall: Bool = {
 
 if sealStatus != errSecSuccess {
     if sealStatus == errSecCSUnsigned {
-        err("✗ no code signature: \(target)")
+        err("✗ no code signature: \(display(target))")
         err("  An unsigned binary cannot hold a Full Disk Access grant.")
         exit(2)
     }
@@ -244,7 +308,7 @@ if sealStatus != errSecSuccess {
                       errSecCSSignatureInvalid,
                       errSecCSSignatureNotVerifiable].contains(sealStatus)
 
-    err("✗ signature does not validate: \(target)")
+    err("✗ signature does not validate: \(display(target))")
     err("  \(describe(sealStatus))")
     err("")
     if sealItself {
@@ -257,7 +321,13 @@ if sealStatus != errSecSuccess {
     }
     err("")
     if isOurInstall {
-        err("  Fix:  rm -f \(sh(target)) && DEVELOPER_ID=<cert-sha1> make install-signed")
+        if targetIsPrintable {
+            err("  Fix:  rm -f \(sh(target)) && DEVELOPER_ID=<cert-sha1> make install-signed")
+        } else {
+            err("  This path contains control characters, so no paste-ready command is")
+            err("  offered. Remove it by whatever means you are sure of, then:")
+            err("        DEVELOPER_ID=<cert-sha1> make install-signed")
+        }
     } else {
         err("  This is not a path this project installs, so no fix is offered here:")
         err("  re-installing or re-signing someone else's software is their call,")
@@ -271,27 +341,13 @@ var infoRef: CFDictionary?
 guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &infoRef)
         == errSecSuccess,
       let info = infoRef as? [String: Any] else {
-    envProblem("could not read the signing information of \(target)")
-}
-
-if let want = requiredEntitlement {
-    let ents = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
-    guard let ents, ents[want] != nil else {
-        err("✗ required entitlement missing: \(want)")
-        err("  \(target)")
-        err("  The signature carries \(ents?.count ?? 0) entitlement(s); this is read from")
-        err("  the signature itself, not from codesign's printed output.")
-        err("")
-        err("  This is install-signed's own contract, not a fault in the binary's")
-        err("  designated requirement — hence 7 rather than 4.")
-        exit(7)
-    }
+    envProblem("could not read the signing information of \(display(target))")
 }
 
 let adhocBit: UInt32 = 0x0002  // kSecCodeSignatureAdhoc
 let signFlags = (info[kSecCodeInfoFlags as String] as? UInt32) ?? 0
 if signFlags & adhocBit != 0 {
-    err("✗ ad-hoc signature: \(target)")
+    err("✗ ad-hoc signature: \(display(target))")
     if let team = info[kSecCodeInfoTeamIdentifier as String] as? String {
         err("  TeamIdentifier=\(team)")
     }
@@ -304,18 +360,49 @@ if signFlags & adhocBit != 0 {
     exit(1)
 }
 
+// The entitlement gate runs HERE, after the ad-hoc verdict. Round 7: it ran
+// before, so an ad-hoc binary was answered 7 — "install-signed's contract" —
+// when the honest answer is 1, and the message explained the wrong fault.
+if let want = requiredEntitlement {
+    let ents = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
+    // Present is not the same as granted. Round 7 signed a Developer ID
+    // binary whose apple-events entitlement was explicitly <false/> and this
+    // gate passed it — install-signed would have shipped a signature that
+    // spells out that it does NOT have the permission.
+    let granted: Bool = {
+        guard let v = ents?[want] else { return false }
+        if let b = v as? Bool { return b }
+        if let n = v as? NSNumber { return n.boolValue }
+        return true   // a non-boolean entitlement (a string, an array) is a value, not a denial
+    }()
+    if !granted {
+        err("✗ required entitlement not granted: \(want)")
+        err("  \(display(target))")
+        if ents?[want] == nil {
+            err("  The signature does not carry it at all.")
+        } else {
+            err("  The signature carries it, set to a value that denies it.")
+        }
+        err("  Read from the signature itself, not from codesign's printed output.")
+        err("")
+        err("  This is install-signed's own contract, not a fault in the binary's")
+        err("  designated requirement — hence 7 rather than 4.")
+        exit(7)
+    }
+}
+
 // ── 4. The designated requirement, as an object ──────────────────────────
 // Exactly one. No path in it, no sibling lines, nothing to forge.
 var reqRef: SecRequirement?
 guard SecCodeCopyDesignatedRequirement(staticCode, [], &reqRef) == errSecSuccess,
       let requirement = reqRef else {
-    envProblem("could not read the designated requirement of \(target)")
+    envProblem("could not read the designated requirement of \(display(target))")
 }
 
 var textRef: CFString?
 guard SecRequirementCopyString(requirement, [], &textRef) == errSecSuccess,
       let drText = textRef as String? else {
-    envProblem("could not render the designated requirement of \(target)")
+    envProblem("could not render the designated requirement of \(display(target))")
 }
 
 // ── 5. Is it a shape we recognise? ───────────────────────────────────────
@@ -351,7 +438,7 @@ for (name, pattern) in shapes {
 }
 
 guard let matchedShape = shape else {
-    err("✗ cannot tell whether this grant is durable: \(target)")
+    err("✗ cannot tell whether this grant is durable: \(display(target))")
     err("  DR: \(drText)")
     err("")
     err("  This tool recognises the requirement shapes a standard codesign")
@@ -360,7 +447,11 @@ guard let matchedShape = shape else {
     err("  that reading them as text gets the answer wrong in both directions,")
     err("  so the honest answer here is that it does not know.")
     err("")
-    err("  Inspect it yourself:  codesign -d -r- \(sh(target))")
+    if targetIsPrintable {
+        err("  Inspect it yourself:  codesign -d -r- \(sh(target))")
+    } else {
+        err("  This path contains control characters; no paste-ready command is offered.")
+    }
     err("  Or reinstall onto known ground:  DEVELOPER_ID=<cert-sha1> make install-signed")
     exit(5)
 }
@@ -372,7 +463,7 @@ guard let matchedShape = shape else {
 // before re-parsing it cannot occur here.
 let satisfies = SecStaticCodeCheckValidity(staticCode, checkFlags, requirement)
 if satisfies != errSecSuccess {
-    err("✗ does not satisfy its own designated requirement: \(target)")
+    err("✗ does not satisfy its own designated requirement: \(display(target))")
     err("  DR: \(drText)")
     err("  \(describe(satisfies))")
     err("")
@@ -386,7 +477,7 @@ if satisfies != errSecSuccess {
 }
 
 if let want = requiredShape, matchedShape != want {
-    err("✗ wrong signing identity: \(target)")
+    err("✗ wrong signing identity: \(display(target))")
     err("  required shape: \(want)")
     err("  actual shape:   \(matchedShape)")
     err("  DR: \(drText)")
@@ -402,6 +493,6 @@ if let want = requiredShape, matchedShape != want {
 }
 
 out("✓ durable: \(matchedShape) requirement, valid seal, and this binary satisfies it")
-out("  \(target)")
+out("  \(display(target))")
 out("  \(drText)")
 out("  A Full Disk Access grant on this binary survives rebuilds.")
