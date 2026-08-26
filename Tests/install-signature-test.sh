@@ -23,6 +23,7 @@ set -u
 # The compiled guard, not `swift scripts/...`. Round 6: the driver's own exit 1
 # on a compile failure is indistinguishable from the verdict "ad-hoc", and this
 # suite would have reported that as a passing assertion.
+GUARD_SRC="scripts/verify-install-signature.swift"
 VERIFIER="${VERIFY_INSTALL_SIGNATURE:-.build/verify-install-signature}"
 if [[ ! -x "$VERIFIER" ]]; then
     swiftc -O -o "$VERIFIER" scripts/verify-install-signature.swift 2>/dev/null \
@@ -46,22 +47,38 @@ PASS=0
 # the guard below fails loudly rather than a range check failing silently.
 # `//   N  <text>` — two or more spaces after the number, so ordinary prose
 # containing a numeral cannot match. The text is deliberately NOT constrained
-# to start with a letter: the first draft of this line required [A-Za-z] and
-# therefore silently dropped 6 and 7, whose descriptions begin "--require-".
-# An extraction that quietly returns a short list is the same defect as the
-# hand-maintained range it replaced, so the count is asserted below.
-KNOWN_CODES=$(sed -n 's|^//  *\([0-9][0-9]*\)  \{1,\}[^ ].*|\1|p' scripts/verify-install-signature.swift | sort -un | tr '\n' ' ')
-KNOWN_COUNT=$(printf '%s' "$KNOWN_CODES" | wc -w | tr -d ' ')
-# Verdicts 0-7 plus 64 and 70. If the guard grows a code this must be bumped
-# deliberately — a silent change in either direction is the thing being guarded
-# against, in both directions.
-if [[ "$KNOWN_COUNT" != "10" ]]; then
-    echo "✗ read $KNOWN_COUNT exit codes out of the guard's header, expected 10." >&2
-    echo "  got: $KNOWN_CODES" >&2
-    echo "  Either the guard's vocabulary changed and this expectation was not" >&2
-    echo "  updated, or the extraction is dropping entries. Both are defects." >&2
+# to start with a letter: the first draft required [A-Za-z] and therefore
+# silently dropped 6 and 7, whose descriptions begin "--require".
+DECLARED=$(sed -n 's|^//  *\([0-9][0-9]*\)  \{1,\}[^ ].*|\1|p' "$GUARD_SRC" | sort -un | tr '\n' ' ')
+
+# The declared list is cross-checked against the codes the guard can actually
+# REACH, not against a number typed here.
+#
+# Round 8 mutation-tested the previous mechanism — an extraction plus a
+# hardcoded count of 10 — and found it exactly inverted. Adding `exit(8)`
+# WITHOUT documenting it left the count at 10: green, silent. Documenting a new
+# code made the count 11: hard red, until a human bumped the constant by hand.
+# So the negligent edit passed and the diligent one broke the build, which is
+# the opposite of what the comment above it claimed. And the constant was
+# itself a hand-maintained copy of a fact about the guard — structurally the
+# same object as round 7's `^[0-5]$`, which it had been introduced to remove.
+#
+# There is no constant now. `exit(0)` is never written (the guard falls off the
+# end on success), so 0 is added as the implicit one.
+REACHED=$(printf '0\n%s' "$(grep -oE 'exit\(([0-9]+)\)' "$GUARD_SRC" | grep -oE '[0-9]+')" | sort -un | tr '\n' ' ')
+
+if [[ "$DECLARED" != "$REACHED" ]]; then
+    echo "✗ the guard's documented exit codes and its reachable ones disagree." >&2
+    echo "    documented: $DECLARED" >&2
+    echo "    reachable:  $REACHED" >&2
+    echo "  A code that exists but is undocumented is the dangerous direction —" >&2
+    echo "  callers cannot act on it. A code documented but unreachable is dead" >&2
+    echo "  text. Both are defects, and neither can be fixed by editing a number" >&2
+    echo "  in this file." >&2
     exit 2
 fi
+KNOWN_CODES="$DECLARED"
+
 is_known_code() {  # <rc>
     local c
     for c in $KNOWN_CODES; do [[ "$1" == "$c" ]] && return 0; done
@@ -155,7 +172,37 @@ trap 'rm -rf "$FIXTURES"' EXIT
 # is unrescuable by ALLOW_INCOMPLETE — so a machine where codesign refuses for
 # any reason got a hard red from `make test-all` with no way to proceed. It
 # still counts, and strict mode still refuses to pass on it.
-fixture_fail() { echo "✗ FIXTURE SETUP FAILED: $1${2:+ — $2}" >&2; SKIPPED=$((SKIPPED + 1)); }
+# Returns 1 so the caller can gate on it. Round 8: this counted a skip and
+# returned success, and every call site was `<precondition> && fixture_fail
+# ...` with the assertions following UNGUARDED — so a fixture that failed to
+# build was still asserted against. That produced both a vacuous PASS (a
+# degraded fixture the assertion cannot distinguish) and a hard red the skip
+# accounting could not forgive. Downgrading the abort without guarding the
+# call sites moved the defect rather than removing it.
+fixture_fail() { echo "✗ FIXTURE SETUP FAILED: $1${2:+ — $2}" >&2; SKIPPED=$((SKIPPED + 1)); return 1; }
+
+# The certificate a file was actually signed with, as a SHA-1 fingerprint read
+# back from the signature — not "some Authority line is present". Round 8:
+# other-identity's preconditions asked whether an `Authority=Developer ID
+# Application` line was absent and whether any `^Authority=` line was present.
+# A /bin/ls copy whose signing silently failed satisfies BOTH (Apple's own
+# authority is neither), so the fixture degraded into a duplicate of
+# identity-bound and its assertion passed while proving nothing — the R2-B5
+# defect it was written to prevent, in the check written to prevent it.
+# Exact identity, resolved through the keychain. `codesign -dvvv` does NOT
+# print the certificate's SHA-1 — the 40-hex strings in its output are cdhash
+# values, so comparing them to an identity fingerprint never matches and could
+# in principle match the wrong thing. The reliable route is the identity's
+# common name, which `security find-identity` gives for the fingerprint we
+# asked codesign to sign with, compared against the signature's LEAF authority.
+signed_by() {  # <path> <identity-sha1>  -> 0 when the leaf certificate is that identity
+    local cn auth
+    cn=$(security find-identity -v -p codesigning 2>/dev/null \
+         | grep -F "$2" | sed -n 's/.*"\(.*\)".*/\1/p' | head -1)
+    [[ -n "$cn" ]] || return 1
+    auth=$(codesign -dvv "$1" 2>&1 | sed -n 's/^Authority=//p' | head -1)
+    [[ "$auth" == "$cn" ]]
+}
 
 # /bin/ls is Apple-signed with an identity-bound requirement
 # (`identifier "com.apple.ls" and anchor apple`), present on every Mac, and
@@ -225,16 +272,22 @@ if [[ -n "$NON_DEVID" && -n "$DEVID_ANY" ]]; then
         HAVE_CROSSED=1
     fi
 
+    HAVE_OTHER_IDENTITY=0
     cp /bin/ls "$FIXTURES/other-identity"
     codesign --force --sign "$NON_DEVID" "$FIXTURES/other-identity" >/dev/null 2>&1
     # This fixture exists to prove the verifier does NOT demand Developer ID.
-    # Without the assertion it silently degrades into a duplicate of
-    # identity-bound whenever the signing did not take — which is the very
-    # failure (R2-B5) the round that added it was fixing. Found by round 3.
-    codesign -dvv "$FIXTURES/other-identity" 2>&1 | grep -q 'Authority=Developer ID Application' \
-      && fixture_fail "other-identity is Developer ID signed — it cannot prove non-Developer-ID identities pass"
-    codesign -dvv "$FIXTURES/other-identity" 2>&1 | grep -q '^Authority=' \
-      || fixture_fail "other-identity has no Authority line — signing with the non-Developer-ID identity did not take"
+    # Its preconditions used to ask whether an `Authority=Developer ID
+    # Application` line was ABSENT and whether any `^Authority=` line was
+    # PRESENT. A /bin/ls copy whose signing silently failed satisfies both —
+    # Apple's own authority is neither — so the fixture degraded into a
+    # duplicate of identity-bound and its assertion passed while proving
+    # nothing. That is R2-B5 reproduced inside the check written to prevent it
+    # (round 8). It now demands the certificate we actually asked for.
+    if signed_by "$FIXTURES/other-identity" "$NON_DEVID"; then
+        HAVE_OTHER_IDENTITY=1
+    else
+        fixture_fail "other-identity" "not signed by the non-Developer-ID identity — it would silently duplicate identity-bound" || true
+    fi
 fi
 
 # Constructed by round 3's devil's advocate. Both pass every check the round-3
@@ -281,6 +334,7 @@ if [[ -n "$SHAPE_ID" ]]; then
         codesign -dvv "$FIXTURES/$1" 2>&1 | grep -q '^Signature=adhoc' \
           && fixture_fail "$1 came out ad-hoc — it would never reach the shape check"
     }
+    make_dr_fixture bare-identifier-signed 'identifier "com.foo.bar"'
     make_dr_fixture anchor-in-string 'identifier "com.foo.anchor"'
     make_dr_fixture negated          'identifier "com.foo.neg" and !(anchor apple)'
     make_dr_fixture version-pinned   'identifier "com.foo.ver" and anchor apple generic and info[CFBundleVersion] = "1"'
@@ -404,7 +458,7 @@ echo "── durable but not Developer ID (must PASS, with a note) ──"
 # /bin/ls is Apple-signed, not Developer ID, and its grant IS durable. A
 # verifier that demanded Developer ID would reject it wrongly — the question
 # is whether the requirement is stable and satisfiable, not who issued it.
-if [[ -n "${NON_DEVID:-}" && -f "$FIXTURES/other-identity" ]]; then
+if [[ "${HAVE_OTHER_IDENTITY:-0}" == "1" ]]; then
     assert_exit "non-Developer-ID identity still passes" 0 "$FIXTURES/other-identity"
     # The note this used to assert on has been removed: it claimed
     # CodeSigningState would classify such a build as .unknown, which is false
@@ -455,19 +509,36 @@ else
 fi
 
 echo
-echo "── satisfiable but unprovable (#119 verify R3) ──"
-# The verifier answers one question: will a Full Disk Access grant on this
-# binary still apply later? For these it cannot tell, and says so (5) rather
-# than guessing in the optimistic direction.
-assert_exit "a bare-identifier ad-hoc binary is answered as ad-hoc" 1 "$FIXTURES/bare-identifier"
+echo "── the ad-hoc verdict answers first, whatever the DR says ──"
+# What these two actually establish. Round 8: they were labelled as covering
+# R3 ("a DR naming only an identifier"; "a DR pinning CFBundleVersion") and
+# they cannot — both fixtures are ad-hoc, and the guard answers ad-hoc BEFORE
+# it reads the requirement, so their .req files change nothing and ANY ad-hoc
+# binary returns 1. They were vacuous with the fixtures built perfectly, not
+# only when they degraded. On a plain clone they printed two ✓ for a
+# regression that had not run.
+#
+# Kept, renamed to what they prove: ordering. R3 itself is covered below by
+# real-identity fixtures, which is the only way to reach the shape matcher.
+assert_exit "an ad-hoc binary is ad-hoc even with an identifier-only DR" 1 "$FIXTURES/bare-identifier"
 if [[ "$HAVE_VERSION_BOUND" == "1" ]]; then
-    assert_exit "version-pinned ad-hoc binary is answered as ad-hoc" 1 "$FIXTURES/version-bound"
+    assert_exit "an ad-hoc binary is ad-hoc even with a version-pinned DR" 1 "$FIXTURES/version-bound"
 else
     skip "codesign did not retain the version-pinned requirement."
-    echo "    NOT a pass: the version-bound case is unverified in this run."
 fi
 
 echo
+echo "── satisfiable but unprovable (#119 verify R3) ──"
+# The actual R3 regression: a requirement that is satisfiable and stable but
+# not a shape this tool was taught. It must say "cannot tell" (5), not guess
+# in either direction — and reaching that code at all requires a REAL identity,
+# which is why the ad-hoc pair above cannot stand in for it.
+if [[ "$HAVE_SHAPE_FIXTURES" == "1" ]]; then
+    assert_exit "an identifier-only requirement is not a shape we know" 5 "$FIXTURES/bare-identifier-signed"
+else
+    skip "no signing identity — the R3 identifier-only case is unverified"
+fi
+
 echo "── unsigned / unreadable (must NOT be mistaken for the good state) ──"
 # The trap this guards: `codesign -d -r-` exits 1 on an unsigned binary and
 # prints no requirement at all, so a verifier that only greps for `cdhash`

@@ -65,7 +65,7 @@ final class CodeSigningStateTests: XCTestCase {
             text.contains("rebuilding the binary can invalidate"),
             "ad-hoc guidance must state the rebuild caveat")
         XCTAssertTrue(
-            text.contains("make sign-developer-id"),
+            text.contains("make install-signed"),
             "must name the signed-build route")
         XCTAssertTrue(
             text.lowercased().contains("terminal"),
@@ -97,8 +97,8 @@ final class CodeSigningStateTests: XCTestCase {
         let devID = SafariBrowserError.fullDiskAccessRequired(
             path: "/Users/example/Library/Safari/History.db", signing: .developerID)
 
-        XCTAssertTrue(adHoc.errorDescription?.contains("make sign-developer-id") == true)
-        XCTAssertTrue(devID.errorDescription?.contains("make sign-developer-id") == false)
+        XCTAssertTrue(adHoc.errorDescription?.contains("make install-signed") == true)
+        XCTAssertTrue(devID.errorDescription?.contains("make install-signed") == false)
         // Both name the file they failed on.
         XCTAssertTrue(adHoc.errorDescription?.contains("History.db") == true)
         XCTAssertTrue(devID.errorDescription?.contains("History.db") == true)

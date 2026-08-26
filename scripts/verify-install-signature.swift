@@ -130,8 +130,8 @@ func usage(_ problem: String) -> Never {
       usage: verify-install-signature.swift [--require-shape NAME]
                                             [--require-entitlement KEY] [path]
 
-      Exits 0-7 with a verdict about the binary; 64 for a usage error like this
-      one, 70 when the check could not run. Nothing was inspected.
+      Exit codes are defined once, in the header comment of this file. This
+      message is a usage error: nothing was inspected.
 
     """ + "\n").data(using: .utf8)!)
     exit(64)
@@ -151,9 +151,17 @@ func usage(_ problem: String) -> Never {
 /// A gate that a later argument can switch off is not a gate. Neither was one
 /// a typo could switch off, which is what round 6 said while leaving these.
 func takeValue(_ flag: String, into slot: inout String?) {
-    if slot != nil { usage("\(flag) given more than once") }
-    guard let v = rest.first else { usage("\(flag) needs a value") }
-    if v.hasPrefix("-") { usage("\(flag) needs a value, got the option \(v)") }
+    if slot != nil { usage("\(display(flag)) given more than once") }
+    guard let v = rest.first else { usage("\(display(flag)) needs a value") }
+    if v.hasPrefix("-") { usage("\(display(flag)) needs a value, got the option \(display(v))") }
+    // Round 8: `--require-shape /bin/ls` took the path as the shape name and
+    // then delivered a verdict about the DEFAULT target — a binary the caller
+    // never named, reported as "wrong signing identity". Round 7 rejected a
+    // value that looked like an option and stopped there; this is the same
+    // class one shape over.
+    if v.hasPrefix("/") || v.hasPrefix("./") || v.hasPrefix("~/") {
+        usage("\(display(flag)) needs a name, got what looks like a path: \(display(v))")
+    }
     slot = v; rest.removeFirst()
 }
 
@@ -169,14 +177,14 @@ while let head = rest.first {
         // positional after the first was dropped. So `verify <path>
         // --require-shapee X` — one typo — silently ran with no gate at all
         // and exited 0.
-        usage("unknown option: \(f)")
+        usage("unknown option: \(display(f))")
     default:
         positional.append(head)
     }
 }
 
 if positional.count > 1 {
-    usage("expected at most one path, got \(positional.count): \(positional.joined(separator: " "))")
+    usage("expected at most one path, got \(positional.count): \(positional.map(display).joined(separator: " "))")
 }
 
 guard let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty else {
@@ -205,19 +213,37 @@ func display(_ s: String) -> String {
         case "\n": out += "\\n"
         case "\r": out += "\\r"
         case "\t": out += "\\t"
-        case let c where c.value < 0x20 || c.value == 0x7f:
-            out += String(format: "\\x%02x", c.value)
+        case let c where !isSafeToPrint(c):
+            out += String(format: "\\u{%04x}", c.value)
         default: out.unicodeScalars.append(u)
         }
     }
     return out
 }
 
+/// Round 8: `display()` and the printable test both covered only C0 and DEL.
+/// Everything below is also a way to move the cursor, start a new line, or
+/// reverse the reading order of what follows — i.e. to make output say
+/// something other than what this tool wrote.
+func isSafeToPrint(_ c: Unicode.Scalar) -> Bool {
+    switch c.value {
+    case 0x00...0x1f, 0x7f:            return false   // C0 + DEL
+    case 0x80...0x9f:                  return false   // C1, incl. NEL (U+0085)
+    case 0x2028, 0x2029:               return false   // line / paragraph separator
+    case 0x200e, 0x200f:               return false   // LRM / RLM
+    case 0x202a...0x202e:              return false   // bidi embedding + override
+    case 0x2066...0x2069:              return false   // bidi isolates
+    case 0x200b...0x200d, 0x2060:      return false   // zero-width
+    case 0xfeff:                       return false   // BOM / ZWNBSP
+    default:                           return true
+    }
+}
+
 /// True when the path carries anything that would let it forge output or
 /// smuggle structure into a printed command. Such a path gets its escaped form
 /// and no paste-ready command: a command containing a literal newline is not
 /// paste-ready anyway, and printing one invites exactly the confusion above.
-let targetIsPrintable = target.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f }
+let targetIsPrintable = target.unicodeScalars.allSatisfy(isSafeToPrint)
 
 func sh(_ s: String) -> String {
     "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
@@ -369,19 +395,25 @@ if let want = requiredEntitlement {
     // binary whose apple-events entitlement was explicitly <false/> and this
     // gate passed it — install-signed would have shipped a signature that
     // spells out that it does NOT have the permission.
+    // Only a real boolean true. Round 8: this ended `return true` for every
+    // other type, on the reasoning that "a string is a value, not a denial" —
+    // so `<string>false</string>` and `<array/>` both passed install-signed's
+    // gate. Round 7 had fixed the `<false/>` INSTANCE and opened the type
+    // CLASS in the same closure. The gate exists to answer one question about
+    // one boolean entitlement; anything that is not a boolean true is not a
+    // yes, and guessing on the caller's behalf is how the last hole got made.
     let granted: Bool = {
         guard let v = ents?[want] else { return false }
-        if let b = v as? Bool { return b }
-        if let n = v as? NSNumber { return n.boolValue }
-        return true   // a non-boolean entitlement (a string, an array) is a value, not a denial
+        if let n = v as? NSNumber { return n.boolValue && CFGetTypeID(n) == CFBooleanGetTypeID() }
+        return false
     }()
     if !granted {
-        err("✗ required entitlement not granted: \(want)")
+        err("✗ required entitlement not granted: \(display(want))")
         err("  \(display(target))")
         if ents?[want] == nil {
             err("  The signature does not carry it at all.")
         } else {
-            err("  The signature carries it, set to a value that denies it.")
+            err("  The signature carries it, but not as a boolean true.")
         }
         err("  Read from the signature itself, not from codesign's printed output.")
         err("")
@@ -439,7 +471,7 @@ for (name, pattern) in shapes {
 
 guard let matchedShape = shape else {
     err("✗ cannot tell whether this grant is durable: \(display(target))")
-    err("  DR: \(drText)")
+    err("  DR: \(display(drText))")
     err("")
     err("  This tool recognises the requirement shapes a standard codesign")
     err("  invocation produces, and this is not one of them. It does not try")
@@ -464,7 +496,7 @@ guard let matchedShape = shape else {
 let satisfies = SecStaticCodeCheckValidity(staticCode, checkFlags, requirement)
 if satisfies != errSecSuccess {
     err("✗ does not satisfy its own designated requirement: \(display(target))")
-    err("  DR: \(drText)")
+    err("  DR: \(display(drText))")
     err("  \(describe(satisfies))")
     err("")
     err("  The seal is intact and the requirement is a durable shape, but this")
@@ -478,9 +510,9 @@ if satisfies != errSecSuccess {
 
 if let want = requiredShape, matchedShape != want {
     err("✗ wrong signing identity: \(display(target))")
-    err("  required shape: \(want)")
-    err("  actual shape:   \(matchedShape)")
-    err("  DR: \(drText)")
+    err("  required shape: \(display(want))")
+    err("  actual shape:   \(display(matchedShape))")
+    err("  DR: \(display(drText))")
     err("")
     err("")
     err("  Both shapes are durable; this one is simply not the one asked for.")
@@ -494,5 +526,5 @@ if let want = requiredShape, matchedShape != want {
 
 out("✓ durable: \(matchedShape) requirement, valid seal, and this binary satisfies it")
 out("  \(display(target))")
-out("  \(drText)")
+out("  \(display(drText))")
 out("  A Full Disk Access grant on this binary survives rebuilds.")

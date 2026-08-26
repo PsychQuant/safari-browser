@@ -150,8 +150,14 @@ so instead of guessing.
 
 `make test-all` runs it with `ALLOW_INCOMPLETE=1`, because the suite needs
 **two** signing identities in the keychain — a Developer ID and a
-non-Developer-ID one — to exercise every case. With one it skips two cases;
-with none it skips five. It always names each case it could not run.
+non-Developer-ID one — to exercise every case. With fewer it skips the cases
+that need them, and names every one it could not run.
+
+(How many that is is deliberately not written here. Round 8 found this
+sentence and the Makefile's each carrying a different wrong number, both
+introduced by the round that had just fixed two other stale restatements of a
+fact defined elsewhere. The suite counts them at runtime; a copy in prose
+cannot.)
 
 ```bash
 make test-all                          # green anywhere; partial runs allowed, and announced

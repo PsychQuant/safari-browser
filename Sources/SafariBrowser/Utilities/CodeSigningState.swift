@@ -79,14 +79,16 @@ enum CodeSigningState: Equatable {
                 already given it. Two ways forward:
 
                   1. Install a Developer ID signed build (the grant then survives rebuilds):
-                       DEVELOPER_ID=<cert-sha1> make sign-developer-id
-                       cp .build/release/safari-browser ~/bin/safari-browser
+                       DEVELOPER_ID=<cert-sha1> make install-signed
                      then add ~/bin/safari-browser in
                        System Settings → Privacy & Security → Full Disk Access
 
-                     Copy the binary yourself rather than running `make install` — that
-                     target re-signs whatever it copies with `codesign --sign -`, which
-                     would put you straight back to an ad-hoc binary.
+                     One target, and it verifies the signature before landing it.
+                     Do not use `make sign-developer-id` plus a manual `cp`: that
+                     target signs the build directory and never installs, and
+                     copying over the canonical path reuses its inode, which
+                     makes the next launch die with "load code signature error 2"
+                     — SIGKILL, exit 137, no readable error.
 
                   2. Grant Full Disk Access to your terminal application instead.
                      Simpler, but far broader — the terminal can then read every file

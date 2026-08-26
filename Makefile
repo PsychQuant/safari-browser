@@ -240,7 +240,10 @@ test-install-signature-strict: $(VERIFY_BIN)
 #
 # ALLOW_INCOMPLETE is set here on purpose. The signature suite needs BOTH a
 # Developer ID and a non-Developer-ID identity in the keychain to run every
-# case; with one it skips two, with none it skips three. Round 6 measured
+# case; with fewer it skips the ones that need them and says so. (The number
+# is not restated here — this comment and README each carried a different
+# wrong one until round 8, both written by the round that had just fixed two
+# other stale restatements.) Round 6 measured
 # `make test-all` going red on a machine holding only a Developer ID — which
 # is exactly the configuration #119 tells you to have — and on a plain clone
 # by anyone without an Apple Developer account, for whom README says `make
