@@ -212,6 +212,10 @@ enum SafariBridge {
         // .resolvedTab is exempt (#79): profile was validated at its
         // resolve time and re-validation would cost an enumeration per
         // round-trip.
+        // #126: every targeting command converges here, so this is where the
+        // one-window dialog probe runs — after the window is known, before any
+        // AppleScript or JavaScript touches it. The gate caches per window, so
+        // a command's later round-trips do not pay again.
         if profile != nil, isResolvedTab(target) == false {
             let resolved = try await resolveNativeTarget(
                 from: target,
@@ -219,12 +223,14 @@ enum SafariBridge {
                 warnWriter: warnWriter,
                 profile: profile
             )
+            BlockingDialogGate.shared.check(windowKey(for: resolved))
             return docRefFromResolved(resolved)
         }
         switch target {
         case .frontWindow, .windowIndex, .resolvedTab:
             // .resolvedTab is already concrete (#79) — render directly,
             // no enumeration round-trip.
+            if let key = windowKey(for: target) { BlockingDialogGate.shared.check(key) }
             return resolveDocumentReference(target)
         case .urlMatch, .documentIndex, .windowTab:
             let resolved = try await resolveNativeTarget(
@@ -233,8 +239,15 @@ enum SafariBridge {
                 warnWriter: warnWriter,
                 profile: profile
             )
+            BlockingDialogGate.shared.check(windowKey(for: resolved))
             return docRefFromResolved(resolved)
         }
+    }
+
+    /// Gate key for an enumerated target: the stable window id when the
+    /// enumeration carried one, else the positional index (#126).
+    static func windowKey(for resolved: ResolvedWindowTarget) -> BlockingDialogGate.WindowKey {
+        resolved.windowID.map { .id($0) } ?? .index(resolved.windowIndex)
     }
 
     /// Resolve a `TargetDocument` to a **concrete** (window, tab) target
@@ -1403,6 +1416,9 @@ enum SafariBridge {
             warnWriter: warnWriter,
             profile: profile
         )
+        // #126: a dialog freezes this tab's JavaScript. Refuse now, by name,
+        // instead of letting osascript find out after its 30 s timeout (#108).
+        try BlockingDialogGate.shared.throwIfBlocked()
         do {
             return try await dispatchJS(code, docRef: docRef, target: target)
         } catch let error as SafariBrowserError {
@@ -1632,6 +1648,9 @@ enum SafariBridge {
         // holding it. An empty page is legitimate too, so the probe only runs
         // when the result is empty, and only reclassifies when a dialog is
         // actually found.
+        // #126: the entry-point probe usually already knows; reuse its answer
+        // before paying for the whole-app scan.
+        if text.isEmpty { try BlockingDialogGate.shared.throwIfBlocked() }
         if text.isEmpty, let dialog = detectBlockingDialog() {
             throw SafariBrowserError.javaScriptDialogBlocking(
                 message: dialog.message, buttons: dialog.buttons)
@@ -3673,10 +3692,13 @@ enum SafariBridge {
             // sends the reader looking at permissions, Spaces and Apple Events
             // instead. Probe once, here, where we already know something is
             // wrong — the cost only lands on a run that already failed.
-            if (executable as NSString).lastPathComponent == "osascript",
-               let dialog = detectBlockingDialog() {
-                throw SafariBrowserError.javaScriptDialogBlocking(
-                    message: dialog.message, buttons: dialog.buttons)
+            if (executable as NSString).lastPathComponent == "osascript" {
+                // #126: reuse the entry-point verdict before the whole-app scan.
+                try BlockingDialogGate.shared.throwIfBlocked()
+                if let dialog = detectBlockingDialog() {
+                    throw SafariBrowserError.javaScriptDialogBlocking(
+                        message: dialog.message, buttons: dialog.buttons)
+                }
             }
             // Use ceil so sub-second timeouts don't render as "0 seconds".
             throw SafariBrowserError.processTimedOut(
