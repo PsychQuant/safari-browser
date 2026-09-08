@@ -2998,8 +2998,16 @@ enum SafariBridge {
     /// worth naming too, and the dialog subrole because that is the actual JS
     /// blocker. Depth is bounded because this runs while something is already
     /// stuck, and a diagnostic that hangs is worse than no diagnostic.
-    private static func findDialogElement(in element: AXUIElement, depth: Int) -> AXUIElement? {
-        guard depth < 5 else { return nil }
+    /// `maxDepth` / `timeout` are the #126 entry-point probe's knobs: a JS alert
+    /// sits three levels down (#103 measured it), and the timeout must be set on
+    /// EVERY element the walk touches — Apple's header says it does not
+    /// propagate to the equal-but-distinct refs a copy call returns. Existing
+    /// callers pass neither and keep the pre-#126 behaviour byte for byte.
+    private static func findDialogElement(
+        in element: AXUIElement, depth: Int, maxDepth: Int = 5, timeout: Float? = nil
+    ) -> AXUIElement? {
+        guard depth < maxDepth else { return nil }
+        if let timeout { AXUIElementSetMessagingTimeout(element, timeout) }
         if depth > 0 {
             let role = axRole(of: element)
             if role == kAXSheetRole { return element }
@@ -3012,9 +3020,87 @@ enum SafariBridge {
         guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
               let children = childrenValue as? [AXUIElement] else { return nil }
         for child in children.prefix(30) {
-            if let found = findDialogElement(in: child, depth: depth + 1) { return found }
+            if let found = findDialogElement(in: child, depth: depth + 1, maxDepth: maxDepth, timeout: timeout) {
+                return found
+            }
         }
         return nil
+    }
+
+    // MARK: - #126 entry-point probe (one window, short timeout)
+
+    /// Which window a target names, in the gate's terms — `nil` when the
+    /// target still needs an enumeration to know (`.urlMatch` /
+    /// `.documentIndex`); the resolver supplies the key afterwards.
+    static func windowKey(for target: TargetDocument) -> BlockingDialogGate.WindowKey? {
+        switch target {
+        case .frontWindow: return .front
+        case .windowIndex(let n): return .index(n)
+        case .windowTab(let window, _): return .index(window)
+        case .resolvedTab(let windowID, _, _, _): return .id(windowID)
+        case .urlMatch, .documentIndex: return nil
+        }
+    }
+
+    /// Per-element AX messaging timeout for the entry-point probe. The
+    /// application-wide 2 s (`safariAXApplication`) is what made a whole-app
+    /// scan cost 18 s across 15 windows (#126); a window that is actually being
+    /// automated answers in milliseconds, so 0.25 s only ever lands on a window
+    /// that is itself wedged — which is precisely when the warning must appear.
+    static let entryProbeTimeout: Float = 0.25
+
+    /// Scoped variant of `detectBlockingDialog()` for the #126 happy path:
+    /// ONE window, depth ≤ 3, short timeout. Reads Accessibility attributes only.
+    static func detectBlockingDialog(windowKey: BlockingDialogGate.WindowKey) -> BlockingDialogState {
+        guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else {
+            return .accessibilityDenied
+        }
+        guard let window = axWindow(for: windowKey, in: axApp) else {
+            // No way to map the target onto an AX window: nobody looked.
+            return .unprobed
+        }
+        guard let element = findDialogElement(in: window, depth: 0, maxDepth: 3, timeout: entryProbeTimeout)
+        else { return .none }
+        return .present(BlockingDialog(
+            message: axCollectStaticText(element)
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            buttons: axCollectButtonTitles(element)))
+    }
+
+    /// The AX window behind a `WindowKey`. `.id` matches Safari's AppleScript
+    /// `window id` against the CGWindowID that `_AXUIElementGetWindow` exposes —
+    /// measured equal (#126). `.front` is the focused window; `.index` follows
+    /// front-to-back order, which is also how AppleScript numbers windows.
+    private static func axWindow(for key: BlockingDialogGate.WindowKey, in axApp: AXUIElement) -> AXUIElement? {
+        AXUIElementSetMessagingTimeout(axApp, entryProbeTimeout)
+        switch key {
+        case .front:
+            var focused: CFTypeRef?
+            if AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &focused) == .success,
+               let window = focused, CFGetTypeID(window) == AXUIElementGetTypeID() {
+                return (window as! AXUIElement)  // swiftlint:disable:this force_cast
+            }
+            return axWindows(of: axApp).first
+        case .index(let n):
+            let windows = axWindows(of: axApp)
+            return (n >= 1 && n <= windows.count) ? windows[n - 1] : nil
+        case .id(let wanted):
+            for window in axWindows(of: axApp) {
+                var cgID: CGWindowID = 0
+                if _AXUIElementGetWindow(window, &cgID) == .success, Int(cgID) == wanted {
+                    return window
+                }
+            }
+            return nil
+        }
+    }
+
+    private static func axWindows(of axApp: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
+              let windows = value as? [AXUIElement] else { return [] }
+        return windows
     }
 
     private static func axRole(of element: AXUIElement) -> String? {
