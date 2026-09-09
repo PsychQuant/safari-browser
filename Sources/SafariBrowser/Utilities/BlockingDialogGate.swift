@@ -20,8 +20,10 @@ enum BlockingDialogState: Sendable, Equatable {
 /// Honest limit: `2>&1 | tail -1` is not rescued by this line. For a
 /// read-only command that succeeds it shows the command's stdout (it flushes
 /// last), and for the JavaScript path the last line of the error is its
-/// closing sentence, not the dialog's text — what crosses that pipeline is
-/// the non-zero exit code. Control characters, quoting and length are #114's job.
+/// closing sentence, not the dialog's text. Preserving the upstream non-zero
+/// exit requires `set -o pipefail` or inspecting the upstream command status;
+/// otherwise the pipeline reports `tail`'s status. Control characters, quoting
+/// and length are #114's job.
 enum BlockingDialogWarning {
     static func firstLine(windowKey: BlockingDialogGate.WindowKey, dialog: SafariBridge.BlockingDialog) -> String {
         "⚠ BLOCKING DIALOG in \(windowKey.humanDescription): \(messageText(dialog))"

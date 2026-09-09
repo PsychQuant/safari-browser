@@ -216,7 +216,9 @@ enum SafariBridge {
         // one-window dialog probe — after the window is known, before any
         // AppleScript or JavaScript touches it. Commands that go straight to
         // resolveNativeTarget (close, pdf, tab focus, upload, save-image,
-        // screenshot, tabs --window) do not; that is #133. The gate caches per window for
+        // ordinary screenshot, tabs --window) do not; that is #133. Screenshot
+        // --full and --element reach the gate later through JavaScript.
+        // The gate caches per window for
         // 2 s, which is shorter than one `js` invocation (4-5 round-trips,
         // ~3.5 s measured), so later round-trips may probe again at ~35 ms each.
         if profile != nil, isResolvedTab(target) == false {

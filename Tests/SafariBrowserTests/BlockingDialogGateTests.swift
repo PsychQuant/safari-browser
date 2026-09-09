@@ -38,7 +38,7 @@ final class BlockingDialogGateTests: XCTestCase {
         XCTAssertTrue(line.contains("Failed to add criteria"), "the dialog's own text identifies it: \(line)")
         XCTAssertTrue(line.contains("關閉"), "the reader needs to know what dismisses it: \(line)")
         XCTAssertTrue(line.contains("safari-browser dialog list"), "must point at the tool that handles it: \(line)")
-        XCTAssertFalse(line.contains("\n"), "one line — it has to survive `tail -1`: \(line)")
+        XCTAssertFalse(line.contains("\n"), "one line — it has to survive `head -1`: \(line)")
     }
 
     func testFirstLineSaysWhenTheMessageCouldNotBeRead() {

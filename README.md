@@ -396,7 +396,7 @@ with a non-zero exit instead of waiting for the 30-second osascript timeout;
 
 What the check does **not** cover, honestly: `documents` and `tabs` enumerate
 rather than target (marking dialog-bearing windows there is #129); `close`,
-`pdf`, `tab focus`, `upload`, `save-image`, `screenshot` (other than `--full`)
+`pdf`, `tab focus`, `upload`, `save-image`, `screenshot` (other than `--full` or `--element`)
 and `tabs --window N` resolve through a different path and stay silent for now
 (#133); `exec` does not yet relay the line from its steps (#136). "First line"
 means the first line this command writes: a `--tab` deprecation notice or a
@@ -404,7 +404,7 @@ means the first line this command writes: a `--tab` deprecation notice or a
 `2>&1 | tail -1` is not rescued by this line at all: for a read-only command
 that succeeds it shows the command's own stdout, and for a JavaScript command
 the last line of the error is its closing sentence, not the dialog's text —
-what crosses that pipeline is the non-zero exit code.
+the upstream non-zero exit is preserved only with `set -o pipefail` (or by inspecting the upstream command status); otherwise the pipeline reports `tail`'s exit status.
 
 The check is a read-only Accessibility walk of the target window only, with a
 0.25 s messaging timeout set on the app element before its first read and on
