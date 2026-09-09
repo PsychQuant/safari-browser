@@ -341,3 +341,71 @@ V1 wires marker 到 `ClickCommand` 作為 reference integration。其他 30+ com
 
 完整 spec：`openspec/specs/local-data-query/spec.md`、`non-interference/spec.md`、
 `json-output/spec.md`（`local-safari-data-query` archive 後生成）。
+
+## Install-signature guard：suite 本身被 gate 管（#119, round 10）
+
+`scripts/verify-install-signature.swift` 回答一個問題：這支 binary 上的 Full Disk Access
+授權，之後還會不會生效？（TCC 存的是 designated requirement，ad-hoc 簽章的 DR 就是 cdhash
+本身，所以 rebuild 後授權安靜失效。）它的測試是 `Tests/install-signature-test.sh`。
+
+**改這支 guard 或改它的 suite，要跑的是 `make test-mutation-gate`，不是只看 suite 綠。**
+
+```bash
+make test-mutation-gate                # 17/17 mutant 全殺才算過
+make test-install-signature-strict     # 49 斷言；需兩個 signing identity，拒絕部分執行
+```
+
+### 為什麼 suite 綠不算證據
+
+九輪 review 之後這份 suite 有 35 個綠斷言。Round 9 用 mutation test 量它值多少——把修法
+逐一退回：R5 的 `isOurInstall`、R7 的 `targetIsPrintable`、R8 的 entitlement 型別階梯，
+**每一個都是 35/35、exit 0**。Round 10 推廣後的數字是**十六個宣告的修法，八個存活**。
+
+這是**一個**缺陷不是八個：每一輪都為「剛修好的那個輸入」加斷言，而從來沒有一輪問過那些
+斷言看不看得見修法被拿掉。所以 suite 綠從第一輪起就不是關於那些修法的證據，而九次連續
+綠燈是同一個非證據的九個實例。
+
+兩個存活方式說明問題是結構性的：
+
+- `usage-unknown-option` 存活，而斷言「misspelled flag is a usage error」**仍然綠**——退回
+  修法後 `--require-shapee` 變成 positional、湊成三個 positional、觸發 *extra-path* 檢查，
+  照樣回 64。那個斷言走的是它從未測到的另一條分支。
+- **三個存活者是「印了不該印的東西」** —— 對別人的軟體印 `rm -f`。既有 35 個斷言全部檢查
+  exit code 或工具**會印**的字串；任何關於「印了什麼」的斷言都看不見這一類。因此有了
+  `assert_says_not` 與 `assert_no_forged_line`。
+
+### 三件不可混淆的事（每一件都至少犯過一次）
+
+| 不是 | 是 |
+|------|-----|
+| suite exit code 非零 | **具名斷言**由 PASS 翻 FAIL（fixture 損壞與 skip 記帳也會讓 suite 非零退出，兩者都不證明任何東西看得見那個 mutation）|
+| mutant 編譯失敗算 kill | 算 **gate error**——把它當 kill 就是 gate 在認證自己的故障 |
+| baseline 有 skip 也能跑 | **拒絕起跑**——不能對沒跑到的 case 下任何結論 |
+
+為了第一條，suite 有 `INSTALL_SIGNATURE_RESULT_LOG`（每個斷言一行 `PASS|FAIL|SKIP` + label）。
+**label 是 gate 的 join key，不可隨 verifier 的答案變動** —— `(exit $rc)` 這類細節放
+`pass` 的第二個參數，印但不記錄。寫新斷言時守住這點。
+
+### Mutant 宣告寫在修法那一行之上，不寫在清單裡
+
+格式：`// @mutant(<id>) <from> => <to>`，目標是下一個非空白非註解行，`<from>` 在該行必須
+恰好出現一次。
+
+這個位置不是風格選擇。**Round 7（`^[0-5]$`）與 round 8（硬寫的 `10`）都敗在同一件事：
+關於這支 guard 的事實被手抄了第二份。** 清單放在 gate 裡就是同一個物件。宣告綁在原始碼上，
+refactor 掉那段文字會讓 gate **報錯**，而不是安靜地無事可退。
+
+同理，**宣告裡不要寫 `exit(N)` 字面值**——suite 會從原始碼 grep `exit(N)` 來比對「有文件的
+退出碼」與「可達的退出碼」，註解裡的字面值會污染那個 cross-check。改用條件式 mutation
+（`sealStatus == errSecCSUnsigned => false`）。
+
+### 兩個邊界（gate 管不到的部分）
+
+1. **gate 不保證「每個修法都有宣告」。** 修法可以只有一個字元，沒有任何抽取能分辨哪一行
+   在關一個 review finding。**新修法要附一個宣告，這是 review 義務，不是機械檢查。**
+2. **宣告的替換若編譯通過但不改變行為，會被誤讀成存活者。** 原始碼相同會被機械擋掉；語意
+   no-op 不會——實測 `swiftc` 對相同輸入**不是位元可重現**，比較編譯產物這條路不可用。
+   看到存活者時，先確認那個 revert 真的改變了某個答案，再去補斷言。
+
+`make test-mutation-gate` 刻意不併入 `test-all`：18 次編譯＋跑 suite、需兩個 signing
+identity。Round 6 已經量過「為少數人設的閘把所有人的綠燈弄紅」的後果。

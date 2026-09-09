@@ -162,7 +162,28 @@ cannot.)
 ```bash
 make test-all                          # green anywhere; partial runs allowed, and announced
 make test-install-signature-strict     # refuses to pass on a partial run
+make test-mutation-gate                # does the suite DETECT the fixes it contains?
 ```
+
+`make test-mutation-gate` is the one to run when changing the guard **or the
+suite**. It reverts each fix declared `// @mutant(...)` in the guard, one at a
+time, and requires the suite to go red on a named assertion that was green
+before. A fix the suite cannot detect the loss of is reported as a surviving
+mutant, and a survivor fails the gate.
+
+It exists because being green was not evidence. After nine review rounds the
+suite held 35 green assertions, and reverting the guard's fixes one at a time —
+measured, not argued — left it at 35/35 for **eight of sixteen**. Each round had
+added assertions for the instance it had just fixed; none had asked whether those
+assertions could see the fix removed.
+
+A new fix to the guard should arrive with a declaration. The gate cannot enforce
+that — a fix can be one character, and no extraction tells a line that closes a
+review finding from any other line — so it is a review obligation, stated here,
+in the suite's header, and in the gate's.
+
+It is deliberately not part of `make test-all`: it compiles the guard and runs
+the whole suite once per mutant, and needs both identities.
 
 Use the strict target when changing the guard. `make test-all` deliberately
 does not gate on it: round 6 measured the non-strict suite going red on a
