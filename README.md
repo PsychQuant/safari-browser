@@ -381,7 +381,8 @@ Commands that resolve a document through the shared resolver (`get title`,
 `get url`, `get text`, `js`, `click`, `fill`, `snapshot`, `scroll`, … — the
 `--url` / `--window` / `--document` targeting family) first check that window
 for a blocking dialog, and if one is there say so on **stderr as the first line
-they write themselves**:
+they write themselves** (a "probe unavailable" notice for a different window
+earlier in the same process can precede it):
 
 ```
 ⚠ BLOCKING DIALOG in window id 2838: "Failed to add criteria, not all criteria has been entered." — buttons: "關閉". Run: safari-browser dialog list
@@ -395,18 +396,24 @@ with a non-zero exit instead of waiting for the 30-second osascript timeout;
 
 What the check does **not** cover, honestly: `documents` and `tabs` enumerate
 rather than target (marking dialog-bearing windows there is #129); `close`,
-`pdf`, `tab focus`, `upload`, `save-image` and `tabs --window N` resolve
-through a different path and stay silent for now (#133); `exec` does not yet
-relay the line from its steps (#136). "First line" means the first line this
-command writes: a `--tab` deprecation notice or a `--first-match` match summary
-is written earlier and will precede it. And for a read-only command that
-succeeds, `2>&1 | tail -1` shows the command's own stdout, which flushes last —
-it is the JavaScript path's non-zero failure that makes a blocked tab visible
-in that pipeline.
+`pdf`, `tab focus`, `upload`, `save-image`, `screenshot` (other than `--full`)
+and `tabs --window N` resolve through a different path and stay silent for now
+(#133); `exec` does not yet relay the line from its steps (#136). "First line"
+means the first line this command writes: a `--tab` deprecation notice or a
+`--first-match` match summary is written earlier and will precede it. And
+`2>&1 | tail -1` is not rescued by this line at all: for a read-only command
+that succeeds it shows the command's own stdout, and for a JavaScript command
+the last line of the error is its closing sentence, not the dialog's text —
+what crosses that pipeline is the non-zero exit code.
 
 The check is a read-only Accessibility walk of the target window only, with a
-0.25 s per-element timeout: 31–40 ms measured with fifteen windows open, though
-that number is a manual measurement, not an enforced budget (#135).
+0.25 s messaging timeout set on the app element before its first read and on
+each element it walks (the window-id lookup and the text collection are not yet
+under it, #135). Measured by hand, not enforced: 31–40 ms with fifteen windows
+open on the first day, 43–65 ms with four windows open two days later — it
+straddles the 50 ms budget the issue set (#135). A Safari that is not running, or
+that has no windows, is a silent `none`; a window list that could not be read
+is reported once as "could not map".
 `SAFARI_BROWSER_NO_DIALOG_PROBE=1` (exactly `1`) switches all of this off —
 the warning, the fast-fail, and the "probe unavailable" notice — for scripts
 that accept going back to the pre-#126 behaviour; `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1`

@@ -15,13 +15,13 @@ enum BlockingDialogState: Sendable, Equatable {
 /// The one line every command prints first when a dialog is in the way.
 ///
 /// Shared with `dialog list` so the two never describe the same dialog in two
-/// vocabularies. One line by construction — internal newlines in the dialog's
+/// vocabularies. One line by construction — line separators in the dialog's
 /// own text are folded (verify round 2, B2) — so `head -1` sees all of it.
-/// Honest limit: for a read-only command that succeeds, `2>&1 | tail -1`
-/// still shows the command's stdout (it flushes last); what makes a blocked
-/// tab visible in that pipeline is the JavaScript path failing non-zero with
-/// this same text as its error, not this line. Control characters and length
-/// are #114's job.
+/// Honest limit: `2>&1 | tail -1` is not rescued by this line. For a
+/// read-only command that succeeds it shows the command's stdout (it flushes
+/// last), and for the JavaScript path the last line of the error is its
+/// closing sentence, not the dialog's text — what crosses that pipeline is
+/// the non-zero exit code. Control characters, quoting and length are #114's job.
 enum BlockingDialogWarning {
     static func firstLine(windowKey: BlockingDialogGate.WindowKey, dialog: SafariBridge.BlockingDialog) -> String {
         "⚠ BLOCKING DIALOG in \(windowKey.humanDescription): \(messageText(dialog))"
@@ -53,12 +53,14 @@ enum BlockingDialogWarning {
             : dialog.buttons.map { "\"\(oneLine($0))\"" }.joined(separator: ", ")
     }
 
-    /// Fold every line break (CR, LF, CRLF, U+2028/2029) into one space and
-    /// collapse the runs, so page-controlled text cannot add a second line.
+    /// Fold the seven scalars Foundation's `.newlines` counts as line breaks —
+    /// LF, VT, FF, CR, NEL (U+0085), LS (U+2028), PS (U+2029) — into one space
+    /// and collapse the runs (which also collapses pre-existing double spaces),
+    /// so page-controlled text cannot add a second line.
     static func oneLine(_ raw: String) -> String {
         let folded = raw.unicodeScalars.map { scalar -> String in
             switch scalar {
-            case "\n", "\r", "\u{2028}", "\u{2029}", "\u{0085}": return " "
+            case "\n", "\u{000B}", "\u{000C}", "\r", "\u{0085}", "\u{2028}", "\u{2029}": return " "
             default: return String(scalar)
             }
         }.joined()
@@ -101,7 +103,8 @@ final class BlockingDialogGate: @unchecked Sendable {
     /// What it switches off is all of #126 — the warning, the JavaScript
     /// fast-fail, and the "probe unavailable" notice.
     static let optOutVariable = "SAFARI_BROWSER_NO_DIALOG_PROBE"
-    /// Set to print the probe's cost and verdict after the warning line.
+    /// Set to exactly `1` to print the probe's cost and verdict after the
+    /// warning line.
     static let debugVariable = "SAFARI_BROWSER_DIALOG_PROBE_DEBUG"
 
     private let lock = NSLock()

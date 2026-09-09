@@ -156,6 +156,17 @@ final class BlockingDialogGateTests: XCTestCase {
         XCTAssertEqual(stderr.lines.count, 1)
     }
 
+    // MARK: round-3 — the window-list read must keep "could not read" apart from "empty"
+
+    func testWindowListReadFailureIsUnprobedNotNone() {
+        // A failed kAXWindows read (timeout, apiDisabled, bad type) is "nobody looked",
+        // never "no dialog"; only a SUCCESSFUL empty read means nothing can block.
+        XCTAssertEqual(SafariBridge.probeVerdict(afterWindowListRead: .failed), .unprobed)
+        XCTAssertEqual(SafariBridge.probeVerdict(afterWindowListRead: .empty), BlockingDialogState.none)
+        XCTAssertNil(SafariBridge.probeVerdict(afterWindowListRead: .windows(count: 3)),
+                     "with windows present the probe must go on and look at the target")
+    }
+
     // MARK: opt-out and caching
 
     func testEnvironmentVariableDisablesTheProbe() {

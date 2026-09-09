@@ -216,7 +216,7 @@ enum SafariBridge {
         // one-window dialog probe — after the window is known, before any
         // AppleScript or JavaScript touches it. Commands that go straight to
         // resolveNativeTarget (close, pdf, tab focus, upload, save-image,
-        // tabs --window) do not; that is #133. The gate caches per window for
+        // screenshot, tabs --window) do not; that is #133. The gate caches per window for
         // 2 s, which is shorter than one `js` invocation (4-5 round-trips,
         // ~3.5 s measured), so later round-trips may probe again at ~35 ms each.
         if profile != nil, isResolvedTab(target) == false {
@@ -3092,8 +3092,22 @@ enum SafariBridge {
             // (verify round 2, I2). `open` launches Safari from this state.
             return .none
         }
-        let windows = axWindows(of: axApp)
-        if windows.isEmpty { return .none }   // running, no windows: nothing can block
+        // The short timeout goes on BEFORE the first read: round 2 listed the
+        // windows first and paid the app-level 2 s instead (verify round 2).
+        AXUIElementSetMessagingTimeout(axApp, entryProbeTimeout)
+        // "Could not read the window list" and "the list is empty" are
+        // different facts (verify round 2, blocking): the first is nobody
+        // looked, the second is nothing can block. Keep them apart.
+        let read: WindowListRead
+        let windows: [AXUIElement]
+        if let list = axWindows(of: axApp) {
+            windows = list
+            read = list.isEmpty ? .empty : .windows(count: list.count)
+        } else {
+            windows = []
+            read = .failed
+        }
+        if let verdict = probeVerdict(afterWindowListRead: read) { return verdict }
         guard let window = axWindow(for: windowKey, in: axApp, windows: windows) else {
             // Windows exist but none maps onto the target: nobody looked.
             return .unprobed
@@ -3121,7 +3135,6 @@ enum SafariBridge {
     private static func axWindow(
         for key: BlockingDialogGate.WindowKey, in axApp: AXUIElement, windows: [AXUIElement]
     ) -> AXUIElement? {
-        AXUIElementSetMessagingTimeout(axApp, entryProbeTimeout)
         switch key {
         case .front:
             var focused: CFTypeRef?
@@ -3135,7 +3148,7 @@ enum SafariBridge {
         case .id(let wanted):
             for window in windows {
                 var cgID: CGWindowID = 0
-                // `cgID != 0` matches the three other CGWindowID reads in this file.
+                // `cgID != 0` matches the other CGWindowID reads in this file.
                 if _AXUIElementGetWindow(window, &cgID) == .success, cgID != 0, Int(cgID) == wanted {
                     return window
                 }
@@ -3144,11 +3157,36 @@ enum SafariBridge {
         }
     }
 
-    private static func axWindows(of axApp: AXUIElement) -> [AXUIElement] {
+    /// `nil` when the read itself failed (timeout, API disabled, wrong type);
+    /// `[]` only when Safari answered and has no windows. Callers must not
+    /// collapse the two (verify round 2, blocking).
+    private static func axWindows(of axApp: AXUIElement) -> [AXUIElement]? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement] else { return [] }
+              let windows = value as? [AXUIElement] else { return nil }
         return windows
+    }
+
+    /// What the entry probe learned from reading Safari's window list.
+    enum WindowListRead: Equatable {
+        case failed
+        case empty
+        case windows(count: Int)
+    }
+
+    /// The verdict the window-list read settles on its own, or `nil` when the
+    /// probe has to go on and inspect the target window. Pure, so the one
+    /// distinction the whole design rests on — nobody looked versus nothing
+    /// there — has a test that bites (verify round 2).
+    static func probeVerdict(afterWindowListRead read: WindowListRead) -> BlockingDialogState? {
+        switch read {
+        case .failed: return .unprobed
+        // Spelled out: in an Optional return position a bare `.none` is
+        // `Optional.none`, i.e. "keep probing" — the exact opposite. The test
+        // caught it; renaming the case is #137.
+        case .empty: return BlockingDialogState.none
+        case .windows: return nil
+        }
     }
 
     private static func axRole(of element: AXUIElement) -> String? {
