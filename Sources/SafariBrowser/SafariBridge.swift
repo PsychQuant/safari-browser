@@ -3069,7 +3069,14 @@ enum SafariBridge {
     static let entryProbeTimeout: Float = 0.25
 
     /// Scoped variant of `detectBlockingDialog()` for the #126 happy path:
-    /// ONE window, depth ≤ 3, short timeout. Reads Accessibility attributes only.
+    /// ONE window, short timeout. Reads Accessibility attributes only.
+    ///
+    /// Same depth limit as the whole-app scan: a JS alert sits three levels
+    /// below the window (#103), and a first cut with `maxDepth: 3` stopped one
+    /// level short — `depth < maxDepth` never inspected depth 3 — so the
+    /// scoped probe reported `none` for a dialog the whole-app scan found
+    /// (measured 2026-09-09). The 18 s the whole-app scan cost came from the
+    /// per-window messaging timeout, never from depth.
     static func detectBlockingDialog(windowKey: BlockingDialogGate.WindowKey) -> BlockingDialogState {
         guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else {
             return .accessibilityDenied
@@ -3078,7 +3085,7 @@ enum SafariBridge {
             // No way to map the target onto an AX window: nobody looked.
             return .unprobed
         }
-        guard let element = findDialogElement(in: window, depth: 0, maxDepth: 3, timeout: entryProbeTimeout)
+        guard let element = findDialogElement(in: window, depth: 0, timeout: entryProbeTimeout)
         else { return .none }
         return .present(BlockingDialog(
             message: axCollectStaticText(element)

@@ -30,24 +30,21 @@ struct DialogListCommand: AsyncParsableCommand {
     )
 
     /// Rendered separately from the printing so the wording is testable.
+    ///
+    /// Message and buttons go through the same helpers as the #126 entry-point
+    /// warning, so the two never describe one dialog in two vocabularies: an
+    /// agent that saw the one-line warning recognises the same dialog here. A
+    /// dialog with no readable text still blocks; the helper's stand-in says
+    /// so rather than reading as "no dialog".
     static func describe(_ dialog: SafariBridge.BlockingDialog) -> String {
-        let text = dialog.message.trimmingCharacters(in: .whitespacesAndNewlines)
-        // A dialog with no readable text still blocks. Saying nothing about the
-        // message would read as "no dialog", which is the opposite of the truth.
-        let messageLine = text.isEmpty
-            ? "message: (no readable text — the dialog exposes none)"
-            : "message: \(text)"
-        let buttonLine = dialog.buttons.isEmpty
-            ? "buttons: (none exposed)"
-            : "buttons: " + dialog.buttons.map { "\"\($0)\"" }.joined(separator: ", ")
-        return """
-            blocking dialog present
-              \(messageLine)
-              \(buttonLine)
+        """
+        blocking dialog present
+          message: \(BlockingDialogWarning.messageText(dialog))
+          buttons: \(BlockingDialogWarning.buttonsText(dialog))
 
-            To dismiss it, name the button:
-              safari-browser dialog dismiss --button "<title>"
-            """
+        To dismiss it, name the button:
+          safari-browser dialog dismiss --button "<title>"
+        """
     }
 
     static let noDialogMessage = "no blocking dialog found"

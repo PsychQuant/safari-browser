@@ -134,6 +134,21 @@ final class DialogCommandTests: XCTestCase {
         XCTAssertTrue(out.contains("Leave"))
     }
 
+    /// #126: `dialog list` and the entry-point warning describe the same
+    /// dialog. They must not do it in two vocabularies — an agent that saw the
+    /// one-line warning has to recognise the same dialog in the listing.
+    func testListAndWarningShareOneVocabulary() {
+        let unreadable = SafariBridge.BlockingDialog(message: "  ", buttons: [])
+        let out = DialogListCommand.describe(unreadable)
+        XCTAssertTrue(out.contains(BlockingDialogWarning.messageText(unreadable)),
+                      "the stand-in for an unreadable message must be the warning's — got: \(out)")
+        XCTAssertTrue(out.contains(BlockingDialogWarning.buttonsText(unreadable)),
+                      "the stand-in for absent buttons must be the warning's — got: \(out)")
+        let readable = SafariBridge.BlockingDialog(message: "Leave site?", buttons: ["Stay", "Leave"])
+        XCTAssertTrue(DialogListCommand.describe(readable).contains(BlockingDialogWarning.messageText(readable)),
+                      "a readable message must be rendered exactly as the warning renders it")
+    }
+
     /// A dialog with no readable text still blocks, and saying nothing about it
     /// would read as "no dialog".
     func testListSaysSoWhenTheDialogHasNoText() {
