@@ -112,14 +112,14 @@ final class DaemonClientTests: XCTestCase {
 
     // MARK: - Timeout (failure mode (e) from Silent fallback spec)
 
-    func testSendRequest_timeout_raisesIoError() async throws {
+    func testSendRequest_timeout_reportsUnknownOutcome() async throws {
         let name = "timeout-\(UUID().uuidString.prefix(8))"
         let socketPath = DaemonClient.socketPath(name: String(name))
         let server = DaemonServer.Instance()
         await server.register("hang") { _ in
             // Sleep longer than the client's timeout. When the client hits
-            // SO_RCVTIMEO, the socket read errors with EAGAIN — mapped to
-            // ioError — and the task group returns without waiting for us.
+            // absolute deadline, it must report an unknown outcome without
+            // replaying a handler that might already have caused side effects.
             try await Task.sleep(for: .seconds(30))
             return Data("{}".utf8)
         }
@@ -135,11 +135,11 @@ final class DaemonClientTests: XCTestCase {
                 requestId: 1,
                 timeout: 0.5
             )
-            XCTFail("expected ioError timeout")
-        } catch DaemonClient.Error.ioError {
-            // ok
+            XCTFail("expected unknown outcome timeout")
+        } catch DaemonClient.Error.requestOutcomeUnknown(let reason) {
+            XCTAssertTrue(reason.contains("timeout"))
         } catch {
-            XCTFail("expected ioError, got \(error)")
+            XCTFail("expected unknown outcome, got \(error)")
         }
         let elapsed = Date().timeIntervalSince(start)
         XCTAssertLessThan(elapsed, 2.0, "timeout should fire near 0.5s, not wait full 30s")

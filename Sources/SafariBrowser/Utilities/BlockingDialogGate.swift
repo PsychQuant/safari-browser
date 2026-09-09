@@ -102,7 +102,10 @@ final class BlockingDialogGate: @unchecked Sendable {
         }
     }
 
-    static let shared = BlockingDialogGate()
+    private static let processGate = BlockingDialogGate()
+    static var shared: BlockingDialogGate {
+        DaemonRequestContext.current?.gate ?? processGate
+    }
 
     /// Set to exactly `1` to disable the probe for batch scripts that accept
     /// the risk. Only that value counts (repo convention, `DaemonLog`): a

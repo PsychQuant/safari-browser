@@ -110,21 +110,29 @@ final class DaemonRouterTests: XCTestCase {
         XCTAssertTrue(warnings.first?.contains("protocol") ?? false)
     }
 
-    func testRouter_nonDomainRemoteError_fallsBack() async throws {
-        var warnings: [String] = []
+    func testRouter_handlerErrorPropagatesWithoutReplay() async {
+        var fallbackCalls = 0
+        do {
+            _ = try await SafariBridge.runViaRouter(
+                source: "mutate", daemonOptIn: true,
+                daemonFn: { _ in throw DaemonClient.Error.remoteError(code: "handlerError", message: "after mutation") },
+                statelessFn: { _ in fallbackCalls += 1; return "replayed" },
+                warnWriter: { _ in }
+            )
+            XCTFail("handler errors must propagate")
+        } catch DaemonClient.Error.remoteError(let code, _) {
+            XCTAssertEqual(code, "handlerError")
+        } catch { XCTFail("unexpected error: \(error)") }
+        XCTAssertEqual(fallbackCalls, 0)
+    }
+
+    func testRouter_methodNotFoundCanFallback() async throws {
         let result = try await SafariBridge.runViaRouter(
-            source: "ignored",
-            daemonOptIn: true,
-            daemonFn: { _ in
-                throw DaemonClient.Error.remoteError(
-                    code: "handlerError", message: "internal daemon bug"
-                )
-            },
-            statelessFn: { _ in "fallback-result" },
-            warnWriter: { warnings.append($0) }
+            source: "mutate", daemonOptIn: true,
+            daemonFn: { _ in throw DaemonClient.Error.remoteError(code: "methodNotFound", message: "unsupported") },
+            statelessFn: { _ in "supported locally" }, warnWriter: { _ in }
         )
-        XCTAssertEqual(result, "fallback-result")
-        XCTAssertTrue(warnings.first?.contains("handlerError") ?? false)
+        XCTAssertEqual(result, "supported locally")
     }
 
     // MARK: - Domain errors MUST propagate, not fall back
@@ -196,8 +204,8 @@ final class DaemonRouterTests: XCTestCase {
         XCTAssertNil(err.fallbackReason, "domain error must not trigger fallback")
     }
 
-    func testFallbackReason_unknownRemoteError_returnsReason() {
+    func testFallbackReason_unknownRemoteError_returnsNil() {
         let err = DaemonClient.Error.remoteError(code: "someBugCode", message: "oops")
-        XCTAssertNotNil(err.fallbackReason)
+        XCTAssertNil(err.fallbackReason)
     }
 }

@@ -167,6 +167,34 @@ else
     pass "SAFARI_BROWSER_NO_DIALOG_PROBE=1 disables the probe"
 fi
 
+# #136: both exec paths must preserve warning stderr and result JSON.
+check_exec_dialog() {
+    local label="$1" namespace="$2"
+    if python3 - "$SB" "$MARK" "$namespace" <<'EXEC_PY'
+import json, os, subprocess, sys
+binary, marker, namespace = sys.argv[1:]
+env = dict(os.environ, SAFARI_BROWSER_NAME=namespace)
+env.pop("SAFARI_BROWSER_DAEMON", None)
+steps = [{"cmd":"get title"}, {"cmd":"js", "args":["1+1"], "onError":"continue"}]
+try:
+    r = subprocess.run([binary, "exec", "--url", marker], input=json.dumps(steps),
+                       text=True, capture_output=True, env=env, timeout=20)
+    assert r.returncode == 0, r.stderr
+    rows = json.loads(r.stdout)
+    assert rows[0]["status"] == "ok" and "Dialog Test Page" in rows[0]["value"], rows
+    assert rows[1]["status"] == "error", rows
+    assert "BLOCKING DIALOG" in r.stderr, r.stderr
+    assert "[daemon fallback" not in r.stderr, r.stderr
+except (AssertionError, ValueError, subprocess.TimeoutExpired) as error:
+    print(f"exec dialog verification failed: {error}")
+    raise SystemExit(1)
+EXEC_PY
+    then pass "$label: warning stderr and success/error JSON results"
+    else fail "$label"
+    fi
+}
+check_exec_dialog "stateless exec" "no-daemon-exec-$$"
+
 # ── 3. Daemon parity ─────────────────────────────────────────────────────
 echo "## Daemon path"
 if SAFARI_BROWSER_NAME="$NAME" "$SB" daemon start >"$TMP/daemon.out" 2>&1; then
@@ -194,14 +222,16 @@ if SAFARI_BROWSER_NAME="$NAME" "$SB" daemon start >"$TMP/daemon.out" 2>&1; then
     D_ERR=$(cat "$TMP/daemon-title.err")
     D_FIRST=$(echo "$D_ERR" | head -1)
     if [[ "$D_EXIT" -eq 124 ]]; then
-        skip "daemon parity (daemon path hung > 20 s with the dialog up — pre-existing daemon hang, #130)"
+        fail "daemon parity exceeded 20 s (#130 regression)"
     elif [[ "$D_ERR" == *"[daemon fallback"* ]]; then
-        skip "daemon parity (daemon never answered: $D_FIRST)"
+        fail "daemon parity unexpectedly fell back: $D_FIRST"
     elif [[ "$D_EXIT" -eq 0 && "$D_FIRST" == *"BLOCKING DIALOG"* ]] && grep -q "Dialog Test Page" "$TMP/daemon-title.out"; then
         pass "daemon path: same first-line warning, same stdout, exit 0"
     else
         fail "daemon parity" "exit=$D_EXIT first='$D_FIRST' stdout=$(cat "$TMP/daemon-title.out")"
     fi
+    check_exec_dialog "daemon exec request 1" "$NAME"
+    check_exec_dialog "daemon exec request 2" "$NAME"
     SAFARI_BROWSER_NAME="$NAME" "$SB" daemon stop >/dev/null 2>&1 || true
 else
     skip "daemon parity (daemon start failed: $(head -1 "$TMP/daemon.out"))"

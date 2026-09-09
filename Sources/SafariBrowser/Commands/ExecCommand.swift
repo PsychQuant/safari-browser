@@ -70,8 +70,8 @@ struct ExecCommand: AsyncParsableCommand {
     }
 
     /// Send the script to the daemon's `exec.runScript` handler. Returns
-    /// the encoded result-array string on success, nil if any transport
-    /// or handler-side error occurs (caller falls through to local path).
+    /// the encoded result-array string on success. Returns nil only when the
+    /// request is known not to have executed and local fallback is safe.
     private func runViaDaemon(steps: [ScriptStep]) async throws -> String? {
         // Re-encode steps + target as the envelope the handler expects.
         // Section 7 of tab-ownership-marker v2: forward the resolved
@@ -100,21 +100,26 @@ struct ExecCommand: AsyncParsableCommand {
                 requestId: Int.random(in: 1...Int.max),
                 timeout: 60.0
             )
-            // Handler returns `{"results": "<json string of result array>"}`.
-            guard let dict = try JSONSerialization.jsonObject(with: resultData, options: []) as? [String: Any],
-                  let results = dict["results"] as? String else {
-                return nil
-            }
-            return results
+            return try Self.daemonResults(from: resultData)
         } catch let err as DaemonClient.Error {
-            // Domain errors (e.g. ambiguousWindowMatch) propagate; transport
-            // errors fall through to the local subprocess path silently.
+            // Only pre-execution failures permit local fallback. A lost reply
+            // after transmission cannot establish that the script did not run.
             if err.fallbackReason == nil {
                 throw err
             }
             FileHandle.standardError.write(Data("[daemon fallback: \(err.fallbackReason ?? "")]\n".utf8))
             return nil
         }
+    }
+
+    static func daemonResults(from data: Data) throws -> String {
+        guard let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let results = dict["results"] as? String,
+              let resultBytes = results.data(using: .utf8),
+              (try? JSONSerialization.jsonObject(with: resultBytes)) is [Any] else {
+            throw DaemonClient.Error.requestOutcomeUnknown("invalid exec results payload")
+        }
+        return results
     }
 
     private func readStdinAsString() -> String {

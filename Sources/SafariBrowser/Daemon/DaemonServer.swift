@@ -525,15 +525,18 @@ enum DaemonServer {
             // here so the actor never holds a non-Sendable `Any`.
             let requestIdJSON = encodeRequestId(requestId)
             await instance.markInFlight(fd: fd, requestIdJSON: requestIdJSON)
+            let context = DaemonRequestContext()
             do {
-                let resultData = try await handler(paramsData)
+                let resultData = try await DaemonRequestContext.$current.withValue(context) {
+                    try await handler(paramsData)
+                }
                 await instance.clearInFlight(fd: fd)
-                let resp = encodeResult(requestId: requestId, resultData: resultData)
+                let resp = encodeResult(requestId: requestId, resultData: resultData, diagnostics: context.diagnostics)
                 await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: resultData, errorMessage: nil)
                 return resp
             } catch {
                 await instance.clearInFlight(fd: fd)
-                let resp = encodeError(requestId: requestId, code: .handlerError, message: "\(error)")
+                let resp = encodeError(requestId: requestId, code: .handlerError, message: "\(error)", diagnostics: context.diagnostics)
                 await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: nil, errorMessage: "\(error)")
                 return resp
             }
@@ -576,20 +579,22 @@ enum DaemonServer {
 
         // MARK: - Response encoding
 
-        private static func encodeResult(requestId: Any?, resultData: Data) -> Data {
+        private static func encodeResult(requestId: Any?, resultData: Data, diagnostics: [String] = []) -> Data {
             let resultValue: Any = (try? JSONSerialization.jsonObject(with: resultData, options: [.fragmentsAllowed])) ?? NSNull()
-            let envelope: [String: Any] = [
+            var envelope: [String: Any] = [
                 "requestId": requestId ?? NSNull(),
                 "result": resultValue,
             ]
+            if !diagnostics.isEmpty { envelope["diagnostics"] = diagnostics }
             return (try? JSONSerialization.data(withJSONObject: envelope, options: [])) ?? Data("{}".utf8)
         }
 
-        private static func encodeError(requestId: Any?, code: ErrorCode, message: String) -> Data {
-            let envelope: [String: Any] = [
+        private static func encodeError(requestId: Any?, code: ErrorCode, message: String, diagnostics: [String] = []) -> Data {
+            var envelope: [String: Any] = [
                 "requestId": requestId ?? NSNull(),
                 "error": ["code": code.rawValue, "message": message] as [String: Any],
             ]
+            if !diagnostics.isEmpty { envelope["diagnostics"] = diagnostics }
             return (try? JSONSerialization.data(withJSONObject: envelope, options: [])) ?? Data("{}".utf8)
         }
 

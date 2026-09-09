@@ -9,7 +9,7 @@ BINARY_NAME = safari-browser
 SAFARI_BROWSER_BIN ?= .build/debug/$(BINARY_NAME)
 export SAFARI_BROWSER_BIN
 
-.PHONY: test-mutation-gate
+.PHONY: test-mutation-gate test-daemon-executor
 .PHONY: build build-debug install install-signed clean \
         sign-developer-id verify-developer-id verify-install-signature \
         test test-unit test-smoke test-all test-install-signature \
@@ -272,7 +272,7 @@ test-mutation-gate:
 # test-install-signature-strict` refuses to pass on a partial run — that is
 # the target to use on a machine that has both identities, and the one this
 # repo's own verification uses.
-test-all: test-unit test-smoke
+test-all: test-unit test-smoke test-daemon-executor
 	@ALLOW_INCOMPLETE=1 $(MAKE) --no-print-directory test-install-signature
 	@echo "✓ unit + smoke + install-signature green"
 
@@ -323,3 +323,7 @@ test-reference-edges: build-debug
 
 clean:
 	rm -rf .build
+
+# #130: bounded, Safari-free production daemon and compiled-handle regression.
+test-daemon-executor: build-debug
+	./Tests/daemon-executor-regression.sh

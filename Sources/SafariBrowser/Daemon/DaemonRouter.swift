@@ -29,9 +29,9 @@ extension SafariBridge {
     /// method and surface the result in the same shape as the stateless
     /// osascript path: a plain string on success, or a thrown
     /// `SafariBrowserError.appleScriptFailed(message)` on compile/execute
-    /// error. Any transport-level failure (socket missing, timeout, etc.)
-    /// propagates as `DaemonClient.Error` which the router translates into
-    /// a silent fallback to stateless.
+    /// error. Transport failures before a complete request is sent permit
+    /// stateless fallback. Lost responses after transmission instead report
+    /// an unknown outcome, because repeating the script could repeat effects.
     static func executeAppleScriptViaDaemon(
         source: String,
         timeout: TimeInterval
@@ -40,18 +40,14 @@ extension SafariBridge {
         let paramsData = try JSONSerialization.data(
             withJSONObject: ["source": source], options: []
         )
-        // Use timeout * 2 for the socket receive window so the daemon has
-        // breathing room to finish a legitimately-slow script before the
-        // router falls back. The caller's timeout is still honoured through
-        // the combined path — if the daemon genuinely hangs, the socket
-        // fires ioError and we fall back to osascript which enforces the
-        // real timeout via `runProcessWithTimeout`.
+        // The caller's shorter budget applies; ordinary bridge requests never
+        // wait beyond the 15-second daemon contract.
         let resultData = try await DaemonClient.sendRequest(
             name: name,
             method: "applescript.execute",
             params: paramsData,
             requestId: Int.random(in: 1...Int.max),
-            timeout: max(timeout * 2, timeout + 1)
+            timeout: min(timeout, DaemonClient.defaultTimeoutSeconds)
         )
         let result = (try? JSONSerialization.jsonObject(with: resultData, options: []))
             as? [String: Any] ?? [:]

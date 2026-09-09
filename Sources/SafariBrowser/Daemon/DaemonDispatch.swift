@@ -51,8 +51,16 @@ enum DaemonDispatch {
         // carrying steps + target + maxSteps; the daemon runs the
         // interpreter in-process and returns the result array. Eliminates
         // per-step subprocess + socket handshake from the client path.
-        await server.register("exec.runScript") { params in
-            try await Handlers.execRunScript(paramsData: params)
+        await server.register("exec.runScript") { [cache] params in
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+                do {
+                    return try await cache.execute(source: source).stringValue ?? ""
+                } catch {
+                    throw SafariBrowserError.appleScriptFailed(String(describing: error))
+                }
+            }) {
+                try await Handlers.execRunScript(paramsData: params)
+            }
         }
     }
 

@@ -12,7 +12,7 @@ import Foundation
 /// - `render(template:params:)` substitutes placeholders; missing params
 ///   throw `.missingPlaceholder` so callers fail loudly instead of leaving
 ///   a raw `{{TOKEN}}` in the AppleScript.
-/// - `CompileCache` is an actor that compiles on miss and caches by source
+/// - `CompileCache` compiles on miss on the main actor and caches by source
 ///   string. Identical rendered sources reuse the same handle.
 /// - `known` registers three Phase 1 seed templates (`activateWindow`,
 ///   `enumerateWindows`, `runJSInCurrentTab`); the remaining 4–7 templates
@@ -196,15 +196,19 @@ enum PreCompiledScripts {
         }
     }
 
-    /// Actor that caches `NSAppleScript` compilations keyed by rendered source.
-    /// Safe for concurrent use from multiple tasks. The cached `NSAppleScript`
-    /// instances never cross the actor boundary — callers interact through
+    /// Main-thread cache of `NSAppleScript` compilations keyed by rendered source.
+    /// A regular actor serializes access but may execute on a worker thread:
+    /// even `return 42` followed by `delay 0.3` can then hang (#130). Keep
+    /// creation, compilation, and execution on the main actor together.
+    /// Safe for concurrent use from multiple tasks. Cached script instances
+    /// never cross the isolation boundary — callers interact through
     /// `execute(source:)` which returns a `Sendable` `ExecutionResult`, or
     /// through the introspection accessors `cacheCount` / `contains(source:)`.
-    actor CompileCache {
+    @MainActor final class CompileCache {
         private var cache: [String: NSAppleScript] = [:]
 
-        init() {}
+        // No NSAppleScript work occurs until an isolated method is called.
+        nonisolated init() {}
 
         /// Ensure `source` is compiled and cached. Idempotent: repeated calls
         /// with the same source string re-use the cached `NSAppleScript`.
