@@ -146,10 +146,9 @@ struct DialogDismissCommand: AsyncParsableCommand {
     /// than only that something was. Reconstructing that afterwards is
     /// impossible — the dialog is gone.
     static func preamble(for dialog: SafariBridge.BlockingDialog, pressing button: String) -> String {
-        let text = dialog.message.trimmingCharacters(in: .whitespacesAndNewlines)
-        return """
+        """
             dismissing dialog
-              message: \(text.isEmpty ? "(no readable text)" : text)
+              message: \(BlockingDialogWarning.messageText(dialog))
               pressing: "\(button)"
             """
     }
@@ -213,7 +212,7 @@ struct DialogDismissCommand: AsyncParsableCommand {
                     print("pressed; no dialog remains")
                 case .one(let still):
                     print("pressed; a dialog is still present: "
-                          + (still.message.isEmpty ? "(no readable text)" : still.message))
+                          + BlockingDialogWarning.messageText(still))
                 case .many:
                     print("pressed; more than one dialog is now present — run `dialog list`")
                 case .accessibilityDenied:

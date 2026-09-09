@@ -377,25 +377,44 @@ safari-browser dialog list                     # show the dialog's text and butt
 safari-browser dialog dismiss --button "取消"   # press the button you named
 ```
 
-Every command that targets a window first checks that window for a blocking
-dialog, and if one is there says so on the **first line of stderr**, before any
-other output:
+Commands that resolve a document through the shared resolver (`get title`,
+`get url`, `get text`, `js`, `click`, `fill`, `snapshot`, `scroll`, … — the
+`--url` / `--window` / `--document` targeting family) first check that window
+for a blocking dialog, and if one is there say so on **stderr as the first line
+they write themselves**:
 
 ```
 ⚠ BLOCKING DIALOG in window id 2838: "Failed to add criteria, not all criteria has been entered." — buttons: "關閉". Run: safari-browser dialog list
 ```
 
-Read-only AppleScript commands (`get title`, `get url`, `documents`, …) still
-succeed — the line is on stderr and stdout is untouched, so pipelines keep
-working. Anything that has to run JavaScript in that tab (`js`, `get text`,
-`click`, `fill`, …) fails at once with a non-zero exit instead of waiting for
-the 30-second osascript timeout. The check is one read-only Accessibility query
-of the target window only, with its own 0.25 s timeout: 31–40 ms measured with
-fifteen windows open. `SAFARI_BROWSER_NO_DIALOG_PROBE=1` disables it for
-scripts that accept the risk; `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1` prints its
-cost and verdict. The check runs when a command starts, so a dialog that opens
-*during* a multi-step command still surfaces through the slower failure paths
-described below. And Safari only renders a dialog in a window's *active* tab: an alert pending in a background tab freezes that tab's JavaScript without any dialog to find — `tab focus` the tab first (#131). Without the Accessibility grant the probe cannot run, and it
+Read-only AppleScript commands (`get title`, `get url`) still succeed — the
+line is on stderr and stdout is untouched, so pipelines keep working. Anything
+that has to run JavaScript in that tab (`js`, `click`, `fill`, …) fails at once
+with a non-zero exit instead of waiting for the 30-second osascript timeout;
+`get text` runs its AppleScript first and fails only if that came back empty.
+
+What the check does **not** cover, honestly: `documents` and `tabs` enumerate
+rather than target (marking dialog-bearing windows there is #129); `close`,
+`pdf`, `tab focus`, `upload`, `save-image` and `tabs --window N` resolve
+through a different path and stay silent for now (#133); `exec` does not yet
+relay the line from its steps (#136). "First line" means the first line this
+command writes: a `--tab` deprecation notice or a `--first-match` match summary
+is written earlier and will precede it. And for a read-only command that
+succeeds, `2>&1 | tail -1` shows the command's own stdout, which flushes last —
+it is the JavaScript path's non-zero failure that makes a blocked tab visible
+in that pipeline.
+
+The check is a read-only Accessibility walk of the target window only, with a
+0.25 s per-element timeout: 31–40 ms measured with fifteen windows open, though
+that number is a manual measurement, not an enforced budget (#135).
+`SAFARI_BROWSER_NO_DIALOG_PROBE=1` (exactly `1`) switches all of this off —
+the warning, the fast-fail, and the "probe unavailable" notice — for scripts
+that accept going back to the pre-#126 behaviour; `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1`
+prints the probe's cost and verdict. The check runs when a command starts, so a
+dialog that opens *during* a multi-step command still surfaces through the
+slower failure paths described below. Safari only renders a dialog in a window's
+*active* tab: an alert pending in a background tab freezes that tab's JavaScript
+without any dialog to find — `tab focus` the tab first (#131). Without the Accessibility grant the probe cannot run, and it
 says so once rather than staying quiet — no permission means no information,
 not "no dialog". (#126)
 

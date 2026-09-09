@@ -248,7 +248,7 @@ enum SafariBrowserError: LocalizedError {
         case .ambiguousBlockingDialog(let messages):
             return """
                 \(messages.count) windows are showing a dialog; refusing to guess which one you meant.
-                \(messages.enumerated().map { "  [\($0.offset + 1)] \($0.element.isEmpty ? "(no readable text)" : $0.element)" }.joined(separator: "\n"))
+                \(messages.enumerated().map { "  [\($0.offset + 1)] \($0.element.isEmpty ? "(no readable message)" : $0.element)" }.joined(separator: "\n"))
                 Pressing a button on a dialog you are not looking at is the hazard this command
                 exists to avoid. Dismiss them from Safari, or close the extra window first.
                 """
@@ -269,7 +269,7 @@ enum SafariBrowserError: LocalizedError {
         case .dialogChangedBeforePress(let nowMessage, let nowButtons):
             return """
                 the dialog changed between reading it and pressing — nothing was clicked.
-                It now reads: \(nowMessage.isEmpty ? "(no readable text)" : nowMessage)
+                It now reads: \(nowMessage.isEmpty ? "(no readable message)" : nowMessage)
                 Buttons: \(nowButtons.isEmpty ? "(none exposed)" : nowButtons.map { "\"\($0)\"" }.joined(separator: ", "))
                 Re-run `dialog list` and decide again — pressing a button on a dialog you have
                 not read is the thing this command exists to avoid.

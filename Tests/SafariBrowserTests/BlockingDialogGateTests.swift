@@ -117,6 +117,45 @@ final class BlockingDialogGateTests: XCTestCase {
         XCTAssertNoThrow(try gate.throwIfBlocked(), "unknown is not 'blocked'")
     }
 
+    // MARK: round-2 verify findings (#126 PR #132)
+
+    func testFirstLineFoldsAMultilineMessageOntoOneLine() {
+        // B2: `alert("a\nb")` is ordinary; the line must still survive `head -1`.
+        let dialog = Dialog(message: "line one\nline two\r\nline three", buttons: ["OK\nall", "Cancel"])
+        let line = BlockingDialogWarning.firstLine(windowKey: .front, dialog: dialog)
+        XCTAssertFalse(line.contains("\n") || line.contains("\r"), "must be one line: \(line)")
+        XCTAssertTrue(line.contains("line one line two line three"), line)
+        XCTAssertTrue(line.contains("\"OK all\""), line)
+    }
+
+    func testARealDialogStillWarnsAfterAnUnmappableWindow() {
+        // I1: the unavailable/unmappable notice must not silence a later real dialog.
+        let (gate, stderr) = makeGate(probe: { key in key == .id(1) ? .unprobed : .present(self.sample) })
+        _ = gate.check(.id(1))
+        _ = gate.check(.id(2))
+        XCTAssertEqual(stderr.lines.count, 2, "\(stderr.lines)")
+        XCTAssertTrue(stderr.lines.last?.hasPrefix("⚠ BLOCKING DIALOG") == true, "\(stderr.lines)")
+    }
+
+    func testARealDialogStillWarnsAfterAccessibilityDenied() {
+        let (gate, stderr) = makeGate(probe: { key in key == .id(1) ? .accessibilityDenied : .present(self.sample) })
+        _ = gate.check(.id(1))
+        _ = gate.check(.id(2))
+        XCTAssertEqual(stderr.lines.count, 2, "\(stderr.lines)")
+        XCTAssertTrue(stderr.lines.last?.hasPrefix("⚠ BLOCKING DIALOG") == true, "\(stderr.lines)")
+    }
+
+    func testOptOutRequiresTheValueOne() {
+        // I3: `=0` in a batch script must not silently switch the probe off.
+        let calls = Counter()
+        let (gate, stderr) = makeGate(
+            probe: { _ in calls.increment(); return .present(self.sample) },
+            environment: ["SAFARI_BROWSER_NO_DIALOG_PROBE": "0"])
+        XCTAssertEqual(gate.check(.front), .present(sample))
+        XCTAssertEqual(calls.value, 1)
+        XCTAssertEqual(stderr.lines.count, 1)
+    }
+
     // MARK: opt-out and caching
 
     func testEnvironmentVariableDisablesTheProbe() {

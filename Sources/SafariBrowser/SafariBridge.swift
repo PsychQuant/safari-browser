@@ -212,10 +212,13 @@ enum SafariBridge {
         // .resolvedTab is exempt (#79): profile was validated at its
         // resolve time and re-validation would cost an enumeration per
         // round-trip.
-        // #126: every targeting command converges here, so this is where the
-        // one-window dialog probe runs — after the window is known, before any
-        // AppleScript or JavaScript touches it. The gate caches per window, so
-        // a command's later round-trips do not pay again.
+        // #126: every command that resolves through THIS function gets the
+        // one-window dialog probe — after the window is known, before any
+        // AppleScript or JavaScript touches it. Commands that go straight to
+        // resolveNativeTarget (close, pdf, tab focus, upload, save-image,
+        // tabs --window) do not; that is #133. The gate caches per window for
+        // 2 s, which is shorter than one `js` invocation (4-5 round-trips,
+        // ~3.5 s measured), so later round-trips may probe again at ~35 ms each.
         if profile != nil, isResolvedTab(target) == false {
             let resolved = try await resolveNativeTarget(
                 from: target,
@@ -1463,6 +1466,9 @@ enum SafariBridge {
                     expected: matcher.description, actualURL: nil)
             }
             let retryRef = try await resolveToAppleScript(retryTarget)
+            // #126: the re-resolve probed again; refuse here too rather than
+            // letting the retry pay the 30 s osascript timeout.
+            try BlockingDialogGate.shared.throwIfBlocked()
             do {
                 return try await dispatchJS(code, docRef: retryRef, target: retryTarget)
             } catch let retryError as SafariBrowserError where isTargetDangleError(retryError) {
@@ -3078,11 +3084,18 @@ enum SafariBridge {
     /// (measured 2026-09-09). The 18 s the whole-app scan cost came from the
     /// per-window messaging timeout, never from depth.
     static func detectBlockingDialog(windowKey: BlockingDialogGate.WindowKey) -> BlockingDialogState {
-        guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else {
-            return .accessibilityDenied
+        guard AXIsProcessTrusted() else { return .accessibilityDenied }
+        guard let axApp = try? safariAXApplication() else {
+            // Safari is not running: there is no window for a dialog to be in.
+            // That is a positive `none`, not a permission problem — folding it
+            // into accessibilityDenied told users to grant a grant they had
+            // (verify round 2, I2). `open` launches Safari from this state.
+            return .none
         }
-        guard let window = axWindow(for: windowKey, in: axApp) else {
-            // No way to map the target onto an AX window: nobody looked.
+        let windows = axWindows(of: axApp)
+        if windows.isEmpty { return .none }   // running, no windows: nothing can block
+        guard let window = axWindow(for: windowKey, in: axApp, windows: windows) else {
+            // Windows exist but none maps onto the target: nobody looked.
             return .unprobed
         }
         guard let element = findDialogElement(in: window, depth: 0, timeout: entryProbeTimeout)
@@ -3096,9 +3109,18 @@ enum SafariBridge {
 
     /// The AX window behind a `WindowKey`. `.id` matches Safari's AppleScript
     /// `window id` against the CGWindowID that `_AXUIElementGetWindow` exposes —
-    /// measured equal (#126). `.front` is the focused window; `.index` follows
-    /// front-to-back order, which is also how AppleScript numbers windows.
-    private static func axWindow(for key: BlockingDialogGate.WindowKey, in axApp: AXUIElement) -> AXUIElement? {
+    /// measured equal on five windows (#126) and confirmed live on a sixth (#131).
+    ///
+    /// `.front` and `.index` are UNVERIFIED assumptions (verify round 2, I7;
+    /// tracked in #134): `.front` takes `kAXFocusedWindow` (a Settings window
+    /// or Web Inspector would qualify), and `.index` takes the n-th entry of
+    /// `kAXWindows` as if that order matched AppleScript's window numbering —
+    /// the very iteration-order assumption `getFrontWindowIDViaAX` in this
+    /// file refuses to make, with no filtering of minimized windows. A wrong
+    /// window reads as `none` (silence) or, worse, as someone else's dialog.
+    private static func axWindow(
+        for key: BlockingDialogGate.WindowKey, in axApp: AXUIElement, windows: [AXUIElement]
+    ) -> AXUIElement? {
         AXUIElementSetMessagingTimeout(axApp, entryProbeTimeout)
         switch key {
         case .front:
@@ -3107,14 +3129,14 @@ enum SafariBridge {
                let window = focused, CFGetTypeID(window) == AXUIElementGetTypeID() {
                 return (window as! AXUIElement)  // swiftlint:disable:this force_cast
             }
-            return axWindows(of: axApp).first
+            return windows.first
         case .index(let n):
-            let windows = axWindows(of: axApp)
             return (n >= 1 && n <= windows.count) ? windows[n - 1] : nil
         case .id(let wanted):
-            for window in axWindows(of: axApp) {
+            for window in windows {
                 var cgID: CGWindowID = 0
-                if _AXUIElementGetWindow(window, &cgID) == .success, Int(cgID) == wanted {
+                // `cgID != 0` matches the three other CGWindowID reads in this file.
+                if _AXUIElementGetWindow(window, &cgID) == .success, cgID != 0, Int(cgID) == wanted {
                     return window
                 }
             }

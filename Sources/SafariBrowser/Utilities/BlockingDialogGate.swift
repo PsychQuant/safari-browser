@@ -15,9 +15,13 @@ enum BlockingDialogState: Sendable, Equatable {
 /// The one line every command prints first when a dialog is in the way.
 ///
 /// Shared with `dialog list` so the two never describe the same dialog in two
-/// vocabularies. Single line by construction: agents routinely read stderr
-/// through `2>&1 | tail -1`, which is exactly how the #126 incident stayed
-/// invisible for ten minutes.
+/// vocabularies. One line by construction — internal newlines in the dialog's
+/// own text are folded (verify round 2, B2) — so `head -1` sees all of it.
+/// Honest limit: for a read-only command that succeeds, `2>&1 | tail -1`
+/// still shows the command's stdout (it flushes last); what makes a blocked
+/// tab visible in that pipeline is the JavaScript path failing non-zero with
+/// this same text as its error, not this line. Control characters and length
+/// are #114's job.
 enum BlockingDialogWarning {
     static func firstLine(windowKey: BlockingDialogGate.WindowKey, dialog: SafariBridge.BlockingDialog) -> String {
         "⚠ BLOCKING DIALOG in \(windowKey.humanDescription): \(messageText(dialog))"
@@ -39,14 +43,28 @@ enum BlockingDialogWarning {
     /// unreadable message would read as "no dialog" (see #127 for why the text
     /// can be missing even when the dialog is real).
     static func messageText(_ dialog: SafariBridge.BlockingDialog) -> String {
-        let text = dialog.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = oneLine(dialog.message)
         return text.isEmpty ? "(no readable message)" : "\"\(text)\""
     }
 
     static func buttonsText(_ dialog: SafariBridge.BlockingDialog) -> String {
         dialog.buttons.isEmpty
             ? "(none exposed)"
-            : dialog.buttons.map { "\"\($0)\"" }.joined(separator: ", ")
+            : dialog.buttons.map { "\"\(oneLine($0))\"" }.joined(separator: ", ")
+    }
+
+    /// Fold every line break (CR, LF, CRLF, U+2028/2029) into one space and
+    /// collapse the runs, so page-controlled text cannot add a second line.
+    static func oneLine(_ raw: String) -> String {
+        let folded = raw.unicodeScalars.map { scalar -> String in
+            switch scalar {
+            case "\n", "\r", "\u{2028}", "\u{2029}", "\u{0085}": return " "
+            default: return String(scalar)
+            }
+        }.joined()
+        return folded.split(separator: " ", omittingEmptySubsequences: true)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -77,7 +95,11 @@ final class BlockingDialogGate: @unchecked Sendable {
 
     static let shared = BlockingDialogGate()
 
-    /// Set to disable the probe for batch scripts that accept the risk.
+    /// Set to exactly `1` to disable the probe for batch scripts that accept
+    /// the risk. Only that value counts (repo convention, `DaemonLog`): a
+    /// script exporting `=0` must not switch a visibility mechanism off.
+    /// What it switches off is all of #126 — the warning, the JavaScript
+    /// fast-fail, and the "probe unavailable" notice.
     static let optOutVariable = "SAFARI_BROWSER_NO_DIALOG_PROBE"
     /// Set to print the probe's cost and verdict after the warning line.
     static let debugVariable = "SAFARI_BROWSER_DIALOG_PROBE_DEBUG"
@@ -91,7 +113,10 @@ final class BlockingDialogGate: @unchecked Sendable {
 
     private var cache: [WindowKey: (state: BlockingDialogState, at: Date)] = [:]
     private var last: BlockingDialogState = .unprobed
-    private var warned = false
+    /// Two separate once-flags: a "could not probe" notice must never silence
+    /// a later real dialog (verify round 2, I1).
+    private var warnedPresent = false
+    private var warnedUnavailable = false
 
     init(
         probe: ((WindowKey) -> BlockingDialogState)? = nil,
@@ -119,7 +144,7 @@ final class BlockingDialogGate: @unchecked Sendable {
     @discardableResult
     func check(_ key: WindowKey) -> BlockingDialogState {
         lock.lock(); defer { lock.unlock() }
-        if environment[Self.optOutVariable] != nil {
+        if environment[Self.optOutVariable] == "1" {
             last = .unprobed
             return last
         }
@@ -135,24 +160,22 @@ final class BlockingDialogGate: @unchecked Sendable {
             reused = false
         }
         last = state
-        if !warned {
-            switch state {
-            case .present(let dialog):
-                warned = true
-                stderr(BlockingDialogWarning.firstLine(windowKey: key, dialog: dialog) + "\n")
-            case .accessibilityDenied:
-                warned = true
-                stderr(BlockingDialogWarning.probeUnavailableLine() + "\n")
-            case .unprobed where !reused:
-                // Only a probe that actually ran and came back empty-handed;
-                // the opt-out path returned before reaching here.
-                warned = true
-                stderr(BlockingDialogWarning.unmappableLine(windowKey: key) + "\n")
-            case .none, .unprobed:
-                break
-            }
+        switch state {
+        case .present(let dialog) where !warnedPresent:
+            warnedPresent = true
+            stderr(BlockingDialogWarning.firstLine(windowKey: key, dialog: dialog) + "\n")
+        case .accessibilityDenied where !warnedUnavailable:
+            warnedUnavailable = true
+            stderr(BlockingDialogWarning.probeUnavailableLine() + "\n")
+        case .unprobed where !warnedUnavailable && !reused:
+            // A probe that actually ran and could not map the window. (A cache
+            // hit is not a second sighting; the opt-out path never gets here.)
+            warnedUnavailable = true
+            stderr(BlockingDialogWarning.unmappableLine(windowKey: key) + "\n")
+        case .present, .accessibilityDenied, .unprobed, .none:
+            break
         }
-        if environment[Self.debugVariable] != nil {
+        if environment[Self.debugVariable] == "1" {
             let ms = Int((now().timeIntervalSince(started) * 1000).rounded())
             stderr("dialog probe: \(key.humanDescription) \(reused ? "(cached)" : "\(ms) ms") → \(state.debugName)\n")
         }
@@ -174,7 +197,8 @@ final class BlockingDialogGate: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         cache.removeAll()
         last = .unprobed
-        warned = false
+        warnedPresent = false
+        warnedUnavailable = false
     }
 }
 
