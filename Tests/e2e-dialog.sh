@@ -13,7 +13,8 @@
 # lands the rest on the 30 s timeout path. Only a dialog in OUR tab's window
 # — as reported by the entry probe on the nonce-locked target — is ever
 # dismissed, never anybody else's. (Ownership cannot use the alert's text:
-# #127 — the probe reads the alert's title, not its body.) If a dialog is already up anywhere in Safari the
+# #127 — the probe reads the alert's title, not its body. Background-tab
+# invisibility is #131.) If a dialog is already up anywhere in Safari the
 # test skips: `dialog list` refuses to pick one of several, and the test could
 # not tell whose it would be pressing.
 #
@@ -174,7 +175,7 @@ if SAFARI_BROWSER_NAME="$NAME" "$SB" daemon start >"$TMP/daemon.out" 2>&1; then
     # assertion is about the daemon path, and skip if it never answers.
     # Bounded: with a dialog up, the daemon path has been seen to hang far
     # past the client's 15 s socket timeout (pre-existing daemon behaviour,
-    # filed separately from #126). A hang here must not wedge this test.
+    # #130). A hang here must not wedge this test.
     D_EXIT=124
     for attempt in 1 2 3; do
         SAFARI_BROWSER_DAEMON=1 SAFARI_BROWSER_NAME="$NAME" "$SB" get title "${LOCK[@]}" \
@@ -193,7 +194,7 @@ if SAFARI_BROWSER_NAME="$NAME" "$SB" daemon start >"$TMP/daemon.out" 2>&1; then
     D_ERR=$(cat "$TMP/daemon-title.err")
     D_FIRST=$(echo "$D_ERR" | head -1)
     if [[ "$D_EXIT" -eq 124 ]]; then
-        skip "daemon parity (daemon path hung > 20 s with the dialog up — pre-existing daemon hang, tracked outside #126)"
+        skip "daemon parity (daemon path hung > 20 s with the dialog up — pre-existing daemon hang, #130)"
     elif [[ "$D_ERR" == *"[daemon fallback"* ]]; then
         skip "daemon parity (daemon never answered: $D_FIRST)"
     elif [[ "$D_EXIT" -eq 0 && "$D_FIRST" == *"BLOCKING DIALOG"* ]] && grep -q "Dialog Test Page" "$TMP/daemon-title.out"; then

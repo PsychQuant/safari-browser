@@ -106,6 +106,17 @@ final class BlockingDialogGateTests: XCTestCase {
         XCTAssertNoThrow(try gate.throwIfBlocked(), "unknown is not 'blocked' — read-only work must proceed")
     }
 
+    func testUnmappableWindowIsReportedNotSilent() {
+        // The probe ran but could not find an AX window for the target: nobody
+        // looked at that window. Saying nothing would read as "no dialog".
+        let (gate, stderr) = makeGate(probe: { _ in .unprobed })
+        XCTAssertEqual(gate.check(.id(999)), .unprobed)
+        XCTAssertEqual(stderr.lines.count, 1, "\(stderr.lines)")
+        XCTAssertTrue(stderr.lines[0].contains("999"), "must name the window it could not map: \(stderr.lines)")
+        XCTAssertTrue(stderr.lines[0].contains("dialog list"), stderr.lines[0])
+        XCTAssertNoThrow(try gate.throwIfBlocked(), "unknown is not 'blocked'")
+    }
+
     // MARK: opt-out and caching
 
     func testEnvironmentVariableDisablesTheProbe() {

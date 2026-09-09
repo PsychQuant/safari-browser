@@ -395,7 +395,7 @@ fifteen windows open. `SAFARI_BROWSER_NO_DIALOG_PROBE=1` disables it for
 scripts that accept the risk; `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1` prints its
 cost and verdict. The check runs when a command starts, so a dialog that opens
 *during* a multi-step command still surfaces through the slower failure paths
-described below. Without the Accessibility grant the probe cannot run, and it
+described below. And Safari only renders a dialog in a window's *active* tab: an alert pending in a background tab freezes that tab's JavaScript without any dialog to find — `tab focus` the tab first (#131). Without the Accessibility grant the probe cannot run, and it
 says so once rather than staying quiet — no permission means no information,
 not "no dialog". (#126)
 

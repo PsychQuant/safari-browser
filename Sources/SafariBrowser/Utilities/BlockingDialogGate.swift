@@ -24,6 +24,12 @@ enum BlockingDialogWarning {
             + " — buttons: \(buttonsText(dialog)). Run: safari-browser dialog list"
     }
 
+    /// The probe ran but found no AX window for the target — nobody looked.
+    static func unmappableLine(windowKey: BlockingDialogGate.WindowKey) -> String {
+        "⚠ dialog probe could not map \(windowKey.humanDescription) to an Accessibility window;"
+            + " a blocking dialog there would go unnoticed — run: safari-browser dialog list"
+    }
+
     static func probeUnavailableLine() -> String {
         "⚠ dialog probe unavailable (Accessibility not granted) — a blocking dialog would go unnoticed;"
             + " grant Accessibility or run: safari-browser setup"
@@ -137,6 +143,11 @@ final class BlockingDialogGate: @unchecked Sendable {
             case .accessibilityDenied:
                 warned = true
                 stderr(BlockingDialogWarning.probeUnavailableLine() + "\n")
+            case .unprobed where !reused:
+                // Only a probe that actually ran and came back empty-handed;
+                // the opt-out path returned before reaching here.
+                warned = true
+                stderr(BlockingDialogWarning.unmappableLine(windowKey: key) + "\n")
             case .none, .unprobed:
                 break
             }
