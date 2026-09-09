@@ -9,11 +9,12 @@ BINARY_NAME = safari-browser
 SAFARI_BROWSER_BIN ?= .build/debug/$(BINARY_NAME)
 export SAFARI_BROWSER_BIN
 
+.PHONY: test-mutation-gate
 .PHONY: build build-debug install install-signed clean \
         sign-developer-id verify-developer-id verify-install-signature \
         test test-unit test-smoke test-all test-install-signature \
         test-install-signature-strict \
-        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-exec-script test-mark-tab test-csp test-target-identity test-reference-edges
+        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-dialog test-exec-script test-mark-tab test-csp test-target-identity test-reference-edges
 
 build:
 	swift build -c release
@@ -236,6 +237,22 @@ test-smoke: build-debug
 test-install-signature-strict: $(VERIFY_BIN)
 	@ALLOW_INCOMPLETE= bash Tests/install-signature-test.sh
 
+# Does the signature suite actually DETECT the fixes it contains? Reverts each
+# `// @mutant(...)` declaration in the guard one at a time and requires the suite
+# to go red on a named assertion.
+#
+# Not folded into test-all, and not into test-install-signature-strict: it
+# compiles the guard and runs the whole suite once per mutant (~18 runs, minutes,
+# both signing identities required). It is the gate a change to the guard OR to
+# the suite must pass — the one that would have caught, in round 1, what took
+# until round 10 to measure: nine rounds of a green 35-assertion suite that could
+# not tell half of its own subject's fixes from their absence.
+#
+# A new fix to the guard should arrive with a declaration. The gate cannot
+# enforce that (see its header); reviewers can.
+test-mutation-gate:
+	./Tests/mutation-gate.sh
+
 # Everything that runs on any machine, with or without a signing identity.
 #
 # ALLOW_INCOMPLETE is set here on purpose. The signature suite needs BOTH a
@@ -277,6 +294,13 @@ test-tab-focus: build-debug
 
 test-daemon-parity: build-debug
 	./Tests/e2e-daemon-parity.sh
+
+# #126: a blocking dialog is announced on the first stderr line by every
+# targeting command, and js fails fast. Stages its own alert in a throwaway
+# tab and dismisses it by name; skips (exit 77) without Accessibility or when
+# another dialog is already up.
+test-dialog: build-debug
+	./Tests/e2e-dialog.sh
 
 test-exec-script: build-debug
 	./Tests/e2e-exec-script.sh

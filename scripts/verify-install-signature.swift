@@ -151,14 +151,23 @@ func usage(_ problem: String) -> Never {
 /// A gate that a later argument can switch off is not a gate. Neither was one
 /// a typo could switch off, which is what round 6 said while leaving these.
 func takeValue(_ flag: String, into slot: inout String?) {
+    // @mutant(usage-repeat-flag) slot != nil => false
+    //   R7. Reverting lets a later repeat silently override the first, so a
+    //   gate can be switched off by an argument appended after the path.
     if slot != nil { usage("\(display(flag)) given more than once") }
     guard let v = rest.first else { usage("\(display(flag)) needs a value") }
+    // @mutant(usage-option-as-value) v.hasPrefix("-") => false
+    //   R7. Reverting consumes the NEXT OPTION as this flag's value, so the
+    //   tool delivers a verdict about a binary the caller never named.
     if v.hasPrefix("-") { usage("\(display(flag)) needs a value, got the option \(display(v))") }
     // Round 8: `--require-shape /bin/ls` took the path as the shape name and
     // then delivered a verdict about the DEFAULT target — a binary the caller
     // never named, reported as "wrong signing identity". Round 7 rejected a
     // value that looked like an option and stopped there; this is the same
     // class one shape over.
+    // @mutant(usage-path-as-name) v.hasPrefix("/") || v.hasPrefix("./") || v.hasPrefix("~/") => false
+    //   R8. Reverting takes a path as the shape NAME and then reports on the
+    //   DEFAULT target — again a binary the caller never named.
     if v.hasPrefix("/") || v.hasPrefix("./") || v.hasPrefix("~/") {
         usage("\(display(flag)) needs a name, got what looks like a path: \(display(v))")
     }
@@ -177,12 +186,18 @@ while let head = rest.first {
         // positional after the first was dropped. So `verify <path>
         // --require-shapee X` — one typo — silently ran with no gate at all
         // and exited 0.
+        // @mutant(usage-unknown-option) usage("unknown option: \(display(f))") => positional.append(f)
+        //   R6. Reverting sends an unrecognised flag to the positional list,
+        //   so one typo runs with no gate at all and exits 0.
         usage("unknown option: \(display(f))")
     default:
         positional.append(head)
     }
 }
 
+// @mutant(usage-extra-path) positional.count > 1 => false
+//   R6. Reverting drops every path after the first, so a second path is
+//   silently ignored rather than refused.
 if positional.count > 1 {
     usage("expected at most one path, got \(positional.count): \(positional.map(display).joined(separator: " "))")
 }
@@ -192,6 +207,34 @@ guard let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty else
     exit(70)
 }
 let target = positional.first ?? home + "/bin/safari-browser"
+
+// ── Mutation declarations (@mutant) ──────────────────────────────────────
+//
+// Tests/mutation-gate.sh reverts each declared fix and requires the suite to
+// go red on a NAMED assertion. Round 9 of #119 is why: the suite had 35 green
+// assertions and, measured by reverting fixes one at a time, could not tell
+// three of them from the original. Assertions were added for the instance each
+// round had just fixed; nothing ever asked whether they discriminated.
+//
+// Format, on the line directly above the code it protects:
+//
+//     // @mutant(<id>) <from> => <to>
+//     //   prose: which round, and what the revert lets through
+//
+// The target is the first following line that is neither blank nor a comment,
+// and <from> must occur exactly once in it. That is the whole point of
+// anchoring the declaration to the source rather than listing mutants in the
+// gate: a refactor that moves the code carries its declaration along, and one
+// that deletes the text makes the gate ERROR ("site no longer contains
+// <from>") instead of quietly having nothing to revert. Rounds 7 and 8 were
+// both lost to a hand-maintained second copy of a fact that lived in this
+// file — `^[0-5]$` and a hardcoded count of 10 — and a list of mutants kept
+// somewhere else is that same object.
+//
+// What this does NOT establish: that every fix has a declaration. A fix can be
+// one character, and no extraction can tell a line that closes a review
+// finding from any other line. The gate enforces that declared mutants die;
+// declaring them is a review obligation, stated here and in the suite header.
 
 /// POSIX single-quoting, for any path this tool puts inside a command it
 /// expects a human to run. Round 6: the path was interpolated into
@@ -228,9 +271,15 @@ func display(_ s: String) -> String {
 func isSafeToPrint(_ c: Unicode.Scalar) -> Bool {
     switch c.value {
     case 0x00...0x1f, 0x7f:            return false   // C0 + DEL
+    // @mutant(safe-print-c1) return false => return true
+    //   R8. Reverting narrows the printable test back to C0 and DEL, so
+    //   U+0085 (NEL) starts a new line in output that is not this tool's.
     case 0x80...0x9f:                  return false   // C1, incl. NEL (U+0085)
     case 0x2028, 0x2029:               return false   // line / paragraph separator
     case 0x200e, 0x200f:               return false   // LRM / RLM
+    // @mutant(safe-print-bidi) return false => return true
+    //   R8. Reverting lets a bidi override reverse the reading order of
+    //   everything after it, so printed text can say the opposite of itself.
     case 0x202a...0x202e:              return false   // bidi embedding + override
     case 0x2066...0x2069:              return false   // bidi isolates
     case 0x200b...0x200d, 0x2060:      return false   // zero-width
@@ -243,6 +292,10 @@ func isSafeToPrint(_ c: Unicode.Scalar) -> Bool {
 /// smuggle structure into a printed command. Such a path gets its escaped form
 /// and no paste-ready command: a command containing a literal newline is not
 /// paste-ready anyway, and printing one invites exactly the confusion above.
+// @mutant(printable-always) target.unicodeScalars.allSatisfy(isSafeToPrint) => true
+//   R7 CRITICAL. Reverting offers a paste-ready command for a path containing
+//   a newline, which emits a line reading byte for byte like this tool's own
+//   success message directly under a failing verdict.
 let targetIsPrintable = target.unicodeScalars.allSatisfy(isSafeToPrint)
 
 func sh(_ s: String) -> String {
@@ -309,7 +362,17 @@ func describe(_ status: OSStatus) -> String {
 /// executable of a working copy of Anki.
 let isOurInstall: Bool = {
     let canonical = URL(fileURLWithPath: target).standardizedFileURL.path
-    let installed = home + "/bin/safari-browser"
+    // @mutant(our-install-noncanonical-home) URL(fileURLWithPath: home + "/bin/safari-browser").standardizedFileURL.path => home + "/bin/safari-browser"
+    //   R10. Only `canonical` was standardized, so a HOME spelled any other way
+    //   that denotes the same directory — a trailing slash, a doubled slash, a
+    //   `.` component — made the real install path compare unequal to itself.
+    //   The binary that IS ours was then refused the one prescription that
+    //   applies to it, which is the R5 defect pointing the other way.
+    let installed = URL(fileURLWithPath: home + "/bin/safari-browser").standardizedFileURL.path
+    // @mutant(our-install-any-path) canonical == installed => true
+    //   R5 CRITICAL. Reverting makes every path "ours", so a third-party
+    //   binary with a broken seal is handed `rm -f` — review measured this
+    //   against a working copy of Anki.
     if canonical == installed { return true }
     // The staging file `install-signed` verifies before landing. Round 6:
     // this was a bare `hasPrefix(installed + ".")`, which any suffix
@@ -320,10 +383,18 @@ let isOurInstall: Bool = {
     // from its alphabet, and nothing else.
     guard canonical.hasPrefix(installed + ".") else { return false }
     let suffix = canonical.dropFirst(installed.count + 1)
+    // @mutant(our-install-loose-suffix) suffix.count == 6 && suffix.allSatisfy => true || suffix.allSatisfy
+    //   R6. Reverting accepts any suffix after the dot, so
+    //   `~/bin/safari-browser.$(...)` counts as ours and gets the destructive
+    //   prescription — the check meant to keep `rm -f` away from other
+    //   people's software was itself the hole.
     return suffix.count == 6 && suffix.allSatisfy { $0.isLetter && $0.isASCII || $0.isNumber && $0.isASCII }
 }()
 
 if sealStatus != errSecSuccess {
+    // @mutant(unsigned-distinct) sealStatus == errSecCSUnsigned => false
+    //   R6. Reverting folds "unsigned" into the generic validation failure, so
+    //   the two cannot be told apart by exit code.
     if sealStatus == errSecCSUnsigned {
         err("✗ no code signature: \(display(target))")
         err("  An unsigned binary cannot hold a Full Disk Access grant.")
@@ -404,9 +475,18 @@ if let want = requiredEntitlement {
     // yes, and guessing on the caller's behalf is how the last hole got made.
     let granted: Bool = {
         guard let v = ents?[want] else { return false }
+        // @mutant(ent-false-granted) n.boolValue && CFGetTypeID(n) == CFBooleanGetTypeID() => true
+        //   R7. Reverting accepts an entitlement explicitly set to <false/> —
+        //   a signature that spells out it does NOT hold the permission.
         if let n = v as? NSNumber { return n.boolValue && CFGetTypeID(n) == CFBooleanGetTypeID() }
+        // @mutant(ent-nonbool-granted) return false => return true
+        //   R8. Reverting makes every non-boolean value a yes, so
+        //   <string>false</string> and <array/> satisfy the gate.
         return false
     }()
+    // @mutant(ent-gate-open) !granted => false
+    //   R6/R7. Reverting removes the gate's verdict entirely, so a binary
+    //   without the entitlement reports success instead of 7.
     if !granted {
         err("✗ required entitlement not granted: \(display(want))")
         err("  \(display(target))")
@@ -452,6 +532,10 @@ let shapes: [(String, String)] = [
      #"^\#(ident) and anchor apple generic and \#(devIDOIDs) and certificate leaf\[subject\.OU\] = \#(str)$"#),
     // What Apple's own binaries carry (/bin/ls and friends).
     ("Apple system",
+     // @mutant(shape-unanchored-apple) ^\#(ident) and anchor apple$ => \#(ident) and anchor apple
+     //   R4/R5. Reverting matches the Apple-system shape as a SUBSTRING, so a
+     //   requirement that merely starts that way — an anchored one with an
+     //   extra version pin — is reported as a shape this tool knows.
      #"^\#(ident) and anchor apple$"#),
     // What an Apple Development certificate produces. Recognised deliberately:
     // this tool answers "is the grant durable", and that requirement is as
@@ -508,6 +592,9 @@ if satisfies != errSecSuccess {
     exit(4)
 }
 
+// @mutant(shape-mismatch-open) matchedShape != want => false
+//   R6. Reverting drops --require-shape's verdict, so install-signed would
+//   land a binary signed by the wrong identity and report success.
 if let want = requiredShape, matchedShape != want {
     err("✗ wrong signing identity: \(display(target))")
     err("  required shape: \(display(want))")

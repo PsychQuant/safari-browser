@@ -13,6 +13,31 @@
 # Nothing here needs Full Disk Access, a signing certificate, or a live Safari
 # — only `codesign`, which reads. Fixtures are copies in a temp dir.
 #
+# ── This suite is itself gated (#119 round 10) ───────────────────────────
+#
+# Being green is not evidence. After nine review rounds this file held 35 green
+# assertions, and reverting the guard's fixes one at a time — measured, not
+# argued — left it at 35/35 for EIGHT of the sixteen. Each round had added
+# assertions for the instance it had just fixed; none had ever asked whether
+# those assertions could see the fix removed.
+#
+#     make test-mutation-gate      # Tests/mutation-gate.sh
+#
+# reverts each `// @mutant(...)` declaration in the guard and requires this suite
+# to go red on a NAMED assertion. A change to the guard, or to this file, must
+# pass it; a new fix to the guard should arrive with a declaration, which the
+# gate cannot enforce and reviewers can.
+#
+# Two consequences for how assertions are written here:
+#
+#   * Labels are the gate's join key. They must not vary with the verifier's
+#     answer — detail like `(exit $rc)` goes in pass()'s second argument, which
+#     is printed and not recorded.
+#   * An assertion about what the tool DOES print cannot catch a defect that
+#     consists of printing something it must NOT. Three of the eight survivors
+#     were exactly that (`rm -f` offered for somebody else's software), which is
+#     why assert_says_not and assert_no_forged_line exist.
+#
 # Usage:
 #   make test-install-signature
 #   ./Tests/install-signature-test.sh
@@ -98,9 +123,55 @@ SKIPPED=0
 # what this machine can and accept a partial result knowingly; the summary
 # still names every case that did not run. There is no CI here to appease, and
 # a suite that cannot test the thing must not claim it did.
-skip() { SKIPPED=$((SKIPPED + 1)); printf "  %s SKIPPED — %s\n" "⊘" "$1"; }
-pass() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
-fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      $2"; }
+# Machine-readable result stream, one `<PASS|FAIL|SKIP>\t<label>` line per
+# assertion, written when INSTALL_SIGNATURE_RESULT_LOG names a file. Human
+# output is unchanged.
+#
+# This exists for Tests/mutation-gate.sh, and the reason is round 9 of #119.
+# "The suite goes red" is not evidence that an assertion can tell a reverted
+# fix from the original: the suite also goes red when a fixture degrades, and
+# when the skip accounting fires. Attributing a kill to a NAMED assertion that
+# was green before the mutation and red after is the only form of that claim
+# which cannot be satisfied by collateral damage.
+#
+# Labels are therefore the gate's join key and must not vary with the
+# verifier's answer. `pass` takes an optional second argument for detail that
+# is printed but NOT recorded, so `(exit $rc)` can stay in the transcript
+# without making the label move when rc moves.
+RESULT_LOG="${INSTALL_SIGNATURE_RESULT_LOG:-}"
+record() {  # <PASS|FAIL|SKIP> <label>
+    [[ -n "$RESULT_LOG" ]] || return 0
+    printf '%s\t%s\n' "$1" "$2" >> "$RESULT_LOG"
+}
+
+skip() { SKIPPED=$((SKIPPED + 1)); record SKIP "$1"; printf "  %s SKIPPED — %s\n" "⊘" "$1"; }
+pass() { PASS=$((PASS + 1)); record PASS "$1"; echo "  ✓ $1${2:+ $2}"; }
+fail() { FAIL=$((FAIL + 1)); record FAIL "$1"; echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      $2"; }
+
+# Some cases must vary the tool's idea of HOME: `isOurInstall` is defined
+# against $HOME/bin/safari-browser, and the only honest way to exercise the
+# staging-suffix rule is to put a fixture at that path. Writing into the real
+# ~/bin would be a test that damages the machine it runs on, so HOME is
+# redirected for the duration of ONE assertion via with_home.
+ASSERT_HOME=""
+run_verifier() {
+    if [[ -n "$ASSERT_HOME" ]]; then
+        HOME="$ASSERT_HOME" "$VERIFIER" "$@"
+    else
+        "$VERIFIER" "$@"
+    fi
+}
+
+# with_home <home> <assert-fn> <args...>
+# Scoped, and restores the previous value — a global that callers must remember
+# to reset is the kind of thing that makes a later assertion silently test
+# something else.
+with_home() {
+    local saved="$ASSERT_HOME"
+    ASSERT_HOME="$1"; shift
+    "$@"
+    ASSERT_HOME="$saved"
+}
 
 # assert_exit "<label>" "<expected-code>" <path>
 assert_exit() {
@@ -109,7 +180,7 @@ assert_exit() {
     # test the same thing while reading as though it tested four.
     local label="$1" want="$2"; shift 2
     local out rc
-    out=$("$VERIFIER" "$@" 2>&1); rc=$?
+    out=$(run_verifier "$@" 2>&1); rc=$?
     if [[ "$rc" == "$want" ]]; then
         pass "$label"
     else
@@ -123,13 +194,13 @@ assert_exit() {
 assert_exit_in() {
     local label="$1" allowed="$2" target="$3"
     local out rc
-    out=$("$VERIFIER" "$target" 2>&1); rc=$?
+    out=$(run_verifier "$target" 2>&1); rc=$?
     for want in $allowed; do
         # pass(), not a bare echo: the first draft of this helper printed its
         # own ✓ and never touched $PASS, so the summary undercounted by one
         # while the transcript looked right. That is the same shape as the
         # skip bug above — a visible line standing in for a tallied result.
-        if [[ "$rc" == "$want" ]]; then pass "$label (exit $rc)"; return 0; fi
+        if [[ "$rc" == "$want" ]]; then pass "$label" "(exit $rc)"; return 0; fi
     done
     fail "$label" "expected one of [$allowed], got $rc — output: $(echo "$out" | head -2 | tr '\n' '⏎')"
 }
@@ -137,11 +208,39 @@ assert_exit_in() {
 assert_says() {
     local label="$1" target="$2" needle="$3"
     local out
-    out=$("$VERIFIER" "$target" 2>&1)
+    out=$(run_verifier "$target" 2>&1)
     if [[ "$out" == *"$needle"* ]]; then
         pass "$label"
     else
         fail "$label" "expected output to contain «${needle}», got: $(echo "$out" | head -3 | tr '\n' '⏎')"
+    fi
+}
+
+# The absence of a phrase, for the cases where saying the thing IS the defect:
+# telling a user to `rm -f` somebody else's software, for one.
+assert_says_not() {
+    local label="$1" target="$2" needle="$3"
+    local out
+    out=$(run_verifier "$target" 2>&1)
+    if [[ "$out" != *"$needle"* ]]; then
+        pass "$label"
+    else
+        fail "$label" "expected output NOT to contain «${needle}», got: $(echo "$out" | head -4 | tr '\n' '⏎')"
+    fi
+}
+
+# Anchored at line start, NOT a substring search — and the difference is the
+# whole point. display() escapes a newline in the path to a literal backslash-n,
+# so the escaped form still CONTAINS the text of a success line; it simply no
+# longer begins a line with it, which is what a reader parses. A substring check
+# here would fail on correct output while passing output forged another way.
+assert_no_forged_line() {
+    local label="$1" target="$2" n
+    n=$(run_verifier "$target" 2>&1 | grep -c '^✓ durable' || true)
+    if [[ "$n" == "0" ]]; then
+        pass "$label"
+    else
+        fail "$label" "output carries $n line(s) beginning '✓ durable'"
     fi
 }
 
@@ -179,7 +278,40 @@ trap 'rm -rf "$FIXTURES"' EXIT
 # degraded fixture the assertion cannot distinguish) and a hard red the skip
 # accounting could not forgive. Downgrading the abort without guarding the
 # call sites moved the defect rather than removing it.
-fixture_fail() { echo "✗ FIXTURE SETUP FAILED: $1${2:+ — $2}" >&2; SKIPPED=$((SKIPPED + 1)); return 1; }
+# Round 9 measured the residue of that fix: 11 of the 12 call sites still had
+# their assertions following UNGUARDED, so `<precondition> || fixture_fail ...`
+# announced the damage and then asserted against the damaged fixture anyway.
+# That is a vacuous PASS whenever the degraded file happens to satisfy the
+# assertion, and it was not hypothetical — with the `adhoc` fixture degraded to
+# an Apple-signed /bin/ls, `rejection names the rebuild consequence` passed,
+# because the guard's SUCCESS output contains the word "rebuild".
+#
+# So fixture_fail now takes the fixture's NAME as its first argument and
+# records it; `have <name>` answers whether that fixture is sound, and
+# `assert_fixture <name> ...` runs an assertion only if it is. Nothing
+# hand-maintains a list of fixtures — the name written at the failure site is
+# the same key read at the assertion site, and an assertion that forgets to
+# name its fixture is visible in the diff rather than silently vacuous.
+BROKEN_FIXTURES=" "
+fixture_fail() {  # <fixture-name> [detail]
+    echo "✗ FIXTURE SETUP FAILED: $1${2:+ — $2}" >&2
+    BROKEN_FIXTURES="$BROKEN_FIXTURES$1 "
+    SKIPPED=$((SKIPPED + 1))
+    return 1
+}
+have() { [[ "$BROKEN_FIXTURES" != *" $1 "* ]]; }
+
+# assert_fixture <fixture-name> <assert-fn> <label> <assert-args...>
+# A degraded fixture yields a counted, named SKIP — fatal unless
+# ALLOW_INCOMPLETE=1 — never a PASS.
+assert_fixture() {
+    local fx="$1" label="$3"
+    if have "$fx"; then
+        "${@:2}"
+    else
+        skip "$label (fixture '$fx' did not build)"
+    fi
+}
 
 # The certificate a file was actually signed with, as a SHA-1 fingerprint read
 # back from the signature — not "some Authority line is present". Round 8:
@@ -210,17 +342,17 @@ signed_by() {  # <path> <identity-sha1>  -> 0 when the leaf certificate is that 
 # why every fixture is derived from it and none from ~/bin/safari-browser.
 cp /bin/ls "$FIXTURES/identity-bound"
 codesign -d -r- "$FIXTURES/identity-bound" 2>&1 | grep -q 'cdhash' \
-  && fixture_fail "/bin/ls requirement contains cdhash — expected identity-bound"
+  && fixture_fail identity-bound "/bin/ls requirement contains cdhash — expected identity-bound"
 
 cp /bin/ls "$FIXTURES/adhoc"
 codesign --force --sign - "$FIXTURES/adhoc" >/dev/null 2>&1
 codesign -dvv "$FIXTURES/adhoc" 2>&1 | grep -q 'Signature=adhoc' \
-  || fixture_fail "adhoc fixture is not actually ad-hoc"
+  || fixture_fail adhoc "not actually ad-hoc"
 
 cp /bin/ls "$FIXTURES/unsigned"
 codesign --remove-signature "$FIXTURES/unsigned" >/dev/null 2>&1
 codesign -dvv "$FIXTURES/unsigned" 2>&1 | grep -q 'not signed' \
-  || fixture_fail "unsigned fixture still carries a signature"
+  || fixture_fail unsigned "still carries a signature"
 
 # Ad-hoc signature that KEPT the previous requirement. `--preserve-metadata`
 # copies the old identity-bound requirement onto a signature with no
@@ -230,25 +362,31 @@ cp /bin/ls "$FIXTURES/adhoc-preserved"
 codesign --force --sign - --preserve-metadata=requirements,entitlements \
     "$FIXTURES/adhoc-preserved" >/dev/null 2>&1
 codesign -dvv "$FIXTURES/adhoc-preserved" 2>&1 | grep -q 'Signature=adhoc' \
-  || fixture_fail "adhoc-preserved is not ad-hoc — --preserve-metadata did not apply as expected"
+  || fixture_fail adhoc-preserved "not ad-hoc — --preserve-metadata did not apply as expected"
 codesign -d -r- "$FIXTURES/adhoc-preserved" 2>&1 | grep -q 'cdhash' \
-  && fixture_fail "adhoc-preserved's requirement contains cdhash — the preserved requirement was lost, so this fixture no longer distinguishes shape-checking from signature-checking"
+  && fixture_fail adhoc-preserved "its requirement contains cdhash — the preserved requirement was lost, so this fixture no longer distinguishes shape-checking from signature-checking"
 
 # Broken seal: requirement metadata intact, signature invalid, SIGKILL on
 # launch. The offset is not reasoned about — it is CHECKED. Round 2 flagged
 # `len//2` with a comment claiming "inside __TEXT" that nothing guaranteed;
 # the honest fix is not a better guess but an assertion that the tamper
 # actually broke the seal. (#119 verify B1a / R2-B5)
-cp /bin/ls "$FIXTURES/tampered"
-python3 - "$FIXTURES/tampered" <<'PY' >/dev/null 2>&1
+# One definition, because three fixtures now need a broken seal, and a second
+# copy of the byte-flip would be a second thing to keep true.
+break_seal() {  # <path> -> 0 when codesign now rejects it
+    python3 - "$1" <<'PY' >/dev/null 2>&1
 import sys
 p = sys.argv[1]
 b = bytearray(open(p, 'rb').read())
 b[len(b) // 2] ^= 0xFF
 open(p, 'wb').write(bytes(b))
 PY
-codesign --verify --strict "$FIXTURES/tampered" >/dev/null 2>&1 \
-  && fixture_fail "tampered fixture still passes codesign --verify — the flipped byte landed outside the sealed region"
+    ! codesign --verify --strict "$1" >/dev/null 2>&1
+}
+
+cp /bin/ls "$FIXTURES/tampered"
+break_seal "$FIXTURES/tampered" \
+  || fixture_fail tampered "still passes codesign --verify — the flipped byte landed outside the sealed region"
 
 # Signed with a real certificate that is NOT Developer ID, carrying a
 # preserved Developer ID requirement it can never satisfy. This is the state
@@ -304,7 +442,7 @@ printf 'designated => identifier "com.checheng.safari-browser"\n' > "$FIXTURES/b
 codesign --force --sign - --identifier com.checheng.safari-browser \
     -r "$FIXTURES/bare.req" "$FIXTURES/bare-identifier" >/dev/null 2>&1
 codesign -d -r- "$FIXTURES/bare-identifier" 2>&1 | grep -qE 'anchor|certificate' \
-  && fixture_fail "bare-identifier's DR gained an anchor/certificate clause — it no longer represents the unprovable case"
+  && fixture_fail bare-identifier "its DR gained an anchor/certificate clause — it no longer represents the unprovable case"
 
 cp /bin/ls "$FIXTURES/version-bound"
 printf 'designated => identifier "com.apple.ls" and info[CFBundleShortVersionString] = "1.0"\n' \
@@ -332,7 +470,7 @@ if [[ -n "$SHAPE_ID" ]]; then
         codesign --force --sign "$SHAPE_ID" -r "$FIXTURES/$1.req" \
             "$FIXTURES/$1" >/dev/null 2>&1
         codesign -dvv "$FIXTURES/$1" 2>&1 | grep -q '^Signature=adhoc' \
-          && fixture_fail "$1 came out ad-hoc — it would never reach the shape check"
+          && fixture_fail "$1" "came out ad-hoc — it would never reach the shape check"
     }
     make_dr_fixture bare-identifier-signed 'identifier "com.foo.bar"'
     make_dr_fixture anchor-in-string 'identifier "com.foo.anchor"'
@@ -399,17 +537,94 @@ if [[ -n "${DEVID_ANY:-}" ]]; then
     fi
 fi
 
+# ── Fixtures added in round 10, each to make a declared @mutant die ──────
+#
+# Round 10 did not add these by reading the code and imagining gaps. It ran
+# Tests/mutation-gate.sh, which reverts each declared fix and requires the suite
+# to go red: 8 of 16 mutants survived a fully green 35-assertion run. Every
+# fixture below exists because a specific revert was invisible to every one of
+# those 35.
+
+# Paths carrying characters that must never reach output unescaped. Built with
+# python3 because macOS ships bash 3.2, whose printf has no \u escape — and
+# written to per-key files rather than one list, because one of these paths
+# CONTAINS a newline and no line-oriented format can carry it.
+CTRL_DIR="$FIXTURES/ctrl"
+mkdir -p "$CTRL_DIR"
+if have bare-identifier-signed; then
+    # A signed binary whose requirement shape is unrecognised (verdict 5). That
+    # branch offers `codesign -d -r- <path>` to paste, which is the only place
+    # an unprintable path is both reachable and consequential without first
+    # needing the path to be one this project installs.
+    python3 - "$FIXTURES/bare-identifier-signed" "$CTRL_DIR" <<'PY' || \
+      fixture_fail ctrl-paths "could not create paths containing control characters"
+import os, shutil, sys
+src, d = sys.argv[1], sys.argv[2]
+for key, name in (("nel",   "bad" + chr(0x85) + "name"),
+                  ("rlo",   "bad" + chr(0x202e) + "name"),
+                  ("forge", "x" + chr(0x0a) + chr(0x2713) + " durable: forged")):
+    path = os.path.join(d, name)
+    shutil.copy(src, path)
+    with open(os.path.join(d, ".path." + key), "w") as fh:
+        fh.write(path)
+PY
+    for k in nel rlo forge; do
+        [[ -s "$CTRL_DIR/.path.$k" ]] || fixture_fail "ctrl-$k" "path file missing"
+    done
+else
+    fixture_fail ctrl-paths "needs the unrecognised-shape fixture, which needs a signing identity"
+    for k in nel rlo forge; do fixture_fail "ctrl-$k" "depends on ctrl-paths"; done
+fi
+ctrl_path() { cat "$CTRL_DIR/.path.$1"; }   # preserves an embedded newline
+
+# A fake HOME, so the staging-suffix rule can be exercised at the one path it is
+# defined against ($HOME/bin/safari-browser.XXXXXX) without writing into the
+# real ~/bin. A test that damages the machine it runs on is not a test.
+FAKE_HOME="$FIXTURES/fakehome"
+mkdir -p "$FAKE_HOME/bin" || fixture_fail fakehome "could not create a fake home"
+# suffix -> fixture name. abc123 is mktemp's actual shape (six from its
+# alphabet); the other two are the shapes round 6's bare hasPrefix accepted.
+for pair in "abc123:staging-valid" "abcdefg:staging-long" "ab12:staging-short"; do
+    suf="${pair%%:*}"; name="${pair#*:}"
+    cp /bin/ls "$FAKE_HOME/bin/safari-browser.$suf"
+    break_seal "$FAKE_HOME/bin/safari-browser.$suf" \
+      || fixture_fail "$name" "seal not broken — the fix-offering branch is unreachable"
+done
+
+# Entitlement values that are present but are not a boolean true. Round 8 closed
+# the TYPE class here and nothing tested it: the suite's only entitlement-value
+# fixture is <false/>, which is a boolean, so the branch that answers every
+# other type was never reached.
+for pair in "string:<string>false</string>" "integer:<integer>1</integer>"; do
+    kind="${pair%%:*}"; xml="${pair#*:}"
+    if [[ -z "${DEVID_ANY:-}" ]]; then
+        fixture_fail "ent-$kind" "no signing identity"
+        continue
+    fi
+    cp /bin/ls "$FIXTURES/ent-$kind"
+    cat > "$FIXTURES/ent-$kind.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>com.apple.security.automation.apple-events</key>$xml
+</dict></plist>
+PLIST
+    codesign --force --options runtime --sign "$DEVID_ANY" \
+        --entitlements "$FIXTURES/ent-$kind.plist" "$FIXTURES/ent-$kind" >/dev/null 2>&1 \
+      || fixture_fail "ent-$kind" "codesign refused the $kind entitlements plist"
+done
+
 echo "Install-signature tests ($VERIFIER)"
 echo
 
 echo "── identity-bound signature (the good state) ──"
-assert_exit "identity-bound requirement passes" 0 "$FIXTURES/identity-bound"
+assert_fixture identity-bound assert_exit "identity-bound requirement passes" 0 "$FIXTURES/identity-bound"
 
 echo
 echo "── ad-hoc signature (the state #119 exists to catch) ──"
-assert_exit "cdhash-bound requirement is rejected" 1 "$FIXTURES/adhoc"
-assert_says "rejection names the rebuild consequence" "$FIXTURES/adhoc" "rebuild"
-assert_says "rejection points at the fix" "$FIXTURES/adhoc" "install-signed"
+assert_fixture adhoc assert_exit "cdhash-bound requirement is rejected" 1 "$FIXTURES/adhoc"
+assert_fixture adhoc assert_says "rejection names the rebuild consequence" "$FIXTURES/adhoc" "rebuild"
+assert_fixture adhoc assert_says "rejection points at the fix" "$FIXTURES/adhoc" "install-signed"
 
 echo
 echo "── ad-hoc that kept the old requirement (#119 verify B1b) ──"
@@ -427,17 +642,17 @@ echo "── ad-hoc that kept the old requirement (#119 verify B1b) ──"
 # advertises. Round 2 expected 4 here (cannot satisfy); with the observable
 # fact checked first the answer is 1, and the two verdicts agree on what
 # matters — do not trust this binary's grant.
-assert_exit "ad-hoc with a preserved requirement is ad-hoc" 1 "$FIXTURES/adhoc-preserved"
+assert_fixture adhoc-preserved assert_exit "ad-hoc with a preserved requirement is ad-hoc" 1 "$FIXTURES/adhoc-preserved"
 
 echo
 echo "── broken seal (#119 verify B1a) ──"
 # Distinct from both: the metadata is fine, the signature is not, and macOS
 # SIGKILLs the binary on launch. Reporting this as "grant survives rebuilds"
 # is a claim about a binary that cannot start.
-assert_exit "tampered binary is rejected distinctly" 3 "$FIXTURES/tampered"
+assert_fixture tampered assert_exit "tampered binary is rejected distinctly" 3 "$FIXTURES/tampered"
 # "signature" alone would also match the SUCCESS line ("identity-bound
 # signature"), so this asserts on a word only the broken-seal branch prints.
-assert_says "tampered rejection names the signature, not the requirement" "$FIXTURES/tampered" "code or signature have been modified"
+assert_fixture tampered assert_says "tampered rejection names the signature, not the requirement" "$FIXTURES/tampered" "code or signature have been modified"
 
 echo
 echo "── real certificate, foreign requirement (#119 verify R2-B1) ──"
@@ -476,9 +691,9 @@ echo "── the requirement language is not a bag of words (#119 verify R4) ─
 # extra conjunct. None is a shape this tool was taught, so each must get
 # "cannot tell" rather than a guess in either direction.
 if [[ "$HAVE_SHAPE_FIXTURES" == "1" ]]; then
-    assert_exit "a keyword inside a quoted identifier is not a clause" 5 "$FIXTURES/anchor-in-string"
-    assert_exit "a negated anchor is not an anchor" 5 "$FIXTURES/negated"
-    assert_exit "an anchored requirement with a version pin is not a known shape" 5 "$FIXTURES/version-pinned"
+    assert_fixture anchor-in-string assert_exit "a keyword inside a quoted identifier is not a clause" 5 "$FIXTURES/anchor-in-string"
+    assert_fixture negated assert_exit "a negated anchor is not an anchor" 5 "$FIXTURES/negated"
+    assert_fixture version-pinned assert_exit "an anchored requirement with a version pin is not a known shape" 5 "$FIXTURES/version-pinned"
 else
     skip "no signing identity available to build custom-requirement"
     echo "    fixtures. Ad-hoc ones would be answered by the signature check before"
@@ -490,7 +705,7 @@ fi
 # contents of its requirement are never examined. That is the point: an
 # identifier containing the word `cdhash` cannot change the verdict, because
 # nothing greps for that word any more.
-assert_exit "an ad-hoc binary is ad-hoc whatever its requirement says" 1 "$FIXTURES/adhoc-preserved"
+assert_fixture adhoc-preserved assert_exit "an ad-hoc binary is ad-hoc whatever its requirement says" 1 "$FIXTURES/adhoc-preserved"
 
 if [[ -n "$REQSET" ]]; then
     # The regression is a mangled READ, not a particular verdict: round 3 fed
@@ -520,7 +735,7 @@ echo "── the ad-hoc verdict answers first, whatever the DR says ──"
 #
 # Kept, renamed to what they prove: ordering. R3 itself is covered below by
 # real-identity fixtures, which is the only way to reach the shape matcher.
-assert_exit "an ad-hoc binary is ad-hoc even with an identifier-only DR" 1 "$FIXTURES/bare-identifier"
+assert_fixture bare-identifier assert_exit "an ad-hoc binary is ad-hoc even with an identifier-only DR" 1 "$FIXTURES/bare-identifier"
 if [[ "$HAVE_VERSION_BOUND" == "1" ]]; then
     assert_exit "an ad-hoc binary is ad-hoc even with a version-pinned DR" 1 "$FIXTURES/version-bound"
 else
@@ -534,7 +749,7 @@ echo "── satisfiable but unprovable (#119 verify R3) ──"
 # in either direction — and reaching that code at all requires a REAL identity,
 # which is why the ad-hoc pair above cannot stand in for it.
 if [[ "$HAVE_SHAPE_FIXTURES" == "1" ]]; then
-    assert_exit "an identifier-only requirement is not a shape we know" 5 "$FIXTURES/bare-identifier-signed"
+    assert_fixture bare-identifier-signed assert_exit "an identifier-only requirement is not a shape we know" 5 "$FIXTURES/bare-identifier-signed"
 else
     skip "no signing identity — the R3 identifier-only case is unverified"
 fi
@@ -544,7 +759,7 @@ echo "── unsigned / unreadable (must NOT be mistaken for the good state) ─
 # prints no requirement at all, so a verifier that only greps for `cdhash`
 # sees a miss and reports success. Unsigned must be its OWN exit code, not 0
 # and not the ad-hoc code, or the two failures cannot be told apart.
-assert_exit "unsigned binary is rejected distinctly" 2 "$FIXTURES/unsigned"
+assert_fixture unsigned assert_exit "unsigned binary is rejected distinctly" 2 "$FIXTURES/unsigned"
 assert_exit "missing file is an environment error, not a verdict" 70 "$FIXTURES/does-not-exist"
 
 echo
@@ -572,10 +787,9 @@ if [[ -n "$DEVID_ENT" ]]; then
     # satisfy its own requirement. It is simply not what install-signed asked
     # for. Round 6 found both answers collapsed onto 4, whose documented
     # meaning is the opposite.
-    if [[ -f "$FIXTURES/identity-bound" ]]; then
-        assert_exit "--require-shape rejects a different durable shape as 6, not 4" 6 \
-            --require-shape "Developer ID" "$FIXTURES/identity-bound"
-    fi
+    assert_fixture identity-bound assert_exit \
+        "--require-shape rejects a different durable shape as 6, not 4" 6 \
+        --require-shape "Developer ID" "$FIXTURES/identity-bound"
     assert_exit "--require-entitlement passes when the signature carries it" 0 \
         --require-entitlement com.apple.security.automation.apple-events "$DEVID_ENT"
     # /bin/ls is durable and satisfies its own requirement; it just has no
@@ -629,7 +843,7 @@ PLIST
         # Round 7 signed exactly this and the gate passed it: install-signed
         # would have shipped a signature that spells out it does NOT hold the
         # permission the four local-data commands need.
-        assert_exit "an entitlement set to <false/> does not satisfy the gate" 7 \
+        assert_fixture ent-denied assert_exit "an entitlement set to <false/> does not satisfy the gate" 7 \
             --require-entitlement com.apple.security.automation.apple-events "$FIXTURES/ent-denied"
     else
         fixture_fail "ent-denied" "codesign refused the denying entitlements plist"
@@ -637,7 +851,7 @@ PLIST
     # Ordering: the ad-hoc verdict comes first. Round 7 evaluated the
     # entitlement before it, so an ad-hoc binary was answered 7 and the message
     # explained the wrong fault.
-    assert_exit "an ad-hoc binary is answered 1, not the entitlement contract" 1 \
+    assert_fixture adhoc assert_exit "an ad-hoc binary is answered 1, not the entitlement contract" 1 \
         --require-entitlement com.apple.security.automation.apple-events "$FIXTURES/adhoc"
 else
     skip "no signing identity — the entitlement-value gate is unverified"
@@ -680,7 +894,7 @@ if [[ -e "$HOME/bin/safari-browser" ]]; then
     "$VERIFIER" >/dev/null 2>&1
     rc=$?
     if is_known_code "$rc"; then
-        pass "no-argument form resolves a default target (exit $rc)"
+        pass "no-argument form resolves a default target" "(exit $rc)"
     else
         fail "no-argument form resolves a default target" \
              "got exit $rc, which is not in the guard's declared vocabulary ($KNOWN_CODES)"
@@ -688,6 +902,77 @@ if [[ -e "$HOME/bin/safari-browser" ]]; then
 else
     skip "no installed binary at ~/bin/safari-browser to resolve as the default"
 fi
+
+echo
+echo "── a destructive prescription reaches only our own install (#119 R5/R6) ──"
+# R5 told a user to `rm -f` the executable of a working copy of Anki. R6 then
+# found the narrowing itself too loose. Both fixes were measured by the round-10
+# mutation gate as invisible to the whole suite: reverting either left 35/35.
+#
+# The reason is structural, not an oversight — every assertion above checks an
+# exit code or a phrase the tool DOES print, and this class of defect is
+# entirely about a phrase it must NOT print, on a path nobody was testing.
+assert_fixture tampered assert_says \
+    "a broken seal outside our install names the refusal" \
+    "$FIXTURES/tampered" "not a path this project installs"
+assert_fixture tampered assert_says_not \
+    "a broken seal outside our install is offered no rm -f" \
+    "$FIXTURES/tampered" "rm -f"
+with_home "$FAKE_HOME" assert_fixture staging-valid assert_says \
+    "the staging file install-signed verifies IS ours" \
+    "$FAKE_HOME/bin/safari-browser.abc123" "rm -f"
+# Spelled with a `.` component, which denotes the same directory. Deliberately
+# NOT "a doubled slash": that is what TMPDIR happens to produce on this machine,
+# and a fixture whose discriminating power depends on the developer's
+# environment is the defect round 6 found in the requirement-SET case.
+with_home "$FAKE_HOME/." assert_fixture staging-valid assert_says \
+    "a HOME spelled non-canonically still resolves to our install" \
+    "$FAKE_HOME/bin/safari-browser.abc123" "rm -f"
+with_home "$FAKE_HOME" assert_fixture staging-long assert_says_not \
+    "a seven-character suffix is not mktemp's shape" \
+    "$FAKE_HOME/bin/safari-browser.abcdefg" "rm -f"
+with_home "$FAKE_HOME" assert_fixture staging-short assert_says_not \
+    "a four-character suffix is not mktemp's shape" \
+    "$FAKE_HOME/bin/safari-browser.ab12" "rm -f"
+
+echo
+echo "── control characters in a path never reach output unescaped (#119 R7/R8) ──"
+# The existing forge assertion (further up) runs against an UNSIGNED fixture,
+# which exits 2 on a branch that offers no command at all — so it never reaches
+# the printability test it was written to cover. That is why reverting
+# `targetIsPrintable` to a constant true changed nothing the suite could see.
+# These run on the unrecognised-shape branch, which does offer a command.
+assert_fixture ctrl-nel assert_says \
+    "a NEL in the path suppresses the paste-ready command" \
+    "$(ctrl_path nel)" "no paste-ready command"
+assert_fixture ctrl-rlo assert_says \
+    "a bidi override in the path suppresses the paste-ready command" \
+    "$(ctrl_path rlo)" "no paste-ready command"
+assert_fixture ctrl-forge assert_no_forged_line \
+    "a newline in the path cannot forge a verdict through the inspect command" \
+    "$(ctrl_path forge)"
+
+echo
+echo "── the entitlement gate wants a boolean true, not merely a value (#119 R8) ──"
+assert_fixture ent-string assert_exit \
+    "an entitlement carrying a string is not a boolean true" 7 \
+    --require-entitlement com.apple.security.automation.apple-events "$FIXTURES/ent-string"
+assert_fixture ent-integer assert_exit \
+    "an entitlement carrying an integer is not a boolean true" 7 \
+    --require-entitlement com.apple.security.automation.apple-events "$FIXTURES/ent-integer"
+
+echo
+echo "── a flag's value is a name, and an unknown flag is not a target (#119 R6/R8) ──"
+# Both of these were fixed and neither was tested. The misspelled-flag assertion
+# above passes on the pristine guard AND with the unknown-option fix reverted,
+# because three positionals then trip the extra-path check instead — a green
+# assertion standing in front of a branch it never reaches.
+assert_exit "an absolute path where a shape name belongs is a usage error" 64 \
+    --require-shape /bin/ls
+assert_exit "a relative path where a shape name belongs is a usage error" 64 \
+    --require-shape ./nonexistent
+assert_exit "an unknown option alone is a usage error, not a target" 64 \
+    --require-shapee
 
 echo
 echo "Passed: $PASS  Failed: $FAIL"
