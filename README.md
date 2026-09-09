@@ -377,6 +377,28 @@ safari-browser dialog list                     # show the dialog's text and butt
 safari-browser dialog dismiss --button "取消"   # press the button you named
 ```
 
+Every command that targets a window first checks that window for a blocking
+dialog, and if one is there says so on the **first line of stderr**, before any
+other output:
+
+```
+⚠ BLOCKING DIALOG in window id 2838: "Failed to add criteria, not all criteria has been entered." — buttons: "關閉". Run: safari-browser dialog list
+```
+
+Read-only AppleScript commands (`get title`, `get url`, `documents`, …) still
+succeed — the line is on stderr and stdout is untouched, so pipelines keep
+working. Anything that has to run JavaScript in that tab (`js`, `get text`,
+`click`, `fill`, …) fails at once with a non-zero exit instead of waiting for
+the 30-second osascript timeout. The check is one read-only Accessibility query
+of the target window only, with its own 0.25 s timeout: 31–40 ms measured with
+fifteen windows open. `SAFARI_BROWSER_NO_DIALOG_PROBE=1` disables it for
+scripts that accept the risk; `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1` prints its
+cost and verdict. The check runs when a command starts, so a dialog that opens
+*during* a multi-step command still surfaces through the slower failure paths
+described below. Without the Accessibility grant the probe cannot run, and it
+says so once rather than staying quiet — no permission means no information,
+not "no dialog". (#126)
+
 A JavaScript `alert` / `confirm` blocks `js`, `get text` and anything else that
 runs script in that document — and it may be on a Space you are not looking at,
 so `dialog list` is often the fastest way to find out why a command hung.

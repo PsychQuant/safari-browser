@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dialog Test Page</title>
+</head>
+<body>
+    <h1>Dialog Test Page</h1>
+
+    <p>
+        Fixture for <code>Tests/e2e-dialog.sh</code> (#126). The button raises a
+        JavaScript alert that freezes this tab until it is dismissed. The test
+        does not click it: it arms the alert through <code>js</code> behind a
+        <code>setTimeout</code>, so the <code>js</code> call returns before the
+        dialog opens and only the commands that follow meet it.
+    </p>
+
+    <button id="alertBtn" onclick="alert('e2e dialog')">Open alert</button>
+</body>
+</html>
