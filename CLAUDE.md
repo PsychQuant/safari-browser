@@ -361,6 +361,9 @@ make test-install-signature-strict     # 49 斷言；需兩個 signing identity�
 逐一退回：R5 的 `isOurInstall`、R7 的 `targetIsPrintable`、R8 的 entitlement 型別階梯，
 **每一個都是 35/35、exit 0**。Round 10 推廣後的數字是**十六個宣告的修法，八個存活**。
 
+（上面指令寫 17 不是 16：第十七個宣告是 round 10 自己修掉的 `isOurInstall` 路徑正規化
+缺陷——新斷言抓到的，當場補上宣告。先量到的是 16 個裡有 8 個存活，現在 gate 管 17 個。）
+
 這是**一個**缺陷不是八個：每一輪都為「剛修好的那個輸入」加斷言，而從來沒有一輪問過那些
 斷言看不看得見修法被拿掉。所以 suite 綠從第一輪起就不是關於那些修法的證據，而九次連續
 綠燈是同一個非證據的九個實例。
