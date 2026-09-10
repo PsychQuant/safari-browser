@@ -3,8 +3,10 @@ import Foundation
 /// #126: what the entry-point probe found for the window a command targets.
 ///
 /// `unprobed` is not `none`. It means nobody looked (probe disabled, target
-/// not yet resolved, window not mappable) — and #89's rule that the absence of
-/// a probe must never be reported as the absence of a dialog applies here too.
+/// not yet resolved, window list unreadable, window not mappable) — #89's rule
+/// that the absence of a probe must not be reported as the absence of a dialog.
+/// One gap remains inside the target window: a subtree walk that stops short
+/// (read error, depth limit, children cap) still yields `none` — #135 / #138.
 enum BlockingDialogState: Sendable, Equatable {
     case unprobed
     case accessibilityDenied
