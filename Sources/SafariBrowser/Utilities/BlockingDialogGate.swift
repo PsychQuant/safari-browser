@@ -14,7 +14,10 @@ enum BlockingDialogState: Sendable, Equatable {
     case present(SafariBridge.BlockingDialog)
 }
 
-/// The one line every command prints first when a dialog is in the way.
+/// The line a command that resolves through the shared document resolver
+/// prints on stderr when a dialog is in the way — the first line it writes
+/// itself (a `--tab` notice or `--first-match` summary can precede it; the
+/// native-target commands are #133).
 ///
 /// Shared with `dialog list` so the two never describe the same dialog in two
 /// vocabularies. One line by construction — line separators in the dialog's

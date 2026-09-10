@@ -2990,7 +2990,9 @@ enum SafariBridge {
     /// exits 0, `click` blames System Events. None of them name the cause, and
     /// they contradict each other, so this exists to be called *on failure*
     /// and turn any of those into the same honest answer. It is not called on
-    /// the happy path: the AX round-trip is not worth paying for every command.
+    /// the happy path — the whole-app round-trip is not worth paying for every
+    /// command; #126's one-window probe (`detectBlockingDialog(windowKey:)`)
+    /// is what runs there, and this scan stays as the failure-path backstop.
     ///
     /// Returns nil when Accessibility is not granted — no permission means no
     /// information, not "no dialog", and callers must not report the absence
