@@ -398,6 +398,61 @@ safari-browser dialog list                     # show the dialog's text and butt
 safari-browser dialog dismiss --button "取消"   # press the button you named
 ```
 
+Commands that resolve a document through the shared resolver (`get title`,
+`get url`, `get text`, `js`, `click`, `fill`, `snapshot`, `scroll`, … — the
+`--url` / `--window` / `--document` targeting family) first check that window
+for a blocking dialog, and if one is there say so on **stderr as the first line
+they write themselves** (a "probe unavailable" notice for a different window
+earlier in the same process can precede it):
+
+```
+⚠ BLOCKING DIALOG in window id 2838: "Failed to add criteria, not all criteria has been entered." — buttons: "關閉". Run: safari-browser dialog list
+```
+
+Read-only AppleScript commands (`get title`, `get url`) still succeed — the
+line is on stderr and stdout is untouched, so pipelines keep working. Anything
+that has to run JavaScript in that tab (`js`, `click`, `fill`, …) fails at once
+with a non-zero exit instead of waiting for the 30-second osascript timeout;
+`get text` runs its AppleScript first and fails only if that came back empty.
+
+What the check does **not** cover, honestly: `documents` and `tabs` enumerate
+rather than target (marking dialog-bearing windows there is #129); `close`,
+`pdf`, `tab focus`, `upload`, `save-image`, `screenshot` (other than `--full` or `--element`)
+and `tabs --window N` resolve through a different path and stay silent for now
+(#133); `exec` does not yet relay the line from its steps (#136). "First line"
+means the first line this command writes: a `--tab` deprecation notice or a
+`--first-match` match summary is written earlier and will precede it. And
+`2>&1 | tail -1` is not rescued by this line at all: for a read-only command
+that succeeds it shows the command's own stdout, and for a JavaScript command
+the last line of the error is its closing sentence, not the dialog's text —
+the upstream non-zero exit is preserved only with `set -o pipefail` (or by inspecting the upstream command status); otherwise the pipeline reports `tail`'s exit status.
+
+The check is a read-only Accessibility walk of the target window only, with a
+0.25 s messaging timeout set on the app element before its first read and on
+each element it walks (the window-id lookup and the text collection are not yet
+under it, #135). Measured by hand, not enforced: 31–40 ms with fifteen windows
+open on the first day, 43–65 ms with four windows open two days later; a `js`
+invocation probes two or three times, so budget it at **≤ 200 ms per command**
+— the figure #126 re-set after measuring, covering three probes at 65 ms; an
+automated assertion is #135.
+A Safari that is not running, or that has no windows, is a silent `none`; a
+window list that could not be read is reported once as "could not map"; a
+target window whose subtree walk stopped short — an AX read error, the depth
+limit of five, or the thirty-children cap per level — still reads as `none`:
+there "could not look" and "nothing there" are not yet told apart (#135,
+#138). On a command that then fails, the failure-path whole-app scan still
+catches it; a read-only command that succeeds never reaches that path.
+`SAFARI_BROWSER_NO_DIALOG_PROBE=1` (exactly `1`) switches all of this off —
+the warning, the fast-fail, and the "probe unavailable" notice — for scripts
+that accept going back to the pre-#126 behaviour; `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1`
+prints the probe's cost and verdict. The check runs when a command starts, so a
+dialog that opens *during* a multi-step command still surfaces through the
+slower failure paths described below. Safari only renders a dialog in a window's
+*active* tab: an alert pending in a background tab freezes that tab's JavaScript
+without any dialog to find — `tab focus` the tab first (#131). Without the Accessibility grant the probe cannot run, and it
+says so once rather than staying quiet — no permission means no information,
+not "no dialog". (#126)
+
 A JavaScript `alert` / `confirm` blocks `js`, `get text` and anything else that
 runs script in that document — and it may be on a Space you are not looking at,
 so `dialog list` is often the fastest way to find out why a command hung.
