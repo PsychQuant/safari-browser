@@ -220,7 +220,7 @@ enum SafariBridge {
         // --full and --element reach the gate later through JavaScript.
         // The gate caches per window for
         // 2 s, which is shorter than one `js` invocation (4-5 round-trips,
-        // ~3.5 s measured), so later round-trips may probe again at ~35 ms each.
+        // ~3.5 s measured), so later round-trips may probe again at 40–65 ms each (measured).
         if profile != nil, isResolvedTab(target) == false {
             let resolved = try await resolveNativeTarget(
                 from: target,

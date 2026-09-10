@@ -410,10 +410,14 @@ The check is a read-only Accessibility walk of the target window only, with a
 0.25 s messaging timeout set on the app element before its first read and on
 each element it walks (the window-id lookup and the text collection are not yet
 under it, #135). Measured by hand, not enforced: 31–40 ms with fifteen windows
-open on the first day, 43–65 ms with four windows open two days later — it
-straddles the 50 ms budget the issue set (#135). A Safari that is not running, or
-that has no windows, is a silent `none`; a window list that could not be read
-is reported once as "could not map".
+open on the first day, 43–65 ms with four windows open two days later; a `js`
+invocation probes two or three times, so budget it at **≤ 150 ms per command**
+(the figure #126 settled on after measuring; an automated assertion is #135).
+A Safari that is not running, or that has no windows, is a silent `none`; a
+window list that could not be read is reported once as "could not map"; a
+target window whose subtree could not be walked still reads as `none` — the
+one place "could not look" and "nothing there" are not yet told apart (#135,
+#138; the failure-path whole-app scan still catches it).
 `SAFARI_BROWSER_NO_DIALOG_PROBE=1` (exactly `1`) switches all of this off —
 the warning, the fast-fail, and the "probe unavailable" notice — for scripts
 that accept going back to the pre-#126 behaviour; `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1`
