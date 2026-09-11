@@ -45,6 +45,14 @@ Binary installs to `~/bin/safari-browser`. Ensure `~/bin` is in your `$PATH`.
 
 ### Which install target? (#119)
 
+`sign-developer-id` has been removed (#123). It signed the build directory without
+installing; use `DEVELOPER_ID=<cert-sha1> make install-signed` for a signed install.
+The runtime FDA guidance and the standalone guard now share `SignatureAssessment`
+and read Security framework objects. Filename text cannot establish signing identity.
+A durable grant survives rebuilds only while the signing identity and designated
+requirement remain the same (#122).
+
+
 The choice is not "dev vs release" — it is **whether you will use `history`,
 `bookmarks`, `cloud-tabs`, or `downloads`**, the four commands that read
 `~/Library/Safari/` and therefore need Full Disk Access.
@@ -110,7 +118,8 @@ opened. A caller cannot act on a code that means three things.
 The guard validates every architecture in a universal binary for both its seal
 and requirement, so damage to a non-native slice is rejected too (#139).
 
-The guard is **compiled** (`make .build/verify-install-signature`) rather than
+The guard is **compiled** (`make .build/verify-install-signature`) from the shared
+assessment and CLI wrapper by `scripts/build-signature-guard.py`, rather than
 run as `swift scripts/...` for the same reason: the swift driver exits `1` when
 it cannot compile the script, and `1` is the verdict "this binary is ad-hoc".
 On a machine where `swiftly` leads `PATH` and `.build` was made by another
@@ -150,6 +159,12 @@ narrowness: the tool no longer reads requirements it was not taught, and says
 so instead of guessing.
 
 ### Running the signature suite
+
+`make test-install-atomic` additionally exercises both actual install recipes in
+temporary directories, including a running holder of the old inode and failed
+signing/verification. It requires a local Developer ID, reports missing identity
+as incomplete, and never replaces your installed CLI.
+
 
 `make test-all` runs it with `ALLOW_INCOMPLETE=1`, because the suite needs
 **two** signing identities in the keychain — a Developer ID and a

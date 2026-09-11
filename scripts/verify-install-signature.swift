@@ -112,8 +112,8 @@ import Security
 // source of truth for "is this signature durable" without the first one being
 // retired. Two answers to one question, one reading OSStatus and SecRequirement
 // objects and one reading English prose, is the defect — #122 is where they
-// get merged, and until then no comment in this repo may claim the greps are
-// gone without saying which ones.
+// get merged. Both callers now consume SignatureAssessment, which reads
+// Security framework objects rather than this diagnostic text.
 var requiredShape: String?
 var requiredEntitlement: String?
 var positional: [String] = []
@@ -311,47 +311,6 @@ func envProblem(_ what: String) -> Never {
     exit(70)
 }
 
-// ── 1. Get a handle on the code ──────────────────────────────────────────
-var code: SecStaticCode?
-let url = URL(fileURLWithPath: target) as CFURL
-let createStatus = SecStaticCodeCreateWithPath(url, [], &code)
-
-if createStatus != errSecSuccess {
-    if !FileManager.default.fileExists(atPath: target) {
-        err("✗ no such file: \(display(target))")
-        exit(70)
-    }
-    if createStatus == errSecCSUnsigned {
-        err("✗ no code signature: \(display(target))")
-        err("  An unsigned binary cannot hold a Full Disk Access grant.")
-        exit(2)
-    }
-    envProblem("could not read \(display(target)) as code (OSStatus \(createStatus))")
-}
-guard let staticCode = code else {
-    envProblem("could not read \(display(target)) as code")
-}
-
-// ── 2. Does the signature validate? ─────────────────────────────────────
-// A number, not prose — and the number's own meaning comes from Apple via
-// SecCopyErrorMessageString rather than from this file's guesses about
-// codesign's wording.
-//
-// Resource validation is off on purpose. A bundle's damaged RESOURCE says
-// nothing about whether TCC will honour a grant on the code: TCC evaluates
-// the code requirement. Round 5 conflated the two and declared Blender —
-// intact seal, one changed resource, running fine — SIGKILL-bound.
-//
-// Info.plist damage is NOT in that category and is deliberately still fatal:
-// CFBundleIdentifier feeds the designated requirement itself, so a plist
-// that no longer matches its seal really does break the grant. What round 5
-// got wrong there was the WORDS, not the verdict — see below.
-// A universal binary can have a valid native slice and a damaged other slice.
-// Validate every architecture, including when checking its requirement below.
-// @mutant(all-architecture-seals) kSecCSDoNotValidateResources | kSecCSCheckAllArchitectures => kSecCSDoNotValidateResources
-let checkFlags = SecCSFlags(rawValue: kSecCSDoNotValidateResources | kSecCSCheckAllArchitectures)
-let sealStatus = SecStaticCodeCheckValidity(staticCode, checkFlags, nil)
-
 /// Apple's own description of an OSStatus. Never this file's paraphrase.
 func describe(_ status: OSStatus) -> String {
     let text = SecCopyErrorMessageString(status, nil) as String? ?? "unknown error"
@@ -394,16 +353,20 @@ let isOurInstall: Bool = {
     return suffix.count == 6 && suffix.allSatisfy { $0.isLetter && $0.isASCII || $0.isNumber && $0.isASCII }
 }()
 
-if sealStatus != errSecSuccess {
-    // @mutant(unsigned-distinct) sealStatus == errSecCSUnsigned => false
-    //   R6. Reverting folds "unsigned" into the generic validation failure, so
-    //   the two cannot be told apart by exit code.
-    if sealStatus == errSecCSUnsigned {
-        err("✗ no code signature: \(display(target))")
-        err("  An unsigned binary cannot hold a Full Disk Access grant.")
-        exit(2)
-    }
-
+// Classification is shared with CodeSigningState; only rendering is local.
+let assessment = SignatureAssessment.evaluate(at: URL(fileURLWithPath: target), requiredEntitlement: requiredEntitlement)
+switch assessment {
+case .missingFile:
+    err("✗ no such file: \(display(target))")
+    exit(70)
+case .unavailable(let operation, let status):
+    let detail = status.map { " (OSStatus \($0))" } ?? ""
+    envProblem("could not \(operation) of \(display(target))\(detail)")
+case .unsigned:
+    err("✗ no code signature: \(display(target))")
+    err("  An unsigned binary cannot hold a Full Disk Access grant.")
+    exit(2)
+case .invalidSeal(let sealStatus):
     let sealItself = [errSecCSSignatureFailed,
                       errSecCSSignatureInvalid,
                       errSecCSSignatureNotVerifiable].contains(sealStatus)
@@ -434,21 +397,9 @@ if sealStatus != errSecSuccess {
         err("  and deleting it on this tool's say-so would be worse than the fault.")
     }
     exit(3)
-}
-
-// ── 3. Ad-hoc? A flag bit, not a field parsed out of a diagnostic. ───────
-var infoRef: CFDictionary?
-guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &infoRef)
-        == errSecSuccess,
-      let info = infoRef as? [String: Any] else {
-    envProblem("could not read the signing information of \(display(target))")
-}
-
-let adhocBit: UInt32 = 0x0002  // kSecCodeSignatureAdhoc
-let signFlags = (info[kSecCodeInfoFlags as String] as? UInt32) ?? 0
-if signFlags & adhocBit != 0 {
+case .adHoc(let team):
     err("✗ ad-hoc signature: \(display(target))")
-    if let team = info[kSecCodeInfoTeamIdentifier as String] as? String {
+    if let team {
         err("  TeamIdentifier=\(team)")
     }
     err("")
@@ -458,105 +409,20 @@ if signFlags & adhocBit != 0 {
     err("")
     err("  Fix:  DEVELOPER_ID=<cert-sha1> make install-signed")
     exit(1)
-}
-
-// The entitlement gate runs HERE, after the ad-hoc verdict. Round 7: it ran
-// before, so an ad-hoc binary was answered 7 — "install-signed's contract" —
-// when the honest answer is 1, and the message explained the wrong fault.
-if let want = requiredEntitlement {
-    let ents = info[kSecCodeInfoEntitlementsDict as String] as? [String: Any]
-    // Present is not the same as granted. Round 7 signed a Developer ID
-    // binary whose apple-events entitlement was explicitly <false/> and this
-    // gate passed it — install-signed would have shipped a signature that
-    // spells out that it does NOT have the permission.
-    // Only a real boolean true. Round 8: this ended `return true` for every
-    // other type, on the reasoning that "a string is a value, not a denial" —
-    // so `<string>false</string>` and `<array/>` both passed install-signed's
-    // gate. Round 7 had fixed the `<false/>` INSTANCE and opened the type
-    // CLASS in the same closure. The gate exists to answer one question about
-    // one boolean entitlement; anything that is not a boolean true is not a
-    // yes, and guessing on the caller's behalf is how the last hole got made.
-    let granted: Bool = {
-        guard let v = ents?[want] else { return false }
-        // @mutant(ent-false-granted) n.boolValue && CFGetTypeID(n) == CFBooleanGetTypeID() => true
-        //   R7. Reverting accepts an entitlement explicitly set to <false/> —
-        //   a signature that spells out it does NOT hold the permission.
-        if let n = v as? NSNumber { return n.boolValue && CFGetTypeID(n) == CFBooleanGetTypeID() }
-        // @mutant(ent-nonbool-granted) return false => return true
-        //   R8. Reverting makes every non-boolean value a yes, so
-        //   <string>false</string> and <array/> satisfy the gate.
-        return false
-    }()
-    // @mutant(ent-gate-open) !granted => false
-    //   R6/R7. Reverting removes the gate's verdict entirely, so a binary
-    //   without the entitlement reports success instead of 7.
-    if !granted {
-        err("✗ required entitlement not granted: \(display(want))")
-        err("  \(display(target))")
-        if ents?[want] == nil {
-            err("  The signature does not carry it at all.")
-        } else {
-            err("  The signature carries it, but not as a boolean true.")
-        }
-        err("  Read from the signature itself, not from codesign's printed output.")
-        err("")
-        err("  This is install-signed's own contract, not a fault in the binary's")
-        err("  designated requirement — hence 7 rather than 4.")
-        exit(7)
+case .missingEntitlement(let want, let present):
+    err("✗ required entitlement not granted: \(display(want))")
+    err("  \(display(target))")
+    if !present {
+        err("  The signature does not carry it at all.")
+    } else {
+        err("  The signature carries it, but not as a boolean true.")
     }
-}
-
-// ── 4. The designated requirement, as an object ──────────────────────────
-// Exactly one. No path in it, no sibling lines, nothing to forge.
-var reqRef: SecRequirement?
-guard SecCodeCopyDesignatedRequirement(staticCode, [], &reqRef) == errSecSuccess,
-      let requirement = reqRef else {
-    envProblem("could not read the designated requirement of \(display(target))")
-}
-
-var textRef: CFString?
-guard SecRequirementCopyString(requirement, [], &textRef) == errSecSuccess,
-      let drText = textRef as String? else {
-    envProblem("could not render the designated requirement of \(display(target))")
-}
-
-// ── 5. Is it a shape we recognise? ───────────────────────────────────────
-// Whole-string anchored. Quoted strings are opaque groups that understand
-// backslash escapes, so an embedded quote cannot end the group early and a
-// string's CONTENTS can never be read as structure. This text came from the
-// requirement object, so there is no second requirement it could describe.
-let ident = #"identifier ("([^"\\]|\\.)*"|[A-Za-z0-9_.\-]+)"#
-let str = #"("([^"\\]|\\.)*"|[A-Za-z0-9_.\-]+)"#
-let devIDOIDs = #"certificate 1\[field\.1\.2\.840\.113635\.100\.6\.2\.6\] /\* exists \*/ and certificate leaf\[field\.1\.2\.840\.113635\.100\.6\.1\.13\] /\* exists \*/"#
-
-let shapes: [(String, String)] = [
-    // What `install-signed` produces: Developer ID with hardened runtime.
-    ("Developer ID",
-     #"^\#(ident) and anchor apple generic and \#(devIDOIDs) and certificate leaf\[subject\.OU\] = \#(str)$"#),
-    // What Apple's own binaries carry (/bin/ls and friends).
-    ("Apple system",
-     // @mutant(shape-unanchored-apple) ^\#(ident) and anchor apple$ => \#(ident) and anchor apple
-     //   R4/R5. Reverting matches the Apple-system shape as a SUBSTRING, so a
-     //   requirement that merely starts that way — an anchored one with an
-     //   extra version pin — is reported as a shape this tool knows.
-     #"^\#(ident) and anchor apple$"#),
-    // What an Apple Development certificate produces. Recognised deliberately:
-    // this tool answers "is the grant durable", and that requirement is as
-    // identity-bound as the Developer ID one. Whether the certificate is
-    // specifically Developer ID is `install-signed`'s contract, asserted there.
-    ("Apple Development",
-     #"^\#(ident) and anchor apple generic and certificate leaf\[subject\.CN\] = \#(str) and certificate 1\[field\.1\.2\.840\.113635\.100\.6\.2\.1\] /\* exists \*/$"#),
-]
-
-var shape: String?
-for (name, pattern) in shapes {
-    if drText.range(of: pattern, options: [.regularExpression]) != nil {
-        shape = name
-        break
-    }
-}
-
-guard let matchedShape = shape else {
+    err("  Read from the signature itself, not from codesign's printed output.")
+    err("")
+    err("  This is install-signed's own contract, not a fault in the binary's")
+    err("  designated requirement — hence 7 rather than 4.")
+    exit(7)
+case .unknownRequirement(let drText):
     err("✗ cannot tell whether this grant is durable: \(display(target))")
     err("  DR: \(display(drText))")
     err("")
@@ -573,15 +439,7 @@ guard let matchedShape = shape else {
     }
     err("  Or reinstall onto known ground:  DEVELOPER_ID=<cert-sha1> make install-signed")
     exit(5)
-}
-
-// ── 6. Does this binary actually satisfy it? ─────────────────────────────
-// The requirement OBJECT goes back to the API. It is never serialised and
-// re-parsed, so the requirement checked is necessarily the one read — the
-// round-5 defect where whitespace normalisation rewrote a certificate CN
-// before re-parsing it cannot occur here.
-let satisfies = SecStaticCodeCheckValidity(staticCode, checkFlags, requirement)
-if satisfies != errSecSuccess {
+case .unsatisfiedRequirement(let drText, let satisfies):
     err("✗ does not satisfy its own designated requirement: \(display(target))")
     err("  DR: \(display(drText))")
     err("  \(describe(satisfies))")
@@ -593,28 +451,29 @@ if satisfies != errSecSuccess {
     err("")
     err("  Fix:  DEVELOPER_ID=<cert-sha1> make install-signed")
     exit(4)
-}
+case .durable(let matchedShape, let drText):
+    // @mutant(shape-mismatch-open) matchedShape != want => false
+    //   R6. Reverting drops --require-shape's verdict, so install-signed would
+    //   land a binary signed by the wrong identity and report success.
+    if let want = requiredShape, matchedShape != want {
+        err("✗ wrong signing identity: \(display(target))")
+        err("  required shape: \(display(want))")
+        err("  actual shape:   \(display(matchedShape))")
+        err("  DR: \(display(drText))")
+        err("")
+        err("")
+        err("  Both shapes are durable; this one is simply not the one asked for.")
+        err("  That is install-signed's contract, not a fault in the binary — hence 6")
+        err("  rather than 4, whose documented meaning is that a binary cannot satisfy")
+        err("  its OWN requirement. `security find-identity -v -p codesigning` often")
+        err("  lists an Apple Development identity FIRST; install-signed needs the")
+        err("  Developer ID one.")
+        exit(6)
+    }
 
-// @mutant(shape-mismatch-open) matchedShape != want => false
-//   R6. Reverting drops --require-shape's verdict, so install-signed would
-//   land a binary signed by the wrong identity and report success.
-if let want = requiredShape, matchedShape != want {
-    err("✗ wrong signing identity: \(display(target))")
-    err("  required shape: \(display(want))")
-    err("  actual shape:   \(display(matchedShape))")
-    err("  DR: \(display(drText))")
-    err("")
-    err("")
-    err("  Both shapes are durable; this one is simply not the one asked for.")
-    err("  That is install-signed's contract, not a fault in the binary — hence 6")
-    err("  rather than 4, whose documented meaning is that a binary cannot satisfy")
-    err("  its OWN requirement. `security find-identity -v -p codesigning` often")
-    err("  lists an Apple Development identity FIRST; install-signed needs the")
-    err("  Developer ID one.")
-    exit(6)
-}
+    out("✓ durable: \(matchedShape) requirement, valid seal, and this binary satisfies it")
+    out("  \(display(target))")
+    out("  \(display(drText))")
+    out("  A Full Disk Access grant on this binary survives rebuilds.")
 
-out("✓ durable: \(matchedShape) requirement, valid seal, and this binary satisfies it")
-out("  \(display(target))")
-out("  \(display(drText))")
-out("  A Full Disk Access grant on this binary survives rebuilds.")
+}

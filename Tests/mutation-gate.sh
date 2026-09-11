@@ -51,10 +51,10 @@
 #            unusable baseline) — which is not a verdict about the suite.
 set -u
 
-GUARD_SRC="${GUARD_SRC:-scripts/verify-install-signature.swift}"
+GUARD_SRC="${GUARD_SRC:-}"
 SUITE="${SUITE:-Tests/install-signature-test.sh}"
 
-for f in "$GUARD_SRC" "$SUITE"; do
+for f in "${GUARD_SRC:-scripts/verify-install-signature.swift}" "$SUITE"; do
     [[ -r "$f" ]] || { echo "✗ cannot read $f — run this from the repository root" >&2; exit 2; }
 done
 
@@ -62,6 +62,12 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/mutation-gate.XXXXXX") || {
     echo "✗ could not create a work directory" >&2; exit 2; }
 [[ -n "$WORK" && -d "$WORK" ]] || { echo "✗ work directory missing" >&2; exit 2; }
 trap 'rm -rf "$WORK"' EXIT
+# Compile and mutate the exact same shared assessment plus CLI wrapper used
+# by normal builds. An explicit GUARD_SRC remains a full-source test override.
+if [[ -z "$GUARD_SRC" ]]; then
+    GUARD_SRC="$WORK/combined.swift"
+    python3 scripts/build-signature-guard.py --emit-source "$GUARD_SRC" || exit 2
+fi
 
 # ── Read the declarations out of the guard ────────────────────────────────
 # Emits one `id<TAB>lineno<TAB>from<TAB>to` record per mutant. The target is the
