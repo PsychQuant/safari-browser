@@ -93,4 +93,17 @@ final class DaemonRequestContextTests: XCTestCase {
         }
     }
 
+    func testCachedRunnerMatchesStandaloneTextAndErrorFormatting() async throws {
+        let cache = PreCompiledScripts.CompileCache()
+        let text = try await DaemonDispatch.Handlers.cachedScriptText(
+            source: #"return " hello " & linefeed"#, cache: cache)
+        XCTAssertEqual(text, "hello")
+        do {
+            _ = try await DaemonDispatch.Handlers.cachedScriptText(source: #"error "broken""#, cache: cache)
+            XCTFail("expected AppleScript error")
+        } catch SafariBrowserError.appleScriptFailed(let message) {
+            XCTAssertEqual(message, "broken")
+        }
+    }
+
 }

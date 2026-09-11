@@ -53,11 +53,7 @@ enum DaemonDispatch {
         // per-step subprocess + socket handshake from the client path.
         await server.register("exec.runScript") { [cache] params in
             try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
-                do {
-                    return try await cache.execute(source: source).stringValue ?? ""
-                } catch {
-                    throw SafariBrowserError.appleScriptFailed(String(describing: error))
-                }
+                try await Handlers.cachedScriptText(source: source, cache: cache)
             }) {
                 try await Handlers.execRunScript(paramsData: params)
             }
@@ -83,6 +79,17 @@ enum DaemonDispatch {
     /// Concrete handler implementations. Factored out so each handler can be
     /// unit-tested in isolation from the socket layer.
     enum Handlers {
+        static func cachedScriptText(source: String, cache: PreCompiledScripts.CompileCache) async throws -> String {
+            do {
+                let output = try await cache.execute(source: source).stringValue ?? ""
+                return output.trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch PreCompiledScripts.Error.compilationFailed(let message) {
+                throw SafariBrowserError.appleScriptFailed(message)
+            } catch PreCompiledScripts.Error.executionFailed(let message) {
+                throw SafariBrowserError.appleScriptFailed(message)
+            }
+        }
+
         /// `cache.arithmetic({"expression": "<AppleScript numeric expr>"})`
         ///
         /// Builds `return <expression>` as AppleScript, routes through the
