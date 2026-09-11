@@ -430,7 +430,10 @@ When the GUI session is locked or unavailable, `dialog list`, `dialog dismiss`,
 and screenshots report that session problem before attempting AX operations.
 Unlock the Mac or run from an active logged-in GUI session, then retry; a locked
 session is not evidence that no dialog or Safari window exists. Entry probes
-remain `unprobed` in that state (#144).
+remain `unprobed` in that state (#144). A session reported as off-console or not
+fully logged in is also unavailable, including a background user after fast user
+switching. Remote shells must have an available GUI session; SSH-specific behavior
+has not been verified.
 
 Probes share a **200 ms total budget per logical command**, following #126's
 final budget decision. Each worker wait is limited to less than 100 ms; an
@@ -886,7 +889,10 @@ Exec forwards the caller's `SAFARI_BROWSER_NO_DIALOG_PROBE` and
 Unset values explicitly mean false even if the daemon started with either setting
 on. Only these two booleans are sent, and each request is isolated. Older clients
 that omit `dialogProbe` retain the daemon environment defaults; malformed options
-are rejected before any step executes (#143).
+are rejected before any step executes (#143). After upgrading the executable,
+restart each existing daemon namespace with `daemon stop` followed by `daemon start`
+before relying on these settings: a daemon still running the older executable
+ignores the new options.
 
 Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). v1 dispatches via subprocess to the same binary, so daemon opt-in still amortizes per-step cost. `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
 
