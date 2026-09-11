@@ -57,6 +57,7 @@ enum SafariBrowserError: LocalizedError {
     /// Apple-internal formats with no cross-version stability guarantee —
     /// a future macOS reshaping them should be diagnosable in one read.
     case safariDataParseFailed(path: String, detail: String)
+    case safariDataReadFailed(path: String, detail: String)
     case screenRecordingRequired(postPreflight: Bool, underlying: String?)
     case webAreaNotFound(reason: String)
     case imageCroppingFailed(reason: String)
@@ -178,10 +179,10 @@ enum SafariBrowserError: LocalizedError {
             // blames System Events. None of them mention a dialog, and the
             // window holding it is often on another Space where it cannot be
             // seen at all.
-            let quoted = message.isEmpty ? "(no readable message)" : "\"\(message)\""
+            let quoted = BlockingDialogWarning.messageText(message)
             let buttonLine = buttons.isEmpty
                 ? "Its buttons could not be read."
-                : "Dismiss it with: \(buttons.joined(separator: " / "))"
+                : "Dismiss it with: \(BlockingDialogWarning.buttonsText(buttons))"
             return """
                 A JavaScript dialog is open and blocking this tab: \(quoted)
                 \(buttonLine)
@@ -254,29 +255,29 @@ enum SafariBrowserError: LocalizedError {
         case .ambiguousBlockingDialog(let messages):
             return """
                 \(messages.count) windows are showing a dialog; refusing to guess which one you meant.
-                \(messages.enumerated().map { "  [\($0.offset + 1)] \($0.element.isEmpty ? "(no readable message)" : $0.element)" }.joined(separator: "\n"))
+                \(messages.enumerated().map { "  [\($0.offset + 1)] \(BlockingDialogWarning.messageText($0.element))" }.joined(separator: "\n"))
                 Pressing a button on a dialog you are not looking at is the hazard this command
                 exists to avoid. Dismiss them from Safari, or close the extra window first.
                 """
 
         case .dialogButtonNotFound(let titled, let available):
             return """
-                no button titled "\(titled)" on this dialog.
-                Present: \(available.isEmpty ? "(none exposed)" : available.map { "\"\($0)\"" }.joined(separator: ", "))
+                no button titled \(TerminalText.quotedDialogField(titled)) on this dialog.
+                Present: \(BlockingDialogWarning.buttonsText(available))
                 Titles are localized — copy one from `safari-browser dialog list`.
                 """
 
         case .dialogButtonAmbiguous(let titled, let count):
             return """
-                this dialog has \(count) buttons titled "\(titled)"; refusing to guess which one you meant.
+                this dialog has \(count) buttons titled \(TerminalText.quotedDialogField(titled)); refusing to guess which one you meant.
                 Pressing an arbitrary one is the un-asked-for action this command exists to avoid.
                 """
 
         case .dialogChangedBeforePress(let nowMessage, let nowButtons):
             return """
                 the dialog changed between reading it and pressing — nothing was clicked.
-                It now reads: \(nowMessage.isEmpty ? "(no readable message)" : nowMessage)
-                Buttons: \(nowButtons.isEmpty ? "(none exposed)" : nowButtons.map { "\"\($0)\"" }.joined(separator: ", "))
+                It now reads: \(BlockingDialogWarning.messageText(nowMessage))
+                Buttons: \(BlockingDialogWarning.buttonsText(nowButtons))
                 Re-run `dialog list` and decide again — pressing a button on a dialog you have
                 not read is the thing this command exists to avoid.
                 """
@@ -396,10 +397,12 @@ enum SafariBrowserError: LocalizedError {
                 """
 
         case .safariDataFileNotFound(let path):
-            return "Safari data file not found: \(path)"
+            return "Safari data file not found: \(TerminalText.escaped(path))"
 
+        case .safariDataReadFailed(let path, let detail):
+            return "Could not read Safari data file '\(TerminalText.escaped(path))': \(TerminalText.escaped(detail))"
         case .safariDataParseFailed(let path, let detail):
-            return "Could not parse Safari data file \(path): \(detail)"
+            return "Could not parse Safari data file \(TerminalText.escaped(path)): \(TerminalText.escaped(detail))"
 
         case .elementAmbiguous(let selector, let matches):
             let lines = matches.enumerated().map { (i, m) -> String in

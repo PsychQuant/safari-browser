@@ -5,8 +5,8 @@ import Foundation
 struct HistoryVisit: Equatable {
     let url: String
     let title: String?
-    let visitTime: Date
-    let visitCount: Int
+    let visitTime: Date?
+    let visitCount: Int?
 }
 
 /// Queries Safari's on-disk browsing history.
@@ -73,10 +73,10 @@ struct HistoryCommand: ParsableCommand {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = timeZone
 
-        let stamp = formatter.string(from: visit.visitTime)
-        let title = visit.title?.replacingOccurrences(of: "\n", with: " ") ?? ""
+        let stamp = visit.visitTime.map { formatter.string(from: $0) } ?? "(no date)"
+        let title = LocalDataOutput.sanitizeTextField(visit.title ?? "")
         let suffix = title.isEmpty ? "" : " — \(title)"
-        return "[\(index)]  \(stamp)  \(visit.url)\(suffix)"
+        return "[\(index)]  \(stamp)  \(LocalDataOutput.sanitizeTextField(visit.url))\(suffix)"
     }
 
     static func encodeJSON(_ visits: [HistoryVisit]) throws -> Data {
@@ -88,8 +88,8 @@ struct HistoryCommand: ParsableCommand {
             [
                 "url": visit.url,
                 "title": visit.title as Any? ?? NSNull(),
-                "visit_time": iso.string(from: visit.visitTime),
-                "visit_count": visit.visitCount,
+                "visit_time": visit.visitTime.map { iso.string(from: $0) } as Any? ?? NSNull(),
+                "visit_count": visit.visitCount as Any? ?? NSNull(),
             ]
         }
         if payload.isEmpty {
@@ -104,57 +104,68 @@ struct HistoryCommand: ParsableCommand {
     static func visits(
         inDatabaseAt url: URL, search: String?, since: Date?, limit: Int
     ) throws -> [HistoryVisit] {
-        // Ordering happens in SQL; limiting and filtering do NOT — they run in
-        // the row mapper below. So this walks and sorts the whole visit table
-        // even for `--limit 1`: measured ~1.1s against 273k visits, which is
-        // tolerable but is a full scan, not the cheap query the shape suggests.
-        // Pushing `--since` and `--limit` into SQL is tracked separately; the
-        // reason it is not free is `--search`, which needs Swift-side
-        // case-insensitive matching that SQLite's default LIKE will not do
-        // correctly for non-ASCII.
-        let sql = """
+        try SQLiteReader.withDatabase(at: url) { database in
+            try visits(in: database, search: search, since: since, limit: limit)
+        }
+    }
+
+    static func visits(
+        in database: SQLiteReader.Database, search: String?, since: Date?, limit: Int
+    ) throws -> [HistoryVisit] {
+        guard limit > 0 else { throw ValidationError("--limit must be a positive integer.") }
+        var sql = """
             SELECT i.url, v.title, v.visit_time, i.visit_count
             FROM history_visits v
-            JOIN history_items i ON i.id = v.history_item
-            ORDER BY v.visit_time DESC
+            LEFT JOIN history_items i ON i.id = v.history_item
             """
+        var bindings: [SQLiteReader.Value] = []
+        if let since {
+            sql += " WHERE typeof(v.visit_time) IN ('integer', 'real') AND v.visit_time >= ?"
+            bindings.append(.double(since.timeIntervalSince1970 - coreDataEpochOffset))
+        }
+        sql += " ORDER BY v.visit_time DESC"
 
-        let sinceReference = since.map { $0.timeIntervalSince1970 - coreDataEpochOffset }
         let needle = search?.lowercased()
-        var collected: [HistoryVisit] = []
-
-        _ = try SQLiteReader.query(at: url, sql: sql) { row -> HistoryVisit? in
-            guard collected.count < limit else { return nil }
+        var diagnostics = SchemaDiagnostics(sourceURL: database.sourceURL, context: "history")
+        var index = 0
+        // Count accepted results, not raw rows: malformed rows and search misses
+        // must not consume --limit. Do not step again once the answer is full.
+        let results = try SQLiteReader.query(
+            in: database, sql: sql, bindings: bindings, maxResults: limit
+        ) { row -> HistoryVisit? in
+            defer { index += 1 }
             guard row.count >= 4,
-                let pageURL = row[0].stringValue,
-                let reference = row[2].doubleValue
-            else { return nil }
-
-            if let sinceReference, reference < sinceReference { return nil }
-
-            let title = row[1].stringValue
-            if let needle,
-                !pageURL.lowercased().contains(needle),
-                !(title?.lowercased().contains(needle) ?? false)
-            {
+                let pageURL = SchemaDiagnostics.requiredString(row[0].stringValue)
+            else {
+                diagnostics.invalid(at: "row[\(index)]", field: "url")
                 return nil
             }
-
-            let visit = HistoryVisit(
-                url: pageURL,
-                title: title,
-                visitTime: date(fromCoreDataReferenceTime: reference),
-                visitCount: row[3].intValue ?? 0)
-            collected.append(visit)
-            return visit
+            diagnostics.valid()
+            let title = row[1].stringValue
+            if let needle, !pageURL.lowercased().contains(needle),
+                !(title?.lowercased().contains(needle) ?? false)
+            { return nil }
+            let reference = row[2].doubleValue.flatMap { $0.isFinite ? $0 : nil }
+            let visitTime = SchemaDiagnostics.representableDate(reference.map { date(fromCoreDataReferenceTime: $0) })
+            // The SQL comparison is a fast prefilter; an unrepresentable date
+            // cannot establish that the visit occurred on/after --since.
+            if let since, visitTime.map({ $0 < since }) ?? true { return nil }
+            return HistoryVisit(
+                url: pageURL, title: title,
+                visitTime: visitTime,
+                visitCount: row[3].intValue.flatMap { $0 >= 0 ? $0 : nil })
         }
-
-        return collected
+        try diagnostics.finish()
+        return results
     }
 
     // MARK: - Run
 
     func run() throws {
+        try run(sourceURL: SafariDataStore.sourceURL(for: .history))
+    }
+
+    func run(sourceURL: URL) throws {
         guard limit > 0 else {
             throw ValidationError("--limit must be a positive integer.")
         }
@@ -168,9 +179,9 @@ struct HistoryCommand: ParsableCommand {
 
         let results: [HistoryVisit]
         do {
-            results = try SafariDataStore.withCopy(.history) { copy in
+            results = try SafariDataStore.withDatabaseSnapshot(sourceURL: sourceURL) { database in
                 try HistoryCommand.visits(
-                    inDatabaseAt: copy, search: search, since: sinceDate, limit: limit)
+                    in: database, search: search, since: sinceDate, limit: limit)
             }
         } catch let error as SafariBrowserError {
             if case .safariDataFileNotFound = error {

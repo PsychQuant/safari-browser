@@ -9,7 +9,7 @@ BINARY_NAME = safari-browser
 SAFARI_BROWSER_BIN ?= .build/debug/$(BINARY_NAME)
 export SAFARI_BROWSER_BIN
 
-.PHONY: test-mutation-gate test-daemon-executor test-dialog-harness test-install-atomic test-signature-entrypoint
+.PHONY: test-data-interruption test-mutation-gate test-daemon-executor test-dialog-harness test-install-atomic test-signature-entrypoint
 .PHONY: build build-debug install install-signed clean \
         verify-developer-id verify-install-signature \
         test test-unit test-smoke test-all test-install-signature \
@@ -254,7 +254,7 @@ test-mutation-gate:
 # test-install-signature-strict` refuses to pass on a partial run — that is
 # the target to use on a machine that has both identities, and the one this
 # repo's own verification uses.
-test-all: test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint
+test-all: test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint test-data-interruption
 	@ALLOW_INCOMPLETE=1 $(MAKE) --no-print-directory test-install-signature
 	@echo "✓ unit + smoke + install-signature green"
 
@@ -313,3 +313,7 @@ test-daemon-executor: build-debug
 # #138: error/skip boundaries without touching Safari.
 test-dialog-harness:
 	python3 Tests/dialog-harness-test.py
+
+# Synthetic fixtures only; production memory snapshot code is interrupted.
+test-data-interruption:
+	python3 Tests/data-snapshot-interruption.py

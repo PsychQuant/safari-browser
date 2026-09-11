@@ -1,5 +1,7 @@
 ## Context
 
+本節保留 #109 建立四個指令時的背景；存取與解析契約已依 #111/#112/#113/#115/#116/#117/#120 更新，舊版磁碟複本方案不再適用。
+
 `safari-browser` 現有 42 個 top-level 指令**全部**透過 AppleScript、Accessibility API 或 CoreGraphics 操作執行中的 Safari。**沒有任何一個指令碰檔案系統。** 本變更引入這個 repo 的第一條本機檔案讀取路徑，因此沒有既有 pattern 可沿用，需要建立新的慣例。
 
 四個目標資料檔位於 `~/Library/Safari/`，受 TCC 保護，需要「完全取用磁碟」（`kTCCServiceSystemPolicyAllFiles`）。這是本工具目前未使用的權限類別——現有的三種權限（輔助使用、螢幕錄製、Apple 事件）都由 `safari-browser setup` 處理。
@@ -20,7 +22,7 @@
 - 讓「找回看過的頁面」這類查詢不必離開本工具、不必手寫 SQL
 - 四個指令維持與現有 42 個指令一致的介面慣例（輸出格式、`--json`、錯誤處理）
 - 在權限不足時給出**能實際照做**的指引，而非泛用的「權限被拒」
-- 維持 Non-Interference 契約：唯讀、不碰輸入裝置、不搶焦點、不改 Safari 任何狀態
+- 維持 Non-Interference 契約：不碰輸入裝置、不搶焦點、不改 Safari 視窗、分頁及來源資料內容；SQLite 讀取可參與正常鎖定與 WAL 共享索引維護
 
 **Non-Goals:**
 
@@ -58,7 +60,7 @@
 
 ### Decision 2：`SafariDataStore` 只共用檔案存取，**不**抽象查詢
 
-四個來源真正共通的只有一件事：把 TCC 保護的檔案（含 WAL sidecar）安全複製到暫存區，或回報型別化錯誤。
+四個來源共用 TCC 保護檔案的唯讀存取與型別化錯誤映射。SQLite 由唯讀來源連線建立一致讀取交易，透過 SQLite Backup API 取得 `:memory:` 快照；plist 直接讀入 `Data`。解析只使用記憶體內容，不建立新的磁碟資料複本。來源 SQLite 可以參與正常讀鎖及 WAL 共享索引維護，但不執行來源寫入 SQL。
 
 **不建立 `protocol SafariDataSource`。** 四者的輸出結構毫無共通點——造訪紀錄是含時間戳與次數的平面列、書籤是有階層的樹、iCloud 分頁按裝置分組、下載紀錄是檔名對來源網址。強行抽出共同協定會是**假抽象**：協定裡放不進任何有意義的共同方法，每個實作最後都在做完全不同的事，而讀者還得多穿過一層才看得到真正的邏輯。
 
@@ -66,7 +68,8 @@
 
 **考慮過的替代方案**：
 - *完整 repository pattern（型別化模型 + 統一查詢介面）* — 被否決。YAGNI；四個來源沒有共同的查詢語意。
-- *每個指令各自複製檔案，不共用工具層* — 被否決。WAL sidecar 處理、FDA 偵測、暫存目錄清理這三件事若複製四份，任一份寫錯都是靜默的資料正確性問題。
+- *每個指令各自處理檔案存取* — 被否決。一致快照、來源錯誤映射與連線生命週期若複製四份，任一份寫錯都可能破壞資料正確性。
+- *保留磁碟複本並只收緊 mode* — 被否決。同 UID 程序仍可讀取，signal 終止也可能留下新複本；記憶體方案消除這條新檔案暴露路徑。既有殘留複本不憑名稱前綴自動刪除，以免誤刪仍在使用的檔案。
 
 ### Decision 3：預設輸出上限依**資料性質**分兩類
 
@@ -101,39 +104,33 @@
 
 ```
 safari-browser history    [--search <text>] [--since <YYYY-MM-DD>] [--limit <n>] [--json]
-safari-browser bookmarks  [--folder <name>] [--json]
+safari-browser bookmarks  [--search <text>] [--folder <name>] [--json]
 safari-browser cloud-tabs [--json]
 safari-browser downloads  [--limit <n>] [--json]
 ```
 
 - `--limit` 於 `history` 與 `downloads` 預設為 `50`；於 `bookmarks` 與 `cloud-tabs` **不提供此選項**
-- `--search` 對網址與標題做大小寫不敏感的子字串比對
+- `history` 與 `bookmarks` 的 `--search` 對網址與標題做 Swift Unicode 大小寫不敏感的子字串比對；書籤資料夾名稱不屬於 search 欄位，與 `--folder` 同時指定時兩者皆須符合
 - `--since` 接受 `YYYY-MM-DD`，篩選該日期（含）之後的造訪
 - `--folder` 對書籤資料夾名稱做大小寫不敏感的子字串比對
 
-工具層：
+工具層（#111/#112/#113 取代舊 `withCopy` 契約）：
 
 ```swift
-enum SafariDataFile: CaseIterable {
-    case history       // History.db，含 -wal / -shm
-    case bookmarks     // Bookmarks.plist
-    case cloudTabs     // CloudTabs.db，含 -wal / -shm
-    case downloads     // Downloads.plist
-}
-
 enum SafariDataStore {
-    /// 將指定檔案（含其 WAL sidecar，若有）複製到新建的暫存目錄，
-    /// 以主檔 URL 呼叫 `body`，並在 `body` 返回或拋出後**必然**移除該暫存目錄。
-    static func withCopy<T>(_ file: SafariDataFile, _ body: (URL) throws -> T) throws -> T
-
-    /// 可測試核心：來源路徑由呼叫端指定，供單元測試以 fixture 驗證 sidecar 行為。
-    static func withCopy<T>(
-        sourceURL: URL, includeWALSidecars: Bool, _ body: (URL) throws -> T
+    static func withDatabaseSnapshot<T>(
+        sourceURL: URL, timeout: TimeInterval = 5,
+        _ body: (SQLiteReader.Database) throws -> T
     ) throws -> T
+    static func readPlist(sourceURL: URL) throws -> Data
 }
 ```
 
-**為何是 scope-based 而非回傳 URL**：本文件初稿寫的是 `copyForReading(_:) throws -> URL` + 「呼叫端負責移除」。該形狀**無法滿足** `local-data-query` spec 的 `Safe copy of TCC-protected data files` 要求——其 scenario 明訂暫存目錄在「**成功或失敗皆然**」的情況下都不得殘留，而任何仰賴呼叫端記得寫 `defer` 的契約都會在錯誤路徑上漏掉。改為 scope-based 後清理由型別保證，呼叫端無從遺漏。（此修正於 apply 階段發現並就地更新，未靜默偏離。）
+SQLite 快照使用單調時鐘期限；記憶體目的資料庫沿用來源 page size，暫存運算設為 `temp_store=MEMORY`，快照完成後設為唯讀查詢。body 結束後釋放連線；沒有等待清理的新磁碟複本，因此程序中斷也不會留下此類新複本。這不構成對其他同 UID 程序的記憶體隔離保證。
+
+`SQLiteReader.query(in:sql:bindings:maxResults:rowMapper:)` 在收滿 `maxResults` 筆非 nil 映射結果後立即 finalize，不再 step。History 的 `--since` 以 SQL binding 篩選；`--search` 留在 Swift 處理非 ASCII 文字。**不下推原始列數的 SQL LIMIT**，避免 malformed entry 或 search miss 消耗輸出額度。尚未收滿時，任何 SQLite step 錯誤都須失敗，診斷列數採實際已 step 的列數。此停止條件不保證 SQLite query plan 在第一次回傳列以前不做排序／讀頁；有序索引仍決定其內部讀取成本。
+
+四個 `run()` 均委派 `run(sourceURL:)`，供測試注入合成來源；正式路徑仍固定來自 `SafariDataStore.sourceURL(for:)`，不加入 production 環境變數覆寫。
 
 ### Data shape（`--json`）
 
@@ -157,7 +154,7 @@ enum SafariDataStore {
 [{"filename": "...", "source_url": "...", "date": "2026-08-17T10:03:43+08:00"}]
 ```
 
-時間一律為含時區偏移的 ISO 8601。
+存在的時間值使用含時區偏移的 ISO 8601。History 的 `title`、`visit_time`、`visit_count` 可為 `null`；Downloads 的 `date` 可為 `null`，nil 日期穩定排最後。缺少其他選填欄位維持空字串或明示的 `(unknown device)`，不得捏造日期或次數。History／Downloads 的日期另以共用 guard 檢查：Unix 秒數須 finite、位於 UTC CE 0001 至 9999 範圍 `[-62135596800, 253402300800)`，且當前時區的 Gregorian era 為 1、year 為 1–9999；不符者為 nil，避免 Foundation formatter 對極端值輸出空字串、截短年份或錯示 BCE。
 
 ### 預設輸出（非 `--json`）
 
@@ -171,19 +168,23 @@ enum SafariDataStore {
 
 | 情況 | Exit code | 行為 |
 |---|---|---|
-| 權限不足（無法讀取 `~/Library/Safari/`） | 非 0 | stderr 印出**依簽章狀態分歧**的指引（見 Decision 1）；stdout 無輸出 |
-| 資料檔不存在（如未啟用 iCloud 分頁） | **0** | stderr 印一行說明；stdout 無輸出 |
-| 資料檔存在但無法解析 | 非 0 | stderr 指出是哪個檔案與哪一層解析失敗 |
+| 權限不足（來源存取回傳 EACCES／EPERM） | 非 0 | stderr 印出**依簽章狀態分歧**的指引（見 Decision 1）；stdout 無輸出 |
+| 資料檔不存在（ENOENT，如未啟用 iCloud 分頁） | **0** | stderr 說明；文字模式 stdout 無資料列，`--json` 輸出 `[]` |
+| 其他來源 I/O 失敗 | 非 0 | stderr 指出來源與 I/O 原因，不誤導使用者重新授權 FDA；stdout 無資料列 |
+| 資料檔存在但無法解析，或已檢查的非空候選皆缺必要欄位 | 非 0 | stderr 指出來源、解析層、entry 索引及欄位；stdout 無資料列 |
+| 部分候選不符 schema，但仍有有效候選 | 0 | stderr 警告損壞數量、entry 索引及欄位（詳細位置最多八筆）；stdout 保留符合篩選的有效資料 |
 | 查詢結果為空（條件無命中） | 0 | stdout 無資料列；`--json` 輸出 `[]` |
 
-「權限不足」與「檔案不存在」**必須**是不同的錯誤類型，不可合併——前者需要使用者採取行動，後者是正常狀態。
+必要欄位為 History／CloudTabs 的 URL、Bookmarks leaf 的 `URLString`、Downloads 的 `DownloadEntryPath`，均須為非空字串。解析有效性在 Swift 搜尋篩選之前計算：合法資料未命中不是 schema 失敗。空集合不是失敗；SQLite 診斷只涵蓋已依 SQL since 選出的、到達停止條件前實際檢查的候選，不為了計數而額外全表掃描。Bookmarks 保留無 type 的容器、Reading List 路徑辨識，忽略 Safari 已知的 proxy 節點；只有明確 `WebBookmarkTypeList` 且缺少 `Children` 時視為正常空資料夾，存在但型別不符的 `Children` 仍是 schema 錯誤。非字典子項不得讓有效兄弟項目一起被丟棄。
+
+「權限不足」、「檔案不存在」、其他 I/O 錯誤及解析錯誤**必須**是不同結果，不能合併。
 
 ### Acceptance criteria
 
 1. 四個指令都出現在 `safari-browser --help` 的 subcommand 清單中。
 2. `safari-browser history --limit 5` 印出 5 行以內的資料列，時間為當前世紀（驗證 Core Data epoch 轉換）。
 3. 針對 epoch 轉換有獨立的單元測試，以已知輸入驗證已知輸出，不依賴實機資料。
-4. `SafariDataStore.withCopy(.history)` 交給 body 的暫存目錄同時含有 `History.db` 與其存在的 sidecar 檔。
+4. `SafariDataStore.withDatabaseSnapshot(sourceURL:)` 提供包含 WAL 已提交資料的一致記憶體快照；plist 直接讀入記憶體，不建立新磁碟複本。
 5. 在 `CloudTabs.db` 不存在的機器上，`safari-browser cloud-tabs` 以 exit code 0 結束、stdout 無輸出、stderr 有說明。
 6. 四個指令的 `--json` 輸出皆為合法 JSON（`| python3 -m json.tool` 不報錯），無資料時為 `[]`。
 7. 非 `--json` 模式下，stdout **不含**任何說明性文字（`2>/dev/null` 後仍可直接解析）。
@@ -191,7 +192,7 @@ enum SafariDataStore {
 
 ### Scope boundaries
 
-**In scope**：四個指令、`SafariDataStore` 工具層、三個新錯誤類型（`fullDiskAccessRequired` / `safariDataFileNotFound` / `safariDataParseFailed`——第三個是上方 Failure modes 表中「資料檔存在但無法解析」那一列所需，初稿漏數）、subcommand 註冊、`non-interference` 與 `json-output` 兩份 spec 的 delta、新增 `local-data-query` spec、README 指令表、上述單元測試。
+**In scope**：四個指令、`SafariDataStore` 工具層、型別化錯誤（`fullDiskAccessRequired` / `safariDataFileNotFound` / `safariDataParseFailed`，以及後續 #113 的 `safariDataReadFailed`）、subcommand 註冊、`non-interference` 與 `json-output` 兩份 spec 的 delta、新增 `local-data-query` spec、README 指令表、上述單元測試。
 
 **Out of scope**：跨來源搜尋策略、daemon 路徑支援、`setup` 的任何變動、`Makefile` 的任何變動、寫入能力、其他瀏覽器。
 
@@ -199,9 +200,9 @@ enum SafariDataStore {
 
 **[adhoc 簽章下 FDA 授權可能在重新編譯後靜默失效]** → 錯誤訊息在偵測到 adhoc build 時主動說明此風險並指向 `DEVELOPER_ID=<cert-sha1> make install-signed`。**誠實邊界：此失效機制是根據 TCC 以 cdhash 識別未簽章 binary 的運作方式所做的推論，未經實測。** 錯誤訊息的設計對這條推論不敏感——即使推論有誤，建議使用者改用簽章 build 仍然正確。
 
-**[複製 `History.db` 的瞬間 Safari 正在寫入，取得撕裂狀態]** → 連同 `-wal` / `-shm` 一起複製；SQLite 的 WAL 設計對此有容忍度。實作時需明確驗證而非假設——若複製後開啟失敗，錯誤訊息須指出是複製一致性問題而非權限問題。
+**[來源在 checkpoint／寫入時取得不一致狀態]** → #111/#112 的 SQLite Backup API 加來源讀取交易，取代先前逐檔複製 main／WAL／SHM 的方案。三個檔案先後複製並不保證一致；應以並行寫入與 checkpoint fixture 驗證新方案，busy／timeout 必須明確失敗。成本是記憶體峰值與讀取鎖，不能宣稱與其他 SQLite 使用者完全無互動。
 
-**[`CloudTabs.db` 無法在開發機驗證]** → 缺檔路徑可測（開發機即為缺檔狀態）；「有檔時解析是否正確」只能標記為未驗證，並在 tasks 中明確記錄此限制，不假裝已驗證。
+**[`CloudTabs.db` 無法在開發機驗證]** → 缺檔路徑可測（開發機即為缺檔狀態）；#109 當時「有檔時解析」未驗證的紀錄保留。後續 #115 已加入合成 SQLite schema、裝置 join、缺少選填欄位及 malformed URL 測試；這證明對已知 schema 的行為，不證明未來 Apple 格式不變。
 
 **[plist 是 Apple 內部格式，無跨版本穩定保證]** → 解析失敗時給出指名檔案與解析層級的錯誤，而非泛用的 parse error，使日後 macOS 改格式時能快速定位。
 

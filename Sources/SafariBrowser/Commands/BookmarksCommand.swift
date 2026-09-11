@@ -25,6 +25,9 @@ struct BookmarksCommand: ParsableCommand {
     @Option(name: .long, help: "Filter to bookmarks whose folder path contains this text")
     var folder: String?
 
+    @Option(name: .long, help: "Filter to entries whose URL or title contains this text")
+    var search: String?
+
     @Flag(name: .long, help: "Output as JSON array")
     var json = false
 
@@ -41,61 +44,71 @@ struct BookmarksCommand: ParsableCommand {
     /// (verified against a real `Bookmarks.plist`). A plist decoder is the
     /// only route.
     static func entries(inPlistAt url: URL) throws -> [BookmarkEntry] {
-        let data: Data
-        do {
-            data = try Data(contentsOf: url)
-        } catch {
-            throw SafariBrowserError.safariDataParseFailed(
-                path: url.path, detail: "could not read file: \(error.localizedDescription)")
-        }
+        try entries(in: SafariDataStore.readPlist(sourceURL: url), sourceURL: url)
+    }
 
-        let root: Any
-        do {
-            root = try PropertyListSerialization.propertyList(
-                from: data, options: [], format: nil)
-        } catch {
-            throw SafariBrowserError.safariDataParseFailed(
-                path: url.path,
-                detail: "property list decoding failed: \(error.localizedDescription)")
-        }
-
+    static func entries(in data: Data, sourceURL: URL) throws -> [BookmarkEntry] {
+        let root = try SchemaDiagnostics.plist(data, sourceURL: sourceURL)
         guard let dictionary = root as? [String: Any] else {
             throw SafariBrowserError.safariDataParseFailed(
-                path: url.path, detail: "root object is not a dictionary")
+                path: sourceURL.path, detail: "root object is not a dictionary")
         }
-
         var collected: [BookmarkEntry] = []
-        walk(dictionary, path: [], into: &collected)
+        var diagnostics = SchemaDiagnostics(sourceURL: sourceURL, context: "bookmarks")
+        walk(dictionary, path: [], location: "root[0]", into: &collected, diagnostics: &diagnostics)
+        try diagnostics.finish()
         return collected
     }
 
-    /// Recursive descent over `WebBookmarkTypeList` / `WebBookmarkTypeLeaf`.
-    static func walk(_ node: [String: Any], path: [String], into results: inout [BookmarkEntry]) {
-        switch node["WebBookmarkType"] as? String {
-        case "WebBookmarkTypeList":
-            let title = node["Title"] as? String ?? ""
-            let childPath = title.isEmpty ? path : path + [title]
-            for child in node["Children"] as? [[String: Any]] ?? [] {
-                walk(child, path: childPath, into: &results)
+    private static func walk(
+        _ node: [String: Any], path: [String], location: String,
+        into results: inout [BookmarkEntry], diagnostics: inout SchemaDiagnostics
+    ) {
+        let type = node["WebBookmarkType"] as? String
+        if type == "WebBookmarkTypeLeaf" {
+            guard let urlString = SchemaDiagnostics.requiredString(node["URLString"]) else {
+                diagnostics.invalid(at: location, field: "URLString")
+                return
             }
-
-        case "WebBookmarkTypeLeaf":
-            guard let urlString = node["URLString"] as? String else { return }
-            let uriDictionary = node["URIDictionary"] as? [String: Any]
-            let title = uriDictionary?["title"] as? String ?? ""
-            results.append(
-                BookmarkEntry(
-                    folder: path.joined(separator: "/"),
-                    title: title,
-                    url: urlString,
-                    isReadingList: path.contains(readingListFolderTitle)))
-
-        default:
-            // Some nodes carry children without declaring a type; descend
-            // anyway rather than silently dropping a whole subtree.
-            for child in node["Children"] as? [[String: Any]] ?? [] {
-                walk(child, path: path, into: &results)
+            diagnostics.valid()
+            let title = (node["URIDictionary"] as? [String: Any])?["title"] as? String ?? ""
+            results.append(BookmarkEntry(
+                folder: path.joined(separator: "/"), title: title, url: urlString,
+                isReadingList: path.contains(readingListFolderTitle)))
+            return
+        }
+        // Safari's built-in proxy nodes (for example its history shortcut)
+        // are not bookmarks and intentionally carry no URL or children.
+        if type == "WebBookmarkTypeProxy" { return }
+        // Safari omits Children for legitimate empty folders. A present but
+        // wrong-typed Children value still signals schema failure.
+        if type == "WebBookmarkTypeList" && node["Children"] == nil { return }
+        if node.isEmpty && location == "root[0]" { return }
+        guard let children = node["Children"] as? [Any] else {
+            diagnostics.invalid(at: location, field: "Children")
+            return
+        }
+        let title = type == "WebBookmarkTypeList" ? node["Title"] as? String ?? "" : ""
+        let childPath = title.isEmpty ? path : path + [title]
+        for (index, child) in children.enumerated() {
+            let childLocation = "\(location).Children[\(index)]"
+            guard let child = child as? [String: Any] else {
+                diagnostics.invalid(at: childLocation, field: "dictionary")
+                continue
             }
+            walk(child, path: childPath, location: childLocation, into: &results, diagnostics: &diagnostics)
+        }
+    }
+
+    static func filtered(_ entries: [BookmarkEntry], folder: String?, search: String?) -> [BookmarkEntry] {
+        let folderNeedle = folder?.lowercased()
+        let searchNeedle = search?.lowercased()
+        return entries.filter { entry in
+            let matchesFolder = folderNeedle.map { entry.folder.lowercased().contains($0) } ?? true
+            let matchesSearch = searchNeedle.map {
+                entry.title.lowercased().contains($0) || entry.url.lowercased().contains($0)
+            } ?? true
+            return matchesFolder && matchesSearch
         }
     }
 
@@ -103,10 +116,10 @@ struct BookmarksCommand: ParsableCommand {
 
     static func formatRow(index: Int, entry: BookmarkEntry) -> String {
         let marker = entry.isReadingList ? "[reading-list]" : ""
-        let folder = entry.folder.isEmpty ? "(root)" : entry.folder
-        let title = entry.title.replacingOccurrences(of: "\n", with: " ")
+        let folder = entry.folder.isEmpty ? "(root)" : LocalDataOutput.sanitizeTextField(entry.folder)
+        let title = LocalDataOutput.sanitizeTextField(entry.title)
         let suffix = title.isEmpty ? "" : " — \(title)"
-        let parts = ["[\(index)]", folder, marker, entry.url].filter { !$0.isEmpty }
+        let parts = ["[\(index)]", folder, marker, LocalDataOutput.sanitizeTextField(entry.url)].filter { !$0.isEmpty }
         return parts.joined(separator: "  ") + suffix
     }
 
@@ -127,11 +140,14 @@ struct BookmarksCommand: ParsableCommand {
     // MARK: - Run
 
     func run() throws {
+        try run(sourceURL: SafariDataStore.sourceURL(for: .bookmarks))
+    }
+
+    func run(sourceURL: URL) throws {
         let all: [BookmarkEntry]
         do {
-            all = try SafariDataStore.withCopy(.bookmarks) { copy in
-                try BookmarksCommand.entries(inPlistAt: copy)
-            }
+            all = try BookmarksCommand.entries(
+                in: SafariDataStore.readPlist(sourceURL: sourceURL), sourceURL: sourceURL)
         } catch let error as SafariBrowserError {
             if case .safariDataFileNotFound = error {
                 LocalDataOutput.reportAbsentSource(.bookmarks, json: json)
@@ -140,13 +156,7 @@ struct BookmarksCommand: ParsableCommand {
             throw error
         }
 
-        let results: [BookmarkEntry]
-        if let folder {
-            let needle = folder.lowercased()
-            results = all.filter { $0.folder.lowercased().contains(needle) }
-        } else {
-            results = all
-        }
+        let results = BookmarksCommand.filtered(all, folder: folder, search: search)
 
         try LocalDataOutput.emit(
             json: json,
