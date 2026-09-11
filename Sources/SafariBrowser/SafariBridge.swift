@@ -4060,17 +4060,20 @@ enum SafariBridge {
     // MARK: - AppleScript Runner
 
     @discardableResult
-    private static func runAppleScript(
+    static func runAppleScript(
         _ script: String,
         timeout: TimeInterval = SafariBridge.defaultProcessTimeout
     ) async throws -> String {
+        if let runner = DaemonRequestContext.appleScriptRunner {
+            return try await runner(script)
+        }
         // Task 7.1 routing: if daemon mode is opted in AND the daemon is
         // reachable, send the AppleScript source through the
         // `applescript.execute` method so a warm pre-compiled handle
         // serves the request. Any daemon-transport failure falls back
         // silently to the stateless `osascript` subprocess path with a
         // single `[daemon fallback: <reason>]` stderr line.
-        try await runViaRouter(
+        return try await runViaRouter(
             source: script,
             daemonOptIn: SafariBridge.shouldUseDaemonAuto(),
             daemonFn: { src in

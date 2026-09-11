@@ -419,7 +419,7 @@ What the check does **not** cover, honestly: `documents` and `tabs` enumerate
 rather than target (marking dialog-bearing windows there is #129); `close`,
 `pdf`, `tab focus`, `upload`, `save-image`, `screenshot` (other than `--full` or `--element`)
 and `tabs --window N` resolve through a different path and stay silent for now
-(#133); `exec` does not yet relay the line from its steps (#136). "First line"
+(#133); `exec` relays step diagnostics on stderr in both subprocess and daemon modes (#136). "First line"
 means the first line this command writes: a `--tab` deprecation notice or a
 `--first-match` match summary is written earlier and will precede it. And
 `2>&1 | tail -1` is not rescued by this line at all: for a read-only command
@@ -844,7 +844,16 @@ SAFARI_BROWSER_NAME=beta  safari-browser daemon start
 **NOT covered** (fall through to stateless path even with daemon on):
 `screenshot`, `pdf`, `upload --native`, `upload --allow-hid`.
 
-If the daemon is missing, crashed, version-mismatched, or unresponsive (15s), commands **silently fall back** to the stateless path with a single `[daemon fallback: <reason>]` stderr line. Idle >10 minutes → daemon auto-exits. See `openspec/specs/persistent-daemon/spec.md` for full semantics.
+Ordinary daemon requests share one 15-second deadline across connection, handshake,
+transmission, and the complete response; `exec` has an explicit 60-second deadline.
+Partial bytes do not restart the clock. A connection failure, incompatible handshake,
+or unknown method before execution falls back with `[daemon fallback: <reason>]`.
+Once any request bytes have been sent, a timeout, lost response, or invalid reply
+reports an **unknown execution outcome** and does not rerun the operation. The original
+operation can still finish in Safari; inspect its result before retrying. Handler
+errors also propagate without replay. Idle >10 minutes → daemon auto-exits.
+The compiled AppleScript cache runs on the main thread, including compilation and
+reuse, so repeated scripts that use `delay` complete normally (#130).
 
 ### Exec scripts (multi-step automation)
 
@@ -863,6 +872,11 @@ JSON
 # From file
 safari-browser exec --script /tmp/login.json --url plaud
 ```
+
+Both exec paths preserve diagnostics on stderr while stdout remains a single JSON
+array. Daemon exec uses a request-local dialog gate and the internal compiled script
+runner; it does not open a nested connection to itself. Every new request gets fresh
+warning state, and diagnostics are returned on success and handler failure (#136).
 
 Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). v1 dispatches via subprocess to the same binary, so daemon opt-in still amortizes per-step cost. `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
 

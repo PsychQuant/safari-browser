@@ -49,37 +49,66 @@ enum CommandDispatch {
         let targetArgs = stepHasTargetFlag ? [] : sharedTargetArgs
 
         let invocation = cmdParts + args + targetArgs
-        return try await runSelfBinary(arguments: invocation)
+        return try await runSubprocess(executable: currentExecutablePath(), arguments: invocation)
     }
 
     /// Executes the running `safari-browser` binary with the given
-    /// arguments. Captures stdout. Non-zero exit raises an error that
+    /// arguments. Drains both pipes concurrently and relays stderr on either
+    /// success or failure. Non-zero exit raises an error that
     /// the step loop translates into a `StepResult.error`.
-    private static func runSelfBinary(arguments: [String]) async throws -> String {
-        let path = currentExecutablePath()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        try process.run()
-        process.waitUntilExit()
-
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdoutText = String(data: stdoutData, encoding: .utf8) ?? ""
-
-        if process.terminationStatus != 0 {
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
-            let combined = stderrText.isEmpty ? stdoutText : stderrText
-            throw SafariBrowserError.appleScriptFailed(
-                combined.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
+    static func runSubprocess(
+        executable: String, arguments: [String],
+        stderrWriter: @escaping @Sendable (String) -> Void = {
+            FileHandle.standardError.write(Data($0.utf8))
         }
-        return stdoutText.trimmingCharacters(in: .newlines)
+    ) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: executable)
+                process.arguments = arguments
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
+                do {
+                    try process.run()
+                    let output = PipeData()
+                    let errors = PipeData()
+                    let readers = DispatchGroup()
+                    readers.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        output.set(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+                        readers.leave()
+                    }
+                    readers.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        errors.set(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+                        readers.leave()
+                    }
+                    process.waitUntilExit()
+                    readers.wait()
+                    let stdoutText = String(decoding: output.value, as: UTF8.self)
+                    let stderrText = String(decoding: errors.value, as: UTF8.self)
+                    if !stderrText.isEmpty { stderrWriter(stderrText) }
+                    if process.terminationStatus != 0 {
+                        let combined = stderrText.isEmpty ? stdoutText : stderrText
+                        throw SafariBrowserError.appleScriptFailed(
+                            combined.trimmingCharacters(in: .whitespacesAndNewlines))
+                    }
+                    continuation.resume(returning: stdoutText.trimmingCharacters(in: .newlines))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private final class PipeData: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+        func set(_ value: Data) { lock.lock(); defer { lock.unlock() }; data = value }
+        var value: Data { lock.lock(); defer { lock.unlock() }; return data }
     }
 
     private static func currentExecutablePath() -> String {

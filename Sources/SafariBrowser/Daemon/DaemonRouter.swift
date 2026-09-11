@@ -29,9 +29,9 @@ extension SafariBridge {
     /// method and surface the result in the same shape as the stateless
     /// osascript path: a plain string on success, or a thrown
     /// `SafariBrowserError.appleScriptFailed(message)` on compile/execute
-    /// error. Any transport-level failure (socket missing, timeout, etc.)
-    /// propagates as `DaemonClient.Error` which the router translates into
-    /// a silent fallback to stateless.
+    /// error. Transport failures before any request bytes are sent permit
+    /// stateless fallback. Lost responses after transmission instead report
+    /// an unknown outcome, because repeating the script could repeat effects.
     static func executeAppleScriptViaDaemon(
         source: String,
         timeout: TimeInterval
@@ -40,27 +40,33 @@ extension SafariBridge {
         let paramsData = try JSONSerialization.data(
             withJSONObject: ["source": source], options: []
         )
-        // Use timeout * 2 for the socket receive window so the daemon has
-        // breathing room to finish a legitimately-slow script before the
-        // router falls back. The caller's timeout is still honoured through
-        // the combined path — if the daemon genuinely hangs, the socket
-        // fires ioError and we fall back to osascript which enforces the
-        // real timeout via `runProcessWithTimeout`.
+        // The caller's shorter budget applies; ordinary bridge requests never
+        // wait beyond the 15-second daemon contract.
         let resultData = try await DaemonClient.sendRequest(
             name: name,
             method: "applescript.execute",
             params: paramsData,
             requestId: Int.random(in: 1...Int.max),
-            timeout: max(timeout * 2, timeout + 1)
+            timeout: min(timeout, DaemonClient.defaultTimeoutSeconds)
         )
-        let result = (try? JSONSerialization.jsonObject(with: resultData, options: []))
-            as? [String: Any] ?? [:]
-        if let status = result["status"] as? String, status == "error" {
-            let message = (result["message"] as? String) ?? "unknown"
-            throw SafariBrowserError.appleScriptFailed(message)
+        guard let result = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any],
+              let status = result["status"] as? String else {
+            throw DaemonClient.Error.requestOutcomeUnknown("invalid AppleScript result payload")
         }
-        let output = (result["output"] as? String) ?? ""
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch status {
+        case "ok":
+            guard let output = result["output"] as? String else {
+                throw DaemonClient.Error.requestOutcomeUnknown("missing AppleScript output")
+            }
+            return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        case "error":
+            guard let message = result["message"] as? String else {
+                throw DaemonClient.Error.requestOutcomeUnknown("missing AppleScript error message")
+            }
+            throw SafariBrowserError.appleScriptFailed(message)
+        default:
+            throw DaemonClient.Error.requestOutcomeUnknown("invalid AppleScript status")
+        }
     }
 
     /// Three-signal opt-in detection per the `Daemon mode is opt-in` spec
