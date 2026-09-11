@@ -115,6 +115,10 @@ its value reached `fatalError` — which the shebang form surfaced as `5`,
 "unrecognised shape, inspect it yourself", about a binary that was never
 opened. A caller cannot act on a code that means three things.
 
+Direct execution of `./scripts/verify-install-signature.swift` also uses the shared
+build helper; a build failure returns 70 and is not an ad-hoc verdict. Use the
+compiled guard for repeated checks rather than invoking the source with `swift`.
+
 The guard validates every architecture in a universal binary for both its seal
 and requirement, so damage to a non-native slice is rejected too (#139).
 

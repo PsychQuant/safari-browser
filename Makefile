@@ -9,7 +9,7 @@ BINARY_NAME = safari-browser
 SAFARI_BROWSER_BIN ?= .build/debug/$(BINARY_NAME)
 export SAFARI_BROWSER_BIN
 
-.PHONY: test-mutation-gate test-daemon-executor test-dialog-harness test-install-atomic
+.PHONY: test-mutation-gate test-daemon-executor test-dialog-harness test-install-atomic test-signature-entrypoint
 .PHONY: build build-debug install install-signed clean \
         verify-developer-id verify-install-signature \
         test test-unit test-smoke test-all test-install-signature \
@@ -165,7 +165,7 @@ install-signed: verify-developer-id build $(VERIFY_BIN)
 	 echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (Developer ID)"; \
 	 true
 	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
-	@echo "    it then persists across rebuilds and version bumps."
+	@echo "    it persists while the signing identity and designated requirement stay the same."
 	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
 
 # Is the installed binary's grant rebuild-proof? Reads only — no certificate,
@@ -188,6 +188,9 @@ test-install-signature: $(VERIFY_BIN)
 # Requires a local Developer ID; writes only test fixtures in temporary installs.
 test-install-atomic: $(VERIFY_BIN)
 	python3 Tests/install-atomic-test.py --guard $(VERIFY_BIN) --mutation-check
+
+test-signature-entrypoint:
+	python3 Tests/signature-entrypoint-test.py
 
 # ── CI-safe tiers (no live Safari required) ──────────────────────────
 test:
@@ -251,7 +254,7 @@ test-mutation-gate:
 # test-install-signature-strict` refuses to pass on a partial run — that is
 # the target to use on a machine that has both identities, and the one this
 # repo's own verification uses.
-test-all: test-unit test-smoke test-daemon-executor test-dialog-harness
+test-all: test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint
 	@ALLOW_INCOMPLETE=1 $(MAKE) --no-print-directory test-install-signature
 	@echo "✓ unit + smoke + install-signature green"
 

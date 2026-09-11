@@ -1,4 +1,7 @@
-#!/usr/bin/env swift
+#!/bin/sh
+//usr/bin/env true; guard_builder="$(dirname "$0")/build-signature-guard.py"; if [ ! -r "$guard_builder" ]; then printf '%s\n' 'Cannot build signature guard: helper unavailable' >&2; exit 70; fi; exec /usr/bin/env python3 "$guard_builder" --run -- "$@"
+// The line above is a Swift comment and a shell bootstrap: direct execution
+// uses the shared build helper, while emitted Swift source ignores it.
 // Will a Full Disk Access grant on this binary still apply later? (#119)
 //
 // TCC stores the binary's designated requirement (DR) and re-evaluates it, so
@@ -98,22 +101,11 @@ import Security
 // greps are gone FROM THIS FILE, and both answers here come from the
 // signature itself.
 //
-// That qualification is load-bearing, and round 7 is why. The sentence used to
-// end at "are gone", which is false about the product: CodeSigningState.parse
-// still classifies a signature with unanchored `contains()` over the stderr of
-// `codesign -dvv <path>` — the same stream codesign writes the path into. Put
-// an UNSIGNED file inside a directory named `Authority=Developer ID
-// Application` and the shipped classifier calls it .developerID, whose guidance
-// text does not mention that a rebuild invalidates the grant. That is round
-// five's "two byte-identical copies, opposite verdicts", still live in
-// Sources/, and it is tracked as #122.
-//
-// The deeper fault is not that bug. It is that this file became a second
-// source of truth for "is this signature durable" without the first one being
-// retired. Two answers to one question, one reading OSStatus and SecRequirement
-// objects and one reading English prose, is the defect — #122 is where they
-// get merged. Both callers now consume SignatureAssessment, which reads
-// Security framework objects rather than this diagnostic text.
+// Round 7 found a second classifier in CodeSigningState.parse: a directory
+// named Authority=Developer ID Application could make unsigned bytes look
+// durable. #122 removed that parser. Runtime and guard now both consume
+// SignatureAssessment's Security-framework verdict; this wrapper only renders
+// messages and maps them to the documented exit codes.
 var requiredShape: String?
 var requiredEntitlement: String?
 var positional: [String] = []
@@ -474,6 +466,6 @@ case .durable(let matchedShape, let drText):
     out("✓ durable: \(matchedShape) requirement, valid seal, and this binary satisfies it")
     out("  \(display(target))")
     out("  \(display(drText))")
-    out("  A Full Disk Access grant on this binary survives rebuilds.")
+    out("  A Full Disk Access grant survives rebuilds while the signing identity and designated requirement stay the same.")
 
 }
