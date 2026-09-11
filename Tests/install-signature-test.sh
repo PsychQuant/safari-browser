@@ -51,7 +51,7 @@ set -u
 GUARD_SRC="scripts/verify-install-signature.swift"
 VERIFIER="${VERIFY_INSTALL_SIGNATURE:-.build/verify-install-signature}"
 if [[ ! -x "$VERIFIER" ]]; then
-    swiftc -O -o "$VERIFIER" scripts/verify-install-signature.swift 2>/dev/null \
+    python3 scripts/build-signature-guard.py --output "$VERIFIER" 2>/dev/null \
       || { echo "✗ could not compile the guard — build failure, not a test result" >&2; exit 2; }
 fi
 

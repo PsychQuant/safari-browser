@@ -5,56 +5,46 @@ import XCTest
 /// #109: the FDA remediation text differs by signing state, and the two
 /// states need genuinely different advice — telling an ad-hoc user to add the
 /// binary sends them to a grant that stops working on the next rebuild.
-/// Parsing is tested against captured `codesign -dvv` output so the assertions
-/// do not depend on how *this* build happens to be signed.
+/// Classification is tested with actual signatures and misleading paths;
+/// codesign output is never a classifier input.
 final class CodeSigningStateTests: XCTestCase {
 
-    /// Real `codesign -dvv` output shape for an ad-hoc signed binary —
-    /// what `make install` currently produces.
-    private let adHocOutput = """
-        Executable=/Users/example/bin/safari-browser
-        Identifier=com.checheng.safari-browser
-        Format=Mach-O universal (x86_64 arm64)
-        CodeDirectory v=20400 size=9012 flags=0x2(adhoc) hashes=271+7 location=embedded
-        Signature=adhoc
-        Info.plist entries=4
-        TeamIdentifier=not set
-        """
-
-    /// Shape for a Developer ID signed, hardened-runtime binary.
-    private let developerIDOutput = """
-        Executable=/Users/example/bin/ExampleTool
-        Identifier=ExampleTool
-        Format=Mach-O universal (x86_64 arm64)
-        CodeDirectory v=20500 size=18875 flags=0x10000(runtime) hashes=579+7 location=embedded
-        Signature size=8968
-        Authority=Developer ID Application: EXAMPLE OWNER (ABCDE12345)
-        Authority=Developer ID Certification Authority
-        Authority=Apple Root CA
-        TeamIdentifier=ABCDE12345
-        """
-
-    // MARK: - Parsing
-
-    func testParsesAdHocSignature() {
-        XCTAssertEqual(CodeSigningState.parse(adHocOutput), .adHoc)
+    func testUnsignedPathCannotForgeSigningIdentity() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("signing-state-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let forgedDirectory = directory.appendingPathComponent("Authority=Developer ID Application", isDirectory: true)
+        try FileManager.default.createDirectory(at: forgedDirectory, withIntermediateDirectories: true)
+        let plain = directory.appendingPathComponent("unsigned")
+        let forged = forgedDirectory.appendingPathComponent("unsigned")
+        try Data("unsigned fixture".utf8).write(to: plain)
+        try FileManager.default.copyItem(at: plain, to: forged)
+        XCTAssertEqual(CodeSigningState.state(ofBinaryAt: plain), .unknown)
+        XCTAssertEqual(CodeSigningState.state(ofBinaryAt: forged), .unknown,
+                       "file names cannot establish a durable code signature")
     }
 
-    func testParsesDeveloperIDSignature() {
-        XCTAssertEqual(CodeSigningState.parse(developerIDOutput), .developerID)
+    func testAppleSystemSignatureIsDurable() {
+        XCTAssertEqual(CodeSigningState.state(ofBinaryAt: URL(fileURLWithPath: "/bin/ls")), .durable)
     }
 
-    func testUnrecognisedOutputIsUnknown() {
-        XCTAssertEqual(CodeSigningState.parse(""), .unknown)
-        XCTAssertEqual(CodeSigningState.parse("code object is not signed at all"), .unknown)
+    func testMissingBinaryHasUnknownState() {
+        XCTAssertEqual(CodeSigningState.state(ofBinaryAt: URL(fileURLWithPath: "/tmp/missing-signature-\(UUID().uuidString)")), .unknown)
     }
 
-    func testAdHocWinsOverAuthorityLine() {
-        // Defensive: if output ever carried both markers, ad-hoc is the
-        // conservative read — it produces the guidance with the caveat.
-        XCTAssertEqual(
-            CodeSigningState.parse(adHocOutput + "\nAuthority=Developer ID Application: X"),
-            .adHoc)
+    func testAdHocClassificationReadsSignatureFlags() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("adhoc-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/ls"), to: file)
+        let signer = Process()
+        signer.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        signer.arguments = ["--force", "--sign", "-", file.path]
+        signer.standardOutput = FileHandle.nullDevice
+        signer.standardError = FileHandle.nullDevice
+        try signer.run()
+        signer.waitUntilExit()
+        XCTAssertEqual(signer.terminationStatus, 0)
+        XCTAssertEqual(CodeSigningState.state(ofBinaryAt: file), .adHoc)
     }
 
     // MARK: - Guidance content
@@ -72,8 +62,10 @@ final class CodeSigningStateTests: XCTestCase {
             "must name the grant-the-terminal route")
     }
 
-    func testDeveloperIDGuidancePointsAtTheBinaryWithoutTheCaveat() {
-        let text = CodeSigningState.developerID.fullDiskAccessGuidance
+    func testDurableGuidanceExplainsIdentityAndRequirementContinuity() {
+        let text = CodeSigningState.durable.fullDiskAccessGuidance
+        XCTAssertTrue(text.contains("identity and designated requirement stay the same"))
+        XCTAssertTrue(text.contains("granting access again"))
         XCTAssertTrue(text.contains("Full Disk Access"))
         XCTAssertFalse(
             text.contains("rebuilding the binary can invalidate"),
@@ -86,7 +78,7 @@ final class CodeSigningStateTests: XCTestCase {
     func testGuidanceDiffersBetweenStates() {
         XCTAssertNotEqual(
             CodeSigningState.adHoc.fullDiskAccessGuidance,
-            CodeSigningState.developerID.fullDiskAccessGuidance)
+            CodeSigningState.durable.fullDiskAccessGuidance)
     }
 
     // MARK: - Error surface
@@ -95,7 +87,7 @@ final class CodeSigningStateTests: XCTestCase {
         let adHoc = SafariBrowserError.fullDiskAccessRequired(
             path: "/Users/example/Library/Safari/History.db", signing: .adHoc)
         let devID = SafariBrowserError.fullDiskAccessRequired(
-            path: "/Users/example/Library/Safari/History.db", signing: .developerID)
+            path: "/Users/example/Library/Safari/History.db", signing: .durable)
 
         XCTAssertTrue(adHoc.errorDescription?.contains("make install-signed") == true)
         XCTAssertTrue(devID.errorDescription?.contains("make install-signed") == false)

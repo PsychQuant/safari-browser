@@ -106,11 +106,13 @@ Permission denial SHALL terminate the command with a non-zero exit code. A missi
 
 When a command fails due to insufficient Full Disk Access, the system SHALL inspect the signing state of its own binary and emit guidance matching that state.
 
-For an ad-hoc signed binary, the guidance SHALL state that rebuilding the binary can invalidate an existing Full Disk Access grant, and SHALL name both the option of installing a Developer ID signed build and the option of granting Full Disk Access to the terminal application instead.
+For an ad-hoc signed binary, the guidance SHALL state that rebuilding the binary can invalidate an existing Full Disk Access grant, and SHALL name both `DEVELOPER_ID=<cert-sha1> make install-signed` for installing a Developer ID signed build and the option of granting Full Disk Access to the terminal application instead.
 
-For a Developer ID signed binary, the guidance SHALL direct the user to add the binary itself to Full Disk Access in System Settings.
+For a binary verified to have a valid signature and a satisfied, recognized identity-bound designated requirement, the guidance SHALL direct the user to add the binary itself to Full Disk Access in System Settings. It SHALL state that retaining the grant across rebuilds depends on keeping the same signing identity and designated requirement.
 
-Generic guidance that does not distinguish these cases is insufficient, because the two states require different user actions.
+When durability cannot be established, guidance SHALL acknowledge the unknown state and name `make verify-install-signature` and `DEVELOPER_ID=<cert-sha1> make install-signed`; it SHALL NOT promise grant persistence based on path text or a Developer ID label alone. The default `make install` SHALL remain ad-hoc and require no Developer ID certificate. This guidance was synchronized in #124 with the #119 installation path and #122 assessment contract; the original #109 default-install decision is retained.
+
+Generic guidance that does not distinguish these cases is insufficient, because these states require different user actions.
 
 #### Scenario: Ad-hoc build names the rebuild caveat
 
@@ -118,11 +120,17 @@ Generic guidance that does not distinguish these cases is insufficient, because 
 - **WHEN** a command fails due to insufficient Full Disk Access
 - **THEN** stderr states that rebuilding the binary can invalidate the grant, and names both remediation options
 
-#### Scenario: Developer ID build points at the binary
+#### Scenario: Verified durable build points at the binary
 
-- **GIVEN** the running binary carries a Developer ID signature
+- **GIVEN** the running binary has a verified durable signature
 - **WHEN** a command fails due to insufficient Full Disk Access
-- **THEN** stderr directs the user to add this binary to Full Disk Access in System Settings
+- **THEN** stderr directs the user to add this binary to Full Disk Access in System Settings, with the condition that the signing identity and designated requirement remain unchanged
+
+#### Scenario: Unknown signature does not promise grant persistence
+
+- **GIVEN** the running binary cannot be verified as durable
+- **WHEN** a command fails due to insufficient Full Disk Access
+- **THEN** stderr states that durability cannot be confirmed and provides the verification and signed-install commands
 
 ---
 

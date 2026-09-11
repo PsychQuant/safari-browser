@@ -3,7 +3,7 @@
 - [x] 1.1 撰寫 `SafariDataStoreTests` 中的 WAL sidecar 測試：建立含 `X.db`、`X.db-wal`、`X.db-shm` 的暫存 fixture，斷言 `withCopy` 交給 body 的目錄同時含有三者；再以只有主檔的 fixture 斷言不因缺 sidecar 而失敗。此測試在實作前必須失敗（滿足 `Safe copy of TCC-protected data files`）。驗證：`swift test --filter SafariDataStoreTests` 由紅轉綠。
 - [x] 1.2 實作 `SafariDataStore.withCopy(_:_:)`，使 `SafariDataFile` 的四個 case 都能被複製到獨立暫存目錄並以主檔 URL 呼叫 body，且 body 返回**或拋出**後該目錄皆不再存在（滿足 `Safe copy of TCC-protected data files`）。驗證：1.1 的測試全綠，且測試結束後 `/tmp` 無殘留 `safari-data-*` 目錄。
 - [x] 1.3 讓「權限不足」與「檔案不存在」成為兩個可分辨的結果：`Errors.swift` 新增 `fullDiskAccessRequired` 與 `safariDataFileNotFound`，前者以非 0 結束、後者以 0 結束且 stdout 無資料列（滿足 `Full Disk Access failure is distinguished from missing data files`）。**驗證（更正，#109 verify MEDIUM-11）：訊息通道的區分由 `CodeSigningStateTests.testMissingFileErrorIsDistinctFromPermissionError` 覆蓋。exit code 那一半當時沒有做——`ErrorsTests.swift` 在本 change 的任何 commit 中都未被觸及。** 原本此處寫的是「`ErrorsTests` 新增斷言涵蓋兩者的 exit code 與訊息通道」，那是一筆不實的完成紀錄。缺口本身追蹤於後續 issue。
-- [x] 1.4 使 FDA 權限錯誤的 stderr 內容隨 binary 自身簽章狀態分歧——adhoc build 須提及重編後授權可能失效並同時給出 `make sign-developer-id` 與「改授權終端機」兩條路；Developer ID build 須指示將 binary 加入系統設定（滿足 `Permission guidance is specific to the binary's signing state`）。驗證：對兩種簽章狀態各有一個單元測試斷言訊息含該狀態專屬的關鍵字。
+- [x] 1.4 使 FDA 權限錯誤的 stderr 內容隨 binary 自身簽章狀態分歧——ad-hoc build 須提及重編後授權可能失效並同時給出 `DEVELOPER_ID=<cert-sha1> make install-signed` 與「改授權終端機」兩條路；經驗證 durable 的 build 須指示將 binary 加入系統設定，且跨重編保留授權以同一簽署身分與 DR 為前提；無法確認時不得保證授權持續有效（滿足 `Permission guidance is specific to the binary's signing state`）。**紀錄界線（#124）**：保留 #109 原有完成勾選及當時「兩種簽章狀態各有一個單元測試」的紀錄；本次僅同步 #119 的安裝入口及 #122 的分類契約，新分類與指引的驗證由 `shared-install-signature-contract` task 1.1／2.2 追蹤，不以舊勾選宣稱新行為已驗證。
 
 ## 2. history 指令
 
