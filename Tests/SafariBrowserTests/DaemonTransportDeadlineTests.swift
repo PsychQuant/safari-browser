@@ -96,7 +96,7 @@ final class DaemonTransportDeadlineTests: XCTestCase {
             _ = try await peer.request(timeout: 0.2, params: Data(("{\"value\":\"" + String(repeating: "x", count: 2_000_000) + "\"}").utf8))
             XCTFail("write should reach deadline")
         } catch let error as DaemonClient.Error {
-            XCTAssertNotNil(error.fallbackReason, "no full newline-delimited request reached peer")
+            XCTAssertNil(error.fallbackReason, "a partial request can execute on a peer that accepts EOF as framing")
             XCTAssertTrue(error.description.contains("timeout"))
         }
         XCTAssertLessThan(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9, 0.32)
@@ -190,6 +190,39 @@ final class DaemonTransportDeadlineTests: XCTestCase {
             XCTFail("bridge must not extend caller's deadline")
         } catch DaemonClient.Error.requestOutcomeUnknown(let reason) {
             XCTAssertTrue(reason.contains("timeout"))
+        }
+    }
+
+    func testMalformedAppleScriptPayloadNeverReturnsSuccessOrReplays() async throws {
+        for payload in ["null", "{}", #"{"status":"other"}"#,
+                        #"{"status":"ok","output":7}"#, #"{"status":"error"}"#] {
+            let peer = try DeadlinePeer(directory: ProcessInfo.processInfo.environment["TMPDIR"] ?? "/tmp") { fd in
+                DeadlinePeer.handshake(fd)
+                let request = DeadlinePeer.readRequest(fd)
+                let object = (try? JSONSerialization.jsonObject(with: request)) as? [String: Any]
+                let result = try! JSONSerialization.jsonObject(with: Data(payload.utf8), options: [.fragmentsAllowed])
+                var response = try! JSONSerialization.data(withJSONObject: ["requestId": object?["requestId"] ?? 0, "result": result])
+                response.append(10)
+                _ = DeadlinePeer.write(fd, response)
+            }
+            defer { peer.stop() }
+            let oldName = ProcessInfo.processInfo.environment["SAFARI_BROWSER_NAME"]
+            setenv("SAFARI_BROWSER_NAME", peer.name, 1)
+            defer {
+                if let oldName { setenv("SAFARI_BROWSER_NAME", oldName, 1) }
+                else { unsetenv("SAFARI_BROWSER_NAME") }
+            }
+            var fallbackCalls = 0
+            do {
+                _ = try await SafariBridge.runViaRouter(source: "mutate", daemonOptIn: true,
+                    daemonFn: { _ in try await SafariBridge.executeAppleScriptViaDaemon(source: "return 42", timeout: 1) },
+                    statelessFn: { _ in fallbackCalls += 1; return "replayed" })
+                XCTFail("malformed payload accepted: \(payload)")
+            } catch let error as DaemonClient.Error {
+                XCTAssertNil(error.fallbackReason)
+                guard case .requestOutcomeUnknown = error else { return XCTFail("\(error)") }
+            }
+            XCTAssertEqual(fallbackCalls, 0)
         }
     }
 

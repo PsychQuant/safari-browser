@@ -14,7 +14,7 @@ Non-Goals：不自動關閉 dialog、不承諾取消 Safari 已收到的 AppleEv
 
 DaemonClient 將阻塞 I/O 移到獨立 DispatchQueue，socket 使用 O_NONBLOCK。以 DispatchTime uptime 形成同一 deadline，connect／poll／write／read 都消費同一剩餘時間；EINTR 重試不重設期限，EOF 沒有換行不接受為完整回覆。timeout 僅接受有限且 0.001～86400 秒的值。
 
-完整 newline-delimited request 送出後，逾時、斷線、無效 JSON、requestId 不符一律回報 requestOutcomeUnknown，fallbackReason 為 nil。收到 methodNotFound 可證明 handler 未執行，仍允許 fallback；handlerError 不能保證無副作用，直接回報。ExecCommand 對缺 results 的回覆同樣禁止重跑。一般 bridge 請求使用 min(呼叫端上限,15 秒)，exec 保留明確 60 秒。
+任何 request 位元組送出後，逾時、斷線、無效 JSON、requestId 不符一律回報 requestOutcomeUnknown，fallbackReason 為 nil。收到 methodNotFound 可證明 handler 未執行，仍允許 fallback；handlerError 不能保證無副作用，直接回報。ExecCommand 對缺 results 的回覆同樣禁止重跑。一般 bridge 請求使用 min(呼叫端上限,15 秒)，exec 保留明確 60 秒。
 
 ### 主執行緒編譯快取
 

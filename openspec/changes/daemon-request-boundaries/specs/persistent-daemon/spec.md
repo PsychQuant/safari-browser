@@ -2,7 +2,7 @@
 
 ### Requirement: Silent fallback to stateless path on daemon failure
 
-The client SHALL fall back to the stateless path with a single stderr warning prefixed `[daemon fallback: <reason>]` only when no complete request was transmitted, the handshake is incompatible, or the daemon rejects an unknown method before execution. Domain errors and handler errors SHALL propagate. After a complete request was transmitted, timeout, EOF, malformed response, or mismatched requestId SHALL report an unknown execution outcome and MUST NOT automatically retry.
+The client SHALL fall back to the stateless path with a single stderr warning prefixed `[daemon fallback: <reason>]` only when no request bytes were transmitted, the handshake is incompatible, or the daemon rejects an unknown method before execution. Domain errors and handler errors SHALL propagate. After any request bytes were transmitted, timeout, EOF, malformed response, or mismatched requestId SHALL report an unknown execution outcome and MUST NOT automatically retry.
 
 #### Scenario: Dead daemon does not break CLI
 - **WHEN** connection to a stale daemon socket is refused before request transmission

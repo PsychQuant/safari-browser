@@ -142,7 +142,7 @@ enum DaemonClient {
     static let defaultTimeoutSeconds: TimeInterval = 15.0
 
     /// The deadline covers connection, handshake, the request frame, and the
-    /// entire response. Once the complete frame is sent, unverified outcomes
+    /// entire response. Once any request bytes are sent, unverified outcomes
     /// must never authorize replay of a potentially mutating operation.
     static func sendRequest(
         name: String,
@@ -197,9 +197,8 @@ enum DaemonClient {
         payload.append(10)
         try writeFrame(fd: fd, payload: payload, deadline: deadline)
 
-        // A successful full-frame write is the boundary after which the peer
-        // could already have executed the operation. Do not map later transport
-        // or parsing failures back to the stateless fallback path.
+        // Partial-write failures are already classified by writeFrame. A lost
+        // or invalid response cannot authorize repeating the operation either.
         do {
             let response = try reader.readLine(fd: fd, deadline: deadline)
             guard let object = try JSONSerialization.jsonObject(with: response) as? [String: Any],
@@ -333,19 +332,26 @@ enum DaemonClient {
     }
 
     private static func writeFrame(fd: Int32, payload: Data, deadline: Deadline) throws {
-        try payload.withUnsafeBytes { bytes in
-            var written = 0
-            while written < bytes.count {
-                _ = try deadline.remainingMilliseconds()
-                let count = Darwin.write(fd, bytes.baseAddress!.advanced(by: written), bytes.count - written)
-                if count > 0 { written += count; continue }
-                if count < 0, errno == EINTR { continue }
-                if count < 0, errno == EAGAIN || errno == EWOULDBLOCK {
-                    try deadline.wait(fd: fd, events: Int16(POLLOUT))
-                    continue
+        var written = 0
+        do {
+            try payload.withUnsafeBytes { bytes in
+                while written < bytes.count {
+                    _ = try deadline.remainingMilliseconds()
+                    let count = Darwin.write(fd, bytes.baseAddress!.advanced(by: written), bytes.count - written)
+                    if count > 0 { written += count; continue }
+                    if count < 0, errno == EINTR { continue }
+                    if count < 0, errno == EAGAIN || errno == EWOULDBLOCK {
+                        try deadline.wait(fd: fd, events: Int16(POLLOUT))
+                        continue
+                    }
+                    throw Error.ioError("write failed: errno=\(errno)")
                 }
-                throw Error.ioError("write failed: errno=\(errno)")
             }
+        } catch {
+            // Older peers accept valid JSON at EOF without its final LF. Even
+            // a partial write therefore cannot prove that execution did not start.
+            if written > 0 { throw Error.requestOutcomeUnknown("request transmission interrupted: \(error)") }
+            throw error
         }
     }
 

@@ -848,7 +848,7 @@ Ordinary daemon requests share one 15-second deadline across connection, handsha
 transmission, and the complete response; `exec` has an explicit 60-second deadline.
 Partial bytes do not restart the clock. A connection failure, incompatible handshake,
 or unknown method before execution falls back with `[daemon fallback: <reason>]`.
-Once a complete request has been sent, a timeout, lost response, or invalid reply
+Once any request bytes have been sent, a timeout, lost response, or invalid reply
 reports an **unknown execution outcome** and does not rerun the operation. The original
 operation can still finish in Safari; inspect its result before retrying. Handler
 errors also propagate without replay. Idle >10 minutes → daemon auto-exits.
