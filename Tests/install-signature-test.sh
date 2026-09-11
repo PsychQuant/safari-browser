@@ -388,6 +388,27 @@ cp /bin/ls "$FIXTURES/tampered"
 break_seal "$FIXTURES/tampered" \
   || fixture_fail tampered "still passes codesign --verify — the flipped byte landed outside the sealed region"
 
+# #139: do not depend on /bin/ls being thin/universal, or on its midpoint
+# landing in the native slice. Build two known slices and damage each one
+# separately. Whatever architecture Security selects, one damaged copy has an
+# intact native slice; only an all-architectures check rejects BOTH copies.
+printf '%s\n' 'int main(void) { return 0; }' > "$FIXTURES/universal.c"
+if clang -arch arm64 -arch x86_64 -o "$FIXTURES/universal-pristine" "$FIXTURES/universal.c" >/dev/null 2>&1 \
+    && codesign --force --sign - "$FIXTURES/universal-pristine" >/dev/null 2>&1 \
+    && codesign --verify --all-architectures "$FIXTURES/universal-pristine" >/dev/null 2>&1; then
+    for arch in arm64 x86_64; do
+        cp "$FIXTURES/universal-pristine" "$FIXTURES/universal-broken-$arch"
+        if ! python3 "$(dirname "$0")/tamper-universal-text.py" "$FIXTURES/universal-broken-$arch" "$arch" \
+            || codesign --verify --all-architectures "$FIXTURES/universal-broken-$arch" >/dev/null 2>&1; then
+            fixture_fail "universal-broken-$arch" "chosen architecture did not acquire a broken seal"
+        fi
+    done
+else
+    fixture_fail universal-pristine "cannot construct signed arm64/x86_64 fixture"
+    fixture_fail universal-broken-arm64 "universal fixture unavailable"
+    fixture_fail universal-broken-x86_64 "universal fixture unavailable"
+fi
+
 # Signed with a real certificate that is NOT Developer ID, carrying a
 # preserved Developer ID requirement it can never satisfy. This is the state
 # round 2 constructed: valid seal, not ad-hoc, no cdhash — every negative
@@ -650,6 +671,9 @@ echo "── broken seal (#119 verify B1a) ──"
 # SIGKILLs the binary on launch. Reporting this as "grant survives rebuilds"
 # is a claim about a binary that cannot start.
 assert_fixture tampered assert_exit "tampered binary is rejected distinctly" 3 "$FIXTURES/tampered"
+assert_fixture universal-pristine assert_exit "intact universal ad-hoc binary retains its verdict" 1 "$FIXTURES/universal-pristine"
+assert_fixture universal-broken-arm64 assert_exit "a broken arm64 slice invalidates the whole binary" 3 "$FIXTURES/universal-broken-arm64"
+assert_fixture universal-broken-x86_64 assert_exit "a broken x86_64 slice invalidates the whole binary" 3 "$FIXTURES/universal-broken-x86_64"
 # "signature" alone would also match the SUCCESS line ("identity-bound
 # signature"), so this asserts on a word only the broken-seal branch prints.
 assert_fixture tampered assert_says "tampered rejection names the signature, not the requirement" "$FIXTURES/tampered" "code or signature have been modified"
