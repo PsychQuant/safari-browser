@@ -12,4 +12,4 @@
 ## 3. 驗證與交付
 
 - [x] 3.1 完整 swift test、make test-all 與 Safari dialog／exec fixture 驗證兩條路徑，保留跳過原因；更新 README／CHANGELOG 的新期限、結果未知與 diagnostics 契約，經 spectra analyze／validate 檢查。Refs #130, #136。
-- [ ] 3.2 凍結提交並完成獨立交叉驗證，逐 issue 同步 checklist／Current Status，建立承接 #126 的 PR；不 merge、不 close。Refs #130, #136。
+- [x] 3.2 凍結提交並完成獨立交叉驗證，逐 issue 同步 checklist／Current Status，建立承接 #126 的 PR；不 merge、不 close。Refs #130, #136。
