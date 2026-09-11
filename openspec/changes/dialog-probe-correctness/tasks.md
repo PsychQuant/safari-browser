@@ -14,5 +14,5 @@
 ## 3. 測試與交付
 
 - [x] 3.1 可驗證的 e2e：實作 Honest probe tests，計時依賴／非整數／mktemp 失敗不假通過，debug=1 量測每指令累計≤200 ms，cleanup 與 dismiss 同用 nonce 所有權、GUI 鎖定前置檢查；Unicode／全換行／URL target 補斷言。Refs #138, #135。
-- [ ] 3.2 【非 GUI 與先前四視窗 ID 對照已完成；目前 GUI 鎖定，等待最終 Safari 實測】跑完整單元測試、smoke、真實 Safari fixture 與多視窗 ID 對照，更新 README／CHANGELOG；以 spectra analyze／validate 確認契約一致。Refs #134, #137, #135, #138, #133。
-- [ ] 3.3 凍結提交、獨立交叉驗證、逐 issue 同步狀態與 checklist，建立承接 daemon 修正的 PR；不 merge、不 close。Refs #134, #137, #135, #138, #133。
+- [x] 3.2 跑完整單元測試、smoke、真實 Safari fixture 與多視窗 ID 對照，更新 README／CHANGELOG；以 spectra analyze／validate 確認契約一致。最終程式碼 4203f52：966 個單元測試、9 個 harness／ownership 檢查、25 個 Safari 實測均通過；實測無失敗或略過，清理程序 exit 0。Refs #134, #137, #135, #138, #133。
+- [x] 3.3 凍結提交、獨立交叉驗證、逐 issue 同步狀態與 checklist，建立承接 daemon 修正的 PR；不 merge、不 close。R2 六位獨立審查皆 CODE PASS，最終 GUI 已通過；PR #145 承接 #142。Refs #134, #137, #135, #138, #133。
