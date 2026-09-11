@@ -2,22 +2,20 @@ import Foundation
 
 /// #126: what the entry-point probe found for the window a command targets.
 ///
-/// `unprobed` is not `none`. It means nobody looked (probe disabled, target
-/// not yet resolved, window list unreadable, window not mappable) — #89's rule
-/// that the absence of a probe must not be reported as the absence of a dialog.
-/// One gap remains inside the target window: a subtree walk that stops short
-/// (read error, depth limit, children cap) still yields `none` — #135 / #138.
+/// `unprobed` is not `clear`: there is no complete observation (probe disabled,
+/// target unresolved, window unreadable, or traversal incomplete). Failed reads,
+/// time limits, and truncated branches never establish the absence of a dialog.
 enum BlockingDialogState: Sendable, Equatable {
     case unprobed
     case accessibilityDenied
-    case none
+    case clear
     case present(SafariBridge.BlockingDialog)
 }
 
 /// The line a command that resolves through the shared document resolver
 /// prints on stderr when a dialog is in the way — the first line it writes
 /// itself (a `--tab` notice or `--first-match` summary can precede it; the
-/// native-target commands are #133).
+/// native-target commands share the same gate).
 ///
 /// Shared with `dialog list` so the two never describe the same dialog in two
 /// vocabularies. One line by construction — line separators in the dialog's
@@ -35,9 +33,9 @@ enum BlockingDialogWarning {
             + " — buttons: \(buttonsText(dialog)). Run: safari-browser dialog list"
     }
 
-    /// The probe ran but found no AX window for the target — nobody looked.
+    /// The probe could not establish a complete answer for this target.
     static func unmappableLine(windowKey: BlockingDialogGate.WindowKey) -> String {
-        "⚠ dialog probe could not map \(windowKey.humanDescription) to an Accessibility window;"
+        "⚠ dialog probe could not inspect \(windowKey.humanDescription) completely;"
             + " a blocking dialog there would go unnoticed — run: safari-browser dialog list"
     }
 
@@ -77,7 +75,7 @@ enum BlockingDialogWarning {
     }
 }
 
-/// Process-wide memory of the entry-point probe (#126).
+/// Target-keyed memory of entry probes, scoped to the CLI or daemon request.
 ///
 /// The bridge asks it once per resolved window; JavaScript dispatch asks it
 /// whether to refuse. Everything that touches the outside world — the AX probe,
@@ -118,16 +116,22 @@ final class BlockingDialogGate: @unchecked Sendable {
     static let debugVariable = "SAFARI_BROWSER_DIALOG_PROBE_DEBUG"
 
     private let lock = NSLock()
-    private let probe: (WindowKey) -> BlockingDialogState
+    private let probe: (WindowKey, TimeInterval) -> BlockingDialogState
     private let stderr: (String) -> Void
     private let environment: [String: String]
-    private let now: () -> Date
+    private let now: () -> TimeInterval
     private let ttl: TimeInterval
 
-    private var cache: [WindowKey: (state: BlockingDialogState, at: Date)] = [:]
-    private var last: BlockingDialogState = .unprobed
+    private var cache: [WindowKey: (state: BlockingDialogState, at: TimeInterval)] = [:]
+    // A newer check or reset must invalidate work that was started earlier.
+    private var generation: UInt64 = 0
+    private var latestProbe: [WindowKey: UInt64] = [:]
     /// Two separate once-flags: a "could not probe" notice must never silence
     /// a later real dialog (verify round 2, I1).
+    private static let commandBudget: TimeInterval = 0.2
+    private static let singleProbeBudget: TimeInterval = 0.1
+    private var budgetCommitted: TimeInterval = 0
+    private var budgetEpoch: UInt64 = 0
     private var warnedPresent = false
     private var warnedUnavailable = false
 
@@ -135,83 +139,127 @@ final class BlockingDialogGate: @unchecked Sendable {
         probe: ((WindowKey) -> BlockingDialogState)? = nil,
         stderr: ((String) -> Void)? = nil,
         environment: [String: String]? = nil,
-        now: (() -> Date)? = nil,
+        now: (() -> TimeInterval)? = nil,
         ttl: TimeInterval = 2
     ) {
-        self.probe = probe ?? { SafariBridge.detectBlockingDialog(windowKey: $0) }
+        if let probe { self.probe = { key, _ in probe(key) } }
+        else { self.probe = { key, budget in SafariBridge.detectBlockingDialog(windowKey: key, budget: budget) } }
         self.stderr = stderr ?? { FileHandle.standardError.write(Data($0.utf8)) }
         self.environment = environment ?? ProcessInfo.processInfo.environment
-        self.now = now ?? Date.init
+        self.now = now ?? { ProcessInfo.processInfo.systemUptime }
         self.ttl = ttl
     }
 
-    /// The most recent verdict, for the JavaScript gate and the failure paths.
-    var current: BlockingDialogState {
-        lock.lock(); defer { lock.unlock() }
-        return last
+    /// A query never performs AX work and never borrows another window's answer.
+    func state(for key: WindowKey) -> BlockingDialogState {
+        let timestamp = now()
+        return lock.withLock {
+            guard environment[Self.optOutVariable] != "1", let cached = cache[key],
+                  timestamp >= cached.at, timestamp - cached.at < ttl else {
+                cache.removeValue(forKey: key)
+                return .unprobed
+            }
+            return cached.state
+        }
     }
 
-    /// Probe (or reuse a fresh answer for) the window behind `key`, remember
-    /// the verdict, and — the first time anything is in the way — say so on
-    /// stderr before any other output.
+    /// Keep the short state lock away from AX work: the bounded worker may be
+    /// waiting on an unresponsive application while other windows need a result.
     @discardableResult
-    func check(_ key: WindowKey) -> BlockingDialogState {
-        lock.lock(); defer { lock.unlock() }
-        if environment[Self.optOutVariable] == "1" {
-            last = .unprobed
-            return last
-        }
+    func check(_ key: WindowKey, forceRefresh: Bool = false) -> BlockingDialogState {
+        guard environment[Self.optOutVariable] != "1" else { return .unprobed }
         let started = now()
-        let state: BlockingDialogState
-        let reused: Bool
-        if let cached = cache[key], started.timeIntervalSince(cached.at) < ttl {
-            state = cached.state
-            reused = true
+        let lookup: (cached: BlockingDialogState?, token: UInt64, reserved: TimeInterval, epoch: UInt64) = lock.withLock {
+            if !forceRefresh, let cached = cache[key],
+               started >= cached.at, started - cached.at < ttl {
+                return (cached.state, 0, 0, budgetEpoch)
+            }
+            generation &+= 1
+            latestProbe[key] = generation
+            cache.removeValue(forKey: key)
+            let available = max(0, Self.commandBudget - budgetCommitted)
+            let reserved = available >= 0.001 ? min(Self.singleProbeBudget, available) : 0
+            budgetCommitted += reserved
+            return (nil, generation, reserved, budgetEpoch)
+        }
+        let result: BlockingDialogState
+        let reused = lookup.cached != nil
+        if let cached = lookup.cached {
+            result = cached
         } else {
-            state = probe(key)
-            cache[key] = (state, started)
-            reused = false
+            // Keep a small margin for returning and accounting; real AX work
+            // is bounded by the worker. A zero budget never calls the provider.
+            let observed = lookup.reserved > 0
+                ? probe(key, max(0, lookup.reserved - 0.001)) : .unprobed
+            let finished = now()
+            let accepted: BlockingDialogState? = lock.withLock {
+                if budgetEpoch == lookup.epoch {
+                    let elapsed = lookup.reserved > 0 ? max(0, finished - started) : 0
+                    budgetCommitted = max(0, budgetCommitted - lookup.reserved + elapsed)
+                }
+                guard latestProbe[key] == lookup.token else { return nil }
+                let fresh = finished >= started && finished - started < ttl
+                let state: BlockingDialogState = fresh ? observed : .unprobed
+                cache[key] = (state, started)
+                return state
+            }
+            guard let accepted else { return .unprobed }
+            result = accepted
         }
-        last = state
-        switch state {
-        case .present(let dialog) where !warnedPresent:
-            warnedPresent = true
-            stderr(BlockingDialogWarning.firstLine(windowKey: key, dialog: dialog) + "\n")
-        case .accessibilityDenied where !warnedUnavailable:
-            warnedUnavailable = true
-            stderr(BlockingDialogWarning.probeUnavailableLine() + "\n")
-        case .unprobed where !warnedUnavailable && !reused:
-            // A probe that actually ran and could not map the window. (A cache
-            // hit is not a second sighting; the opt-out path never gets here.)
-            warnedUnavailable = true
-            stderr(BlockingDialogWarning.unmappableLine(windowKey: key) + "\n")
-        case .present, .accessibilityDenied, .unprobed, .none:
-            break
+        let messages: [String] = lock.withLock {
+            var lines: [String] = []
+            switch result {
+            case .present(let dialog) where !warnedPresent:
+                warnedPresent = true
+                lines.append(BlockingDialogWarning.firstLine(windowKey: key, dialog: dialog) + "\n")
+            case .accessibilityDenied where !warnedUnavailable:
+                warnedUnavailable = true
+                lines.append(BlockingDialogWarning.probeUnavailableLine() + "\n")
+            case .unprobed where !warnedUnavailable && !reused:
+                warnedUnavailable = true
+                lines.append(BlockingDialogWarning.unmappableLine(windowKey: key) + "\n")
+            case .present, .accessibilityDenied, .unprobed, .clear:
+                break
+            }
+            return lines
         }
+        // Writers may inspect the gate; never invoke injected code under its lock.
+        for message in messages { stderr(message) }
         if environment[Self.debugVariable] == "1" {
-            let ms = Int((now().timeIntervalSince(started) * 1000).rounded())
-            stderr("dialog probe: \(key.humanDescription) \(reused ? "(cached)" : "\(ms) ms") → \(state.debugName)\n")
+            let ms = Int((max(0, now() - started) * 1000).rounded())
+            stderr("dialog probe: \(key.humanDescription) \(reused ? "(cached)" : "\(ms) ms") → \(result.debugName)\n")
         }
-        return state
+        return result
     }
 
-    /// JavaScript cannot run while a dialog holds the tab. Refuse now, with the
-    /// same error the failure paths already use, instead of letting osascript
-    /// discover it after its 30-second timeout.
-    func throwIfBlocked() throws {
-        if case .present(let dialog) = current {
+    /// Refuse JavaScript only on current evidence for this exact target.
+    func throwIfBlocked(_ key: WindowKey) throws {
+        if case .present(let dialog) = state(for: key) {
             throw SafariBrowserError.javaScriptDialogBlocking(message: dialog.message, buttons: dialog.buttons)
         }
     }
 
-    /// Forget everything — for tests and for long-lived processes that know
-    /// the world changed (a dialog was just dismissed).
+    /// Each daemon exec step is a logical command, just like its subprocess
+    /// counterpart. Refresh evidence and its budget, retaining request warnings.
+    func beginCommand() {
+        lock.withLock {
+            cache.removeAll()
+            latestProbe.removeAll()
+            budgetCommitted = 0
+            budgetEpoch &+= 1
+        }
+    }
+
+    /// A dialog dismissal invalidates cached and in-flight observations alike.
     func reset() {
-        lock.lock(); defer { lock.unlock() }
-        cache.removeAll()
-        last = .unprobed
-        warnedPresent = false
-        warnedUnavailable = false
+        lock.withLock {
+            cache.removeAll()
+            latestProbe.removeAll()
+            budgetCommitted = 0
+            budgetEpoch &+= 1
+            warnedPresent = false
+            warnedUnavailable = false
+        }
     }
 }
 
@@ -220,7 +268,7 @@ private extension BlockingDialogState {
         switch self {
         case .unprobed: return "unprobed"
         case .accessibilityDenied: return "accessibility denied"
-        case .none: return "none"
+        case .clear: return "clear"
         case .present: return "present"
         }
     }

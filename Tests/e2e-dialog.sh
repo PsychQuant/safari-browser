@@ -30,13 +30,26 @@
 set -u
 
 SB="${SAFARI_BROWSER_BIN:-$HOME/bin/safari-browser}"
+# Isolate stateless checks from a caller's existing daemon namespace.
+export SAFARI_BROWSER_NAME="fixture-no-daemon-$$"
+unset SAFARI_BROWSER_DAEMON
 FIXTURE="file://$(cd "$(dirname "$0")" && pwd)/Fixtures/dialog-test.html"
-MARK="dlg$$"
+MARK="dlg$(/usr/bin/uuidgen)" || exit 1
 URL="${FIXTURE}?${MARK}"
 LOCK=(--url "$MARK")
 NAME="dialog-$$"                 # daemon namespace for the parity step
 DIALOG_TEXT="e2e dialog ${MARK}"
-TMP=$(mktemp -d /tmp/sb-dialog.XXXXXX)
+# A broken clock must fail before any Safari interaction or arithmetic.
+command -v python3 >/dev/null 2>&1 || { echo "FAIL: python3 is required for timing" >&2; exit 1; }
+now_ms() {
+    local value
+    value=$(python3 -c 'import time; print(time.monotonic_ns() // 1000000)') || return 1
+    [[ "$value" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$value"
+}
+now_ms >/dev/null || { echo "FAIL: timing command did not return an integer" >&2; exit 1; }
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/sb-dialog.XXXXXX") || { echo "FAIL: could not create temporary directory" >&2; exit 1; }
+FIXTURE_OPENED=0
 PASS=0
 FAIL=0
 SKIP=0
@@ -46,20 +59,39 @@ fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      $
 skip() { SKIP=$((SKIP + 1)); echo "  ⊘ SKIP $1"; }
 
 # Whole seconds are too coarse for a "under 3 s" bound.
-now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+
 
 # First button title in a `dialog list` listing: the line `  buttons: "A", "B"`.
 dialog_button() { sed -nE 's/^ *buttons: "([^"]*)".*/\1/p' | head -1; }
 
+owns_fixture_dialog() {
+    [[ "$FIXTURE_OPENED" -eq 1 ]] || return 1
+    local warning attempt
+    # An AX timeout is deliberately unknown. Wait for positive ownership
+    # evidence before the destructive step; never treat unknown as permission.
+    for attempt in 1 2 3; do
+        warning=$("$SB" get title "${LOCK[@]}" 2>&1 >/dev/null) || return 1
+        if printf '%s' "$warning" | python3 "$(dirname "$0")/dialog_ownership.py" "$URL"; then
+            return 0
+        fi
+        sleep 0.2
+    done
+    return 1
+}
+
+dismiss_fixture_dialog() {
+    local button="$1"
+    [[ -n "$button" ]] && owns_fixture_dialog || return 1
+    "$SB" dialog dismiss --button "$button"
+}
+
 cleanup() {
+    [[ "$FIXTURE_OPENED" -eq 1 ]] || { rm -rf "$TMP"; return; }
     SAFARI_BROWSER_NAME="$NAME" "$SB" daemon stop >/dev/null 2>&1 || true
-    # If an assertion failed midway our alert may still be up. Dismiss it by
-    # name ONLY when the dialog on screen is ours (its text carries the nonce).
-    local probe btn n=0
-    probe=$("$SB" get title "${LOCK[@]}" 2>&1 >/dev/null | head -1)
-    if [[ "$probe" == *"BLOCKING DIALOG"* ]]; then
-        btn=$("$SB" dialog list 2>/dev/null | dialog_button)
-        [[ -n "$btn" ]] && "$SB" dialog dismiss --button "$btn" >/dev/null 2>&1
+    local button n=0
+    if owns_fixture_dialog; then
+        button=$("$SB" dialog list 2>/dev/null | dialog_button)
+        dismiss_fixture_dialog "$button" >/dev/null 2>&1 || true
     fi
     while "$SB" close "${LOCK[@]}" --first-match >/dev/null 2>&1; do
         n=$((n + 1)); [ "$n" -gt 5 ] && break
@@ -81,19 +113,42 @@ if [[ ! -x "$SB" ]]; then
     echo "  SKIP: $SB is not executable. Run 'make build-debug' or 'make install'."
     exit 77
 fi
+SESSION_CHECK="${DIALOG_TEST_SESSION_CHECK:-$TMP/session-check}"
+if [[ -z "${DIALOG_TEST_SESSION_CHECK:-}" ]]; then
+    clang "$(dirname "$0")/Fixtures/session-lock.c" -framework CoreGraphics -framework CoreFoundation -o "$SESSION_CHECK" || {
+        echo "FAIL: cannot build GUI-session preflight" >&2; exit 1;
+    }
+fi
+"$SESSION_CHECK"
+SESSION_STATUS=$?
+case "$SESSION_STATUS" in
+    0) ;;
+    77) echo "SKIP: GUI session is locked or unavailable; unlock before running Safari e2e."; exit 77 ;;
+    *) echo "FAIL: GUI-session preflight failed ($SESSION_STATUS)" >&2; exit 1 ;;
+esac
+
 PRE=$("$SB" dialog list 2>&1)
-if echo "$PRE" | grep -qi "accessibility"; then
-    echo "  SKIP: Accessibility is not granted to $SB — the probe is an AX read. Run: $SB setup"
+PRE_EXIT=$?
+if [[ "$PRE_EXIT" -ne 0 ]]; then
+    if [[ "$PRE" == *"Accessibility"* || "$PRE" == *"windows are showing a dialog"* ]]; then
+        echo "SKIP: dialog inspection unavailable or multiple dialogs present: $PRE"
+        exit 77
+    fi
+    echo "FAIL: dialog list exited $PRE_EXIT: $PRE" >&2
+    exit 1
+fi
+if [[ "$PRE" == "blocking dialog present"* ]]; then
+    echo "SKIP: a dialog already exists; this test only dismisses its own."
     exit 77
 fi
-if ! echo "$PRE" | grep -q "no blocking dialog"; then
-    echo "  SKIP: a dialog is already open somewhere in Safari; this test only ever dismisses its own."
-    echo "$PRE" | sed 's/^/    /'
-    exit 77
+if [[ "$PRE" != "no blocking dialog found" ]]; then
+    echo "FAIL: unexpected dialog list output: $PRE" >&2
+    exit 1
 fi
 
 # ── Setup ────────────────────────────────────────────────────────────────
-"$SB" open "$URL" >/dev/null 2>&1
+"$SB" open "$URL" >/dev/null 2>&1 || exit 1
+FIXTURE_OPENED=1
 sleep 2
 GOT=$("$SB" get url "${LOCK[@]}" 2>/dev/null)
 if echo "$GOT" | grep -q "$MARK"; then
@@ -132,10 +187,10 @@ sleep 7
 
 # ── 1. Read-only AppleScript command: succeeds, warns FIRST on stderr ────
 echo "## Read-only command with the dialog up"
-T0=$(now_ms)
+T0=$(now_ms) || { fail "timing failed"; exit 1; }
 "$SB" get title "${LOCK[@]}" >"$TMP/title.out" 2>"$TMP/title.err"
 TITLE_EXIT=$?
-T1=$(now_ms)
+T1=$(now_ms) || { fail "timing failed"; exit 1; }
 FIRST=$(head -1 "$TMP/title.err")
 if [[ "$TITLE_EXIT" -eq 0 ]] && grep -q "Dialog Test Page" "$TMP/title.out"; then
     pass "get title still succeeds: exit 0, title on stdout"
@@ -158,6 +213,39 @@ else
     fail "warning points at dialog list" "$FIRST"
 fi
 echo "      get title wall clock with the dialog up: $((T1 - T0)) ms"
+
+# #135: assert the AX probe cost, excluding target resolution and process startup.
+SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1 "$SB" get title "${LOCK[@]}" >"$TMP/debug.out" 2>"$TMP/debug.err"
+if python3 - "$TMP/debug.err" <<'BUDGET_PY'
+import re, sys
+values = [int(v) for v in re.findall(r'dialog probe: .*? (\d+) ms\b', open(sys.argv[1]).read())]
+assert values, "debug did not report a timed probe"
+assert sum(values) <= 200, f"command probe budget exceeded: {values}"
+print(f"      AX probe measurements: {values} ms")
+BUDGET_PY
+then pass "command probes stay within 200 ms"
+else fail "AX probe timing/budget"
+fi
+"$SB" tab focus "${LOCK[@]}" >"$TMP/focus.out" 2>"$TMP/focus.err"
+if grep -q "BLOCKING DIALOG" "$TMP/focus.err"; then pass "native tab focus emits dialog warning"
+else fail "native tab focus emits dialog warning"; fi
+
+WINDOW=$("$SB" documents --json 2>/dev/null | python3 -c 'import json,sys; rows=[r for r in json.load(sys.stdin) if sys.argv[1] in r["url"]]; assert len(rows)==1; print(rows[0]["window"])' "$MARK")
+if [[ "$WINDOW" =~ ^[1-9][0-9]*$ ]] && "$SB" tabs --window "$WINDOW" --json >"$TMP/tabs.json" 2>"$TMP/tabs.err" && grep -q "BLOCKING DIALOG" "$TMP/tabs.err" && python3 -c 'import json,sys; rows=json.load(open(sys.argv[1])); assert any(sys.argv[2] in r["url"] for r in rows)' "$TMP/tabs.json" "$MARK"; then
+    pass "tabs --window warns and retains JSON output"
+else fail "tabs --window warning and JSON output"; fi
+
+# Default screenshot takes the capture resolver rather than the document path.
+CURRENT_URL=$("$SB" get url 2>/dev/null)
+if [[ "$CURRENT_URL" == *"$MARK"* ]]; then
+    if "$SB" screenshot "$TMP/default-capture.png" >"$TMP/capture.out" 2>"$TMP/capture.err"; then
+        if grep -q "BLOCKING DIALOG" "$TMP/capture.err" && [[ -s "$TMP/default-capture.png" ]]; then
+            pass "default screenshot warns for its capture window"
+        else fail "default screenshot warning"; fi
+    elif grep -q "Screen Recording" "$TMP/capture.err"; then
+        skip "default screenshot (Screen Recording not granted)"
+    else fail "default screenshot capture" "$(cat "$TMP/capture.err")"; fi
+else skip "default screenshot (fixture is not the front Safari tab)"; fi
 
 # ── 2. Opt-out ───────────────────────────────────────────────────────────
 ERR=$(SAFARI_BROWSER_NO_DIALOG_PROBE=1 "$SB" get title "${LOCK[@]}" 2>&1 >/dev/null)
@@ -239,10 +327,10 @@ fi
 
 # ── 4. JavaScript refuses fast ───────────────────────────────────────────
 echo "## JavaScript with the dialog up"
-T0=$(now_ms)
+T0=$(now_ms) || { fail "timing failed"; exit 1; }
 JS_OUT=$("$SB" js "${LOCK[@]}" "1+1" 2>"$TMP/js.err")
 JS_EXIT=$?
-T1=$(now_ms)
+T1=$(now_ms) || { fail "timing failed"; exit 1; }
 JS_MS=$((T1 - T0))
 if [[ "$JS_EXIT" -ne 0 ]]; then
     pass "js exits non-zero"
@@ -270,19 +358,27 @@ if [[ -n "$BTN" ]]; then
 else
     fail "dialog list shows the dialog" "$LISTING"
 fi
-if [[ -n "$BTN" ]] && "$SB" dialog dismiss --button "$BTN" >"$TMP/dismiss.out" 2>&1; then
+if [[ -n "$BTN" ]] && dismiss_fixture_dialog "$BTN" >"$TMP/dismiss.out" 2>&1; then
     pass "dialog dismiss --button \"$BTN\""
 else
     fail "dialog dismiss" "$(cat "$TMP/dismiss.out" 2>/dev/null)"
 fi
 sleep 0.5
-AFTER=$("$SB" js "${LOCK[@]}" "1+1" 2>"$TMP/after.err")
+AFTER=$(SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1 "$SB" js "${LOCK[@]}" "1+1" 2>"$TMP/after.err")
 AFTER_EXIT=$?
 if [[ "$AFTER_EXIT" -eq 0 && "$AFTER" == *2* ]]; then
     pass "js works again after dismissal"
 else
     fail "js works again after dismissal" "exit=$AFTER_EXIT stdout=$AFTER stderr=$(cat "$TMP/after.err")"
 fi
+if python3 - "$TMP/after.err" <<'JS_BUDGET_PY'
+import re,sys
+values=[int(v) for v in re.findall(r'dialog probe: .*? (\d+) ms\b',open(sys.argv[1]).read())]
+assert values and sum(values)<=200, f"JS command probe budget: {values}"
+print(f"      JS command total probe cost: {sum(values)} ms ({values})")
+JS_BUDGET_PY
+then pass "JS command cumulative probe cost stays within 200 ms"
+else fail "JS command cumulative probe budget"; fi
 ERR=$("$SB" get title "${LOCK[@]}" 2>&1 >/dev/null)
 if echo "$ERR" | grep -q "BLOCKING DIALOG"; then
     fail "no warning after dismissal" "$ERR"

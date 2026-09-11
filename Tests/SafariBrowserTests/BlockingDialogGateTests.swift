@@ -18,7 +18,7 @@ final class BlockingDialogGateTests: XCTestCase {
     private func makeGate(
         probe: @escaping (BlockingDialogGate.WindowKey) -> BlockingDialogState,
         environment: [String: String] = [:],
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) -> (gate: BlockingDialogGate, stderr: StderrCapture) {
         let capture = StderrCapture()
         let gate = BlockingDialogGate(
@@ -59,7 +59,7 @@ final class BlockingDialogGateTests: XCTestCase {
     func testThrowIfBlockedThrowsTheDialogErrorWhenPresent() {
         let (gate, _) = makeGate(probe: { _ in .present(self.sample) })
         _ = gate.check(.id(2838))
-        XCTAssertThrowsError(try gate.throwIfBlocked()) { error in
+        XCTAssertThrowsError(try gate.throwIfBlocked(.id(2838))) { error in
             guard case .javaScriptDialogBlocking(let message, let buttons) = error as? SafariBrowserError else {
                 return XCTFail("expected javaScriptDialogBlocking, got \(error)")
             }
@@ -69,16 +69,16 @@ final class BlockingDialogGateTests: XCTestCase {
     }
 
     func testThrowIfBlockedIsSilentWhenNoDialog() {
-        let (gate, _) = makeGate(probe: { _ in .none })
+        let (gate, _) = makeGate(probe: { _ in .clear })
         _ = gate.check(.front)
-        XCTAssertNoThrow(try gate.throwIfBlocked())
+        XCTAssertNoThrow(try gate.throwIfBlocked(.front))
     }
 
     func testThrowIfBlockedIsSilentBeforeAnyProbe() {
         let (gate, _) = makeGate(probe: { _ in .present(self.sample) })
         // Nothing resolved a target yet — the gate must not invent a dialog.
-        XCTAssertNoThrow(try gate.throwIfBlocked())
-        XCTAssertEqual(gate.current, .unprobed)
+        XCTAssertNoThrow(try gate.throwIfBlocked(.id(2838)))
+        XCTAssertEqual(gate.state(for: .id(2838)), .unprobed)
     }
 
     // MARK: stderr contract
@@ -93,7 +93,7 @@ final class BlockingDialogGateTests: XCTestCase {
     }
 
     func testNoWarningWhenNoDialog() {
-        let (gate, stderr) = makeGate(probe: { _ in .none })
+        let (gate, stderr) = makeGate(probe: { _ in .clear })
         _ = gate.check(.front)
         XCTAssertTrue(stderr.lines.isEmpty, "\(stderr.lines)")
     }
@@ -103,7 +103,7 @@ final class BlockingDialogGateTests: XCTestCase {
         XCTAssertEqual(gate.check(.front), .accessibilityDenied)
         XCTAssertEqual(stderr.lines.count, 1)
         XCTAssertTrue(stderr.lines[0].contains("Accessibility"), stderr.lines[0])
-        XCTAssertNoThrow(try gate.throwIfBlocked(), "unknown is not 'blocked' — read-only work must proceed")
+        XCTAssertNoThrow(try gate.throwIfBlocked(.front), "unknown is not 'blocked' — read-only work must proceed")
     }
 
     func testUnmappableWindowIsReportedNotSilent() {
@@ -114,7 +114,7 @@ final class BlockingDialogGateTests: XCTestCase {
         XCTAssertEqual(stderr.lines.count, 1, "\(stderr.lines)")
         XCTAssertTrue(stderr.lines[0].contains("999"), "must name the window it could not map: \(stderr.lines)")
         XCTAssertTrue(stderr.lines[0].contains("dialog list"), stderr.lines[0])
-        XCTAssertNoThrow(try gate.throwIfBlocked(), "unknown is not 'blocked'")
+        XCTAssertNoThrow(try gate.throwIfBlocked(.id(999)), "unknown is not 'blocked'")
     }
 
     // MARK: round-2 verify findings (#126 PR #132)
@@ -158,16 +158,6 @@ final class BlockingDialogGateTests: XCTestCase {
 
     // MARK: round-3 — the window-list read must keep "could not read" apart from "empty"
 
-    func testWindowListReadFailureIsUnprobedNotNone() {
-        // A failed kAXWindows read (timeout, apiDisabled, bad type) is "nobody looked",
-        // never "no dialog"; only a SUCCESSFUL empty read means nothing can block.
-        XCTAssertEqual(SafariBridge.probeVerdict(afterWindowListRead: .failed), .unprobed)
-        XCTAssertEqual(SafariBridge.probeVerdict(afterWindowListRead: .empty), BlockingDialogState.none)
-        XCTAssertNil(SafariBridge.probeVerdict(afterWindowListRead: .windows(count: 3)),
-                     "with windows present the probe must go on and look at the target")
-    }
-
-    // MARK: opt-out and caching
 
     func testEnvironmentVariableDisablesTheProbe() {
         let calls = Counter()
@@ -177,29 +167,137 @@ final class BlockingDialogGateTests: XCTestCase {
         XCTAssertEqual(gate.check(.front), .unprobed)
         XCTAssertEqual(calls.value, 0, "opt-out must not pay the AX round-trip")
         XCTAssertTrue(stderr.lines.isEmpty)
-        XCTAssertNoThrow(try gate.throwIfBlocked())
+        XCTAssertNoThrow(try gate.throwIfBlocked(.id(2838)))
     }
 
     func testProbeResultIsReusedWithinTwoSeconds() {
         let calls = Counter()
-        var clock = Date(timeIntervalSince1970: 1_000)
+        var clock = TimeInterval(1_000)
         let (gate, _) = makeGate(
-            probe: { _ in calls.increment(); return .none },
+            probe: { _ in calls.increment(); return .clear },
             now: { clock })
         _ = gate.check(.id(7))
         _ = gate.check(.id(7))
         XCTAssertEqual(calls.value, 1, "a daemon / exec script must not re-probe on every step")
-        clock = clock.addingTimeInterval(2.5)
+        clock += 2.5
         _ = gate.check(.id(7))
         XCTAssertEqual(calls.value, 2, "but a long-lived process must not trust a stale answer")
     }
 
     func testDifferentWindowsAreProbedSeparately() {
         let calls = Counter()
-        let (gate, _) = makeGate(probe: { _ in calls.increment(); return .none })
+        let (gate, _) = makeGate(probe: { _ in calls.increment(); return .clear })
         _ = gate.check(.id(7))
         _ = gate.check(.id(8))
         XCTAssertEqual(calls.value, 2)
+    }
+
+    func testExpiredPresentVerdictCannotKeepBlocking() {
+        var clock = TimeInterval(1000)
+        let (gate, _) = makeGate(probe: { _ in .present(self.sample) }, now: { clock })
+        gate.check(.id(7))
+        clock += 2
+        XCTAssertNoThrow(try gate.throwIfBlocked(.id(7)), "an expired answer is not evidence of a current dialog")
+    }
+
+    func testSlowProbeDoesNotSerializeOtherWindowsBehindStateLock() async {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let firstFinished = expectation(description: "first probe finishes")
+        let secondFinished = expectation(description: "second window can finish independently")
+        let (gate, _) = makeGate(probe: { key in
+            if key == .id(1) {
+                entered.signal()
+                _ = release.wait(timeout: .now() + 2)
+            }
+            return .clear
+        })
+        DispatchQueue.global().async { gate.check(.id(1)); firstFinished.fulfill() }
+        XCTAssertEqual(entered.wait(timeout: .now() + 1), .success)
+        DispatchQueue.global().async { gate.check(.id(2)); secondFinished.fulfill() }
+        await fulfillment(of: [secondFinished], timeout: 0.2)
+        release.signal()
+        await fulfillment(of: [firstFinished], timeout: 1)
+    }
+
+    func testVerdictsAreQueriedOnlyForTheRequestedWindow() {
+        let (gate, _) = makeGate(probe: { key in key == .id(1) ? .present(self.sample) : .clear })
+        gate.check(.id(1))
+        XCTAssertEqual(gate.state(for: .id(2)), .unprobed)
+        XCTAssertNoThrow(try gate.throwIfBlocked(.id(2)))
+        gate.check(.id(2))
+        XCTAssertEqual(gate.state(for: .id(1)), .present(sample))
+        XCTAssertEqual(gate.state(for: .id(2)), .clear)
+        XCTAssertThrowsError(try gate.throwIfBlocked(.id(1)))
+        XCTAssertNoThrow(try gate.throwIfBlocked(.id(2)))
+    }
+
+    func testStateQueryExpiresAtTTLWithoutReprobing() {
+        let calls = Counter()
+        var clock: TimeInterval = 10
+        let (gate, _) = makeGate(probe: { _ in calls.increment(); return .present(self.sample) }, now: { clock })
+        gate.check(.id(1))
+        clock = 11.999
+        XCTAssertEqual(gate.state(for: .id(1)), .present(sample))
+        clock = 12
+        XCTAssertEqual(gate.state(for: .id(1)), .unprobed)
+        XCTAssertNoThrow(try gate.throwIfBlocked(.id(1)))
+        XCTAssertEqual(calls.value, 1, "state queries must not perform hidden AX work")
+        gate.check(.id(1))
+        XCTAssertEqual(calls.value, 2)
+    }
+
+    func testForcedRefreshReplacesFreshVerdict() {
+        var blocked = true
+        let (gate, _) = makeGate(probe: { _ in blocked ? .present(self.sample) : .clear })
+        gate.check(.id(1))
+        blocked = false
+        XCTAssertEqual(gate.check(.id(1)), .present(sample))
+        XCTAssertEqual(gate.check(.id(1), forceRefresh: true), .clear)
+        XCTAssertNoThrow(try gate.throwIfBlocked(.id(1)))
+    }
+
+    func testLateOlderProbeDoesNotOverwriteNewerVerdict() async {
+        let firstEntered = DispatchSemaphore(value: 0)
+        let releaseFirst = DispatchSemaphore(value: 0)
+        let firstDone = expectation(description: "older probe returns")
+        let calls = Counter()
+        let sample = self.sample
+        let (gate, _) = makeGate(probe: { _ in
+            calls.increment()
+            if calls.value == 1 {
+                firstEntered.signal()
+                _ = releaseFirst.wait(timeout: .now() + 2)
+                return .present(sample)
+            }
+            return .clear
+        })
+        DispatchQueue.global().async { gate.check(.id(1)); firstDone.fulfill() }
+        XCTAssertEqual(firstEntered.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(gate.check(.id(1), forceRefresh: true), .clear)
+        releaseFirst.signal()
+        await fulfillment(of: [firstDone], timeout: 1)
+        XCTAssertEqual(gate.state(for: .id(1)), .clear)
+        XCTAssertNoThrow(try gate.throwIfBlocked(.id(1)))
+    }
+
+    func testResetDiscardsAnInflightProbeResult() async {
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let finished = expectation(description: "probe finishes after reset")
+        let sample = self.sample
+        let (gate, capture) = makeGate(probe: { _ in
+            entered.signal()
+            _ = release.wait(timeout: .now() + 2)
+            return .present(sample)
+        })
+        DispatchQueue.global().async { gate.check(.id(1)); finished.fulfill() }
+        XCTAssertEqual(entered.wait(timeout: .now() + 1), .success)
+        gate.reset()
+        release.signal()
+        await fulfillment(of: [finished], timeout: 1)
+        XCTAssertEqual(gate.state(for: .id(1)), .unprobed)
+        XCTAssertTrue(capture.lines.isEmpty)
     }
 
     // MARK: target → window key
@@ -217,7 +315,55 @@ final class BlockingDialogGateTests: XCTestCase {
         // A `.urlMatch` has not been resolved to a window yet; probing it would
         // mean guessing. The resolver supplies the key after enumeration.
         XCTAssertNil(SafariBridge.windowKey(for: .documentIndex(4)))
+        XCTAssertNil(SafariBridge.windowKey(for: .urlMatch(.contains("fixture"))))
     }
+    func testCommandStopsProbingAfterItsTotalBudgetIsSpent() {
+        var clock: TimeInterval = 100
+        var calls = 0
+        let (gate, _) = makeGate(probe: { _ in
+            calls += 1
+            clock += 0.1
+            return .clear
+        }, now: { clock })
+        XCTAssertEqual(gate.check(.id(1)), .clear)
+        XCTAssertEqual(gate.check(.id(2)), .clear)
+        XCTAssertEqual(gate.check(.id(3)), .unprobed)
+        XCTAssertEqual(calls, 2)
+    }
+
+    func testNextLogicalCommandRefreshesBudgetWithoutRepeatingRequestWarning() {
+        var clock: TimeInterval = 100
+        var calls = 0
+        let (gate, stderr) = makeGate(probe: { _ in
+            calls += 1
+            clock += 0.1
+            return .present(self.sample)
+        }, now: { clock })
+        gate.check(.id(1))
+        gate.check(.id(2))
+        XCTAssertEqual(gate.check(.id(3)), .unprobed)
+        gate.beginCommand()
+        guard case .present = gate.check(.id(3)) else { return XCTFail("new command needs a fresh probe") }
+        XCTAssertEqual(calls, 3)
+        XCTAssertEqual(stderr.lines.filter { $0.contains("BLOCKING DIALOG") }.count, 1)
+    }
+
+    func testEveryUnicodeLineSeparatorAndAllNewlineMessage() {
+        for separator in ["\n", "\r", "\u{000B}", "\u{000C}", "\u{0085}", "\u{2028}", "\u{2029}"] {
+            XCTAssertEqual(BlockingDialogWarning.oneLine("a" + separator + "b"), "a b")
+            XCTAssertEqual(BlockingDialogWarning.messageText(Dialog(message: separator, buttons: [])), "(no readable message)")
+        }
+    }
+
+    func testDebugRequiresExactlyOne() {
+        for value in ["0", "", "true", "1"] {
+            let (gate, stderr) = makeGate(probe: { _ in .clear },
+                environment: [BlockingDialogGate.debugVariable: value])
+            gate.check(.id(42))
+            XCTAssertEqual(stderr.lines.contains(where: { $0.hasPrefix("dialog probe:") }), value == "1")
+        }
+    }
+
 }
 
 // MARK: - test doubles
