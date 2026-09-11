@@ -218,6 +218,35 @@ final class DaemonLifecycleCancellationTests: XCTestCase {
         XCTAssertTrue(cancelled, "slow request must surface cancelled (or EOF) on shutdown")
     }
 
+    /// Regression #141: the production five-second watchdog must not kill
+    /// an embedding XCTest process. The suite runner also requires a final
+    /// completion summary, so a premature _exit(0) is a failing run.
+    func testEmbeddedShutdownSurvivesProductionDeadline() async throws {
+        let socketPath = "/tmp/embed-\(UUID().uuidString.prefix(8)).sock"
+        let server = DaemonServer.Instance()
+        try await server.start(socketPath: socketPath)
+        _ = try await Self.sendOneRequest(
+            path: socketPath,
+            body: #"{"method":"daemon.shutdown","params":{},"requestId":141}"#
+        )
+        try await Task.sleep(for: .milliseconds(5300))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))
+        await server.stop()
+    }
+
+    func testExplicitWatchdogIsInvokedOnShutdown() async throws {
+        let socketPath = "/tmp/watch-\(UUID().uuidString.prefix(8)).sock"
+        let called = expectation(description: "process owner watchdog")
+        let server = DaemonServer.Instance(shutdownWatchdog: { called.fulfill() })
+        try await server.start(socketPath: socketPath)
+        _ = try await Self.sendOneRequest(
+            path: socketPath,
+            body: #"{"method":"daemon.shutdown","params":{},"requestId":142}"#
+        )
+        await fulfillment(of: [called], timeout: 1)
+        await server.stop()
+    }
+
     // MARK: - Helpers
 
     /// Simple raw POSIX-socket request: connect, write one line, read

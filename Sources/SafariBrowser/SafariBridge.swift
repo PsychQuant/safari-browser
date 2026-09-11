@@ -2697,7 +2697,13 @@ enum SafariBridge {
     /// capturing AX's different CG ID). The axWindow is nil only when
     /// the legacy front-window fallback path is taken (no Accessibility
     /// + no explicit `--window`).
-    static func resolveWindowForCapture(window: Int? = nil) async throws -> (cgID: String, axWindow: AXUIElement?) {
+    static func resolveWindowForCapture(
+        window: Int? = nil,
+        session: GUISession = .live,
+        resolve: ((Int?) async throws -> (cgID: String, axWindow: AXUIElement?))? = nil
+    ) async throws -> (cgID: String, axWindow: AXUIElement?) {
+        try session.requireAvailable()
+        if let resolve { return try await resolve(window) }
         if let window {
             return try await getWindowIDViaAX(windowIndex: window)
         }
@@ -3146,12 +3152,16 @@ enum SafariBridge {
         /// Messages of every window carrying a dialog, for a fail-closed error.
         case many(messages: [String])
         case accessibilityDenied
+        case sessionLocked
+        case sessionUnavailable
     }
 
     enum DialogPressOutcome: Sendable, Equatable {
         case pressed
         case noDialogFound
         case accessibilityDenied
+        case sessionLocked
+        case sessionUnavailable
         case ambiguous(messages: [String])
         /// The decision function declined once it saw the dialog as it now
         /// reads — carried back so the caller can say *why* rather than only
@@ -3205,7 +3215,16 @@ enum SafariBridge {
 
     /// Strict scan for the `dialog` command: refuses to collapse several
     /// dialogs into one, and reports missing permission as missing permission.
-    static func scanBlockingDialogs() -> DialogScan {
+    static func scanBlockingDialogs(
+        session: GUISession = .live,
+        inspect: (() -> DialogScan)? = nil
+    ) -> DialogScan {
+        switch session.state {
+        case .locked: return .sessionLocked
+        case .unavailable: return .sessionUnavailable
+        case .available: break
+        }
+        if let inspect { return inspect() }
         guard let found = collectDialogs() else { return .accessibilityDenied }
         switch found.count {
         case 0: return .none
@@ -3230,8 +3249,16 @@ enum SafariBridge {
     /// it currently reads and returns an index only if it still matches what the
     /// caller saw; every other answer presses nothing.
     static func pressDialogButton(
+        session: GUISession = .live,
+        press: (((BlockingDialog) -> Int?) -> DialogPressOutcome)? = nil,
         deciding decide: (BlockingDialog) -> Int?
     ) -> DialogPressOutcome {
+        switch session.state {
+        case .locked: return .sessionLocked
+        case .unavailable: return .sessionUnavailable
+        case .available: break
+        }
+        if let press { return press(decide) }
         guard let found = collectDialogs() else { return .accessibilityDenied }
         guard !found.isEmpty else { return .noDialogFound }
         guard found.count == 1 else {
@@ -3250,6 +3277,11 @@ enum SafariBridge {
             return .indexOutOfRange(buttonCount: buttons.count)
         }
 
+        switch session.state {
+        case .locked: return .sessionLocked
+        case .unavailable: return .sessionUnavailable
+        case .available: break
+        }
         let err = AXUIElementPerformAction(buttons[index].element, kAXPressAction as CFString)
         if err == .success { return .pressed }
         // Only these two prove the action did not happen. `cannotComplete`

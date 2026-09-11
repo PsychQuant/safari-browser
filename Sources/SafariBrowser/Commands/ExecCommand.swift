@@ -77,13 +77,7 @@ struct ExecCommand: AsyncParsableCommand {
         // Section 7 of tab-ownership-marker v2: forward the resolved
         // markTab mode so the daemon wraps the entire execution in one
         // marker (saves 2 round-trips for wrap+unwrap vs per-step).
-        let stepsJSON = steps.map { step in step.toDictionary() }
-        let envelope: [String: Any] = [
-            "steps": stepsJSON,
-            "targetArgs": ScriptInterpreter.encodeTargetArgs(target),
-            "maxSteps": maxSteps,
-            "markTab": target.markTabResolved().rawValue,
-        ]
+        let envelope = daemonEnvelope(steps: steps)
         let envelopeData: Data
         do {
             envelopeData = try JSONSerialization.data(withJSONObject: envelope, options: [])
@@ -110,6 +104,21 @@ struct ExecCommand: AsyncParsableCommand {
             FileHandle.standardError.write(Data("[daemon fallback: \(err.fallbackReason ?? "")]\n".utf8))
             return nil
         }
+    }
+
+    /// Serialize only the two supported probe flags, including explicit false
+    /// values so a long-lived daemon cannot override this client's settings.
+    func daemonEnvelope(
+        steps: [ScriptStep],
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: Any] {
+        [
+            "steps": steps.map { $0.toDictionary() },
+            "targetArgs": ScriptInterpreter.encodeTargetArgs(target),
+            "maxSteps": maxSteps,
+            "markTab": target.markTabResolved().rawValue,
+            "dialogProbe": DialogProbeOptions(environment: environment).dictionary,
+        ]
     }
 
     static func daemonResults(from data: Data) throws -> String {

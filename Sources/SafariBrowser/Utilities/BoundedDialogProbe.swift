@@ -195,13 +195,11 @@ final class BoundedDialogProbe: @unchecked Sendable {
 
 /// Real AX elements are born on and stay on the worker. Every attribute read
 /// and window-ID SPI call first applies that operation's remaining budget.
-private struct AXDialogProbeProvider: DialogProbeProvider {
+struct AXDialogProbeProvider: DialogProbeProvider {
+    var session: GUISession = .live
     func windows(timeout: Float) throws -> [AXUIElement] {
+        guard session.state == .available else { throw DialogProbeReadError.unavailable }
         guard AXIsProcessTrusted() else { throw DialogProbeReadError.accessibilityDenied }
-        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any],
-              session["CGSSessionScreenIsLocked"] as? Bool != true else {
-            throw DialogProbeReadError.unavailable
-        }
         guard let safari = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first
         else { return [] }
         let app = AXUIElementCreateApplication(safari.processIdentifier)
