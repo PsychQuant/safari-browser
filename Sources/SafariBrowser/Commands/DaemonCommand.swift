@@ -304,7 +304,7 @@ struct DaemonServeCommand: AsyncParsableCommand {
             env: ProcessInfo.processInfo.environment
         )
 
-        let loop = DaemonServeLoop.Server()
+        let loop = DaemonServeLoop.Server(shutdownWatchdog: DaemonServer.scheduleProcessExit)
         try await loop.start(
             socketPath: socketPath,
             pidPath: pidPath,

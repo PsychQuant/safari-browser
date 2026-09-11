@@ -12,6 +12,15 @@ import Darwin
 ///
 /// Method handlers that speak to Safari arrive in later tasks (3.1 / 4.1 / 7.1).
 enum DaemonServer {
+    /// Only the process-owning __serve command installs this callback.
+    /// Embedded instances must never terminate the process that hosts them.
+    static func scheduleProcessExit() {
+        Task.detached(priority: .userInitiated) {
+            try? await Task.sleep(for: .seconds(5))
+            Darwin._exit(0)
+        }
+    }
+
     /// Sendable carrier for the in-flight pair so the actor's
     /// `snapshotInFlight()` method can return cleanly across the actor
     /// boundary. `requestIdJSON` is the already-encoded JSON snippet
@@ -101,7 +110,12 @@ enum DaemonServer {
         /// shutdown caller lands first.
         private var shutdownHook: (@Sendable () async -> Void)?
 
-        init() {}
+        private let shutdownWatchdog: (@Sendable () -> Void)?
+
+        init(shutdownWatchdog: (@Sendable () -> Void)? = nil) {
+            self.shutdownWatchdog = shutdownWatchdog
+        }
+
 
         /// Register a method handler. Overwrites any previous handler for the same method.
         func register(_ method: String, handler: @escaping MethodHandler) {
@@ -466,12 +480,10 @@ enum DaemonServer {
                         await instance.stop()
                     }
                 }
-                Task.detached(priority: .userInitiated) {
-                    try? await Task.sleep(for: .seconds(5))
-                    // Force-exit if process still alive 5s after shutdown
-                    // request. Per Section 6.3 of the spec.
-                    Darwin._exit(0)
-                }
+                // The production entry owns process termination. Tests and
+                // other embedded users keep normal teardown without _exit.
+                let watchdog = await instance.shutdownWatchdog
+                watchdog?()
             }
             return response
         }
