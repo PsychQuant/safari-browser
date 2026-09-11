@@ -35,6 +35,8 @@ struct InProcessStepDispatcher: StepDispatcher {
         args: [String],
         sharedTargetArgs: [String]
     ) async throws -> String {
+        BlockingDialogGate.shared.beginCommand()
+
         // Reconstruct the per-step target. If the step has its own
         // target flags, those override; otherwise use the shared exec
         // target args. We parse the args back into a `TargetOptions`

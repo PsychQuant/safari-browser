@@ -16,6 +16,9 @@
         dialog opens and only the commands that follow meet it.
     </p>
 
+    <div role="dialog" aria-label="Web content dialog">
+        This DOM dialog does not suspend JavaScript and must not trigger the native gate.
+    </div>
     <button id="alertBtn" onclick="alert('e2e dialog')">Open alert</button>
 </body>
 </html>

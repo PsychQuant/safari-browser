@@ -161,6 +161,12 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // CG ID came from AX but bounds resize went through AS `window N`
         // (could be a different window).
         let (windowID, axWindow) = try await SafariBridge.resolveWindowForCapture(window: resolvedWindowIndex)
+        // Default captures bypass the document resolver to preserve their CG
+        // fallback. Probe the exact capture window after that resolution too.
+        let probeKey: BlockingDialogGate.WindowKey
+        if let id = Int(windowID), id > 0 { probeKey = .id(id) }
+        else { probeKey = .front }
+        BlockingDialogGate.shared.check(probeKey)
 
         // JS target for dimensions / scroll state. Uses the full
         // TargetOptions resolution so `--full --url plaud` reads

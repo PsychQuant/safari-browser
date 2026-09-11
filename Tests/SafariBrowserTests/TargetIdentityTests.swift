@@ -115,11 +115,11 @@ final class TargetIdentityTests: XCTestCase {
     }
 
     func testDocRefFromResolvedWindowLevelKeepsDocumentForm() {
-        // Window-level target (no anchor tab): keep `document of window N`
+        // Window-level target (no anchor tab): keep document scope with stable ID
         // — the #21 modal-sheet bypass depends on document-scoped refs.
         let resolved = SafariBridge.ResolvedWindowTarget(
             windowIndex: 1, tabIndexInWindow: nil, windowID: 22510, anchorTabIndex: nil)
-        XCTAssertEqual(SafariBridge.docRefFromResolved(resolved), "document of window 1")
+        XCTAssertEqual(SafariBridge.docRefFromResolved(resolved), "document of window id 22510")
     }
 
     func testResolveDocumentReferenceResolvedTab() {
