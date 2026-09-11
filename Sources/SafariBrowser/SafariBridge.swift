@@ -2257,15 +2257,15 @@ enum SafariBridge {
             // candidate at original index 3.
             return ResolvedWindowTarget(
                 windowIndex: window.windowIndex,
-                tabIndexInWindow: tab.isCurrent ? nil : tab.tabIndex
+                tabIndexInWindow: tab.isCurrent ? nil : tab.tabIndex,
+                windowID: window.windowID,
+                anchorTabIndex: tab.tabIndex
             )
         }
     }
 
-    /// Async orchestrator. Resolves `.frontWindow` / `.windowIndex`
-    /// synchronously without touching AppleScript; falls through to a
-    /// single `listAllWindows` enumeration for `.urlContains` /
-    /// `.documentIndex`.
+    /// Resolve a physical target and probe its stable identity. Positional
+    /// windows use a bounded ID lookup; tab/URL/profile targets enumerate.
     ///
     /// Stateless — no caching between calls (#26 design decision:
     /// Stateless resolver — no cache). Safari's window state may change

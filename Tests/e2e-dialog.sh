@@ -34,7 +34,7 @@ SB="${SAFARI_BROWSER_BIN:-$HOME/bin/safari-browser}"
 export SAFARI_BROWSER_NAME="fixture-no-daemon-$$"
 unset SAFARI_BROWSER_DAEMON
 FIXTURE="file://$(cd "$(dirname "$0")" && pwd)/Fixtures/dialog-test.html"
-MARK="dlg$$"
+MARK="dlg$(/usr/bin/uuidgen)" || exit 1
 URL="${FIXTURE}?${MARK}"
 LOCK=(--url "$MARK")
 NAME="dialog-$$"                 # daemon namespace for the parity step
@@ -71,7 +71,9 @@ owns_fixture_dialog() {
     # evidence before the destructive step; never treat unknown as permission.
     for attempt in 1 2 3; do
         warning=$("$SB" get title "${LOCK[@]}" 2>&1 >/dev/null) || return 1
-        [[ "$warning" == *"BLOCKING DIALOG"* ]] && return 0
+        if printf '%s' "$warning" | python3 "$(dirname "$0")/dialog_ownership.py" "$URL"; then
+            return 0
+        fi
         sleep 0.2
     done
     return 1

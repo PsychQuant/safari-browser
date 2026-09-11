@@ -13,6 +13,19 @@ final class DialogTargetIdentityTests: XCTestCase {
         }
     }
 
+    func testCompositeWindowTabTargetRetainsIdentityAndRequestedTab() throws {
+        let tabs = [SafariBridge.TabInWindow(tabIndex: 1, url: "file:///one", title: "one", isCurrent: true),
+                    SafariBridge.TabInWindow(tabIndex: 2, url: "file:///two", title: "two", isCurrent: false)]
+        let windows = [SafariBridge.WindowInfo(windowIndex: 3, currentTabIndex: 1,
+                                               tabs: tabs, windowID: 42)]
+        for tab in [1, 2] {
+            let result = try SafariBridge.pickNativeTarget(.windowTab(window: 1, tabInWindow: tab), in: windows)
+            XCTAssertEqual(result.windowID, 42)
+            XCTAssertEqual(result.anchorTabIndex, tab)
+            XCTAssertEqual(SafariBridge.docRefFromResolved(result), "tab \(tab) of window id 42")
+        }
+    }
+
     func testNativePositionalTargetUsesStableIDAndEmitsWarning() async throws {
         let context = DaemonRequestContext(probe: { key in
             key == .id(42) ? .present(SafariBridge.BlockingDialog(message: "owned", buttons: ["OK"])) : .unprobed

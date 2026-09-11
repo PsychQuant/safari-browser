@@ -60,3 +60,7 @@ Gate 在鎖內為真正執行的 probe 預留剩餘預算，完成後按實際�
 Native UI scope：AXWebArea 是網頁內容邊界，不向其內走訪。ARIA dialog 不會停止 JavaScript，不能當成原生 blocking dialog。回歸測試與 HTML fixture 都包含 DOM dialog，仍須能執行 JS；原生 alert 則仍需被偵測。Screenshot 預設路徑在 capture resolver 取得實際 CGWindowID 後探測，以保留既有 CG fallback。
 
 GUI 鎖定驗證：在鎖定狀態下 AXIsProcessTrusted 仍為 true，但 kAXWindows 的元素會退化成 AXApplication／ID 0；不能把它當成沒有視窗。Scoped probe 因無法配對正值 ID 而維持 unprobed；e2e 用 CGSessionCopyCurrentDictionary 檢查 GUI session，鎖定／無 GUI 回 77 並在任何 Safari 操作前停止，檢查本身失敗則回 1。測試用 session checker 可注入，避免 CI 依賴真人桌面狀態。
+
+R2 修正：composite window/tab 目標也保留 windowID 與 anchorTabIndex，避免當指定分頁剛好是 current tab 時退成 document-of-window。測試涵蓋 current 與 background 兩種分頁。
+
+Fixture 所有權：每次使用 UUID query。Dismiss 前除了有目標視窗的正向 warning，還以該 warning 的穩定 window ID 讀取 current tab URL，要求仍是同一個本機 fixture 路徑與 query。Fixture 只是留在背景分頁不能授權 dismiss；讀取失敗一律拒絕。此 helper 僅供測試，不增加產品自動 dismiss。

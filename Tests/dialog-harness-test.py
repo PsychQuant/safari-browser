@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import tempfile
 import unittest
+from dialog_ownership import fixture_is_active
 
 SCRIPT = Path(__file__).with_name('e2e-dialog.sh')
 
@@ -65,6 +66,31 @@ class HarnessBoundaryTests(unittest.TestCase):
     def test_known_existing_dialog_remains_environment_skip(self):
         result, _ = self.run_harness(known_dialog=True)
         self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+
+class DialogOwnershipTests(unittest.TestCase):
+    warning = '⚠ BLOCKING DIALOG in window id 42: "test" — buttons: "OK"'
+    url = 'file:///tmp/test%20folder/dialog-test.html?unique-marker'
+
+    def test_requires_current_fixture_in_the_warned_window(self):
+        ids = []
+        def read(window_id):
+            ids.append(window_id)
+            return 'file:///tmp/test%20folder/dialog-test.html?unique-marker'
+        self.assertTrue(fixture_is_active(self.warning, self.url, read))
+        self.assertEqual(ids, [42])
+        self.assertFalse(fixture_is_active(self.warning, self.url, lambda _: 'https://example.com/?unique-marker'))
+        self.assertFalse(fixture_is_active(self.warning, self.url, lambda _: 'file:///tmp/test%20folder/dialog-test.html?other-run'))
+
+    def test_unknown_warning_cannot_authorize_dismissal(self):
+        def unexpected_read(_):
+            self.fail('unknown or ambiguous evidence must not trigger an AppleScript read')
+        self.assertFalse(fixture_is_active('could not inspect window', self.url, unexpected_read))
+        self.assertFalse(fixture_is_active(self.warning + '\n' + self.warning, self.url, unexpected_read))
+
+    def test_current_tab_read_failure_is_not_permission(self):
+        def read(_):
+            raise subprocess.TimeoutExpired('osascript', 3)
+        self.assertFalse(fixture_is_active(self.warning, self.url, read))
 
 if __name__ == '__main__':
     unittest.main()
