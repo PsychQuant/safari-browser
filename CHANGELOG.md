@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Validate every architecture in installed binaries** (#139): the signature guard now checks every Mach-O slice for both seal validity and requirement satisfaction. A damaged non-native slice can no longer pass because the native slice is intact. The regression suite builds a known arm64/x86_64 fixture, damages each slice separately, and requires both copies to fail; the mutation gate verifies that removing the all-architectures flag is detected.
+
 - **Embedded shutdown and test completion** (#141): only the production daemon installs the five-second process-exit watchdog. Embedded servers cannot terminate XCTest; the test runner now requires a final suite summary with a positive test count as well as exit 0. Regression tests cover an embedded host surviving the deadline and production shutdown during blocked AppleScript.
 - **Exec probe settings follow the caller** (#143): the request carries only explicit disabled/debug booleans, isolates them per request, and rejects malformed options before executing steps. Legacy envelopes without options retain daemon environment defaults.
 - **GUI session failures are explicit** (#144): dialog listing, dismissal and screenshot capture report locked/unavailable sessions before AX operations, with guidance to use an active unlocked session. Scoped probes retain unknown status. Off-console or incompletely logged-in sessions are rejected too; remote-shell behavior has not been live-verified.
