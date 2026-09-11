@@ -426,6 +426,12 @@ native dialog that suspends JavaScript. Failed reads, missing identity,
 truncated native UI branches, or a busy/timed-out worker produce `unprobed`
 and a warning, not a claim that no dialog exists.
 
+When the GUI session is locked or unavailable, `dialog list`, `dialog dismiss`,
+and screenshots report that session problem before attempting AX operations.
+Unlock the Mac or run from an active logged-in GUI session, then retry; a locked
+session is not evidence that no dialog or Safari window exists. Entry probes
+remain `unprobed` in that state (#144).
+
 Probes share a **200 ms total budget per logical command**, following #126's
 final budget decision. Each worker wait is limited to less than 100 ms; an
 unfinished worker prevents new work from being queued. A daemon exec step is
@@ -846,6 +852,10 @@ Once any request bytes have been sent, a timeout, lost response, or invalid repl
 reports an **unknown execution outcome** and does not rerun the operation. The original
 operation can still finish in Safari; inspect its result before retrying. Handler
 errors also propagate without replay. Idle >10 minutes → daemon auto-exits.
+The production daemon retains a five-second shutdown watchdog even if an AppleScript
+is blocked. Embedded server instances perform teardown without terminating their
+host process. `make test` and `make test-unit` require a completed XCTest suite
+summary in addition to exit 0, so early process termination cannot report a pass.
 The compiled AppleScript cache runs on the main thread, including compilation and
 reuse, so repeated scripts that use `delay` complete normally (#130).
 
@@ -871,6 +881,12 @@ Both exec paths preserve diagnostics on stderr while stdout remains a single JSO
 array. Daemon exec uses a request-local dialog gate and the internal compiled script
 runner; it does not open a nested connection to itself. Every new request gets fresh
 warning state, and diagnostics are returned on success and handler failure (#136).
+Exec forwards the caller's `SAFARI_BROWSER_NO_DIALOG_PROBE` and
+`SAFARI_BROWSER_DIALOG_PROBE_DEBUG` settings, each enabled only by exactly `1`.
+Unset values explicitly mean false even if the daemon started with either setting
+on. Only these two booleans are sent, and each request is isolated. Older clients
+that omit `dialogProbe` retain the daemon environment defaults; malformed options
+are rejected before any step executes (#143).
 
 Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). v1 dispatches via subprocess to the same binary, so daemon opt-in still amortizes per-step cost. `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
 
