@@ -84,6 +84,9 @@ struct ScreenshotCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        // Session state precedes both permission and target resolution: a
+        // locked desktop can return AX placeholders that look like no window.
+        try GUISession.live.requireAvailable()
         // #70: every screenshot path ends in /usr/sbin/screencapture, whose
         // pixel capture requires Screen Recording permission on the
         // CONTROLLING app. Preflight (read-only, never prompts — preserves

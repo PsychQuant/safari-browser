@@ -51,6 +51,10 @@ struct DialogListCommand: AsyncParsableCommand {
 
     func run() async throws {
         switch SafariBridge.scanBlockingDialogs() {
+        case .sessionLocked:
+            throw SafariBrowserError.guiSessionLocked
+        case .sessionUnavailable:
+            throw SafariBrowserError.guiSessionUnavailable
         case .accessibilityDenied:
             throw SafariBrowserError.accessibilityRequired(flag: "dialog list")
         case .none:
@@ -170,6 +174,10 @@ struct DialogDismissCommand: AsyncParsableCommand {
     func run() async throws {
         let dialog: SafariBridge.BlockingDialog
         switch SafariBridge.scanBlockingDialogs() {
+        case .sessionLocked:
+            throw SafariBrowserError.guiSessionLocked
+        case .sessionUnavailable:
+            throw SafariBrowserError.guiSessionUnavailable
         case .accessibilityDenied:
             throw SafariBrowserError.accessibilityRequired(flag: "dialog dismiss")
         case .none:
@@ -215,9 +223,17 @@ struct DialogDismissCommand: AsyncParsableCommand {
                           + BlockingDialogWarning.messageText(still))
                 case .many:
                     print("pressed; more than one dialog is now present — run `dialog list`")
+                case .sessionLocked:
+                    print("pressed; could not re-check: " + SafariBrowserError.guiSessionLocked.localizedDescription)
+                case .sessionUnavailable:
+                    print("pressed; could not re-check: " + SafariBrowserError.guiSessionUnavailable.localizedDescription)
                 case .accessibilityDenied:
                     print("pressed; could not re-check (Accessibility no longer available)")
                 }
+            case .sessionLocked:
+                throw SafariBrowserError.guiSessionLocked
+            case .sessionUnavailable:
+                throw SafariBrowserError.guiSessionUnavailable
             case .accessibilityDenied:
                 throw SafariBrowserError.accessibilityRequired(flag: "dialog dismiss")
             case .noDialogFound:
