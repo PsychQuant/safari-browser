@@ -4,8 +4,12 @@ SQLite reads SHALL use a consistent in-memory backup; plist reads SHALL remain i
 #### Scenario: Checkpoint while copying
 - **WHEN** another connection checkpoints or appends during backup
 - **THEN** the returned snapshot SHALL contain one coherent committed view.
+#### Scenario: Checkpointed WAL with absent sidecars
+- **WHEN** normal read-only initialization cannot open a WAL-mode source whose WAL/journal are absent or empty
+- **THEN** on supported local POSIX filesystems the tool SHALL require an exclusive descriptor-scoped SQLite lease before using immutable read-only access to the held file; it SHALL not create source sidecars or modify source content, and SHALL fail if safety conditions cannot be established.
+
 ### Requirement: Honest source errors
-ENOENT SHALL be absent, EACCES/EPERM SHALL be FDA denial, other I/O failures SHALL remain I/O errors, and malformed data SHALL be parse errors. Diagnostics SHALL identify the source path.
+ENOENT on the initial source open SHALL be absent; later SQLite auxiliary-file ENOENT SHALL fail as I/O, EACCES/EPERM SHALL be FDA denial, other I/O failures SHALL remain I/O errors, and malformed data SHALL be parse errors. Diagnostics SHALL identify the source path.
 #### Scenario: Disk or read error
 - **WHEN** source access fails with EIO
 - **THEN** the message SHALL NOT recommend FDA authorization.

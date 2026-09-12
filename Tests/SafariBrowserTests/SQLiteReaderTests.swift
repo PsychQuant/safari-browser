@@ -151,6 +151,17 @@ final class SQLiteReaderTests: XCTestCase {
         }
     }
 
+    func testAuxiliaryENOENTDoesNotBecomeMissingSource() throws {
+        let url = try makeDatabase(rows: 1)
+        let absent = dir.appendingPathComponent("absent-directory/aux.db")
+        try SQLiteReader.withDatabase(at:url) { db in
+            XCTAssertThrowsError(try SQLiteReader.query(in:db,sql:"ATTACH DATABASE ? AS aux",bindings:[.text(absent.path)]) { _ -> Int? in nil }) {
+                guard case SafariBrowserError.safariDataReadFailed(let path, _) = $0 else { return XCTFail("auxiliary error mislabeled: \($0)") }
+                XCTAssertEqual(path,url.path)
+            }
+        }
+    }
+
     func testAcceptedLimitStopsBeforeLaterSQLFailure() throws {
         let url = try makeDatabase(rows: 5)
         // abs(Int64.min) fails only once the third row is stepped. Earlier

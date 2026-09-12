@@ -531,6 +531,14 @@ locking and WAL index maintenance, while source database content stays read-only
 The read transaction ends before parsing/querying the private snapshot. Busy
 retries have a five-second budget; filesystem calls themselves remain OS-managed.
 This replaces the old independent main/WAL/SHM copy strategy (#111–#113).
+If macOS SQLite cannot open a checkpointed WAL database with absent sidecars,
+a local APFS/HFS fallback holds an exclusive SQLite-compatible OFD lease before
+reading the held descriptor as immutable. The lease requires a read/write file
+descriptor solely for locking; no source content or sidecar is written. A nonempty
+WAL, unsupported filesystem, or unavailable lease fails explicitly. Only the first
+source open can report normal absence; missing auxiliary files cannot produce an
+empty success. The lease protects against cooperating POSIX SQLite writers, not
+arbitrary raw file modifications.
 
 Missing files are normal absence; source EACCES/EPERM means permission denial;
 other I/O errors are reported as I/O errors, with the original source path.

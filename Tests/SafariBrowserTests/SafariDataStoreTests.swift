@@ -95,6 +95,63 @@ final class SafariDataStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url),before)
     }
 
+    func testCheckpointedWALWithoutSidecarsIsReadable() throws {
+        let url = dir.appendingPathComponent("closed.db")
+        var writer: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &writer), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(writer,"PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES(42); PRAGMA wal_checkpoint(TRUNCATE)",nil,nil,nil),SQLITE_OK)
+        sqlite3_close(writer)
+        for suffix in ["-wal", "-shm"] { try? FileManager.default.removeItem(atPath:url.path+suffix) }
+        let before = try Data(contentsOf:url)
+        XCTAssertEqual(Array(before[18..<20]),[2,2])
+        let rows = try SafariDataStore.withDatabaseSnapshot(sourceURL:url) { db in
+            try SQLiteReader.query(in:db,sql:"SELECT x FROM t") { $0[0].intValue }
+        }
+        XCTAssertEqual(rows,[42])
+        XCTAssertEqual(try Data(contentsOf:url),before)
+    }
+
+    func testCheckpointedLeaseExcludesSQLiteWriterAndEndsBeforeConsumer() throws {
+        let url = dir.appendingPathComponent("exclusive.db")
+        var setup: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path,&setup),SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(setup,"PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES(1); PRAGMA wal_checkpoint(TRUNCATE)",nil,nil,nil),SQLITE_OK)
+        sqlite3_close(setup)
+        for suffix in ["-wal","-shm"] { try? FileManager.default.removeItem(atPath:url.path+suffix) }
+        var writer: OpaquePointer?
+        defer { sqlite3_close(writer) }
+        var attempted = false
+        let memory = try SQLiteReader.checkpointedSnapshot(at:url,deadline:ProcessInfo.processInfo.systemUptime+1,timeout:1,afterStep:{
+            if !attempted {
+                attempted = true
+                XCTAssertEqual(sqlite3_open(url.path,&writer),SQLITE_OK)
+                sqlite3_busy_timeout(writer,1)
+                let rc=sqlite3_exec(writer,"INSERT INTO t VALUES(2)",nil,nil,nil)
+                XCTAssertTrue(rc == SQLITE_BUSY || rc == SQLITE_LOCKED,"writer escaped lease: \(rc)")
+            }
+        },originalError: .safariDataReadFailed(path:url.path,detail:"offline fixture"))
+            XCTAssertEqual(try SQLiteReader.query(in:memory,sql:"SELECT x FROM t") { $0[0].intValue },[1])
+            XCTAssertEqual(sqlite3_exec(writer,"INSERT INTO t VALUES(2)",nil,nil,nil),SQLITE_OK,
+                           "source lease must be released before consumer runs")
+
+        XCTAssertTrue(attempted)
+    }
+
+    func testCheckpointedReadDoesNotRequireWritingTheSourceDirectory() throws {
+        let folder=dir.appendingPathComponent("read-only-directory")
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:false)
+        defer { try? FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:folder.path) }
+        let url=folder.appendingPathComponent("t.db")
+        var db:OpaquePointer?;XCTAssertEqual(sqlite3_open(url.path,&db),SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db,"PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES(8); PRAGMA wal_checkpoint(TRUNCATE)",nil,nil,nil),SQLITE_OK);sqlite3_close(db)
+        for suffix in ["-wal","-shm"] { try? FileManager.default.removeItem(atPath:url.path+suffix) }
+        let before=try Data(contentsOf:url)
+        try FileManager.default.setAttributes([.posixPermissions:0o500],ofItemAtPath:folder.path)
+        XCTAssertEqual(try SafariDataStore.withDatabaseSnapshot(sourceURL:url) { try SQLiteReader.query(in:$0,sql:"SELECT x FROM t") { $0[0].intValue } },[8])
+        XCTAssertEqual(try Data(contentsOf:url),before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath:folder.path),["t.db"])
+    }
+
     func testSnapshotDeadlineAndThrowingConsumerLeaveNoCopy() throws {
         let url=dir.appendingPathComponent("t.db")
         var db: OpaquePointer?; XCTAssertEqual(sqlite3_open(url.path,&db),SQLITE_OK)

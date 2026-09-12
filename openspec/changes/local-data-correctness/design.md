@@ -11,6 +11,12 @@
 6. Bookmarks search僅title/URL、不改cloud/downloadflags；search與folder filter皆需符合。
 ## Task ownership
 Root：SafariDataStore、SQLiteReader、storage/SQLite tests、Errors的新I/O case。Parser agent：四Commands除formatRow、parser/query/command tests、SchemaDiagnostics。Formatter agent：四Commands的formatRow、LocalDataOutput、BlockingDialogGate renderer、Errors的dialog分支、texttests。History date?由parser改型別、formatter處理formatRow顯示。
+## R1 re-baseline: checkpointed WAL without sidecars
+實測正常可寫目錄也會在本機SQLite回CANTOPEN/errno3，不能只改錯誤字樣而失去Safari關閉後的讀取能力。新增受限fallback：只在初始化CANTOPEN後，在APFS/HFS上用OFD exclusive lease覆蓋SQLite標準locking bytes；鎖需要O_RDWR描述符，但不執行任何寫入。持鎖後驗SQLite WAL header、WAL/journal缺失或為空，再以持有fd的immutable唯讀URI進行相同memory backup。其他SQLite寫入者被排除，lease在consumer前關閉；source資料內容與sidecars都不由fallback改寫。非空WAL、無法鎖定、只讀來源無法取得lease或非支援檔案系統均明確失敗，不退回猜測。
+SQLite後續ENOENT不再當主檔不存在：只有初次POSIX source open有此權限。SQLite錯誤保留operation/code/errno；附件檔失敗不得exit0。
+測試：正常/readonly directory的無sidecar WAL讀取、source內容不變、OFD與SQLite POSIX writer互斥、consumer前釋鎖，以及backup中SIGINT/TERM/KILL後writer可恢復。普通readonly交易/backup路徑維持優先，不對活動WAL使用immutable。
+參考：https://sqlite.org/uri.html 、https://sqlite.org/lockingv3.html 。lease只針對使用本機POSIX協定的SQLite操作，不宣稱保護任意忽略鎖的原始檔案寫入者。
+
 ## Risks / Trade-offs
 記憶體峰值增加；NOMEM/timeout明確失敗。ReadonlySQLite會參與讀鎖和共享索引，這是Backup API的一致性成本。舊資料複本不自動sweep，新的流程不再產生它們，signal不會遺留新複本。Readtransaction與page size、busy、WAL checkpoint需合成fixture驗證。
 ## Verification

@@ -30,7 +30,12 @@ func hold() -> Never {
     fflush(stdout)
     while true { Thread.sleep(forTimeInterval: 1) }
 }
-if CommandLine.arguments[1] == "sqlite" {
+if CommandLine.arguments[1] == "checkpointed-backup" {
+    _ = try SQLiteReader.checkpointedSnapshot(at: source,
+        deadline: ProcessInfo.processInfo.systemUptime + 10, timeout: 10,
+        afterStep: { hold() },
+        originalError: .safariDataReadFailed(path: source.path, detail: "fixture"))
+} else if CommandLine.arguments[1] == "sqlite" {
     try SafariDataStore.withDatabaseSnapshot(sourceURL: source) { db in
         let filenames = try SQLiteReader.query(in: db, sql: "PRAGMA database_list") { $0[2].stringValue }
         precondition(filenames == [""])
@@ -56,8 +61,19 @@ with tempfile.TemporaryDirectory(prefix='snapshot-interruption-') as folder:
     connection.commit()
     plist = work / 'fixture.plist'
     plist.write_bytes(plistlib.dumps({'DownloadHistory': []}))
+    checkpointed = work / 'checkpointed.db'
+    offline = sqlite3.connect(checkpointed)
+    offline.execute('PRAGMA journal_mode=WAL')
+    offline.execute('CREATE TABLE t(x)')
+    offline.execute('INSERT INTO t VALUES(1)')
+    offline.commit()
+    offline.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+    offline.close()
+    for suffix in ['-wal', '-shm']:
+        sidecar = Path(str(checkpointed) + suffix)
+        if sidecar.exists(): sidecar.unlink()
     temporary = Path(tempfile.gettempdir())
-    for mode, file in [('sqlite', database), ('plist', plist)]:
+    for mode, file in [('sqlite', database), ('plist', plist), ('checkpointed-backup', checkpointed)]:
         for sig in [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]:
             before = set(temporary.glob('safari-data-*'))
             child = subprocess.Popen([str(binary), mode, str(file)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -70,6 +86,16 @@ with tempfile.TemporaryDirectory(prefix='snapshot-interruption-') as folder:
                 child.wait(timeout=5)
                 assert child.returncode == -sig, (mode, sig, child.returncode)
                 assert set(temporary.glob('safari-data-*')) == before, 'new disk copy survived interruption'
+                if mode == 'checkpointed-backup':
+                    # Kernel cleanup must release the OFD lease even when Swift
+                    # never runs defer. Use a rollback, preserving the fixture.
+                    resumed = sqlite3.connect(file, timeout=1)
+                    resumed.execute('BEGIN IMMEDIATE')
+                    resumed.rollback()
+                    resumed.close()
+                    for suffix in ['-wal', '-shm']:
+                        sidecar = Path(str(file) + suffix)
+                        if sidecar.exists(): sidecar.unlink()
                 print(f'PASS {mode} {sig.name}: memory ready, terminated, no disk copy', flush=True)
             finally:
                 if child.poll() is None:
