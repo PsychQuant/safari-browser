@@ -72,7 +72,7 @@ enum SafariDataStore {
     /// Boolean existence probe. An unreadable source is not a missing source.
     static func openSource(_ url: URL) throws -> Int32 {
         let fd = Darwin.open(url.path, O_RDONLY | O_CLOEXEC)
-        guard fd >= 0 else { throw ioError(path: url.path, code: errno) }
+        guard fd >= 0 else { throw ioError(path: url.path, code: errno, allowMissing: true) }
         var info = stat()
         if fstat(fd, &info) != 0 {
             let code = errno; close(fd)
@@ -85,9 +85,9 @@ enum SafariDataStore {
         return fd
     }
 
-    static func ioError(path: String, code: Int32) -> SafariBrowserError {
+    static func ioError(path: String, code: Int32, allowMissing: Bool = false) -> SafariBrowserError {
         switch code {
-        case ENOENT: return .safariDataFileNotFound(path: path)
+        case ENOENT where allowMissing: return .safariDataFileNotFound(path: path)
         case EACCES, EPERM:
             return .fullDiskAccessRequired(path: path, signing: CodeSigningState.current())
         default:

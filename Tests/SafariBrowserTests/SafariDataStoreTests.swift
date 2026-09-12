@@ -22,7 +22,8 @@ final class SafariDataStoreTests: XCTestCase {
         for code in [EPERM, EACCES] {
             guard case .fullDiskAccessRequired = SafariDataStore.ioError(path: "/source", code: code) else { return XCTFail() }
         }
-        guard case .safariDataFileNotFound = SafariDataStore.ioError(path: "/source", code: ENOENT) else { return XCTFail() }
+        guard case .safariDataFileNotFound = SafariDataStore.ioError(path: "/source", code: ENOENT, allowMissing: true) else { return XCTFail() }
+        guard case .safariDataReadFailed = SafariDataStore.ioError(path: "/source", code: ENOENT) else { return XCTFail("late ENOENT is not initial absence") }
     }
 
     func testPlistReadHasNoTemporaryCopyAndPreservesSourceMode() throws {
@@ -124,6 +125,9 @@ final class SafariDataStoreTests: XCTestCase {
         let memory = try SQLiteReader.checkpointedSnapshot(at:url,deadline:ProcessInfo.processInfo.systemUptime+1,timeout:1,afterStep:{
             if !attempted {
                 attempted = true
+                let unrelated = Darwin.open(url.path, O_RDONLY)
+                XCTAssertGreaterThanOrEqual(unrelated, 0)
+                if unrelated >= 0 { close(unrelated) }
                 XCTAssertEqual(sqlite3_open(url.path,&writer),SQLITE_OK)
                 sqlite3_busy_timeout(writer,1)
                 let rc=sqlite3_exec(writer,"INSERT INTO t VALUES(2)",nil,nil,nil)
@@ -150,6 +154,41 @@ final class SafariDataStoreTests: XCTestCase {
         XCTAssertEqual(try SafariDataStore.withDatabaseSnapshot(sourceURL:url) { try SQLiteReader.query(in:$0,sql:"SELECT x FROM t") { $0[0].intValue } },[8])
         XCTAssertEqual(try Data(contentsOf:url),before)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath:folder.path),["t.db"])
+    }
+
+    func testOfflineFallbackRejectsUnsafeSidecarsSymlinksAndUnavailableLease() throws {
+        let url = dir.appendingPathComponent("reject.db")
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path,&db),SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db,"PRAGMA journal_mode=WAL; CREATE TABLE t(x); PRAGMA wal_checkpoint(TRUNCATE)",nil,nil,nil),SQLITE_OK)
+        sqlite3_close(db)
+        for suffix in ["-wal","-shm"] { try? FileManager.default.removeItem(atPath:url.path+suffix) }
+        let before=try Data(contentsOf:url)
+        func reject(_ target:URL, contains text:String) {
+            XCTAssertThrowsError(try SQLiteReader.checkpointedSnapshot(at:target,
+                deadline:ProcessInfo.processInfo.systemUptime+0.03,timeout:0.03,
+                afterStep:{ XCTFail("unsafe fallback started backup") },
+                originalError:.safariDataReadFailed(path:target.path,detail:"initial fixture failure"))) {
+                guard case SafariBrowserError.safariDataReadFailed(_,let detail) = $0 else { return XCTFail("\($0)") }
+                XCTAssertTrue(detail.contains(text),detail)
+            }
+        }
+        for suffix in ["-wal","-journal"] {
+            let sidecar=URL(fileURLWithPath:url.path+suffix)
+            try Data("nonempty".utf8).write(to:sidecar)
+            reject(url,contains:suffix)
+            try FileManager.default.removeItem(at:sidecar)
+        }
+        let link=dir.appendingPathComponent("alias.db")
+        try FileManager.default.createSymbolicLink(at:link,withDestinationURL:url)
+        reject(link,contains:"lock-capable descriptor")
+        let fd=Darwin.open(url.path,O_RDWR)
+        XCTAssertGreaterThanOrEqual(fd,0)
+        defer { close(fd) }
+        var lease=flock(l_start:0x40000000,l_len:512,l_pid:0,l_type:Int16(F_WRLCK),l_whence:Int16(SEEK_SET))
+        XCTAssertEqual(fcntl(fd,F_OFD_SETLK,&lease),0)
+        reject(url,contains:"exclusive lease")
+        XCTAssertEqual(try Data(contentsOf:url),before)
     }
 
     func testSnapshotDeadlineAndThrowingConsumerLeaveNoCopy() throws {

@@ -137,37 +137,43 @@ enum SQLiteReader {
     /// written. The SQLite connection itself remains read-only and immutable.
     static func checkpointedSnapshot(at url: URL, deadline: TimeInterval, timeout: TimeInterval,
                                              afterStep: (() throws -> Void)?, originalError: SafariBrowserError) throws -> Database {
+        func unavailable(_ reason: String) -> SafariBrowserError {
+            if case .safariDataReadFailed(let path, let detail) = originalError {
+                return .safariDataReadFailed(path: path, detail: detail + "; checkpointed-WAL fallback unavailable: " + reason)
+            }
+            return originalError // Preserve actual permission-denial classification.
+        }
         // Avoid a writable source ever occupying a closed standard descriptor.
-        guard (0...2).allSatisfy({ fcntl(Int32($0), F_GETFD) >= 0 }) else { throw originalError }
+        guard (0...2).allSatisfy({ fcntl(Int32($0), F_GETFD) >= 0 }) else { throw unavailable("standard descriptors are closed") }
         let fd = Darwin.open(url.path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
-        guard fd >= 0 else { throw originalError }
+        guard fd >= 0 else { throw unavailable("cannot open lock-capable descriptor: \(String(cString: strerror(errno)))") }
         defer { close(fd) }
         var info = stat()
-        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { throw originalError }
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { throw unavailable("source is not a readable regular file") }
         var filesystem = statfs()
-        guard fstatfs(fd, &filesystem) == 0 else { throw originalError }
+        guard fstatfs(fd, &filesystem) == 0 else { throw unavailable("cannot identify filesystem") }
         let kind = withUnsafePointer(to: &filesystem.f_fstypename) {
             $0.withMemoryRebound(to: CChar.self, capacity: 16) { String(cString: $0) }
         }
-        guard kind == "apfs" || kind == "hfs" else { throw originalError }
+        guard kind == "apfs" || kind == "hfs" else { throw unavailable("filesystem does not support this local POSIX lease: \(kind)") }
         // SQLite's PENDING, RESERVED and SHARED locking bytes (lockingv3.html).
         var lease = flock(l_start: 0x40000000, l_len: 512, l_pid: 0,
                           l_type: Int16(F_WRLCK), l_whence: Int16(SEEK_SET))
         while fcntl(fd, F_OFD_SETLK, &lease) != 0 {
             let code = errno
-            guard [EAGAIN, EACCES, EINTR].contains(code), ProcessInfo.processInfo.systemUptime < deadline else { throw originalError }
+            guard [EAGAIN, EACCES, EINTR].contains(code), ProcessInfo.processInfo.systemUptime < deadline else { throw unavailable("exclusive lease could not be acquired within the deadline (errno \(code))") }
             sqlite3_sleep(5)
         }
         var header = [UInt8](repeating: 0, count: 20)
         guard pread(fd, &header, header.count, 0) == header.count,
-              Array(header.prefix(16)) == Array("SQLite format 3\0".utf8), header[18] == 2, header[19] == 2 else { throw originalError }
+              Array(header.prefix(16)) == Array("SQLite format 3\0".utf8), header[18] == 2, header[19] == 2 else { throw unavailable("source does not have a checkpointed WAL header") }
         // With cooperating SQLite writers excluded, a missing/empty WAL holds
         // no committed frames. A nonempty WAL must use normal SQLite recovery.
         for suffix in ["-wal", "-journal"] {
             var sidecar = stat()
             if lstat(url.path + suffix, &sidecar) == 0 {
-                guard sidecar.st_mode & S_IFMT == S_IFREG, sidecar.st_size == 0 else { throw originalError }
-            } else if errno != ENOENT { throw originalError }
+                guard sidecar.st_mode & S_IFMT == S_IFREG, sidecar.st_size == 0 else { throw unavailable("nonempty or nonregular \(suffix) requires normal SQLite recovery") }
+            } else if errno != ENOENT { throw unavailable("cannot inspect \(suffix): \(String(cString: strerror(errno)))") }
         }
         let source = try open(path: "file:/dev/fd/\(fd)?immutable=1",
                               flags: SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, source: url)
