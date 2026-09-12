@@ -140,7 +140,7 @@ final class WindowDialogObservationTests: XCTestCase {
         XCTAssertNil(observation.status(for: 99).textSuffix)
         let missing = observation.status(for: nil)
         XCTAssertTrue(missing.jsonObject["window_id"] is NSNull)
-        XCTAssertTrue(try XCTUnwrap(missing.textSuffix).contains("unknown"))
+        XCTAssertNil(missing.textSuffix)
     }
 
     func testMultipleMessagesUseCountAndEmptyMessagesStayExplicit() {

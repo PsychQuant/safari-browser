@@ -81,23 +81,58 @@ final class DialogListingRenderingTests: XCTestCase {
         XCTAssertEqual(statuses.compactMap { $0["state"] as? String }, ["unknown", "unknown"])
         XCTAssertEqual(statuses.compactMap { $0["reason"] as? String }, ["missingID", "notobserved"])
         XCTAssertTrue(statuses[0]["window_id"] is NSNull)
-        XCTAssertTrue(DocumentsCommand.formatText(documents, observation: captured).allSatisfy {
-            $0.contains("[dialog: unknown")
-        })
+        XCTAssertEqual(DocumentsCommand.formatText(documents, observation: captured),
+                       DocumentsCommand.formatText(documents))
         let tabs = [SafariBridge.TabInfo(index: 1, title: "", url: "", windowID: nil)]
         let line = try XCTUnwrap(TabsCommand.formatText(tabs, observation: captured).first)
-        XCTAssertEqual(line.components(separatedBy: "\t").count, 4)
-        XCTAssertTrue(line.hasPrefix("1\t\t\t[dialog: unknown"))
+        XCTAssertEqual(line.components(separatedBy: "\t").count, 3)
+        XCTAssertEqual(line, "1\t\t")
     }
 
     func testUnavailableObservationPreservesOrdinaryRowsAndExplainsUnknown() throws {
         let captured = WindowDialogObservation.unavailable(reason: "disabled")
         let tabs = [SafariBridge.TabInfo(index: 7, title: "Title", url: "https://example.test", windowID: 71)]
         let line = try XCTUnwrap(TabsCommand.formatText(tabs, observation: captured).first)
-        XCTAssertEqual(line, "7\tTitle\thttps://example.test\t[dialog: unknown (disabled)]")
+        XCTAssertEqual(line, "7\tTitle\thttps://example.test")
         let status = try XCTUnwrap(TabsCommand.jsonRows(tabs, observation: captured)[0]["blocking_dialog"] as? [String: Any])
         XCTAssertEqual(status["state"] as? String, "unknown")
         XCTAssertEqual(status["reason"] as? String, "disabled")
+    }
+
+    func testUnknownWarningsAreExplicitOnStderrAndDisabledIsSilent() {
+        for reason in ["denied", "locked", "incomplete", "missingID", "notobserved"] {
+            let status = WindowDialogObservation.unavailable(reason: reason).status(for: 71)
+            XCTAssertNil(status.textSuffix)
+            let warning = DocumentsCommand.dialogWarnings(commandName: "tabs", statuses: [status])
+            XCTAssertTrue(warning.contains(reason))
+            XCTAssertTrue(warning.contains("unmarked rows"))
+        }
+        let disabled = WindowDialogObservation.unavailable(reason: "disabled").status(for: 71)
+        XCTAssertEqual(DocumentsCommand.dialogWarnings(commandName: "tabs", statuses: [disabled]), "")
+    }
+
+    func testInProcessDocumentsSharesMetadataAndHonorsRequestOptOut() async throws {
+        let record = ["1", "1", "1", "https://fixture.test", "Fixture", "個人 — Fixture", "71"]
+            .joined(separator: "\u{1D}")
+        for disabled in [false, true] {
+            let calls = ExecSubprocessOutputTests.Output()
+            let context = DaemonRequestContext(environment: [:])
+            try context.configureDialogProbe(.init(environment: disabled ? [BlockingDialogGate.optOutVariable: "1"] : [:]))
+            let captured = observation()
+            let output = try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ _ in record }) {
+                    try await WindowDialogObservation.$provider.withValue({ calls.append("capture"); return captured }) {
+                        try await InProcessStepDispatcher().dispatch(cmd: "documents", args: [], sharedTargetArgs: [])
+                    }
+                }
+            }
+            let rows = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [[String: Any]])
+            let status = try XCTUnwrap(rows.first?["blocking_dialog"] as? [String: Any])
+            XCTAssertEqual(status["state"] as? String, disabled ? "unknown" : "clear")
+            XCTAssertEqual(status["window_id"] as? Int, 71)
+            XCTAssertEqual(status["reason"] as? String, disabled ? "disabled" : nil)
+            XCTAssertEqual(calls.text, disabled ? "" : "capture")
+        }
     }
 
     func testEmptyListingsNeverCreateSyntheticRows() {
