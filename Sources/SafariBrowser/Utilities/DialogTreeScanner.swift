@@ -24,16 +24,17 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
             let limit = max(0, maxWindows)
             if windows.count > limit { snapshot.isComplete = false }
             var identifiers = Set<Int>()
+            var visited = Set<P.Node>()
             for window in windows.prefix(limit) {
                 do {
                     let id = try provider.windowID(window, timeout: remaining(deadline))
-                    guard id > 0, identifiers.insert(id).inserted,
-                        try provider.role(window, timeout: remaining(deadline)) == "AXWindow"
-                    else {
+                    guard id > 0, identifiers.insert(id).inserted else {
                         snapshot.isComplete = false
                         continue
                     }
-                    inspectWindow(window, id: id, provider: provider, deadline: deadline, snapshot: &snapshot)
+                    inspectWindow(
+                        window, id: id, provider: provider, deadline: deadline,
+                        snapshot: &snapshot, visited: &visited)
                 } catch { snapshot.isComplete = false }
             }
             if DispatchTime.now().uptimeNanoseconds >= deadline.uptimeNanoseconds { snapshot.isComplete = false }
@@ -56,11 +57,10 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
 
     private func inspectWindow(
         _ window: P.Node, id: Int, provider: P, deadline: DispatchTime,
-        snapshot: inout DialogTreeSnapshot<P.Node>
+        snapshot: inout DialogTreeSnapshot<P.Node>, visited: inout Set<P.Node>
     ) {
         var pending: [(P.Node, Int)] = [(window, 0)]
         var inspected = 0
-        var visited = Set<P.Node>()
         while !pending.isEmpty && inspected < max(0, maxNodes) {
             let (node, depth) = pending.removeLast()
             inspected += 1
@@ -70,10 +70,14 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
             }
             do {
                 let role = try provider.role(node, timeout: remaining(deadline))
+                if depth == 0 && role != "AXWindow" {
+                    snapshot.isComplete = false
+                    continue
+                }
                 if role == "AXWebArea" { continue }
                 let subrole = try provider.subrole(node, timeout: remaining(deadline))
                 if isDialog(role: role, subrole: subrole) {
-                    let detail = details(node, id: id, provider: provider, deadline: deadline)
+                    let detail = details(node, id: id, provider: provider, deadline: deadline, visited: &visited)
                     for candidate in [detail.candidate] + detail.nested {
                         if snapshot.candidates.contains(where: { $0.element == candidate.element }) {
                             snapshot.isComplete = false
@@ -98,19 +102,21 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
     }
 
     private func details(
-        _ element: P.Node, id: Int, provider: P, deadline: DispatchTime
+        _ element: P.Node, id: Int, provider: P, deadline: DispatchTime, visited: inout Set<P.Node>
     ) -> (candidate: CapturedDialog<P.Node>, nested: [CapturedDialog<P.Node>], complete: Bool) {
         var pending: [(P.Node, Int)] = [(element, 0)]
         var inspected = 0
         var complete = true
-        var visited = Set<P.Node>()
         var nested: [CapturedDialog<P.Node>] = []
         var messages: [String] = []
         var buttons: [(element: P.Node, title: String)] = []
         while !pending.isEmpty && inspected < max(0, maxDetailNodes) {
             let (node, depth) = pending.removeLast()
             inspected += 1
-            guard visited.insert(node).inserted else {
+            // The depth-zero root was just entered by discovery. All other
+            // nodes share the same identity history across both traversals and
+            // every window, so a reused noncandidate cannot authorize a press.
+            if depth > 0 && !visited.insert(node).inserted {
                 complete = false
                 continue
             }

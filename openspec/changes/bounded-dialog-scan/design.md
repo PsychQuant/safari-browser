@@ -15,7 +15,7 @@
 
 ### Complete global scanner
 
-新增 DialogTreeScanner，使用既有 DialogProbeProvider 與 DialogMessageText。scan 接受 DispatchTime deadline；每次讀取 timeout 為 min(剩餘時間,40ms)。最多64個視窗、每窗512節點與8層、每個dialog256節點與6層。超出界線、失敗、未知視窗ID或非AXWindow根、重複ID皆不完整。WebArea 是刻意排除的網頁內容；不任意略過原生 toolbar/group 分支。視窗根本身帶AXDialog/AXSystemDialog subrole也須辨識。深度優先找到最外層 native dialog 後讀它的訊息與按鈕，繼續其他分支以辨識多個候選。遇到巢狀已知native root須保留為另一個候選，其細節不混入外層；因已知歧義，巢狀候選訊息可明示未讀。Node以Hashable身分去重，循環或重複引用須不完整，不能捏造更多候選。訊息與按鈕元素只讀一次並保留同序配對。詳細資料截斷/讀取失敗使嚴格全域結果不完整，不能支持按鈕決策。可選文字或title屬性回unsupported/noValue是明確不存在，依既有規則省略；無名稱的按鈕不列入選擇，但繼續走訪其子項。文字區域的可編輯性若未知則不完整，不能讀取其值。
+新增 DialogTreeScanner，使用既有 DialogProbeProvider 與 DialogMessageText。scan 接受 DispatchTime deadline；每次讀取 timeout 為 min(剩餘時間,40ms)。最多64個視窗、每窗512節點與8層、每個dialog256節點與6層。超出界線、失敗、未知視窗ID或非AXWindow根、重複ID皆不完整。WebArea 是刻意排除的網頁內容；不任意略過原生 toolbar/group 分支。視窗根本身帶AXDialog/AXSystemDialog subrole也須辨識。深度優先找到最外層 native dialog 後讀它的訊息與按鈕，繼續其他分支以辨識多個候選。遇到巢狀已知native root須保留為另一個候選，其細節不混入外層；因已知歧義，巢狀候選訊息可明示未讀。Node以整次scan共用的Hashable身分集合去重（跨視窗、discovery與details）；只允許剛找到的dialog root交接details時的那一次既有身分。循環或重複引用須不完整，不能捏造更多候選。視窗根的role在實際走訪時驗證一次，不預先重讀。訊息與按鈕元素只讀一次並保留同序配對。詳細資料截斷/讀取失敗使嚴格全域結果不完整，不能支持按鈕決策。可選文字或title屬性回unsupported/noValue是明確不存在，依既有規則省略；無名稱的按鈕不列入選擇，但繼續走訪其子項。文字區域的可編輯性若未知則不完整，不能讀取其值。
 
 同步掃描結果保留 Node/按鈕引用供同一個執行緒立即按鈕；背景全域讀取只將 Sendable 的 DialogScan 值返回 caller，AX節點不跨 worker。已確認的多個候選可回 ambiguous；不完整的0/1候選不得回 none/one。
 

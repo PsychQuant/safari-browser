@@ -194,6 +194,33 @@ final class DialogTreeScannerTests: XCTestCase {
         XCTAssertEqual(cycle.candidates.count, 1)
     }
 
+    func testSharedNodeAcrossDiscoveryAndDetailsCannotAuthorizePress() {
+        for crossWindow in [false, true] {
+            var p = Self.dialog
+            if crossWindow {
+                p.roots.append(8)
+                p.nodes[8] = Node(role: "AXWindow", children: [3], id: 99)
+            } else {
+                p.nodes[1]!.children.append(3)
+            }
+            let result = scan(p)
+            XCTAssertFalse(result.isComplete)
+            XCTAssertEqual(result.candidates.count, 1)
+            XCTAssertEqual(result.scanResult, .inspectionIncomplete)
+            let pressed = DialogPressExecutor.perform(
+                snapshot: result, deadline: .now() + 0.7, session: .init { [:] },
+                decide: { _ in
+                    XCTFail("shared reference must not authorize a decision")
+                    return 0
+                },
+                press: { _, _ in
+                    XCTFail("shared reference must not authorize a press")
+                    return .pressed
+                })
+            XCTAssertEqual(pressed, .inspectionIncomplete)
+        }
+    }
+
     func testExpiredDeadlineAndUnknownMessageMetadataAreIncomplete() {
         XCTAssertFalse(DialogTreeScanner<Provider>().scan(provider: Self.dialog, deadline: .now() - 1).isComplete)
         var p = Self.dialog
