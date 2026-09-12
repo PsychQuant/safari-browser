@@ -11,10 +11,11 @@ final class BoundedDialogProbeTests: XCTestCase {
         var text: String?
         var title: String?
         var roleDelay: TimeInterval = 0
+        var valueSettable: Bool? = false
     }
 
     private enum Operation: String, CaseIterable, Sendable {
-        case windows, windowID, role, subrole, children, text, buttonTitle
+        case windows, windowID, role, subrole, children, text, buttonTitle, valueSettable
     }
 
     private final class Calls: @unchecked Sendable {
@@ -74,6 +75,9 @@ final class BoundedDialogProbeTests: XCTestCase {
         func text(_ node: Int, timeout: Float) throws -> String? {
             try calls.touch(.text, timeout: timeout); return nodes[node]!.text
         }
+        func valueIsSettable(_ node: Int, timeout: Float) throws -> Bool? {
+            try calls.touch(.valueSettable, timeout: timeout); return nodes[node]!.valueSettable
+        }
         func buttonTitle(_ node: Int, timeout: Float) throws -> String? {
             try calls.touch(.buttonTitle, timeout: timeout); return nodes[node]!.title
         }
@@ -102,6 +106,27 @@ final class BoundedDialogProbeTests: XCTestCase {
     func testRecognizesDepthThreeDialogAndCollectsTextAndButtons() {
         let probe = makeProbe()
         XCTAssertEqual(probe.check(windowKey: .id(42)), .present(.init(message: "這是訊息", buttons: ["確定"])))
+    }
+
+    func testReadsSafariAlertBodyInsideScrollAreaWithoutPromptInputOrDuplicateGroupValue() {
+        var nodes = Self.dialogTree
+        nodes[4] = Node(subrole: "AXDialog", children: [5, 8, 6, 10], text: "actual body")
+        nodes[5] = Node(role: "AXStaticText", text: "JavaScript")
+        nodes[8] = Node(role: "AXScrollArea", children: [9])
+        nodes[9] = Node(role: "AXTextArea", text: "actual body")
+        nodes[10] = Node(role: "AXTextField", text: "private prompt answer")
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "JavaScript actual body", buttons: ["確定"])))
+    }
+
+    func testTextAreaMustBeConfirmedReadOnlyBeforeItsValueIsCollected() {
+        for editable: Bool? in [true, nil] {
+            var nodes = Self.dialogTree
+            nodes[4] = Node(subrole: "AXDialog", children: [5, 6, 8])
+            nodes[8] = Node(role: "AXTextArea", text: "private multiline answer", valueSettable: editable)
+            XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                           .present(.init(message: "這是訊息", buttons: ["確定"])))
+        }
     }
 
     func testDialogPathIsNotStarvedByLargeSiblingTabStrip() {
@@ -206,7 +231,11 @@ final class BoundedDialogProbeTests: XCTestCase {
     func testEveryBlockingProviderPhaseHasABoundedCallerWaitAndNoQueue() {
         for operation in Operation.allCases {
             let calls = Calls(blocked: operation)
-            let probe = makeProbe(calls: calls)
+            var nodes = Self.dialogTree
+            if operation == .valueSettable {
+                nodes[5] = Node(role: "AXTextArea", text: "這是訊息")
+            }
+            let probe = makeProbe(calls: calls, nodes: nodes)
             let started = Date()
             XCTAssertEqual(probe.check(windowKey: .id(42)), .unprobed, operation.rawValue)
             XCTAssertLessThan(Date().timeIntervalSince(started), 0.3, "scheduler tolerance for \(operation)")
