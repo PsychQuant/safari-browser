@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Checked wait duration conversion** (#153): duration-only waits reject millisecond values that overflow UInt64 nanoseconds with a validation error. Existing negative-value diagnostics, the full representable range and URL/JavaScript predicate precedence are preserved.
+
 - **Bounded global dialog inspection** (#128): global reads have an 800 ms waiting budget and share one in-flight worker with entry probes. Failed or truncated observations remain incomplete. Dismissal re-reads synchronously and selects the button element from the same text/title snapshot; abandoned background reads never perform actions. A non-running Safari is treated as having no dialogs rather than an Accessibility denial; root modal windows and nested candidates remain explicit.
 
 - **Read native alert bodies** (#127): entry warnings, dialog listings and dismissal preambles now read Safari’s read-only AXTextArea body alongside static source text. Editable prompt fields and duplicate dialog-group values are excluded.
