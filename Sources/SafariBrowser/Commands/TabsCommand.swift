@@ -42,15 +42,17 @@ struct TabsCommand: AsyncParsableCommand {
         if (target.window != nil || target.resolveProfile() != nil),
            let windowID = tabs.first?.windowID,
            let dialog = observation.singleDialog(for: windowID) {
-            TargetOptions.stderrWarnWriter(BlockingDialogWarning.firstLine(windowKey: .id(windowID), dialog: dialog) + "\n")
+            DocumentsCommand.emitDialogWarning(BlockingDialogWarning.firstLine(windowKey: .id(windowID), dialog: dialog) + "\n")
         }
         if json {
+            DocumentsCommand.emitDialogWarning(DocumentsCommand.dialogWarnings(commandName: "tabs",
+                statuses: tabs.map { observation.status(for: $0.windowID) }, includeLegend: false))
             let arr = Self.jsonRows(tabs, observation: observation)
             let data = try JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted, .sortedKeys])
             print(String(data: data, encoding: .utf8) ?? "[]")
         } else {
             let dialogWarning = DocumentsCommand.dialogWarnings(commandName: "tabs", statuses: tabs.map { observation.status(for: $0.windowID) })
-            if !dialogWarning.isEmpty { TargetOptions.stderrWarnWriter(dialogWarning) }
+            DocumentsCommand.emitDialogWarning(dialogWarning)
             for line in Self.formatText(tabs, observation: observation) {
                 print(line)
             }

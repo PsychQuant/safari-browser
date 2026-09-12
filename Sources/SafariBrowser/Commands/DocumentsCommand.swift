@@ -54,6 +54,8 @@ struct DocumentsCommand: AsyncParsableCommand {
         // stable IDs retained during enumeration, never current window order.
         let observation = WindowDialogObservation.capture()
         if json {
+            Self.emitDialogWarning(Self.dialogWarnings(commandName: "documents",
+                statuses: documents.map { observation.status(for: $0.windowID) }, includeLegend: false))
             let data = try JSONSerialization.data(
                 withJSONObject: Self.jsonRows(documents, observation: observation),
                 options: [.prettyPrinted, .sortedKeys]
@@ -68,7 +70,7 @@ struct DocumentsCommand: AsyncParsableCommand {
         // detection use --json's is_current field).
         TargetOptions.stderrWarnWriter(Self.legendLine())
         let dialogWarning = Self.dialogWarnings(commandName: "documents", statuses: documents.map { observation.status(for: $0.windowID) })
-        if !dialogWarning.isEmpty { TargetOptions.stderrWarnWriter(dialogWarning) }
+        Self.emitDialogWarning(dialogWarning)
         if let note = DocumentsCommand.tablessWindowNote(
             for: windows, profileFilter: profileFilter) {
             TargetOptions.stderrWarnWriter(note)
@@ -122,8 +124,14 @@ struct DocumentsCommand: AsyncParsableCommand {
             + "For scripting use blocking_dialog from --json.\n"
     }
 
-    static func dialogWarnings(commandName: String, statuses: [WindowDialogStatus]) -> String {
-        var warning = statuses.contains { $0.state == .present } ? dialogLegendLine(commandName: commandName) : ""
+    static func emitDialogWarning(_ warning: String) {
+        guard !warning.isEmpty else { return }
+        if let context = DaemonRequestContext.current { context.emit(warning) }
+        else { TargetOptions.stderrWarnWriter(warning) }
+    }
+
+    static func dialogWarnings(commandName: String, statuses: [WindowDialogStatus], includeLegend: Bool = true) -> String {
+        var warning = includeLegend && statuses.contains { $0.state == .present } ? dialogLegendLine(commandName: commandName) : ""
         let reasons = Set(statuses.compactMap { status -> String? in
             guard status.state == .unknown, status.reason != "disabled" else { return nil }
             return status.reason ?? "incomplete"

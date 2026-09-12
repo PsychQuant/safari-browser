@@ -135,6 +135,41 @@ final class DialogListingRenderingTests: XCTestCase {
         }
     }
 
+    func testJSONCommandsAndInProcessDocumentsEmitUnknownDiagnosticsUnlessDisabled() async throws {
+        for mode in ["documents", "tabs", "inprocess"] {
+            for disabled in [false, true] {
+                let context = DaemonRequestContext(environment: disabled ? [BlockingDialogGate.optOutVariable: "1"] : [:])
+                let captures = ExecSubprocessOutputTests.Output()
+                try await DaemonRequestContext.$current.withValue(context) {
+                    try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+                        if source == SafariBridge.listAllWindowsScript {
+                            return ["1", "1", "1", "https://fixture.test", "Fixture", "個人 — Fixture", "72"].joined(separator: "\u{1D}")
+                        }
+                        if source.contains("get id of window") { return "72" }
+                        if source.contains("count of tabs") { return "1" }
+                        return "fixture"
+                    }) {
+                        try await WindowDialogObservation.$provider.withValue({
+                            captures.append("capture")
+                            return .unavailable(reason: "incomplete")
+                        }) {
+                            switch mode {
+                            case "documents": try await DocumentsCommand.parse(["--json"]).run()
+                            case "tabs": try await TabsCommand.parse(["--json"]).run()
+                            default:
+                                let output = try await InProcessStepDispatcher().dispatch(cmd: "documents", args: [], sharedTargetArgs: [])
+                                XCTAssertNoThrow(try JSONSerialization.jsonObject(with: Data(output.utf8)))
+                            }
+                        }
+                    }
+                }
+                XCTAssertEqual(captures.text, disabled ? "" : "capture")
+                XCTAssertEqual(context.diagnostics.count, disabled ? 0 : 1, "\(mode), disabled=\(disabled)")
+                if !disabled { XCTAssertTrue(context.diagnostics.joined().contains("unknown (incomplete)")) }
+            }
+        }
+    }
+
     func testEmptyListingsNeverCreateSyntheticRows() {
         let captured = observation()
         XCTAssertTrue(DocumentsCommand.formatText([], observation: captured).isEmpty)
