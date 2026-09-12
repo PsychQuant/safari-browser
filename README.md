@@ -496,6 +496,21 @@ safari-browser tab new --window 2      # new tab in window 2
 
 ### Blocking Dialogs
 
+A pending alert or confirm on a background tab may freeze its JavaScript while
+remaining absent from Safari’s visible dialog tree. After a process timeout or
+an empty `get text` result, fixed-tab targets get a bounded, read-only activity
+check. If the resolved tab is still in the background, stderr explains that a
+pending dialog may be hidden. This is a diagnostic possibility, not proof that
+a dialog exists; empty text keeps its original success status and timeouts keep
+their original error. Unknown/stale observations produce no background claim.
+
+Recheck the target, run `safari-browser tab focus` with the same target flags,
+then inspect `safari-browser dialog list`. These steps are not performed
+automatically, and a timed-out action must not be replayed merely because the
+target was in the background. Normal non-empty results add no activity query.
+The diagnostic uses a direct osascript call with a 0.3-second timeout plus the
+existing maximum one-second termination grace, without requiring AX permission.
+
 `dialog list` waits up to 800 ms for a complete global inspection. Unresponsive windows, failed reads or traversal limits produce a nonzero incomplete-inspection error, never a successful “no dialog” answer. Entry and global probes share one worker; retry after an in-flight inspection finishes. Dismissal re-reads synchronously and refuses an incomplete or expired observation before pressing a named button.
 
 Dialog messages include Safari’s read-only alert body as well as its source heading. Editable prompt fields are excluded; unreadable or incomplete AX details can still limit the message. Text output escapes control characters and marks truncation.
@@ -1089,6 +1104,14 @@ New flags:
 Design rationale lives in `openspec/changes/archive/*-tab-targeting-v2/` after archive (or `openspec/changes/tab-targeting-v2/` while in-flight). The new `human-emulation` principle is documented alongside `non-interference` in `CLAUDE.md`.
 
 ## Development
+
+`make test-background-dialog-harness` runs Safari-free fixture checks.
+`make test-background-dialog` is a separate live acceptance test: it checks the
+GUI session, selected binary’s UUID and child-process-group behavior before
+creating its own nonce fixture. It uses the guarded internal worker to keep
+fixture subprocesses contained while exercising the original CLI commands.
+Exit 77 means the live check was not performed, including on a locked desktop.
+
 
 ```bash
 make build      # debug build

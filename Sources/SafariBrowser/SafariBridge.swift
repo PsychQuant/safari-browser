@@ -202,6 +202,14 @@ enum SafariBridge {
     struct ResolvedScriptTarget {
         let reference: String
         let key: BlockingDialogGate.WindowKey
+        let diagnosticTarget: BackgroundTabDiagnosticTarget?
+
+        init(reference: String, key: BlockingDialogGate.WindowKey,
+             diagnosticTarget: BackgroundTabDiagnosticTarget? = nil) {
+            self.reference = reference
+            self.key = key
+            self.diagnosticTarget = diagnosticTarget
+        }
     }
 
     static func resolveToAppleScript(
@@ -216,14 +224,45 @@ enum SafariBridge {
         _ target: TargetDocument, firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil, profile: String? = nil
     ) async throws -> ResolvedScriptTarget {
-        if case .resolvedTab(let id, _, _, _) = target {
+        if case .resolvedTab(let id, let tab, let matcher, _) = target {
             let key = BlockingDialogGate.WindowKey.id(id)
             BlockingDialogGate.shared.check(key)
-            return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key)
+            return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key,
+                diagnosticTarget: BackgroundTabDiagnosticTarget(windowID: id, tabIndex: tab, matcher: matcher))
         }
         let resolved = try await resolveNativeTarget(from: target, firstMatch: firstMatch,
                                                     warnWriter: warnWriter, profile: profile)
-        return ResolvedScriptTarget(reference: docRefFromResolved(resolved), key: windowKey(for: resolved))
+        return ResolvedScriptTarget(reference: docRefFromResolved(resolved), key: windowKey(for: resolved),
+            diagnosticTarget: backgroundDiagnosticTarget(for: target, resolved: resolved))
+    }
+
+    static func backgroundDiagnosticTarget(
+        for target: TargetDocument, resolved: ResolvedWindowTarget
+    ) -> BackgroundTabDiagnosticTarget? {
+        switch target {
+        case .frontWindow, .windowIndex: return nil
+        default: break
+        }
+        guard let id = resolved.windowID, id > 0,
+              let tab = resolved.anchorTabIndex, tab > 0 else { return nil }
+        let matcher: UrlMatcher?
+        switch target {
+        case .urlMatch(let value): matcher = value
+        case .resolvedTab(_, _, let value, _): matcher = value
+        default: matcher = nil
+        }
+        return BackgroundTabDiagnosticTarget(windowID: id, tabIndex: tab, matcher: matcher)
+    }
+
+    private static func emitBackgroundTabHint(
+        for target: BackgroundTabDiagnosticTarget?, warnWriter: ((String) -> Void)?
+    ) async {
+        guard let target,
+              let warning = BackgroundTabDiagnostics.warning(for: await BackgroundTabDiagnostics.inspect(target)) else { return }
+        let line = warning + "\n"
+        if let warnWriter { warnWriter(line) }
+        else if let context = DaemonRequestContext.current { context.emit(line) }
+        else { FileHandle.standardError.write(Data(line.utf8)) }
     }
 
     /// Identity lookup is separate from the AX probe budget.
@@ -520,14 +559,19 @@ enum SafariBridge {
         _ script: String,
         target: TargetDocument,
         timeout: TimeInterval = SafariBridge.defaultProcessTimeout,
-        dialogKey: BlockingDialogGate.WindowKey? = nil
+        dialogKey: BlockingDialogGate.WindowKey? = nil,
+        diagnosticTarget: BackgroundTabDiagnosticTarget? = nil,
+        warnWriter: ((String) -> Void)? = nil
     ) async throws -> String {
         do {
             return try await runAppleScript(script, timeout: timeout)
         } catch let error as SafariBrowserError {
-            if let key = dialogKey, case .processTimedOut = error {
-                BlockingDialogGate.shared.check(key, forceRefresh: true)
-                try BlockingDialogGate.shared.throwIfBlocked(key)
+            if case .processTimedOut = error {
+                if let key = dialogKey {
+                    BlockingDialogGate.shared.check(key, forceRefresh: true)
+                    try BlockingDialogGate.shared.throwIfBlocked(key)
+                }
+                await emitBackgroundTabHint(for: diagnosticTarget, warnWriter: warnWriter)
             }
             // Only translate when the error is plausibly "document not found"
             // from a non-default target. AppleScript uses error codes -1719
@@ -1417,7 +1461,7 @@ enum SafariBridge {
         // instead of letting osascript find out after its 30 s timeout (#108).
         try BlockingDialogGate.shared.throwIfBlocked(scriptTarget.key)
         do {
-            return try await dispatchJS(code, docRef: scriptTarget.reference, target: target, dialogKey: scriptTarget.key)
+            return try await dispatchJS(code, docRef: scriptTarget.reference, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter)
         } catch let error as SafariBrowserError {
             // #79 bounded retry: the identity-anchored ref dangled
             // (window closed / tab moved / guard tripped). Re-resolve the
@@ -1464,7 +1508,7 @@ enum SafariBridge {
             // letting the retry pay the 30 s osascript timeout.
             try BlockingDialogGate.shared.throwIfBlocked(retry.key)
             do {
-                return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key)
+                return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key, diagnosticTarget: retry.diagnosticTarget, warnWriter: warnWriter)
             } catch let retryError as SafariBrowserError where isTargetDangleError(retryError) {
                 throw SafariBrowserError.targetTabChanged(
                     expected: matcher.description,
@@ -1482,14 +1526,15 @@ enum SafariBridge {
     private static func dispatchJS(
         _ code: String,
         docRef: String,
-        target: TargetDocument, dialogKey: BlockingDialogGate.WindowKey
+        target: TargetDocument, dialogKey: BlockingDialogGate.WindowKey,
+        diagnosticTarget: BackgroundTabDiagnosticTarget?, warnWriter: ((String) -> Void)?
     ) async throws -> String {
         guard case .resolvedTab(_, _, .some(let matcher), _) = target else {
             return try await runTargetedAppleScript("""
                 tell application "Safari"
                     do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
                 end tell
-                """, target: target, dialogKey: dialogKey)
+                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
         }
         if let guardClause = urlGuardClause(for: matcher) {
             return try await runTargetedAppleScript("""
@@ -1498,7 +1543,7 @@ enum SafariBridge {
                     \(guardClause)
                     do JavaScript "\(code.escapedForAppleScript)" in _t
                 end tell
-                """, target: target, dialogKey: dialogKey)
+                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
         }
         // Regex matcher: Swift-side pre-check. The gap between check and
         // dispatch is far narrower than resolve-to-execute was, and a miss
@@ -1507,7 +1552,7 @@ enum SafariBridge {
             tell application "Safari"
                 return URL of \(docRef)
             end tell
-            """, target: target, dialogKey: dialogKey)
+            """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
         guard matcher.matches(currentURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw SafariBrowserError.appleScriptFailed(
                 "SB_TARGET_CHANGED: URL of target tab no longer matches \(matcher.description)")
@@ -1516,7 +1561,7 @@ enum SafariBridge {
             tell application "Safari"
                 do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
             end tell
-            """, target: target, dialogKey: dialogKey)
+            """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
     }
 
     /// Execute JS and read large results via chunked transfer.
@@ -1641,7 +1686,7 @@ enum SafariBridge {
             tell application "Safari"
                 get text of \(scriptTarget.reference)
             end tell
-            """, target: target, dialogKey: scriptTarget.key)
+            """, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter)
         // #89: this is the worst of the dialog symptoms — an empty string with
         // exit 0. A script reading it concludes "the page has no content",
         // which is the opposite of the truth: the page is fine and a dialog is
@@ -1651,6 +1696,7 @@ enum SafariBridge {
         if text.isEmpty {
             BlockingDialogGate.shared.check(scriptTarget.key, forceRefresh: true)
             try BlockingDialogGate.shared.throwIfBlocked(scriptTarget.key)
+            await emitBackgroundTabHint(for: scriptTarget.diagnosticTarget, warnWriter: warnWriter)
         }
         return text
     }
