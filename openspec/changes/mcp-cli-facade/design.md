@@ -55,3 +55,7 @@ https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/stdio
 https://modelcontextprotocol.io/specification/2026-07-28/server/tools
 https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle
 本機swift-argument-parser的_dumpHelp與實際serializationVersion0輸出。
+
+## Native environment inheritance correction (2026-09-13)
+
+普通 Foundation 子程序不能明設 environment=nil；macOS 實測這會丟失 parent 的環境，導致 daemon __serve 看不到 TMPDIR、exec 子命令看不到 debug flag。包裝器只有在 caller 提供非 nil dictionary 時才設定 Foundation environment；nil 沿用未觸碰的繼承預設，explicit empty dictionary 仍代表空環境。既有 MCP POSIX 路徑的 environment ?? inherited 保留。真實子程序測試涵蓋普通／MCP 繼承與普通 explicit empty。先前「普通路徑行為不變」的驗證結論需重做。

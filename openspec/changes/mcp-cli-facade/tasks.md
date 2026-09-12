@@ -8,3 +8,5 @@
 - [x] 2.2 Isolated command worker整合：hidden worker重用原command、image guard與MCP direct routing；實際同步/非同步/help/重建拒絕與既有路由測試。
 - [x] 2.3 Complete facade verification：完整公開catalog/help routing、原CLI regression、schema/stdio/輸出/cancel/error端到端，README與範圍界線。
 - [x] 2.4 凍結提交、獨立交叉審查、PR與issue狀態同步。
+
+- [ ] 修正實測發現的普通子程序 nil 環境未繼承；區分 explicit empty，補實際子程序回歸與重新審查。

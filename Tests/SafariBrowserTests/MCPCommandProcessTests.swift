@@ -11,6 +11,33 @@ final class MCPCommandProcessTests: XCTestCase {
         return child
     }
 
+    func testNilEnvironmentInheritsForOrdinaryAndMCPChildren() throws {
+        let expected = try XCTUnwrap(ProcessInfo.processInfo.environment["PATH"])
+        for isolated in [false, true] {
+            let output = Pipe()
+            let child = fixture("import os,sys; print('inherited' if os.environ.get('PATH') == sys.argv[1] else 'missing')", isolated: isolated)
+            child.arguments!.append(expected)
+            child.standardOutput = output
+            try child.run()
+            let actual = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            child.waitUntilExit()
+            XCTAssertEqual(actual, "inherited\n", "isolated=\(isolated)")
+            XCTAssertEqual(child.terminationStatus, 0)
+        }
+    }
+
+    func testExplicitEmptyEnvironmentDoesNotInheritOrdinaryChildVariables() throws {
+        let output = Pipe()
+        let child = fixture("import os; print('present' if 'PATH' in os.environ else 'absent')", isolated: false)
+        child.environment = [:]
+        child.standardOutput = output
+        try child.run()
+        let actual = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        child.waitUntilExit()
+        XCTAssertEqual(actual, "absent\n")
+        XCTAssertEqual(child.terminationStatus, 0)
+    }
+
     func testMCPInheritsGroupButOrdinaryFoundationRemainsSeparate() throws {
         for isolated in [true, false] {
             let output = Pipe()
