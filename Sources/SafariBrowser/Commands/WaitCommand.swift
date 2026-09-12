@@ -41,16 +41,25 @@ struct WaitCommand: AsyncParsableCommand {
         }
     }
 
+    static func nanoseconds(forMilliseconds milliseconds: Int) throws -> UInt64 {
+        guard milliseconds >= 0 else {
+            throw ValidationError("Milliseconds must be non-negative, got \(milliseconds)")
+        }
+        let converted = UInt64(milliseconds).multipliedReportingOverflow(by: 1_000_000)
+        guard !converted.overflow else {
+            throw ValidationError("Milliseconds exceed the maximum representable wait of \(UInt64.max / 1_000_000), got \(milliseconds)")
+        }
+        return converted.partialValue
+    }
+
     func run() async throws {
         if let forUrl {
             try await waitForURL(pattern: forUrl)
         } else if let js {
             try await waitForJS(expression: js)
         } else if let milliseconds {
-            guard milliseconds >= 0 else {
-                throw ValidationError("Milliseconds must be non-negative, got \(milliseconds)")
-            }
-            try await Task.sleep(nanoseconds: UInt64(milliseconds) * 1_000_000)
+            let duration = try Self.nanoseconds(forMilliseconds: milliseconds)
+            try await Task.sleep(nanoseconds: duration)
         }
     }
 
