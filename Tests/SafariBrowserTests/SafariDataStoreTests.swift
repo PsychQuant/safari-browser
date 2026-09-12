@@ -1,303 +1,203 @@
+import Foundation
 import SQLite3
 import XCTest
-
 @testable import SafariBrowser
 
-/// #109: `SafariDataStore` is the repo's first filesystem read path — every
-/// other command drives Safari through AppleScript, AX, or CoreGraphics. The
-/// tests here pin the two properties that fail *silently* when wrong:
-/// a WAL-mode database copied without its sidecars loses committed rows that
-/// have not been checkpointed, and a temp directory left behind on the error
-/// path leaks until reboot.
 final class SafariDataStoreTests: XCTestCase {
-
-    private var fixtureDir: URL!
-
+    var dir: URL!
     override func setUpWithError() throws {
-        fixtureDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("sds-fixture-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(
-            at: fixtureDir, withIntermediateDirectories: true)
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("data-snapshot-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
+    }
+    override func tearDownWithError() throws { try FileManager.default.removeItem(at: dir) }
+
+    func testErrnoClassificationDoesNotRecommendFDAForResourceFailures() {
+        for code in [EIO, ENOSPC, EROFS, EMFILE] {
+            let error = SafariDataStore.ioError(path: "/source/History.db", code: code)
+            guard case .safariDataReadFailed(let path, let detail) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(path, "/source/History.db")
+            XCTAssertTrue(detail.contains("errno \(code)"))
+            XCTAssertFalse(error.localizedDescription.contains("Full Disk Access"))
+        }
+        for code in [EPERM, EACCES] {
+            guard case .fullDiskAccessRequired = SafariDataStore.ioError(path: "/source", code: code) else { return XCTFail() }
+        }
+        guard case .safariDataFileNotFound = SafariDataStore.ioError(path: "/source", code: ENOENT, allowMissing: true) else { return XCTFail() }
+        guard case .safariDataReadFailed = SafariDataStore.ioError(path: "/source", code: ENOENT) else { return XCTFail("late ENOENT is not initial absence") }
     }
 
-    override func tearDownWithError() throws {
-        if let dir = fixtureDir, FileManager.default.fileExists(atPath: dir.path) {
-            try FileManager.default.removeItem(at: dir)
+    func testPlistReadHasNoTemporaryCopyAndPreservesSourceMode() throws {
+        let source = dir.appendingPathComponent("Bookmarks.plist")
+        let bytes = Data("source bytes".utf8)
+        try bytes.write(to: source)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: source.path)
+        let temp = FileManager.default.temporaryDirectory
+        let before = Set(try FileManager.default.contentsOfDirectory(atPath: temp.path).filter { $0.hasPrefix("safari-data-") })
+        XCTAssertEqual(try SafariDataStore.readPlist(sourceURL: source), bytes)
+        let after = Set(try FileManager.default.contentsOfDirectory(atPath: temp.path).filter { $0.hasPrefix("safari-data-") })
+        XCTAssertEqual(before, after)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: source.path)[.posixPermissions] as? Int, 0o644)
+    }
+
+    func testMissingAndDirectorySourcesAreDifferentErrors() throws {
+        XCTAssertThrowsError(try SafariDataStore.readPlist(sourceURL: dir.appendingPathComponent("absent"))) {
+            guard case SafariBrowserError.safariDataFileNotFound = $0 else { return XCTFail("\($0)") }
+        }
+        XCTAssertThrowsError(try SafariDataStore.readPlist(sourceURL: dir)) {
+            guard case SafariBrowserError.safariDataReadFailed = $0 else { return XCTFail("\($0)") }
         }
     }
 
-    private func write(_ name: String, _ contents: String) throws -> URL {
-        let url = fixtureDir.appendingPathComponent(name)
-        try contents.write(to: url, atomically: true, encoding: .utf8)
-        return url
-    }
-
-    // MARK: - WAL sidecars
-
-    func testCopiesWALSidecarsAlongsideDatabase() throws {
-        let main = try write("X.db", "main")
-        _ = try write("X.db-wal", "wal")
-        _ = try write("X.db-shm", "shm")
-
-        try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: true) { copied in
-            let dir = copied.deletingLastPathComponent()
-            let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
-            XCTAssertEqual(
-                Set(names), ["X.db", "X.db-wal", "X.db-shm"],
-                "the -wal sidecar carries committed-but-uncheckpointed rows; copying "
-                    + "the main file alone silently loses them")
-            XCTAssertEqual(try String(contentsOf: copied, encoding: .utf8), "main")
-        }
-    }
-
-    func testMissingSidecarsProduceAStandInWAL() throws {
-        // Safari checkpoints and removes the sidecars when it closes cleanly,
-        // so their absence is the normal steady state — not a failure. But a
-        // WAL-header database with no -wal cannot be opened read-only at all
-        // (SQLITE_CANTOPEN), so the copy gets an empty stand-in: a zero-length
-        // WAL has no valid header, so recovery replays nothing and reads the
-        // main file, which after a checkpoint holds everything.
-        let main = try write("X.db", "main")
-
-        try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: true) { copied in
-            let dir = copied.deletingLastPathComponent()
-            let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
-            XCTAssertEqual(Set(names), ["X.db", "X.db-wal"])
-            let size = try FileManager.default
-                .attributesOfItem(atPath: copied.path + "-wal")[.size] as? Int
-            XCTAssertEqual(size, 0, "the stand-in must be empty, not a copy of anything")
-        }
-    }
-
-    func testPlistSourceGetsNoStandInWAL() throws {
-        // The stand-in is meaningless for a plist and must not appear there.
-        let main = try write("Bookmarks.plist", "plist")
-        try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: false) { copied in
-            let dir = copied.deletingLastPathComponent()
-            let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
-            XCTAssertEqual(Set(names), ["Bookmarks.plist"])
-        }
-    }
-
-    func testPlistSourceCopiesOnlyTheFileItself() throws {
-        let main = try write("Bookmarks.plist", "plist")
-        // A stray same-prefixed file must not be swept in when sidecars are off.
-        _ = try write("Bookmarks.plist-wal", "should not be copied")
-
-        try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: false) { copied in
-            let dir = copied.deletingLastPathComponent()
-            let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
-            XCTAssertEqual(Set(names), ["Bookmarks.plist"])
-        }
-    }
-
-    // MARK: - Temp directory lifetime
-
-    func testTempDirectoryIsRemovedAfterSuccess() throws {
-        let main = try write("X.db", "main")
-        var observed: URL?
-
-        try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: false) { copied in
-            observed = copied.deletingLastPathComponent()
-        }
-
-        let dir = try XCTUnwrap(observed)
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: dir.path),
-            "temp copy must not outlive the call")
-    }
-
-    func testTempDirectoryIsRemovedWhenBodyThrows() throws {
-        struct Boom: Error {}
-        let main = try write("X.db", "main")
-        var observed: URL?
-
-        XCTAssertThrowsError(
-            try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: false) { copied in
-                observed = copied.deletingLastPathComponent()
-                throw Boom()
+    func testWALSnapshotIsCoherentAndReleasesReadTransactionBeforeConsumer() throws {
+        let url = dir.appendingPathComponent("History.db")
+        var writer: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &writer), SQLITE_OK)
+        defer { sqlite3_close(writer) }
+        XCTAssertEqual(sqlite3_exec(writer, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t(n INTEGER, pad TEXT); BEGIN;", nil, nil, nil), SQLITE_OK)
+        for i in 0..<2000 { XCTAssertEqual(sqlite3_exec(writer, "INSERT INTO t VALUES(\(i),printf('%0500d',1))", nil, nil, nil), SQLITE_OK) }
+        XCTAssertEqual(sqlite3_exec(writer, "COMMIT", nil, nil, nil), SQLITE_OK)
+        var changed = false
+        try SQLiteReader.withSnapshot(at: url, afterStep: {
+            if !changed {
+                changed = true
+                XCTAssertEqual(sqlite3_exec(writer, "INSERT INTO t VALUES(2000,'later')", nil, nil, nil), SQLITE_OK)
+                // A pinned reader can block TRUNCATE; do not assume sidecars
+                // copied before and after this operation constitute a snapshot.
+                _ = sqlite3_wal_checkpoint_v2(writer, nil, SQLITE_CHECKPOINT_PASSIVE, nil, nil)
             }
-        ) { error in
-            XCTAssertTrue(error is Boom, "the body's error must propagate unchanged")
+        }) { snapshot in
+            XCTAssertEqual(snapshot.sourceURL, url)
+            XCTAssertEqual(try SQLiteReader.query(in: snapshot, sql: "SELECT count(*) FROM t") { $0[0].intValue }, [2000])
+            let files = try SQLiteReader.query(in: snapshot, sql: "PRAGMA database_list") { $0[2].stringValue }
+            XCTAssertEqual(files, [""])
+            XCTAssertEqual(try SQLiteReader.query(in: snapshot, sql: "PRAGMA temp_store") { $0[0].intValue }, [2])
+            XCTAssertThrowsError(try SQLiteReader.query(in: snapshot, sql: "DELETE FROM t") { _ -> Int? in nil })
+            XCTAssertEqual(sqlite3_wal_checkpoint_v2(writer, nil, SQLITE_CHECKPOINT_TRUNCATE, nil, nil), SQLITE_OK,
+                           "consumer must not hold the source transaction open")
         }
-
-        let dir = try XCTUnwrap(observed)
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: dir.path),
-            "the error path is exactly where a caller-managed cleanup contract leaks")
+        XCTAssertTrue(changed)
+        XCTAssertEqual(try SQLiteReader.query(at: url, sql: "SELECT count(*) FROM t") { $0[0].intValue }, [2001])
     }
 
-    func testEachCallGetsItsOwnDirectory() throws {
-        let main = try write("X.db", "main")
-        var first: URL?
-        var second: URL?
-
-        try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: false) {
-            first = $0.deletingLastPathComponent()
-        }
-        try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: false) {
-            second = $0.deletingLastPathComponent()
-        }
-
-        XCTAssertNotEqual(first, second, "concurrent invocations must not share a directory")
-    }
-
-    // MARK: - Sidecar copy failure (#109 verify HIGH-2)
-
-    /// `-wal` holds committed rows not yet checkpointed into the main file.
-    /// The original code copied it with `try?`, so a copy failure silently
-    /// produced a database missing the most recent activity — the exact
-    /// silence `hasWALSidecars` was introduced to prevent.
-    func testWALCopyFailureIsFatalRatherThanSilent() throws {
-        try XCTSkipIf(getuid() == 0, "root bypasses the mode-000 read denial this test needs")
-
-        let main = try write("X.db", "main")
-        // Present to `fileExists` but unreadable to `copyItem` — the shape of
-        // a real mid-copy failure (I/O error, race with Safari's checkpoint,
-        // permission change) without having to provoke one.
-        let wal = try write("X.db-wal", "wal")
-        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: wal.path)
-        addTeardownBlock {
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o600], ofItemAtPath: wal.path)
-        }
-        XCTAssertTrue(
-            FileManager.default.fileExists(atPath: wal.path),
-            "precondition: the guard in withCopy must see the sidecar as present")
-
-        XCTAssertThrowsError(
-            try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: true) { _ in }
-        ) { error in
-            guard case SafariBrowserError.safariDataParseFailed(_, let detail) = error else {
-                return XCTFail("expected safariDataParseFailed, got \(error)")
-            }
-            XCTAssertTrue(
-                detail.contains("write-ahead log"),
-                "the error must say the WAL is the problem, not just 'copy failed' — got: \(detail)")
-        }
-    }
-
-    /// `-shm` is only the shared-memory index; SQLite rebuilds it. Its loss
-    /// must NOT abort the command — only `-wal` carries data.
-    func testSHMCopyFailureIsNotFatal() throws {
-        try XCTSkipIf(getuid() == 0, "root bypasses the mode-000 read denial this test needs")
-
-        let main = try write("X.db", "main")
-        _ = try write("X.db-wal", "wal")
-        let shm = try write("X.db-shm", "shm")
-        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: shm.path)
-        addTeardownBlock {
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o600], ofItemAtPath: shm.path)
-        }
-
-        var ran = false
-        try SafariDataStore.withCopy(sourceURL: main, includeWALSidecars: true) { copied in
-            ran = true
-            let dir = copied.deletingLastPathComponent()
-            let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
-            XCTAssertTrue(names.contains("X.db-wal"), "the data-bearing sidecar must still land")
-        }
-        XCTAssertTrue(ran, "a -shm problem must not prevent the body from running")
-    }
-
-    // MARK: - Real WAL-mode databases (#109 verify round 2, LOGIC-1)
-
-    /// Builds a genuine WAL-mode SQLite database. Every other fixture in this
-    /// file writes text files named `*.db`, which is why no test in this repo
-    /// ever exercised what SQLite actually does with a WAL header — and why
-    /// LOGIC-1 survived two rounds of review.
-    private func makeWALDatabase(rows: Int, checkpoint: Bool) throws -> URL {
-        let url = fixtureDir.appendingPathComponent("W.db")
+    func testSnapshotSupportsNonDefaultPageSizesAndSourcePathsOnFailure() throws {
+        let url = dir.appendingPathComponent("CloudTabs.db")
         var db: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &db), SQLITE_OK)
-        XCTAssertEqual(sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil), SQLITE_OK)
-        XCTAssertEqual(sqlite3_exec(db, "CREATE TABLE t (n INTEGER)", nil, nil, nil), SQLITE_OK)
-        for i in 0..<rows {
-            XCTAssertEqual(
-                sqlite3_exec(db, "INSERT INTO t VALUES (\(i))", nil, nil, nil), SQLITE_OK)
-        }
-        if checkpoint {
-            XCTAssertEqual(
-                sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil), SQLITE_OK)
-        }
+        XCTAssertEqual(sqlite3_exec(db,"PRAGMA page_size=1024; CREATE TABLE t(x); INSERT INTO t VALUES(3)",nil,nil,nil),SQLITE_OK)
         sqlite3_close(db)
-        return url
-    }
-
-    private func rowCount(at url: URL) throws -> Int {
-        try SQLiteReader.query(at: url, sql: "SELECT n FROM t") { $0[0].intValue }.count
-    }
-
-    /// The case that broke: Safari checkpoints and removes the sidecars on a
-    /// clean quit — the state the copy loop's own comment calls normal — and a
-    /// WAL-header database with no `-wal` cannot be opened read-only at all.
-    /// SQLite creates a missing `-shm` but refuses to create a missing `-wal`
-    /// on a read-only connection, so the user was told their data file was
-    /// unparseable when nothing was wrong with it.
-    func testCheckpointedDatabaseWithNoSidecarsIsStillReadable() throws {
-        let source = try makeWALDatabase(rows: 300, checkpoint: true)
-        // A TRUNCATE checkpoint empties the -wal but the file can survive the
-        // close; Safari's own clean quit removes it. Construct that state
-        // explicitly rather than depending on which of the two happens here.
-        for suffix in ["-wal", "-shm"] {
-            try? FileManager.default.removeItem(atPath: source.path + suffix)
-        }
-        XCTAssertFalse(
-            FileManager.default.fileExists(atPath: source.path + "-wal"),
-            "precondition: the source has no -wal, as after a clean Safari quit")
-
-        try SafariDataStore.withCopy(sourceURL: source, includeWALSidecars: true) { copied in
-            XCTAssertEqual(
-                try self.rowCount(at: copied), 300,
-                "a checkpointed WAL database must still read; without a stand-in -wal "
-                    + "SQLite returns SQLITE_CANTOPEN and the command reports corruption")
-        }
-    }
-
-    /// The complementary case: rows that live only in an uncheckpointed `-wal`
-    /// must survive the copy. This is what `hasWALSidecars` exists for, and
-    /// what a `try?` around the sidecar copy used to lose silently.
-    func testUncheckpointedRowsSurviveTheCopy() throws {
-        let source = try makeWALDatabase(rows: 300, checkpoint: false)
-        XCTAssertTrue(
-            FileManager.default.fileExists(atPath: source.path + "-wal"),
-            "precondition: without a checkpoint the rows are still in the -wal")
-
-        try SafariDataStore.withCopy(sourceURL: source, includeWALSidecars: true) { copied in
-            XCTAssertEqual(
-                try self.rowCount(at: copied), 300,
-                "rows committed to the -wal but not checkpointed must be visible")
-        }
-    }
-
-    // MARK: - Missing source
-
-    func testMissingSourceThrowsDataFileNotFound() throws {
-        let absent = fixtureDir.appendingPathComponent("NoSuchFile.db")
-
-        XCTAssertThrowsError(
-            try SafariDataStore.withCopy(sourceURL: absent, includeWALSidecars: true) { _ in }
-        ) { error in
-            guard case SafariBrowserError.safariDataFileNotFound = error else {
-                return XCTFail("expected safariDataFileNotFound, got \(error)")
+        let before = try Data(contentsOf: url)
+        try SafariDataStore.withDatabaseSnapshot(sourceURL: url) { memory in
+            XCTAssertEqual(try SQLiteReader.query(in: memory,sql:"SELECT x FROM t") { $0[0].intValue },[3])
+            XCTAssertThrowsError(try SQLiteReader.query(in: memory,sql:"SELECT missing FROM t") { $0[0].intValue }) {
+                guard case SafariBrowserError.safariDataParseFailed(let path, _) = $0 else { return XCTFail("\($0)") }
+                XCTAssertEqual(path,url.path)
             }
         }
+        XCTAssertEqual(try Data(contentsOf: url),before)
     }
 
-    // MARK: - File descriptors
-
-    func testFilenamesForEachSource() {
-        XCTAssertEqual(SafariDataFile.history.filename, "History.db")
-        XCTAssertEqual(SafariDataFile.bookmarks.filename, "Bookmarks.plist")
-        XCTAssertEqual(SafariDataFile.cloudTabs.filename, "CloudTabs.db")
-        XCTAssertEqual(SafariDataFile.downloads.filename, "Downloads.plist")
+    func testCheckpointedWALWithoutSidecarsIsReadable() throws {
+        let url = dir.appendingPathComponent("closed.db")
+        var writer: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path, &writer), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(writer,"PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES(42); PRAGMA wal_checkpoint(TRUNCATE)",nil,nil,nil),SQLITE_OK)
+        sqlite3_close(writer)
+        for suffix in ["-wal", "-shm"] { try? FileManager.default.removeItem(atPath:url.path+suffix) }
+        let before = try Data(contentsOf:url)
+        XCTAssertEqual(Array(before[18..<20]),[2,2])
+        let rows = try SafariDataStore.withDatabaseSnapshot(sourceURL:url) { db in
+            try SQLiteReader.query(in:db,sql:"SELECT x FROM t") { $0[0].intValue }
+        }
+        XCTAssertEqual(rows,[42])
+        XCTAssertEqual(try Data(contentsOf:url),before)
     }
 
-    func testOnlySQLiteSourcesCarryWALSidecars() {
-        XCTAssertTrue(SafariDataFile.history.hasWALSidecars)
-        XCTAssertTrue(SafariDataFile.cloudTabs.hasWALSidecars)
-        XCTAssertFalse(SafariDataFile.bookmarks.hasWALSidecars)
-        XCTAssertFalse(SafariDataFile.downloads.hasWALSidecars)
+    func testCheckpointedLeaseExcludesSQLiteWriterAndEndsBeforeConsumer() throws {
+        let url = dir.appendingPathComponent("exclusive.db")
+        var setup: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path,&setup),SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(setup,"PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES(1); PRAGMA wal_checkpoint(TRUNCATE)",nil,nil,nil),SQLITE_OK)
+        sqlite3_close(setup)
+        for suffix in ["-wal","-shm"] { try? FileManager.default.removeItem(atPath:url.path+suffix) }
+        var writer: OpaquePointer?
+        defer { sqlite3_close(writer) }
+        var attempted = false
+        let memory = try SQLiteReader.checkpointedSnapshot(at:url,deadline:ProcessInfo.processInfo.systemUptime+1,timeout:1,afterStep:{
+            if !attempted {
+                attempted = true
+                let unrelated = Darwin.open(url.path, O_RDONLY)
+                XCTAssertGreaterThanOrEqual(unrelated, 0)
+                if unrelated >= 0 { close(unrelated) }
+                XCTAssertEqual(sqlite3_open(url.path,&writer),SQLITE_OK)
+                sqlite3_busy_timeout(writer,1)
+                let rc=sqlite3_exec(writer,"INSERT INTO t VALUES(2)",nil,nil,nil)
+                XCTAssertTrue(rc == SQLITE_BUSY || rc == SQLITE_LOCKED,"writer escaped lease: \(rc)")
+            }
+        },originalError: .safariDataReadFailed(path:url.path,detail:"offline fixture"))
+            XCTAssertEqual(try SQLiteReader.query(in:memory,sql:"SELECT x FROM t") { $0[0].intValue },[1])
+            XCTAssertEqual(sqlite3_exec(writer,"INSERT INTO t VALUES(2)",nil,nil,nil),SQLITE_OK,
+                           "source lease must be released before consumer runs")
+
+        XCTAssertTrue(attempted)
+    }
+
+    func testCheckpointedReadDoesNotRequireWritingTheSourceDirectory() throws {
+        let folder=dir.appendingPathComponent("read-only-directory")
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:false)
+        defer { try? FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:folder.path) }
+        let url=folder.appendingPathComponent("t.db")
+        var db:OpaquePointer?;XCTAssertEqual(sqlite3_open(url.path,&db),SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db,"PRAGMA journal_mode=WAL; CREATE TABLE t(x); INSERT INTO t VALUES(8); PRAGMA wal_checkpoint(TRUNCATE)",nil,nil,nil),SQLITE_OK);sqlite3_close(db)
+        for suffix in ["-wal","-shm"] { try? FileManager.default.removeItem(atPath:url.path+suffix) }
+        let before=try Data(contentsOf:url)
+        try FileManager.default.setAttributes([.posixPermissions:0o500],ofItemAtPath:folder.path)
+        XCTAssertEqual(try SafariDataStore.withDatabaseSnapshot(sourceURL:url) { try SQLiteReader.query(in:$0,sql:"SELECT x FROM t") { $0[0].intValue } },[8])
+        XCTAssertEqual(try Data(contentsOf:url),before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath:folder.path),["t.db"])
+    }
+
+    func testOfflineFallbackRejectsUnsafeSidecarsSymlinksAndUnavailableLease() throws {
+        let url = dir.appendingPathComponent("reject.db")
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path,&db),SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db,"PRAGMA journal_mode=WAL; CREATE TABLE t(x); PRAGMA wal_checkpoint(TRUNCATE)",nil,nil,nil),SQLITE_OK)
+        sqlite3_close(db)
+        for suffix in ["-wal","-shm"] { try? FileManager.default.removeItem(atPath:url.path+suffix) }
+        let before=try Data(contentsOf:url)
+        func reject(_ target:URL, contains text:String) {
+            XCTAssertThrowsError(try SQLiteReader.checkpointedSnapshot(at:target,
+                deadline:ProcessInfo.processInfo.systemUptime+0.03,timeout:0.03,
+                afterStep:{ XCTFail("unsafe fallback started backup") },
+                originalError:.safariDataReadFailed(path:target.path,detail:"initial fixture failure"))) {
+                guard case SafariBrowserError.safariDataReadFailed(_,let detail) = $0 else { return XCTFail("\($0)") }
+                XCTAssertTrue(detail.contains(text),detail)
+            }
+        }
+        for suffix in ["-wal","-journal"] {
+            let sidecar=URL(fileURLWithPath:url.path+suffix)
+            try Data("nonempty".utf8).write(to:sidecar)
+            reject(url,contains:suffix)
+            try FileManager.default.removeItem(at:sidecar)
+        }
+        let link=dir.appendingPathComponent("alias.db")
+        try FileManager.default.createSymbolicLink(at:link,withDestinationURL:url)
+        reject(link,contains:"lock-capable descriptor")
+        let fd=Darwin.open(url.path,O_RDWR)
+        XCTAssertGreaterThanOrEqual(fd,0)
+        defer { close(fd) }
+        var lease=flock(l_start:0x40000000,l_len:512,l_pid:0,l_type:Int16(F_WRLCK),l_whence:Int16(SEEK_SET))
+        XCTAssertEqual(fcntl(fd,F_OFD_SETLK,&lease),0)
+        reject(url,contains:"exclusive lease")
+        XCTAssertEqual(try Data(contentsOf:url),before)
+    }
+
+    func testSnapshotDeadlineAndThrowingConsumerLeaveNoCopy() throws {
+        let url=dir.appendingPathComponent("t.db")
+        var db: OpaquePointer?; XCTAssertEqual(sqlite3_open(url.path,&db),SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db,"CREATE TABLE t(x)",nil,nil,nil),SQLITE_OK);sqlite3_close(db)
+        XCTAssertThrowsError(try SQLiteReader.withSnapshot(at:url,timeout:0.01,afterStep:{Thread.sleep(forTimeInterval:0.02)}) { _ in XCTFail("late snapshot escaped") })
+        struct ConsumerError: Error {}
+        XCTAssertThrowsError(try SafariDataStore.withDatabaseSnapshot(sourceURL:url) { _ in throw ConsumerError() })
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath:dir.path),["t.db"])
     }
 }

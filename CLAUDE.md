@@ -324,14 +324,15 @@ V1 wires marker 到 `ClickCommand` 作為 reference integration。其他 30+ com
 1. **Full Disk Access 綁在 code signature 上，不是綁在路徑上。** 「裸 CLI 拿不到自己的 FDA」
    是錯的——Developer ID 簽章的 binary 放在 `~/bin` 一樣持有自己的 grant。`CodeSigningState`
    就是為此存在：ad-hoc 簽章的 binary 叫使用者去系統設定加 FDA 是**錯的建議**，那筆授權綁不住。
-   TCC 拒絕 `open()` 但**不**拒絕 `stat()`，所以 `fileExists` 仍回 true。
-2. **Core Data epoch = 2001-01-01**，與 Unix epoch 差 `978307200` 秒。`History.db` /
-   `CloudTabs.db` 要加這個 offset；**`Downloads.plist` 不要**（它是原生 plist `Date`）。
+   讀取用保留 errno 的 open/read，不能用 `fileExists` 推論授權；EIO/ENOSPC 等不得誤導成 FDA。
+2. **Core Data epoch = 2001-01-01**，與 Unix epoch 差 `978307200` 秒。`History.db` 要加這個 offset；目前
+   `cloud-tabs` 不讀日期欄位；**`Downloads.plist` 不要**（它是原生 plist `Date`）。
    搞錯不報錯，只讓時間安靜偏移 31 年。
-3. **WAL 兩個方向都會咬人。** 只複製主檔 → 安靜掉掉未 checkpoint 的列；主檔 header 說 WAL
-   而 `-wal` 不存在 → `SQLITE_OPEN_READONLY` 回 `SQLITE_CANTOPEN`（SQLite 肯重建 `-shm`，
-   不肯在唯讀連線生 `-wal`），而那正是 Safari 乾淨結束後的常態。修法是補一個**零長度**
-   `-wal` stand-in。**絕不原地讀 live 檔**——一律 copy-then-read，清理走 scope-based `defer`。
+3. **WAL 要由 SQLite 管理一致性。** #111–#113 已退休逐檔 `withCopy` 與零長度 WAL
+   stand-in，改用唯讀來源連線、read transaction 與 Backup API 備份到 `:memory:`。
+   SQLite 會參與正常讀鎖／WAL index 管理；不寫來源資料內容。讀 transaction 在消費
+   記憶體快照前結束。Plist 直接讀成 Data，沒有新的磁碟複本，因此 signal 也不會留下
+   `safari-data-*`。舊殘留不憑 prefix 刪除；0700/0600 也不是同 UID 隔離。
 4. **需要權限 ≠ 有干擾。** 四個指令都是 **Non-interfering**：干擾等級講的是「對使用者當下的
    操作做了什麼」，不是「需要什麼權限」。但它們另有一個正交維度——**資料敏感度**：`history`
    與 `downloads` 暴露長期行為紀錄，因此帶預設上限，不讓裸呼叫傾倒整份紀錄。

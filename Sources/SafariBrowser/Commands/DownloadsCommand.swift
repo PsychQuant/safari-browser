@@ -40,55 +40,49 @@ struct DownloadsCommand: ParsableCommand {
     static let dateAddedKey = "DownloadEntryDateAddedKey"
 
     static func entries(inPlistAt url: URL, limit: Int) throws -> [DownloadEntry] {
-        let data: Data
-        do {
-            data = try Data(contentsOf: url)
-        } catch {
-            throw SafariBrowserError.safariDataParseFailed(
-                path: url.path, detail: "could not read file: \(error.localizedDescription)")
-        }
+        try entries(in: SafariDataStore.readPlist(sourceURL: url), sourceURL: url, limit: limit)
+    }
 
-        let root: Any
-        do {
-            root = try PropertyListSerialization.propertyList(
-                from: data, options: [], format: nil)
-        } catch {
-            throw SafariBrowserError.safariDataParseFailed(
-                path: url.path,
-                detail: "property list decoding failed: \(error.localizedDescription)")
-        }
-
+    static func entries(in data: Data, sourceURL: URL, limit: Int) throws -> [DownloadEntry] {
+        guard limit > 0 else { throw ValidationError("--limit must be a positive integer.") }
+        let root = try SchemaDiagnostics.plist(data, sourceURL: sourceURL)
         guard let dictionary = root as? [String: Any],
-            let rawEntries = dictionary[historyKey] as? [[String: Any]]
+            let rawEntries = dictionary[historyKey] as? [Any]
         else {
             throw SafariBrowserError.safariDataParseFailed(
-                path: url.path, detail: "expected a '\(historyKey)' array at the root")
+                path: sourceURL.path, detail: "expected a '\(historyKey)' array at the root")
         }
-
-        return
-            rawEntries
-            .compactMap { parse($0) }
-            .sorted { lhs, rhs in
-                // Most recent first, matching `history`. Entries without a
-                // date sort last rather than being dropped — the download
-                // still happened.
-                switch (lhs.date, rhs.date) {
-                case let (l?, r?): return l > r
-                case (nil, _?): return false
-                case (_?, nil): return true
-                case (nil, nil): return false
-                }
+        var diagnostics = SchemaDiagnostics(sourceURL: sourceURL, context: "downloads")
+        var results: [(index: Int, entry: DownloadEntry)] = []
+        for (index, raw) in rawEntries.enumerated() {
+            guard let raw = raw as? [String: Any] else {
+                diagnostics.invalid(at: "DownloadHistory[\(index)]", field: "dictionary")
+                continue
             }
-            .prefix(limit)
-            .map { $0 }
+            guard let entry = parse(raw) else {
+                diagnostics.invalid(at: "DownloadHistory[\(index)]", field: pathKey)
+                continue
+            }
+            diagnostics.valid()
+            results.append((index, entry))
+        }
+        try diagnostics.finish()
+        return results.sorted { lhs, rhs in
+            switch (lhs.entry.date, rhs.entry.date) {
+            case let (l?, r?) where l != r: return l > r
+            case (nil, _?): return false
+            case (_?, nil): return true
+            default: return lhs.index < rhs.index
+            }
+        }.prefix(limit).map(\.entry)
     }
 
     static func parse(_ raw: [String: Any]) -> DownloadEntry? {
-        guard let path = raw[pathKey] as? String else { return nil }
+        guard let path = SchemaDiagnostics.requiredString(raw[pathKey]) else { return nil }
         return DownloadEntry(
             filename: (path as NSString).lastPathComponent,
             sourceURL: raw[urlKey] as? String ?? "",
-            date: raw[dateAddedKey] as? Date)
+            date: SchemaDiagnostics.representableDate(raw[dateAddedKey] as? Date))
     }
 
     // MARK: - Formatting
@@ -100,8 +94,8 @@ struct DownloadsCommand: ParsableCommand {
         formatter.timeZone = timeZone
 
         let stamp = entry.date.map { formatter.string(from: $0) } ?? "(no date)"
-        let source = entry.sourceURL.isEmpty ? "" : " ← \(entry.sourceURL)"
-        return "[\(index)]  \(stamp)  \(entry.filename)\(source)"
+        let source = entry.sourceURL.isEmpty ? "" : " ← \(LocalDataOutput.sanitizeTextField(entry.sourceURL))"
+        return "[\(index)]  \(stamp)  \(LocalDataOutput.sanitizeTextField(entry.filename))\(source)"
     }
 
     static func encodeJSON(_ entries: [DownloadEntry]) throws -> Data {
@@ -124,15 +118,18 @@ struct DownloadsCommand: ParsableCommand {
     // MARK: - Run
 
     func run() throws {
+        try run(sourceURL: SafariDataStore.sourceURL(for: .downloads))
+    }
+
+    func run(sourceURL: URL) throws {
         guard limit > 0 else {
             throw ValidationError("--limit must be a positive integer.")
         }
 
         let results: [DownloadEntry]
         do {
-            results = try SafariDataStore.withCopy(.downloads) { copy in
-                try DownloadsCommand.entries(inPlistAt: copy, limit: limit)
-            }
+            results = try DownloadsCommand.entries(
+                in: SafariDataStore.readPlist(sourceURL: sourceURL), sourceURL: sourceURL, limit: limit)
         } catch let error as SafariBrowserError {
             if case .safariDataFileNotFound = error {
                 LocalDataOutput.reportAbsentSource(.downloads, json: json)

@@ -40,21 +40,37 @@ struct CloudTabsCommand: ParsableCommand {
         """
 
     static func tabs(inDatabaseAt url: URL) throws -> [CloudTab] {
-        try SQLiteReader.query(at: url, sql: sql) { row -> CloudTab? in
-            guard row.count >= 3, let tabURL = row[2].stringValue else { return nil }
+        try SQLiteReader.withDatabase(at: url) { database in
+            try tabs(in: database)
+        }
+    }
+
+    static func tabs(in database: SQLiteReader.Database) throws -> [CloudTab] {
+        var diagnostics = SchemaDiagnostics(sourceURL: database.sourceURL, context: "cloud-tabs")
+        var index = 0
+        let results = try SQLiteReader.query(in: database, sql: sql) { row -> CloudTab? in
+            defer { index += 1 }
+            guard row.count >= 3,
+                let tabURL = SchemaDiagnostics.requiredString(row[2].stringValue)
+            else {
+                diagnostics.invalid(at: "row[\(index)]", field: "url")
+                return nil
+            }
+            diagnostics.valid()
             return CloudTab(
                 device: row[0].stringValue ?? "(unknown device)",
-                title: row[1].stringValue ?? "",
-                url: tabURL)
+                title: row[1].stringValue ?? "", url: tabURL)
         }
+        try diagnostics.finish()
+        return results
     }
 
     // MARK: - Formatting
 
     static func formatRow(index: Int, tab: CloudTab) -> String {
-        let title = tab.title.replacingOccurrences(of: "\n", with: " ")
+        let title = LocalDataOutput.sanitizeTextField(tab.title)
         let suffix = title.isEmpty ? "" : " — \(title)"
-        return "[\(index)]  \(tab.device)  \(tab.url)\(suffix)"
+        return "[\(index)]  \(LocalDataOutput.sanitizeTextField(tab.device))  \(LocalDataOutput.sanitizeTextField(tab.url))\(suffix)"
     }
 
     static func encodeJSON(_ tabs: [CloudTab]) throws -> Data {
@@ -67,10 +83,14 @@ struct CloudTabsCommand: ParsableCommand {
     // MARK: - Run
 
     func run() throws {
+        try run(sourceURL: SafariDataStore.sourceURL(for: .cloudTabs))
+    }
+
+    func run(sourceURL: URL) throws {
         let results: [CloudTab]
         do {
-            results = try SafariDataStore.withCopy(.cloudTabs) { copy in
-                try CloudTabsCommand.tabs(inDatabaseAt: copy)
+            results = try SafariDataStore.withDatabaseSnapshot(sourceURL: sourceURL) { database in
+                try CloudTabsCommand.tabs(in: database)
             }
         } catch let error as SafariBrowserError {
             if case .safariDataFileNotFound = error {
