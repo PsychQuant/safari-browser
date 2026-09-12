@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Bounded global dialog inspection** (#128): global reads have an 800 ms waiting budget and share one in-flight worker with entry probes. Failed or truncated observations remain incomplete. Dismissal re-reads synchronously and selects the button element from the same text/title snapshot; abandoned background reads never perform actions. A non-running Safari is treated as having no dialogs rather than an Accessibility denial; root modal windows and nested candidates remain explicit.
+
 - **Read native alert bodies** (#127): entry warnings, dialog listings and dismissal preambles now read Safari’s read-only AXTextArea body alongside static source text. Editable prompt fields and duplicate dialog-group values are excluded.
 
 - **Private and consistent local-data reads** (#111–#113): SQLite Backup API creates an in-memory snapshot under a read transaction; plist data stays in memory too. The commands no longer create unprotected filesystem copies of browser data. Source errno distinguishes missing files, permissions, I/O and parse failures, with source-path diagnostics. Read locks are released before querying the private snapshot; SQLite manages normal WAL coordination. A checkpointed WAL source without usable sidecars can use an exclusive descriptor lease on local APFS/HFS before immutable read-only backup; it never creates source sidecars, requires locking access, and fails explicitly when safety conditions are unavailable. SQLite auxiliary-file ENOENT can no longer masquerade as missing main data.

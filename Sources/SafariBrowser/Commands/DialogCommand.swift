@@ -50,7 +50,13 @@ struct DialogListCommand: AsyncParsableCommand {
     static let noDialogMessage = "no blocking dialog found"
 
     func run() async throws {
-        switch SafariBridge.scanBlockingDialogs() {
+        print(try Self.output(for: SafariBridge.scanBlockingDialogs()))
+    }
+
+    static func output(for scan: SafariBridge.DialogScan) throws -> String {
+        switch scan {
+        case .inspectionIncomplete:
+            throw SafariBrowserError.dialogInspectionIncomplete
         case .sessionLocked:
             throw SafariBrowserError.guiSessionLocked
         case .sessionUnavailable:
@@ -58,9 +64,9 @@ struct DialogListCommand: AsyncParsableCommand {
         case .accessibilityDenied:
             throw SafariBrowserError.accessibilityRequired(flag: "dialog list")
         case .none:
-            print(DialogListCommand.noDialogMessage)
+            return DialogListCommand.noDialogMessage
         case .one(let dialog):
-            print(DialogListCommand.describe(dialog))
+            return DialogListCommand.describe(dialog)
         case .many(let messages):
             // Fail-closed rather than showing one of several: the next step is
             // `dismiss`, and a listing that silently picked one would send the
@@ -174,6 +180,8 @@ struct DialogDismissCommand: AsyncParsableCommand {
     func run() async throws {
         let dialog: SafariBridge.BlockingDialog
         switch SafariBridge.scanBlockingDialogs() {
+        case .inspectionIncomplete:
+            throw SafariBrowserError.dialogInspectionIncomplete
         case .sessionLocked:
             throw SafariBrowserError.guiSessionLocked
         case .sessionUnavailable:
@@ -210,12 +218,16 @@ struct DialogDismissCommand: AsyncParsableCommand {
             }
 
             switch outcome {
+            case .inspectionIncomplete:
+                throw SafariBrowserError.dialogInspectionIncomplete
             case .pressed:
                 // AXPress success means the action was dispatched, not that the
                 // dialog closed — a page that queues several alerts puts the
                 // next one up immediately. Say which happened rather than
                 // letting "pressed" imply "gone".
                 switch SafariBridge.scanBlockingDialogs() {
+                case .inspectionIncomplete:
+                    print("pressed; could not re-check every Safari window — run `dialog list`")
                 case .none:
                     print("pressed; no dialog remains")
                 case .one(let still):
