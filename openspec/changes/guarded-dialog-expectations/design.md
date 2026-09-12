@@ -4,7 +4,7 @@
 
 expectedWindowID透過bridge傳入DialogPressExecutor（optional default nil）。先沿用session/deadline/完整性/唯一候選/按鈕一致性檢查，再檢查candidate.windowID；不符回既有refused outcome，不能呼叫decide或press。其後仍用原message+ordered buttons fingerprint拒絕命令內部變更。guarded拒絕以一般錯誤說明未按任何按鈕，不輸出非預期dialog內容。
 
-harness在真正dismiss argv帶自己的window ID與nonce message；增加在上一個檢查與命令開始間被替換的fake案例。只重複preflight不是修法。不新增HID、default-button、focus或重播。
+harness在真正dismiss argv帶自己的window ID與nonce message；增加在上一個檢查與命令開始間被替換的fake案例。只重複preflight不是修法。不新增HID、default-button、focus或重播。harness在真正dismiss呼叫前記錄attempted；任何未確認結果都保留fixture，cleanup不再次press。AXPress成功不等於已關閉，須明確no-dialog回報或原fixtureJS恢復後才清除pending狀態。
 
 ## Validation
 

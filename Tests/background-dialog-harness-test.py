@@ -214,6 +214,37 @@ class BackgroundHarnessTests(unittest.TestCase):
         self.assertEqual(foreign_presses, [])
         self.assertTrue(gui.armed)
 
+    def test_uncertain_dismissal_is_not_replayed_by_cleanup(self):
+        gui = self.make_harness()
+        title, listing = self.evidence(gui)
+        gui.target = Mock(return_value=title)
+        attempts = []
+
+        def command(*args, **kwargs):
+            if args[:2] == ('dialog', 'list'):
+                return listing
+            if args[:2] == ('dialog', 'dismiss'):
+                attempts.append(args)
+                return result(gui.dialog_text, 'AXPress outcome uncertain', code=1)
+            self.fail('unexpected command')
+
+        gui.cli = command
+        with self.assertRaises(harness.VerificationError):
+            gui.dismiss_owned()
+        self.assertFalse(gui.cleanup())
+        self.assertEqual(len(attempts), 1, 'cleanup must not replay an uncertain press')
+
+    def test_acknowledged_press_without_clear_keeps_pending_state(self):
+        gui = self.make_harness()
+        title, listing = self.evidence(gui)
+        gui.target = Mock(return_value=title)
+        gui.cli = Mock(side_effect=[listing, result(gui.dialog_text + '\npressed; could not re-check')])
+        gui.dismiss_owned()
+        self.assertTrue(gui.armed)
+        self.assertTrue(gui.dismiss_attempted)
+        self.assertFalse(gui.cleanup())
+        self.assertEqual(gui.cli.call_count, 2)
+
     def test_unknown_dialog_cleanup_never_dismisses_or_closes(self):
         gui = self.make_harness()
         gui.cli = Mock(return_value=result('no blocking dialog found'))
@@ -252,7 +283,7 @@ class BackgroundHarnessTests(unittest.TestCase):
     def test_cleanup_recovery_uses_native_title_and_named_verified_button(self):
         gui = self.make_harness()
         title, listing = self.evidence(gui)
-        gui.cli = Mock(side_effect=[title, listing, result(gui.dialog_text),
+        gui.cli = Mock(side_effect=[title, listing, result(gui.dialog_text + '\npressed; no dialog remains'),
                                    result('no blocking dialog found')])
         gui.native.side_effect = lambda source: 'closed' if 'close w' in source else 'owned'
         self.assertTrue(gui.cleanup())

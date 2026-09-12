@@ -139,6 +139,7 @@ class Harness:
         self.window_id = None
         self.creation_attempted = False
         self.armed = False
+        self.dismiss_attempted = False
         self.env = dict(os.environ, SAFARI_BROWSER_NAME='fixture-' + self.nonce,
                         SAFARI_BROWSER_NO_DIALOG_PROBE='0', SAFARI_BROWSER_MARK_TAB='0',
                         SAFARI_BROWSER_MCP_DIRECT='1', SAFARI_BROWSER_MCP_IMAGE_ID=image_id)
@@ -260,6 +261,8 @@ class Harness:
         return match[1]
 
     def dismiss_owned(self):
+        require(not self.dismiss_attempted,
+                'a previous dismissal outcome is unresolved; no press retry, fixture retained')
         self.require_owned()
         # get title is a native Safari read; JavaScript would remain blocked.
         title = self.target('get', 'title')
@@ -268,12 +271,13 @@ class Harness:
         require(button is not None, 'dialog ownership/text/button is unconfirmed; no button pressed')
         self.require_owned()
         require(self.current_url(self.window_id) == self.url, 'active fixture changed before dismissal')
+        self.dismiss_attempted = True
         dismissed = self.cli('dialog', 'dismiss', '--button', button,
                              '--expect-window-id', str(self.window_id),
                              '--expect-message', self.dialog_text)
         require(dismissed.returncode == 0 and self.dialog_text in dismissed.stdout,
                 'owned dialog dismissal was not confirmed: ' + dismissed.stderr)
-        self.armed = False
+        self.armed = 'pressed; no dialog remains' not in dismissed.stdout.splitlines()
 
     def exercise(self):
         if run(['/usr/bin/pgrep', '-x', 'Safari'], timeout=3).returncode:
@@ -346,6 +350,7 @@ class Harness:
         recovered = self.target('js', '1+1', timeout=45)
         require(recovered.returncode == 0 and recovered.stdout.strip() == '2',
                 'fixture JavaScript did not recover after owned dismissal')
+        self.armed = False
         return 0
 
     def cleanup(self):
