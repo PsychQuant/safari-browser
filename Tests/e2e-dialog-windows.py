@@ -24,7 +24,7 @@ def main():
     probe = subprocess.run([str(BINARY), 'dialog', 'list'], capture_output=True, text=True, timeout=3)
     if probe.returncode:
         environmental = ('Accessibility' in probe.stderr or 'GUI session' in probe.stderr
-                         or 'windows are showing a dialog' in probe.stderr)
+                         or 'native dialog candidates were found' in probe.stderr)
         print(('SKIP' if environmental else 'FAIL') + ': initial dialog inspection failed.')
         return 77 if environmental else 1
     if probe.stdout.startswith('blocking dialog present'):

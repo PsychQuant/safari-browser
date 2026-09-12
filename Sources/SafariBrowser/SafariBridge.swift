@@ -3003,13 +3003,6 @@ enum SafariBridge {
         BoundedDialogProbe.shared.check(windowKey: windowKey, budget: budget)
     }
 
-    private static func axRole(of element: AXUIElement) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .success
-        else { return nil }
-        return value as? String
-    }
-
     private static func axStringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success

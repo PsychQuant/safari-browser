@@ -257,7 +257,7 @@ enum SafariBrowserError: LocalizedError {
 
         case .ambiguousBlockingDialog(let messages):
             return """
-                \(messages.count) windows are showing a dialog; refusing to guess which one you meant.
+                \(messages.count) native dialog candidates were found; refusing to guess which one you meant.
                 \(messages.enumerated().map { "  [\($0.offset + 1)] \(BlockingDialogWarning.messageText($0.element))" }.joined(separator: "\n"))
                 Pressing a button on a dialog you are not looking at is the hazard this command
                 exists to avoid. Dismiss them from Safari, or close the extra window first.

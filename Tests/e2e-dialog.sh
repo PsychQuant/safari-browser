@@ -137,7 +137,7 @@ else
     fail "global dialog list returns within 1 s" "took $((PRE_END - PRE_START)) ms"
 fi
 if [[ "$PRE_EXIT" -ne 0 ]]; then
-    if [[ "$PRE" == *"Accessibility"* || "$PRE" == *"windows are showing a dialog"* ]]; then
+    if [[ "$PRE" == *"Accessibility"* || "$PRE" == *"native dialog candidates were found"* ]]; then
         echo "SKIP: dialog inspection unavailable or multiple dialogs present: $PRE"
         exit 77
     fi

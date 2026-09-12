@@ -8,7 +8,7 @@ private func dialogProbeWindowID(_ element: AXUIElement, _ id: UnsafeMutablePoin
 /// A provider is constructed and used on one probe worker. Its nodes never
 /// leave that worker; only the Sendable verdict crosses back to the caller.
 protocol DialogProbeProvider: Sendable {
-    associatedtype Node
+    associatedtype Node: Hashable
     func windows(timeout: Float) throws -> [Node]
     func windowID(_ node: Node, timeout: Float) throws -> Int
     func role(_ node: Node, timeout: Float) throws -> String

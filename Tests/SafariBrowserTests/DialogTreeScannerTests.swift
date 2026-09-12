@@ -150,10 +150,48 @@ final class DialogTreeScannerTests: XCTestCase {
         XCTAssertEqual(result.candidates.first?.buttons.map(\.element), [6, 7])
     }
 
-    func testNestedNativeDialogIsIncomplete() {
+    func testNestedNativeDialogIsRetainedAsAnAmbiguousCandidate() {
         var p = Self.dialog
         p.nodes[4]!.subrole = "AXDialog"
-        XCTAssertFalse(scan(p).isComplete, "nested dialog controls must not be mixed with the outer decision")
+        let result = scan(p)
+        XCTAssertFalse(result.isComplete)
+        XCTAssertEqual(result.candidates.count, 2)
+        XCTAssertEqual(result.scanResult, .many(messages: ["Source", ""]))
+        XCTAssertEqual(result.candidates.first?.buttons.map(\.element), [6, 7])
+        let press = DialogPressExecutor.perform(
+            snapshot: result, deadline: .now() + 0.7, session: .init { [:] },
+            decide: { _ in
+                XCTFail("ambiguous candidates must not decide")
+                return 0
+            },
+            press: { _, _ in
+                XCTFail("ambiguous candidates must not press")
+                return .pressed
+            })
+        XCTAssertEqual(press, .ambiguous(messages: ["Source", ""]))
+    }
+
+    func testRootModalSubroleIsDetectedInsteadOfReportedClear() {
+        for subrole in ["AXDialog", "AXSystemDialog"] {
+            let p = Provider(nodes: [
+                1: Node(role: "AXWindow", subrole: subrole, children: [3], id: 42),
+                3: Node(role: "AXStaticText", text: "App modal"),
+            ])
+            XCTAssertEqual(scan(p).scanResult, .one(.init(message: "App modal", buttons: [])))
+        }
+    }
+
+    func testRepeatedNodesAndCyclesRemainUnknownWithoutInventingExtraCandidates() {
+        var p = Self.dialog
+        p.nodes[1]!.children.append(2)
+        let repeated = scan(p)
+        XCTAssertFalse(repeated.isComplete)
+        XCTAssertEqual(repeated.candidates.count, 1)
+        p = Self.dialog
+        p.nodes[2]!.children.append(2)
+        let cycle = scan(p)
+        XCTAssertFalse(cycle.isComplete)
+        XCTAssertEqual(cycle.candidates.count, 1)
     }
 
     func testExpiredDeadlineAndUnknownMessageMetadataAreIncomplete() {

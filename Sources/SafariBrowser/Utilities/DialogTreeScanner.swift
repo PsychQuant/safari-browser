@@ -60,16 +60,27 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
     ) {
         var pending: [(P.Node, Int)] = [(window, 0)]
         var inspected = 0
+        var visited = Set<P.Node>()
         while !pending.isEmpty && inspected < max(0, maxNodes) {
             let (node, depth) = pending.removeLast()
             inspected += 1
+            guard visited.insert(node).inserted else {
+                snapshot.isComplete = false
+                continue
+            }
             do {
                 let role = try provider.role(node, timeout: remaining(deadline))
                 if role == "AXWebArea" { continue }
                 let subrole = try provider.subrole(node, timeout: remaining(deadline))
-                if depth > 0 && isDialog(role: role, subrole: subrole) {
+                if isDialog(role: role, subrole: subrole) {
                     let detail = details(node, id: id, provider: provider, deadline: deadline)
-                    snapshot.candidates.append(detail.candidate)
+                    for candidate in [detail.candidate] + detail.nested {
+                        if snapshot.candidates.contains(where: { $0.element == candidate.element }) {
+                            snapshot.isComplete = false
+                        } else {
+                            snapshot.candidates.append(candidate)
+                        }
+                    }
                     snapshot.isComplete = snapshot.isComplete && detail.complete
                     continue
                 }
@@ -88,15 +99,21 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
 
     private func details(
         _ element: P.Node, id: Int, provider: P, deadline: DispatchTime
-    ) -> (candidate: CapturedDialog<P.Node>, complete: Bool) {
+    ) -> (candidate: CapturedDialog<P.Node>, nested: [CapturedDialog<P.Node>], complete: Bool) {
         var pending: [(P.Node, Int)] = [(element, 0)]
         var inspected = 0
         var complete = true
+        var visited = Set<P.Node>()
+        var nested: [CapturedDialog<P.Node>] = []
         var messages: [String] = []
         var buttons: [(element: P.Node, title: String)] = []
         while !pending.isEmpty && inspected < max(0, maxDetailNodes) {
             let (node, depth) = pending.removeLast()
             inspected += 1
+            guard visited.insert(node).inserted else {
+                complete = false
+                continue
+            }
             do {
                 let role = try provider.role(node, timeout: remaining(deadline))
                 if role == "AXWebArea" { continue }
@@ -105,6 +122,13 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
                 // decision. Do not mix its controls into an outer sheet.
                 if depth > 0 && isDialog(role: role, subrole: subrole) {
                     complete = false
+                    // Preserve the positively identified candidate. Its details
+                    // are intentionally unread: ambiguity already forbids any
+                    // press, and its controls must not enter the outer snapshot.
+                    nested.append(
+                        CapturedDialog(
+                            windowID: id, element: node,
+                            dialog: .init(message: "", buttons: []), buttons: []))
                     continue
                 }
                 if let message = try DialogMessageText.read(
@@ -132,6 +156,6 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
         let dialog = SafariBridge.BlockingDialog(
             message: messages.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines),
             buttons: buttons.map(\.title))
-        return (CapturedDialog(windowID: id, element: element, dialog: dialog, buttons: buttons), complete)
+        return (CapturedDialog(windowID: id, element: element, dialog: dialog, buttons: buttons), nested, complete)
     }
 }
