@@ -95,16 +95,8 @@ struct InProcessStepDispatcher: StepDispatcher {
         case "documents":
             // Reuse the existing JSON encoder used by `documents --json`.
             let documents = try await SafariBridge.listAllDocuments()
-            let array = documents.map { doc in
-                [
-                    "index": doc.index,
-                    "window": doc.window,
-                    "tab_in_window": doc.tabInWindow,
-                    "is_current": doc.isCurrent,
-                    "url": doc.url,
-                    "title": doc.title,
-                ] as [String: Any]
-            }
+            let array = documents.isEmpty ? [] : DocumentsCommand.jsonRows(
+                documents, observation: WindowDialogObservation.capture())
             let data = try JSONSerialization.data(
                 withJSONObject: array,
                 options: [.prettyPrinted, .sortedKeys]

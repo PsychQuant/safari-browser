@@ -44,9 +44,8 @@ struct TabsCommand: AsyncParsableCommand {
             let data = try JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted, .sortedKeys])
             print(String(data: data, encoding: .utf8) ?? "[]")
         } else {
-            if tabs.contains(where: { observation.status(for: $0.windowID).textSuffix != nil }) {
-                TargetOptions.stderrWarnWriter(DocumentsCommand.dialogLegendLine(commandName: "tabs"))
-            }
+            let dialogWarning = DocumentsCommand.dialogWarnings(commandName: "tabs", statuses: tabs.map { observation.status(for: $0.windowID) })
+            if !dialogWarning.isEmpty { TargetOptions.stderrWarnWriter(dialogWarning) }
             for line in Self.formatText(tabs, observation: observation) {
                 print(line)
             }

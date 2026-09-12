@@ -23,7 +23,7 @@ struct WindowDialogStatus: Sendable {
             if messages.count > 1 { return "[dialogs: \(messages.count)]" }
             return "[dialog: \(BlockingDialogWarning.messageText(messages.first ?? ""))]"
         case .unknown:
-            return "[dialog: unknown (\(TerminalText.escaped(reason ?? "incomplete", limit: 64)))]"
+            return nil // Unknown is reported on stderr and in JSON; keep legacy text fields intact.
         }
     }
 }

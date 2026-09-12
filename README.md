@@ -855,14 +855,19 @@ does not establish whether every tab is blocked or whether a background tab
 has a pending dialog that Safari has not exposed yet.
 
 Each nonempty listing uses one bounded observation without switching tabs or
-dismissing dialogs. Text output appends `[dialog: "…"]`, `[dialogs: N]`, or
-`[dialog: unknown (reason)]` only where needed, with a legend on stderr. Clear
+dismissing dialogs. Text output appends `[dialog: "…"]` or `[dialogs: N]` only
+for a confirmed visible dialog, with a legend on stderr. Clear and unknown
 rows retain their original text; `tabs` keeps its first three TSV fields and
-puts the annotation in a fourth field. JSON is preferable for parsers needing
-a stable field layout. Setting `SAFARI_BROWSER_NO_DIALOG_PROBE=1` skips the
-observation and reports `unknown` / `disabled`, including through the daemon.
-An explicit per-request daemon setting takes precedence over its process
-environment.
+puts a confirmed-dialog annotation in a fourth field. Unknown observations
+are explicitly reported on stderr, so an unmarked text row does **not** prove
+that its window is clear. Use JSON for a per-window state and reason.
+
+Setting `SAFARI_BROWSER_NO_DIALOG_PROBE=1` skips the observation and its text
+warnings, preserving the original text format. JSON still reports `unknown`
+with reason `disabled`. The daemon's in-process `exec` documents step uses the
+same JSON encoder and observation; its explicit per-request probe setting
+takes precedence over the daemon process environment. Bare `tabs --daemon`
+continues to render in the client after its AppleScript requests.
 
 `tabs`, `tab <n>`, `tab new`, `open --new-tab`, and `open --new-window`
 only accept `--window` because they are window-level UI operations;

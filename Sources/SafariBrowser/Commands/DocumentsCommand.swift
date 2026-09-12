@@ -67,9 +67,8 @@ struct DocumentsCommand: AsyncParsableCommand {
         // (scripts that pipe stdout are unaffected; for programmatic active
         // detection use --json's is_current field).
         TargetOptions.stderrWarnWriter(Self.legendLine())
-        if documents.contains(where: { observation.status(for: $0.windowID).textSuffix != nil }) {
-            TargetOptions.stderrWarnWriter(Self.dialogLegendLine(commandName: "documents"))
-        }
+        let dialogWarning = Self.dialogWarnings(commandName: "documents", statuses: documents.map { observation.status(for: $0.windowID) })
+        if !dialogWarning.isEmpty { TargetOptions.stderrWarnWriter(dialogWarning) }
         if let note = DocumentsCommand.tablessWindowNote(
             for: windows, profileFilter: profileFilter) {
             TargetOptions.stderrWarnWriter(note)
@@ -118,9 +117,22 @@ struct DocumentsCommand: AsyncParsableCommand {
     /// Shared wording for window annotations in documents and tabs listings.
     static func dialogLegendLine(commandName: String) -> String {
         "\(commandName): [dialog: ...] / [dialogs: N] describe visible native dialogs of the window; "
-            + "unknown means observation was unavailable or incomplete (reason in the marker). "
+            + "unknown observation is reported separately on stderr; unmarked rows do not prove clear. "
             + "This does not mean every tab is blocked or exclude background pending dialogs. "
             + "For scripting use blocking_dialog from --json.\n"
+    }
+
+    static func dialogWarnings(commandName: String, statuses: [WindowDialogStatus]) -> String {
+        var warning = statuses.contains { $0.state == .present } ? dialogLegendLine(commandName: commandName) : ""
+        let reasons = Set(statuses.compactMap { status -> String? in
+            guard status.state == .unknown, status.reason != "disabled" else { return nil }
+            return status.reason ?? "incomplete"
+        }).sorted()
+        if !reasons.isEmpty {
+            warning += "\(commandName): dialog observation unknown (\(reasons.joined(separator: ", "))); "
+                + "unmarked rows may still have dialogs. Use blocking_dialog from --json for each window's state.\n"
+        }
+        return warning
     }
 
     static func jsonRows(
