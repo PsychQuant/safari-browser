@@ -475,12 +475,17 @@ behavior on both surfaces.
 ```bash
 safari-browser screenshot [path]       # window screenshot (default: screenshot.png)
 safari-browser screenshot --full path  # full page
-safari-browser pdf --allow-hid [path]  # export as PDF (requires --allow-hid)
+safari-browser pdf --allow-hid [path]  # export as PDF; refuses an existing destination
+safari-browser pdf --allow-hid --overwrite page.pdf  # explicitly allow replacement
 safari-browser upload <sel> <file>     # native file dialog (default, fast, large files OK)
 safari-browser upload --js <sel> <file>  # JS DataTransfer injection (no permissions, slow for large files)
 ```
 
 `upload` uses native file dialog by default when Accessibility permission is granted (fast, any file size). Without permission, it falls back to JS DataTransfer automatically. Use `--js` to force JS mode. `pdf` always requires `--allow-hid` (no JS alternative).
+
+`pdf --overwrite` is a separate opt-in for replacing an existing destination; it defaults to off and still requires `--allow-hid`. Without it, an existing path is rejected before GUI interaction, and a replacement prompt appearing later is also refused. Authorized replacement accepts only a unique button named `Replace` or `取代`; other languages or ambiguous buttons cause refusal, with no Return fallback.
+
+Native upload and PDF export may confirm the initial Open/Save sheet for the path you supplied. Initial confirmation uses the default button; Return fallback is limited to lookup failure before a click is dispatched, with fresh frontmost and sheet checks. A dispatched click that fails is not retried with Return. The keyboard-control warning appears before GUI interaction. Captured confirmation diagnostics are returned afterwards as a terminal-escaped, bounded `file dialog trace:` on stderr, including on failure or timeout; they record attempted actions and do not prove the file operation succeeded.
 
 Which commands synthesise keyboard/mouse events, which reach Safari another way, and the rule for when a keystroke path may be deleted: [`docs/operation-paths.md`](docs/operation-paths.md). Note `--allow-hid` on `pdf` gates the *save-destination* keystrokes, not the export itself — that part is already keystroke-free.
 

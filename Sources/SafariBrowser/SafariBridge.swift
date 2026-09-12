@@ -3446,9 +3446,45 @@ enum SafariBridge {
     static func runShell(
         _ executable: String,
         _ arguments: [String],
-        timeout: TimeInterval = SafariBridge.defaultProcessTimeout
+        timeout: TimeInterval = SafariBridge.defaultProcessTimeout,
+        stderrWriter: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
-        try await runProcessWithTimeout(executable, arguments, timeout: timeout)
+        try await runProcessWithTimeout(executable, arguments, timeout: timeout, stderrWriter: stderrWriter)
+    }
+
+    /// File-dialog logs are delivered after the subprocess finishes, including
+    /// failure and timeout. Capture the request's writer before asynchronous I/O.
+    @discardableResult
+    static func runFileDialogScript(
+        _ script: String,
+        timeout: TimeInterval = SafariBridge.defaultProcessTimeout,
+        warnWriter: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
+        let writer = FileDialogDiagnostics.writer(warnWriter)
+        return try await runShell("/usr/bin/osascript", ["-e", script], timeout: timeout,
+                                  stderrWriter: { raw in
+            if let line = FileDialogDiagnostics.trace(raw) { writer(line) }
+        })
+    }
+
+    /// One pipe drains on a dispatch worker while the caller drains the other.
+    /// The group establishes completion before the caller accesses captured data.
+    /// Keep launch and wait on the original thread: Foundation's process run-loop
+    /// bookkeeping can hang if an async suspension moves waitUntilExit elsewhere.
+    private final class ProcessPipeRead: @unchecked Sendable {
+        private let group = DispatchGroup()
+        private var data = Data()
+        init(_ handle: FileHandle) {
+            group.enter()
+            DispatchQueue.global(qos: .utility).async {
+                self.data = handle.readDataToEndOfFile()
+                self.group.leave()
+            }
+        }
+        func collect() -> Data {
+            group.wait()
+            return data
+        }
     }
 
     /// Thread-safe boolean flag used by `runProcessWithTimeout` to distinguish
@@ -3484,7 +3520,8 @@ enum SafariBridge {
     private static func runProcessWithTimeout(
         _ executable: String,
         _ arguments: [String],
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        stderrWriter: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
         // #19 F1 + R2-F1' + R2-F1'': reject any timeout that can't survive the
         // UInt64(timeout * 1e9) conversion or that rounds to 0 nanoseconds.
@@ -3528,11 +3565,16 @@ enum SafariBridge {
             }
         }
 
-        // Read pipes BEFORE waitUntilExit to prevent deadlock when output > 64KB
+        // Drain concurrently: stderr can fill while stdout remains open.
+        let errorRead = ProcessPipeRead(stderr.fileHandleForReading)
         let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errorData = stderr.fileHandleForReading.readDataToEndOfFile()
+        let errorData = errorRead.collect()
         process.waitUntilExit()
         watchdog.cancel()
+
+        if !errorData.isEmpty {
+            stderrWriter?(String(decoding: errorData, as: UTF8.self))
+        }
 
         // Only report processTimedOut when the watchdog actually fired AND the
         // subprocess didn't exit cleanly. The extra terminationStatus check
@@ -3758,29 +3800,38 @@ enum SafariBridge {
                             end if
                         end repeat
 
-                        -- Click the default button (Upload/Open/Save) — locale-independent.
-                        -- #107: both the press and the keystroke fallback are announced.
-                        -- This confirms a sheet the caller never read, which is the hazard
-                        -- #89/#103 organise themselves around, and the fallback silently
-                        -- swaps a non-HID press for a synthetic keystroke. Neither should
-                        -- be reconstructable only by reading the source afterwards.
                         delay 0.3
-                        try
-                            set defaultBtn to (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
-                            log "confirming file dialog: pressing default button \\"" & (title of defaultBtn) & "\\""
-                            click defaultBtn
-                        on error
-                            log "confirming file dialog: default-button press unavailable, falling back to Return keystroke"
-                            keystroke return
-                        end try
+        \(fileDialogConfirmationScript())
 
                         -- Restore user's clipboard
                         set the clipboard to oldClip
-                    on error errMsg
+                    on error errMsg number errNum
                         -- Always restore clipboard, even on unexpected errors
                         set the clipboard to oldClip
-                        error errMsg
+                        error errMsg number errNum
                     end try
+        """
+    }
+
+    /// Initial Open/Save confirmation only. A failed click has an unknown
+    /// delivery outcome and must never become an automatic Return retry.
+    static func fileDialogConfirmationScript() -> String {
+        """
+        set confirmationAttempted to false
+        try
+            set defaultBtn to (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
+            set defaultTitle to title of defaultBtn
+            log "confirming file dialog: pressing default button \\"" & defaultTitle & "\\""
+            set confirmationAttempted to true
+            click defaultBtn
+        on error confirmationError number confirmationNumber
+            if confirmationAttempted then error confirmationError number confirmationNumber
+            if not frontmost then error "Safari lost focus before file-dialog fallback"
+            if not (exists sheet 1 of front window) then error "File dialog is unavailable before fallback"
+            if exists sheet 1 of sheet 1 of front window then error "Nested sheet appeared; no Return fallback was sent"
+            log "confirming file dialog: default-button lookup unavailable, falling back to Return keystroke"
+            keystroke return
+        end try
         """
     }
 
@@ -3807,9 +3858,8 @@ enum SafariBridge {
     /// Saves and restores the user's clipboard content.
     /// Requires: a file dialog sheet to be already open on Safari's front window.
     ///
-    /// `pdf` is the only caller. `upload` embeds the same navigation fragment in
-    /// its own combined script rather than calling this, to keep its flow to a
-    /// single `osascript` (#15); see `fileDialogNavigationScript`.
+    /// Compatibility entry point. PDF and upload embed the same navigation
+    /// fragment in their own combined scripts to retain a single invocation.
     ///
     /// `runner` exists so a test can observe the invocation this actually makes
     /// — how many, and with what. Asserting on `fileDialogNavigationOuterScript`
@@ -3829,7 +3879,7 @@ enum SafariBridge {
         if let runner {
             try await runner("/usr/bin/osascript", args)
         } else {
-            try await runShell("/usr/bin/osascript", args)
+            try await runFileDialogScript(fileDialogNavigationOuterScript(path: path))
         }
     }
 

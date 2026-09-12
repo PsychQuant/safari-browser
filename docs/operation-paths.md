@@ -107,9 +107,9 @@ rule in §3 is correctly vacuous over them.
 | Probe a resolved target window before a document/native operation (#133–#138) | Stable window ID → bounded native AX walk; 200 ms total per logical command, no queued work while busy; default screenshot uses its resolved capture ID | same | Accessibility — denied, failed or incomplete reads remain unknown; WebArea contents are outside native-dialog scope | already non-HID — read-only, no `AXPress` |
 | Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | JS-from-Apple-Events for this step; `upload --native` as a whole needs Accessibility for the steps after it | already non-HID |
 | **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | no AX interface for it — see §4.1 | Accessibility | **disproven** — see §4.1 |
-| **Name the save destination for a PDF** | same keystrokes, via `SafariBridge.navigateFileDialog` | none found yet | Accessibility | **untested** — see §4.2 |
+| **Name the save destination for a PDF** | same keystrokes, via shared `SafariBridge.fileDialogNavigationScript` | none found yet | Accessibility | **untested** — see §4.2 |
 | Open the PDF export sheet | `click menu item "Export as PDF…"` | same | Accessibility | already non-HID — **only where Safari's menus are English**; see §4.2 |
-| Confirm a native dialog sheet (Open / Save / "Replace?") | `AXPress` on the `AXDefault` button, `keystroke return` if that query throws | the press half already; the fallback half — see note | Accessibility | **untested** — see #107 |
+| Confirm a native dialog sheet (Open / Save / "Replace?") | Initial: default-button press; Return only after lookup failure before dispatch and fresh frontmost/non-nested-sheet checks. PDF replacement: `--overwrite` plus a unique `Replace` / `取代` button; no Return fallback | Initial press already uses AX; equivalence when default lookup fails remains unmeasured | Accessibility; PDF still needs `--allow-hid`, and replacement separately needs `--overwrite` | **untested** — Save-panel AX equivalence and owned Open/Save/Replace GUI acceptance remain pending (#107) |
 
 ### Permissions do not track the HID split
 
@@ -210,25 +210,39 @@ by this document standing as written. The first row that reaches `proven` while
 an HID path still exists on the other side of it is the one to argue carefully
 about.
 
-The confirm-sheet row was missing entirely until #107 pointed it out, and it is
-the one place where this document's own rule looks closest to firing. `pdf` and
-`upload` confirm a native sheet by pressing its default button, falling back to a
-`Return` keystroke when the `AXDefault` query throws. #103 proved that a *named*
-button on a dialog can be pressed with `AXPress` and no keystroke — so it is
-tempting to call the fallback deletable.
+The confirm-sheet row already records the initial Open/Save confirmation and
+PDF replacement; #107 updates its policy rather than adding another row. Initial
+confirmation uses the default button. Return fallback is now restricted to a
+lookup or title-read failure **before** click dispatch, followed by fresh checks
+that Safari is frontmost and the sheet is present without a nested sheet. An
+error after dispatch cannot trigger another confirmation.
 
-It is not, and the reason is worth stating because it is easy to get wrong. The
-fallback fires precisely when the button **cannot be found**. #103 proved you can
-press a button you have located; it says nothing about the case where the
-accessibility query failed. Replacing the fallback needs a route that works when
-the default-button lookup does not, and no such route has been measured. So the
-row is `untested`, not `proven`, and the rule still licenses nothing.
+That restriction is a correction, not a description of the old code: its catch
+covered both lookup and click, so a click error could also send Return. Likewise,
+the presence of an AppleScript `log` statement did not previously prove the
+caller saw it; successful subprocess stderr was discarded. The file-dialog
+runner now relays captured stderr on success, failure, and timeout as a single
+terminal-escaped trace, bounded to 4096 rendered scalars with explicit truncation.
+It arrives **after subprocess completion**, records attempted actions rather
+than their success, and is separate from the keyboard-control warning emitted
+before GUI interaction.
 
-What #107 tracks is separate and does not need that measurement: both the press
-and the fallback now announce themselves on stderr, because confirming a sheet
-the caller never read — and silently swapping an accessible press for a synthetic
-keystroke — are the hazards #89 and #103 are built around, occurring in the two
-commands that did not observe them.
+The caller's native file operation authorizes initial confirmation for the
+specified path. PDF replacement requires the additional `--overwrite` flag;
+`--allow-hid` alone does not authorize it. Existing destinations are refused
+before GUI interaction without that flag, as are replacement prompts appearing
+later. Authorized replacement requires a unique `Replace` or `取代` button.
+Other languages, missing buttons, and ambiguous matches are refused; this branch
+has no Return fallback. See the named exception in the
+[non-interference specification](../openspec/specs/non-interference/spec.md).
+
+#103's successful press of a *located, named* dialog button does not establish a
+Save-panel route that works when default-button lookup fails. That equivalence
+remains `untested`; no HID deletion follows from the construction or subprocess
+tests. The current #107 implementation session is GUI-locked, so its owned
+Open/Save/Replace acceptance is still pending. The initial-confirmation fallback
+must be reconsidered against that real measurement, without treating #101's
+file selection or #102's save destination as resolved.
 
 The two dialog rows are worth a note, because they moved. They were `proven`
 while no command existed to act on them; #103 then shipped `dialog dismiss`,
@@ -390,14 +404,14 @@ mutually exclusive.) So the non-HID invocation is conditional on Safari's UI
 language, and the locale-independent alternative the code itself names is the HID
 one.
 
-The largest HID residue is one step later: `PdfCommand` calls
-`SafariBridge.navigateFileDialog`, which enters the save destination with
-`Cmd+Shift+G` → `Cmd+V` → `Return`. It is not the only one — `PdfCommand` also
-falls back to `keystroke return` in its "Replace?" confirmation branch, outside
-`navigateFileDialog` entirely, and both `navigateFileDialog` and `upload`'s copy
-carry the same `keystroke return` fallback when clicking the default button
-throws. Retiring `--allow-hid` means clearing **all** of them, not just the path
-entry.
+The largest HID residue is one step later: `PdfCommand` uses the shared
+`SafariBridge.fileDialogNavigationScript` fragment to enter the save destination
+with `Cmd+Shift+G` → `Cmd+V` → `Return` inside its single export script. The
+initial default-button confirmation retains Return only for a pre-dispatch
+lookup failure after fresh frontmost and sheet checks. The separate authorized
+replacement branch now presses only a unique `Replace` / `取代` button and has
+no Return fallback. Retiring `--allow-hid` still needs evidence covering both
+path entry and the remaining initial-confirmation fallback.
 
 This matters for how the remaining work is scoped, and there are two separate
 open questions rather than one:
@@ -497,7 +511,7 @@ three disciplines map directly onto this file:
 | P02 discipline | Here |
 |---|---|
 | **Name the representation** | §2 records, per operation, which path is taken — "clicked the button" is not a complete statement |
-| **Document transitions** | the discipline this repo keeps unevenly, at different depths. `upload` keeps it at the **top level**: it decides between the native and JS routes on the Accessibility grant and prints which one it took. (It decides *once*, at entry; there is no runtime fallback from one to the other, and the code says so: "Note: --js (DataTransfer) is capped at 10 MB (#24), so it is not a fallback for large files.") Below that level it does not — nor does `pdf`: when a default-button click throws, both fall back to `keystroke return` without recording it. And `screenshot` does not keep it at the top level either: `resolveWindowForCapture` picks between the AX resolver and the legacy CG name-match on `AXIsProcessTrusted()`, the two differ in the permission they need and in their known failure modes, and nothing is printed either way. See §3 for why this is examples rather than an inventory. |
+| **Document transitions** | `upload` reports its native/JS route at entry; the 10 MB JS limit is not a runtime fallback for a larger native upload. Initial Open/Save lookup failures now record the permitted Return fallback, and errors after click dispatch do not replay it. File-dialog subprocess traces are escaped and bounded, then relayed on success, failure, or timeout after the subprocess finishes. This timing is separate from the pre-GUI keyboard warning. These examples do not establish a complete inventory of every command's fallback; see §3. |
 | **Debug along the chain** | locating *which path* failed is half the diagnosis — #67 is precisely a failure localised to one path |
 
 ### What this repo adds on top of P02

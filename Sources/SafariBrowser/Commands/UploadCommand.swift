@@ -291,8 +291,7 @@ struct UploadCommand: AsyncParsableCommand {
             // System Events or Safari's Apple Event dispatcher is blocked and
             // the inner `maxWait to 10` loops never progress.
             runScript: { script in
-                try await SafariBridge.runShell(
-                    "/usr/bin/osascript", ["-e", script], timeout: timeout)
+                try await SafariBridge.runFileDialogScript(script, timeout: timeout)
             })
     }
 

@@ -68,29 +68,9 @@ This is a **single named exception**, not a general rule. It applies to `upload`
 
 > **Provenance.** This documents behavior that shipped in `7e6062a` (change `clipboard-path-input`, #14) without a corresponding spec delta. That change listed `non-interference` in its Impact but characterized the effect as "鍵盤控制時間大幅縮短" — shorter keyboard control — rather than as a change to *what triggers* the interference. The conflict with the `MUST NOT` above went unrecorded until #104. It is written down here as a deliberate, narrow exemption with its cost, rather than left as drift or generalized into a rule nobody decided on.
 
-#### Exception: confirming a native sheet the caller did not read
+#### Exception: initial confirmation of the caller's native file operation
 
-`upload --native` and `pdf` finish a file dialog by pressing its default button — and when the `AXDefault` lookup throws, by sending `Return`. Both act on a sheet the caller never saw, which is otherwise the thing this spec's dialog rules exist to prevent.
-
-This is exempted, narrowly and with its own conditions, because the alternative is worse: the dialog was opened *by the command the user ran*, and leaving it open blocks every subsequent Safari command in that document (#67's failure family). Refusing to confirm would turn a completed upload into a wedged Safari.
-
-The exemption holds only while:
-
-1. The command already warned about keyboard control before the interference began — so the user knows a takeover is in progress when the sheet appears.
-2. **Both** the press and the keystroke fallback are announced on stderr, naming the button pressed. A confirmation nobody can reconstruct afterwards is indistinguishable from one that never happened.
-3. The confirmation is limited to the dialog the command itself opened. It is not a general licence to dismiss dialogs found on screen — `dialog dismiss` (#103) is that path, and it deliberately makes the user name the button.
-
-**What this does not cover.** The "Replace?" sheet is a distinct decision from finishing a file dialog: it confirms overwriting an existing file. `--allow-hid` authorized a keyboard takeover, not that. It is exempted here only because the same reasoning applies — the sheet exists because of the command the user ran, and leaving it up wedges Safari — and condition 2 is what keeps the overwrite from being invisible. Tracked in #107.
-
-#### Scenario: The file-dialog confirmation is announced
-
-- **WHEN** `upload --native` or `pdf` presses a native sheet's default button
-- **THEN** the button's title is written to stderr before the dialog closes
-
-#### Scenario: The keystroke fallback is announced as a mechanism change
-
-- **WHEN** the `AXDefault` lookup throws and the command falls back to `Return`
-- **THEN** stderr records that an accessible press was replaced by a synthetic keystroke — a path classified non-HID has become HID, and that must not be silent
+A native `upload` or an authorized `pdf` operation SHALL be permitted to confirm the initial Open/Save sheet for the caller-specified path. Choosing that path and requesting the operation authorizes its initial confirmation; leaving the command's own chooser open would prevent that operation from finishing and can block later Safari commands (#67). This exception is limited by `Native file confirmation authorization` below. It does not change the preceding upload system-grant exception, authorize a PDF overwrite, or permit confirmation of unrelated dialogs.
 
 #### Scenario: Upload without flags, no Accessibility, file within the JS cap
 
@@ -116,6 +96,44 @@ The exemption holds only while:
 
 - **WHEN** a user runs `safari-browser pdf /tmp/page.pdf` without `--allow-hid`
 - **THEN** the command exits with an error indicating that `--allow-hid` is required
+
+---
+### Requirement: Native file confirmation authorization
+
+Initial Open/Save confirmation SHALL be a named exception within an authorized native file operation for the caller-specified path. The command SHALL emit its existing keyboard-control warning before GUI interaction. The initial confirmation SHALL use the located default button and record its title. A Return fallback SHALL be permitted only when lookup or title reading fails before click dispatch, and only after freshly checking that Safari is frontmost, the file sheet remains present, and no nested sheet is present. The fallback SHALL be recorded as a mechanism change. Once click dispatch begins, an error SHALL propagate without a Return retry.
+
+The file-dialog runner SHALL relay captured stderr after the subprocess finishes, including success, failure, and timeout. The trace SHALL escape terminal controls, be bounded to 4096 rendered scalars, and mark truncation. This is a record of attempted actions, not proof of their success or an announcement delivered before the button press; the separate keyboard-control warning remains the pre-interaction announcement.
+
+PDF replacement SHALL require explicit `--overwrite` in addition to `--allow-hid`. An existing destination without overwrite authorization SHALL be rejected before target resolution or GUI interaction. A replacement sheet that appears later SHALL also be refused without authorization. With authorization, only a unique button named `Replace` or `取代` SHALL be pressed. Missing, ambiguous, or other-language names SHALL be refused; replacement SHALL never fall back to Return or retry a failed press.
+
+This exception SHALL apply only to the file dialog opened by the requested operation. It SHALL NOT authorize confirmation of arbitrary JavaScript dialogs or other dialogs found on screen. The existing upload system-grant exception SHALL remain unchanged.
+
+#### Scenario: Initial native file selection
+
+- **WHEN** the caller authorizes native upload or PDF export for a specified path
+- **THEN** its initial confirmation is permitted and records the button title or the permitted Return fallback
+- **AND** the captured trace is relayed safely after the subprocess finishes
+
+#### Scenario: Lookup failure before initial confirmation
+
+- **WHEN** initial button lookup fails before click dispatch
+- **AND** fresh checks confirm Safari is frontmost and the file sheet exists without a nested sheet
+- **THEN** Return fallback is permitted and recorded as a mechanism change
+
+#### Scenario: Initial press has an uncertain result
+
+- **WHEN** a dispatched initial button click reports an error
+- **THEN** the error is propagated without sending Return
+
+#### Scenario: Separate overwrite permission
+
+- **WHEN** PDF has only `--allow-hid` and a replacement sheet appears
+- **THEN** replacement is refused, including when the destination appeared after the initial existence check
+
+#### Scenario: Authorized replacement has no recognized unique button
+
+- **WHEN** PDF has `--overwrite` but no unique `Replace` or `取代` button can be located
+- **THEN** no replacement confirmation or Return fallback is dispatched
 
 ---
 ### Requirement: Interference warning on stderr

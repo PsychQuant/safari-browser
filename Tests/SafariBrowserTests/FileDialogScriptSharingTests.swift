@@ -170,12 +170,12 @@ final class FileDialogScriptSharingTests: XCTestCase {
             "keystrokes and menu clicks reach the front window, so the target must be raised")
     }
 
-    /// #107 rides along: the Replace? sheet confirms an overwrite the caller
-    /// never saw, so both the press and the keystroke fallback must be logged.
+    /// Replacement has separate authorization and never retries via Return.
     func testPdfAnnouncesTheReplaceConfirmation() {
-        let s = PdfCommand.exportScript(path: path, windowIndex: 1)
-        XCTAssertTrue(s.contains("log \"confirming replace sheet: pressing default button"))
-        XCTAssertTrue(s.contains("falling back to Return keystroke"))
+        let s = PdfCommand.replacementConfirmationScript(overwrite: true)
+        XCTAssertTrue(s.contains("log \"confirming replace sheet: pressing named button"))
+        XCTAssertFalse(s.contains("keystroke return"))
+        XCTAssertTrue(PdfCommand.exportScript(path: path, windowIndex: 1, overwrite: true).contains(s))
     }
 
     // Boundary of what the tests above can see: they reach `navigateFileDialog`
