@@ -73,6 +73,10 @@ reports capabilities and versions. Legacy clients send `initialize`, then
 is advertised. [MCP versioning](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
 
 Each call uses an isolated worker that parses and runs the existing CLI command.
+Within MCP, command subprocesses use POSIX spawn to inherit that worker’s process
+group from creation. Ordinary CLI subprocesses keep the existing Foundation
+launcher. This prevents nested `exec` and external commands from escaping MCP
+cancellation; an explicitly started daemon detaches into its own group.
 Workers use direct execution rather than implicit daemon routing; explicit daemon
 tools retain their usual behavior. CLI output cannot enter the MCP protocol
 stream. Results preserve separate `stdout` and `stderr` objects containing
@@ -86,13 +90,16 @@ stating that they were not executed; ping, discovery and cancellation remain
 available. The default timeout is 300 seconds (`--timeout` accepts 0.001–86400).
 Pending replies are bounded to 64 frames and 16 MiB, including the frame being
 written; reaching that queue limit closes the transport. Input processing and
-EOF cleanup do not wait for the client to drain stdout. Limits are 2 MiB per captured output stream, 4 MiB for stdin and 8 MiB per RPC
-frame. Oversized or incomplete output is an error, never a successful silent
-truncation. EOF cleans up the active worker. Cancellation stops its process
-group and suppresses the active call’s response. Cancellation that arrives after
+EOF cleanup do not wait for the client to drain stdout. Limits are 2 MiB per
+captured output stream, 4 MiB for stdin and 8 MiB per RPC frame. Oversized or incomplete command capture is a tool error, never a successful
+silent truncation. Closing stdin means shutting down the transport: EOF cancels
+the active worker and discards pending replies. Keep stdin open until you receive
+the matching complete response. A missing or interrupted reply leaves the outcome
+unknown, regardless of the server process’s exit status, and must not trigger an
+automatic retry. Cancellation stops its process group and suppresses the active call’s response. Cancellation that arrives after
 a call has completed and submitted its final response has no effect, including
-when that response is still queued for delivery. Cancellation cannot undo earlier effects or
-an explicitly started persistent daemon. Calls are never retried automatically.
+when that response is still queued for delivery. Cancellation cannot undo earlier
+effects or an explicitly started persistent daemon. Calls are never retried automatically.
 
 Restart the server after updating its executable: workers check the loaded
 Mach-O build UUID before running a command, including nested CLI calls. This

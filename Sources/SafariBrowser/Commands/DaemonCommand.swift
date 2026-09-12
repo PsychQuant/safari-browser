@@ -96,7 +96,7 @@ struct DaemonStartCommand: AsyncParsableCommand {
         // Spawn a detached child running `safari-browser daemon __serve`.
         // Redirect its stdout/stderr to the log file so tailing `logs`
         // shows whatever the daemon printed.
-        let process = Process()
+        let process = MCPCommandProcess()
         process.executableURL = URL(fileURLWithPath: currentExecutablePath())
         var serveArgs = ["daemon", "__serve", "--name", resolvedName]
         if let explicit = socketDirFlags.socketDir, !explicit.isEmpty {

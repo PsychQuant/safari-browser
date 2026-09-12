@@ -50,6 +50,15 @@ enum MCPWorkerContext {
         return URL(fileURLWithPath: String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)).standardizedFileURL
     }
 
+    static func subprocessArguments(executable: URL, arguments: [String], environment: [String: String]) throws -> [String] {
+        guard environment[directKey] == "1", environment[imageKey] != nil else { return arguments }
+        guard executable.standardizedFileURL.resolvingSymlinksInPath()
+                == (try executableURL()).standardizedFileURL.resolvingSymlinksInPath() else { return arguments }
+        // Even a replacement predating the image guard rejects this hidden entry
+        // before it can execute an ordinary command from the old catalog.
+        return ["__mcp-exec"] + arguments
+    }
+
     static func validate(environment: [String: String], currentImage: () throws -> String) throws {
         guard let expected = environment[imageKey] else { return }
         guard !expected.isEmpty, try currentImage() == expected else {
@@ -69,7 +78,9 @@ struct MCPWorkerCommand: AsyncParsableCommand {
         }
         // The normal main entry point has already checked the loaded image.
         var command = try SafariBrowser.parseAsRoot(arguments)
-        guard !(command is MCPWorkerCommand), !(command is DaemonServeCommand),
+        // The public catalog excludes hidden commands. Internal daemon start
+        // also uses this guard to launch its hidden service, which detaches itself.
+        guard !(command is MCPWorkerCommand),
               type(of: command).configuration.commandName != "mcp" else {
             throw ValidationError("Recursive or hidden MCP dispatch is not allowed")
         }

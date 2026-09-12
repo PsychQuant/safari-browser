@@ -19,7 +19,7 @@ InputSchema為JSON Schema 2020-12的object，含`positionals`（依valueName）�
 
 ### Isolated command worker
 
-新增隱藏`__mcp-exec`，其唯一職責是parseAsRoot原argv並run既有同步/非同步command，拒絕MCP/worker/daemon __serve自遞迴。MCP parent只傳argv及stdin，不複製業務邏輯。POSIX spawn為每個worker建立owned process group，三條pipe分離，無shell。取消/timeout/capture limit停止owned worker group，保留結果不確定性；明確daemon start所建立的detached daemon是既有持久副作用，不宣稱回滾。
+新增隱藏`__mcp-exec`，其唯一職責是parseAsRoot原argv並run既有同步/非同步command，拒絕MCP/worker自遞迴；public catalog排除hidden，內部daemon start仍能經同一image guard啟動daemon __serve。MCP parent只傳argv及stdin，不複製業務邏輯。POSIX spawn為每個worker建立owned process group，三條pipe分離，無shell。實測Foundation Process會為child另開group，因此五個CLI subprocess launch sites改用MCPCommandProcess：非MCP完整委派Foundation，MCP使用不設SETPGROUP的POSIX spawn原子繼承目前group。取消時不存在post-launch join窗口。所有sameCLI子行程加__mcp-exec前綴，更新到連image guard都沒有的舊binary也會在hidden entry拒絕。內部daemon __serve在啟動時setsid，明確成為持久例外；不使用outer group環境標記。取消/timeout/capture limit停止owned worker group，保留結果不確定性；明確daemon start所建立的detached daemon是既有持久副作用，不宣稱回滾。
 
 每個worker帶internal `SAFARI_BROWSER_MCP_DIRECT=1`及expected Mach-O image UUID。Main僅在expected標記存在時核對目前載入image，更新/不同build即在parser前拒絕；nested exec child也繼承檢查。避免原server的schema對到安裝更新後另一個engine。普通CLI沒有標記，不改路由。MCP direct標記優先於daemon環境/socket自動判斷，explicit daemon工具仍呼叫原command。
 
@@ -27,7 +27,7 @@ Runner預設300秒，可在mcp啟動時配置0.001–86400秒；每stdout/stderr
 
 ### Stdio protocol
 
-MCP只輸出單行JSON-RPC到stdout；CLI輸出只出現在tool result。固定tools集合與分頁（每頁50）由catalog產生，cursor驗證不猜。只允許一個執行中的tool call，額外呼叫回明確未執行的busy tool error；ping/list/discover/cancel可在執行期間處理。取消後不再對該request輸出訊息，EOF會取消並清理在途worker。回覆經獨立有界pump傳送（64frames/16MiB，包含正在寫出的frame），enqueue不等stdout可寫；滿額或write錯誤關閉transport，EOF可直接取消pendingwrites。complete先提交final result後，對已完成request的late cancel不撤銷已提交的結果；仍在active slot的cancel抑制回覆。ID必須string或integer且不能重複in-flight；bool/null/fractional拒絕。
+MCP只輸出單行JSON-RPC到stdout；CLI輸出只出現在tool result。固定tools集合與分頁（每頁50）由catalog產生，cursor驗證不猜。只允許一個執行中的tool call，額外呼叫回明確未執行的busy tool error；ping/list/discover/cancel可在執行期間處理。取消後不再對該request輸出訊息，EOF表示transport shutdown，取消並清理在途worker、丟棄pending replies；client應保持stdin到matching response，無回覆不代表命令成功或可以重播。回覆經獨立有界pump傳送（64frames/16MiB，包含正在寫出的frame），enqueue不等stdout可寫；滿額或write錯誤關閉transport，EOF可直接取消pendingwrites。complete先提交final result後，對已完成request的late cancel不撤銷已提交的結果；仍在active slot的cancel抑制回覆。ID必須string或integer且不能重複in-flight；bool/null/fractional拒絕。
 
 Modern request params._meta需protocolVersion=2026-07-28與clientCapabilities object；每次獨立判斷，不依賴initialize。server/discover回supportedVersions/capabilities/serverInfo，所有modern結果有resultType complete。未知版本用-32022與supported/requested；缺metadata用-32602。Legacy的_meta可含progressToken/extension；只以現代protocol欄位選擇modern驗證，避免把舊meta誤判。Legacy支援2025-06-18/2025-11-25 initialize＋initialized，未知legacy版本協商到2025-11-25；準備前不能執行工具。未宣告能力不提供。未知notification不回覆；JSON批次與畸形request明確拒絕。
 

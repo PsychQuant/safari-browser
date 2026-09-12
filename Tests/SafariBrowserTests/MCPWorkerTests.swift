@@ -33,4 +33,13 @@ final class MCPWorkerTests: XCTestCase {
         XCTAssertFalse(SafariBridge.shouldUseDaemon(flag: true, env: [MCPWorkerContext.directKey: "1", "SAFARI_BROWSER_DAEMON": "1"], socketExists: { _ in XCTFail("must not inspect socket"); return true }))
         XCTAssertTrue(SafariBridge.shouldUseDaemon(flag: true, env: [:], socketExists: { _ in false }))
     }
+    func testNestedCLISpawnUsesGuardedWorkerEntryOnlyInsideMCP() throws {
+        let executable = try MCPWorkerContext.executableURL()
+        let context = [MCPWorkerContext.imageKey: "fixture", MCPWorkerContext.directKey: "1"]
+        XCTAssertEqual(try MCPWorkerContext.subprocessArguments(executable: executable, arguments: ["wait", "0"], environment: context), ["__mcp-exec", "wait", "0"])
+        XCTAssertEqual(try MCPWorkerContext.subprocessArguments(executable: executable, arguments: ["daemon", "__serve"], environment: context), ["__mcp-exec", "daemon", "__serve"])
+        XCTAssertEqual(try MCPWorkerContext.subprocessArguments(executable: executable, arguments: ["wait", "0"], environment: [:]), ["wait", "0"])
+        XCTAssertEqual(try MCPWorkerContext.subprocessArguments(executable: URL(fileURLWithPath: "/usr/bin/osascript"), arguments: ["-e", "return 1"], environment: context), ["-e", "return 1"])
+    }
+
 }

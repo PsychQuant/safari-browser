@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import queue
 import shutil
+import signal
+import uuid
 import struct
 import tempfile
 import subprocess
@@ -236,6 +238,83 @@ class MCPStdioTests(unittest.TestCase):
                         process.stdin.close()
                     process.stdout.close()
                     process.stderr.close()
+
+    @staticmethod
+    def process_info(pid):
+        result = subprocess.run(['/bin/ps', '-o', 'pid=,ppid=,pgid=,stat=,command=', '-p', str(pid)], capture_output=True, text=True)
+        fields = result.stdout.strip().split(None, 4)
+        if result.returncode or len(fields) != 5:
+            return None
+        return (int(fields[0]), int(fields[1]), int(fields[2]), fields[3], fields[4])
+
+    def test_nested_exec_children_stay_owned_through_cancel_and_eof(self):
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                client = Client('--timeout=2')
+                grandchild = None
+                try:
+                    client.send('tools/call', {'name': 'safari.exec', 'arguments': {'stdin': '[{"cmd":"wait","args":["30000"]}]'}}, identifier='nested')
+                    deadline = time.monotonic() + 1
+                    while time.monotonic() < deadline:
+                        child = subprocess.run(['/usr/bin/pgrep', '-P', str(client.process.pid)], capture_output=True, text=True)
+                        if child.stdout.strip():
+                            worker = int(child.stdout.split()[0])
+                            nested = subprocess.run(['/usr/bin/pgrep', '-P', str(worker)], capture_output=True, text=True)
+                            if nested.stdout.strip():
+                                grandchild = int(nested.stdout.split()[0])
+                                info = self.process_info(grandchild)
+                                if info and 'wait 30000' in info[4]:
+                                    break
+                        time.sleep(0.01)
+                    self.assertIsNotNone(grandchild, 'nested CLI did not start')
+                    self.assertEqual(info[2], worker, 'nested CLI escaped worker group')
+                    time.sleep(0.05)
+                    if cancel:
+                        client.send('notifications/cancelled', {'requestId': 'nested'}, notification=True)
+                    else:
+                        client.close()
+                    deadline = time.monotonic() + 0.8
+                    while time.monotonic() < deadline:
+                        info = self.process_info(grandchild)
+                        if info is None or info[3].startswith('Z'):
+                            break
+                        time.sleep(0.01)
+                    self.assertTrue(info is None or info[3].startswith('Z'), 'nested CLI survived cancellation/EOF')
+                finally:
+                    client.close()
+                    if grandchild:
+                        info = self.process_info(grandchild)
+                        if info and BIN in info[4] and 'wait 30000' in info[4]:
+                            try:
+                                os.kill(grandchild, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+
+    def test_explicit_daemon_can_detach_and_is_stopped_after_test(self):
+        with tempfile.TemporaryDirectory(prefix='mcp-', dir='/tmp') as directory:
+            name = 'mcp-' + uuid.uuid4().hex[:8]
+            options = {'name': name, 'socket-dir': directory}
+            daemon_pid = None
+            try:
+                result = self.client.call('safari.daemon.start', {'options': options})['result']
+                self.assertFalse(result['isError'], result)
+                message = result['structuredContent']['stdout']['data']
+                daemon_pid = int(message.split('(pid ')[1].split(')')[0])
+                info = self.process_info(daemon_pid)
+                self.assertIsNotNone(info)
+                self.assertEqual(info[2], daemon_pid, 'persistent daemon must detach from its worker')
+                result = self.client.call('safari.daemon.status', {'options': options})['result']
+                self.assertFalse(result['isError'], result)
+            finally:
+                stopped = subprocess.run([BIN, 'daemon', 'stop', '--name', name, '--socket-dir', directory], capture_output=True, timeout=8)
+                if daemon_pid:
+                    info = self.process_info(daemon_pid)
+                    if info and name in info[4] and '__serve' in info[4]:
+                        try:
+                            os.kill(daemon_pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                self.assertEqual(stopped.returncode, 0, stopped.stderr)
 
     def test_worker_identity_guard_and_hidden_entry(self):
         env = dict(os.environ, SAFARI_BROWSER_MCP_IMAGE_ID='different-build', SAFARI_BROWSER_MCP_DIRECT='1')
