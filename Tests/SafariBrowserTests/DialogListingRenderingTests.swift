@@ -189,6 +189,33 @@ final class DialogListingRenderingTests: XCTestCase {
         }
     }
 
+    func testExplicitWindowAndProfileTabsDoNotStartSeparateEntryProbe() async throws {
+        let captured = observation()
+        for arguments in [["--window", "2", "--json"], ["--profile", "工作", "--json"]] {
+            let entry = ExecSubprocessOutputTests.Output(), listing = ExecSubprocessOutputTests.Output()
+            let context = DaemonRequestContext(probe: { _ in entry.append("entry"); return .clear }, environment: [:])
+            let command = try TabsCommand.parse(arguments)
+            try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+                    if source == SafariBridge.listAllWindowsScript {
+                        return ["1", "1", "1", "https://work.test", "Work", "工作 — Work", "72"].joined(separator: "\u{1D}")
+                    }
+                    if source.contains("get id of window") { return "72" }
+                    if source.contains("count of tabs") { return "1" }
+                    if source.contains("get name of tab") { return "Work" }
+                    if source.contains("get URL of tab") { return "https://work.test" }
+                    return ["1", "1", "1", "https://work.test", "Work", "工作 — Work", "72"].joined(separator: "\u{1D}")
+                }) {
+                    try await WindowDialogObservation.$provider.withValue({ listing.append("capture"); return captured }) {
+                        try await command.run()
+                    }
+                }
+            }
+            XCTAssertEqual(entry.text, "", "\(arguments) must use only the listing observation")
+            XCTAssertEqual(listing.text, "capture")
+        }
+    }
+
     func testEmptyCommandsDoNotCaptureIncludingProfileFilteredDocuments() async throws {
         let calls = ExecSubprocessOutputTests.Output()
         let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])

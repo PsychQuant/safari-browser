@@ -17,3 +17,5 @@ TDD provider snapshot/legacy scan mapping、complete與unknown、ID membership�
 ## Review correction
 
 原 unknown 文字 suffix 違反 opt-out 恢復舊格式的契約。依 R1 logic/DA 審查，unknown 改於 stderr 摘要揭露、JSON 每列保留；明確 opt-out 完全不加新的 dialog 文字提示。InProcessStepDispatcher 的 documents 曾保留獨立舊 JSON encoder，改共用 DocumentsCommand.jsonRows 與一次 capture，避免 daemon exec 遺漏 metadata；以實際 dispatch 函式搭配注入測試驗證 enabled/disabled 兩種請求。
+
+Explicit/profile tabs 的 resolver 與 listTabs 使用 probeDialog:false 只做身份／資料解析，避免舊入口探測與 listing 各掃一次。相容的 BLOCKING DIALOG stderr 警告由同一份完整 observation 的唯一 dialog／raw buttons 產生；其餘呼叫端 probeDialog 預設 true，保留既有入口行為。測試實際 command 路徑同時計數 gate provider 與 listing provider，確保前者零次、後者一次。

@@ -29,16 +29,21 @@ struct TabsCommand: AsyncParsableCommand {
             let base: SafariBridge.TargetDocument = target.window.map { .windowIndex($0) } ?? .frontWindow
             let resolved = try await SafariBridge.resolveNativeTarget(
                 from: base, firstMatch: target.firstMatch,
-                warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
-            tabs = try await SafariBridge.listTabs(in: resolved)
+                warnWriter: TargetOptions.stderrWarnWriter, profile: profile, probeDialog: false)
+            tabs = try await SafariBridge.listTabs(in: resolved, probeDialog: false)
         } else {
-            tabs = try await SafariBridge.listTabs(window: target.window)
+            tabs = try await SafariBridge.listTabs(window: target.window, probeDialog: false)
         }
         guard !tabs.isEmpty else {
             if json { print("[]") }
             return
         }
         let observation = WindowDialogObservation.capture()
+        if (target.window != nil || target.resolveProfile() != nil),
+           let windowID = tabs.first?.windowID,
+           let dialog = observation.singleDialog(for: windowID) {
+            TargetOptions.stderrWarnWriter(BlockingDialogWarning.firstLine(windowKey: .id(windowID), dialog: dialog) + "\n")
+        }
         if json {
             let arr = Self.jsonRows(tabs, observation: observation)
             let data = try JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted, .sortedKeys])
