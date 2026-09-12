@@ -14,6 +14,7 @@ protocol DialogProbeProvider: Sendable {
     func role(_ node: Node, timeout: Float) throws -> String
     func subrole(_ node: Node, timeout: Float) throws -> String?
     func children(_ node: Node, timeout: Float) throws -> [Node]
+    func valueIsSettable(_ node: Node, timeout: Float) throws -> Bool?
     func text(_ node: Node, timeout: Float) throws -> String?
     func buttonTitle(_ node: Node, timeout: Float) throws -> String?
 }
@@ -172,8 +173,9 @@ final class BoundedDialogProbe: @unchecked Sendable {
             next += 1
             // A confirmed dialog remains present if optional details fail.
             if let role = try? provider.role(node, timeout: budget.remaining()) {
-                if role == "AXStaticText",
-                   let text = try? provider.text(node, timeout: budget.remaining()), !text.isEmpty {
+                if role == "AXWebArea" { continue }
+                if let text = try? DialogMessageText.read(
+                    node, role: role, provider: provider, remainingTimeout: budget.remaining), !text.isEmpty {
                     messages.append(text)
                 }
                 if role == "AXButton",
@@ -228,6 +230,15 @@ struct AXDialogProbeProvider: DialogProbeProvider {
 
     func children(_ node: AXUIElement, timeout: Float) throws -> [AXUIElement] {
         try elements(node, attribute: kAXChildrenAttribute as CFString, timeout: timeout, absentIsEmpty: true)
+    }
+
+    func valueIsSettable(_ node: AXUIElement, timeout: Float) throws -> Bool? {
+        try prepare(node, timeout: timeout)
+        var settable: DarwinBoolean = false
+        let status = AXUIElementIsAttributeSettable(node, kAXValueAttribute as CFString, &settable)
+        if status == .attributeUnsupported || status == .noValue { return nil }
+        guard status == .success else { throw DialogProbeReadError.unavailable }
+        return settable.boolValue
     }
 
     func text(_ node: AXUIElement, timeout: Float) throws -> String? {
