@@ -99,15 +99,24 @@ cleanup() {
     recovered=$("$SB" js --url-exact "$URL" "1+1" 2>/dev/null)
     if [[ $? -ne 0 || "$recovered" != "2" ]]; then
         echo "Fixture retained: JavaScript recovery unconfirmed; no press retry." >&2
-        return
+        return 1
     fi
     "$SB" close --url-exact "$URL" >/dev/null 2>&1 || {
         echo "Fixture cleanup not confirmed; exact URL retained." >&2
-        return
+        return 1
     }
     rm -rf "$TMP"
 }
-trap cleanup EXIT
+finish_harness() {
+    local original_status=$?
+    trap - EXIT
+    if ! cleanup; then
+        echo "FAIL: fixture cleanup is incomplete; acceptance not granted." >&2
+        [[ "$original_status" -ne 0 ]] || original_status=1
+    fi
+    exit "$original_status"
+}
+trap finish_harness EXIT
 
 echo "=== safari-browser blocking-dialog e2e (#126) ==="
 echo "Fixture: $URL"
@@ -462,4 +471,7 @@ echo ""
 echo "=== Results: $PASS passed, $FAIL failed, $SKIP skipped ==="
 if [[ "$FAIL" -gt 0 ]]; then
     exit 1
+fi
+if [[ "$SKIP" -gt 0 ]]; then
+    exit 77
 fi

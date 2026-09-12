@@ -13,3 +13,5 @@ TDD parser pair/positive ID、exact raw message、same fingerprint wrong window 
 ## Live acceptance correction (2026-09-13)
 
 Safari 27 實測原文為 `JavaScript ` 加上 fixture nonce 訊息；共用 fixture_dialog_expectations 僅接受 nonce 原文與這個已量測的前綴兩種形狀，並將完整原文帶入 expect-message。legacy shell harness 同樣呼叫帶身份期望的 helper；helper 於 dispatch 前原子建立 attempt 檔案，跨程序 cleanup 不重播。結果不確定時只能先以自有 fixture 的 JS 回應證明恢復，才能關閉精確 URL；舊版缺 expectation 旗標的 binary 在建立 fixture 前即拒絕。
+
+Legacy EXIT handler 必須保留原失敗狀態，且 cleanup 失敗時把原本的成功轉為失敗；任何 assertion 跳過都回 77，不算 acceptance。以實際 shell cleanup／終端片段搭配假 browser 程序驗證 recovery failure、close failure、既有失敗保留、全部成功及有 skip 五條分支。

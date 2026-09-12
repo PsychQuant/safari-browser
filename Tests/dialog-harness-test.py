@@ -130,5 +130,44 @@ class GuardedFixtureTests(unittest.TestCase):
         self.assertNotEqual(second.returncode, 0)
         self.assertEqual(sum(a[1:3] == ['dialog', 'dismiss'] for a in calls), 1)
 
+class CleanupExitTests(unittest.TestCase):
+    def run_cleanup(self, failed_operation, original_status=0):
+        source = SCRIPT.read_text()
+        start = source.index('cleanup() {')
+        end = source.index('echo "=== safari-browser blocking-dialog', start)
+        with tempfile.TemporaryDirectory(prefix='dialog-cleanup-') as directory:
+            root = Path(directory)
+            binary = root / 'fake-browser'
+            binary.write_text('#!/bin/bash\n'
+                              'if [[ "$1" == daemon ]]; then exit 0; fi\n'
+                              f'if [[ "$1" == {shlex.quote(failed_operation)} ]]; then exit 1; fi\n'
+                              'if [[ "$1" == js ]]; then echo 2; fi\nexit 0\n')
+            binary.chmod(0o755)
+            work = root / 'fixture'; work.mkdir()
+            prelude = f'SB={shlex.quote(str(binary))}\nTMP={shlex.quote(str(work))}\nNAME=fake\nURL=file:///fake?nonce\nFIXTURE_OPENED=1\nowns_fixture_dialog() {{ return 1; }}\n'
+            return subprocess.run(['/bin/bash', '-c', prelude + source[start:end] + f'\nexit {original_status}\n'], capture_output=True, text=True, timeout=5)
+
+    def test_failed_recovery_invalidates_success(self):
+        result = self.run_cleanup('js')
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_failed_close_invalidates_success(self):
+        result = self.run_cleanup('close')
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_cleanup_preserves_original_failure(self):
+        self.assertEqual(self.run_cleanup('close', 7).returncode, 7)
+
+    def test_successful_cleanup_preserves_success(self):
+        self.assertEqual(self.run_cleanup('nothing').returncode, 0)
+
+    def test_skipped_assertion_does_not_report_accepted(self):
+        source = SCRIPT.read_text()
+        tail = source[source.index('echo "=== Results:'):]
+        result = subprocess.run(['/bin/bash', '-c', 'PASS=1; FAIL=0; SKIP=1\n' + tail],
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
