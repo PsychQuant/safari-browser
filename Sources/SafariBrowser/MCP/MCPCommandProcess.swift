@@ -60,7 +60,9 @@ final class MCPCommandProcess: @unchecked Sendable {
         if !useMCPIsolation {
             ordinary.executableURL = executableURL
             ordinary.arguments = arguments
-            ordinary.environment = environment
+            // Foundation on macOS treats an explicitly assigned nil as an
+            // empty environment. Leave its inherited default untouched.
+            if let environment { ordinary.environment = environment }
             ordinary.standardInput = standardInput
             ordinary.standardOutput = standardOutput
             ordinary.standardError = standardError
