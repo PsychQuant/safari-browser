@@ -35,27 +35,27 @@ struct WindowDialogObservation: Sendable {
     @TaskLocal static var provider: (@Sendable () -> WindowDialogObservation)?
     let scanResult: SafariBridge.DialogScan
     private let observedWindowIDs: Set<Int>
-    private let messagesByWindowID: [Int: [String]]
+    private let dialogsByWindowID: [Int: [SafariBridge.BlockingDialog]]
     private let reason: String?
 
     init<Node>(snapshot: DialogTreeSnapshot<Node>) {
         scanResult = snapshot.scanResult
         observedWindowIDs = snapshot.observedWindowIDs
         reason = snapshot.accessibilityDenied ? "denied" : (snapshot.isComplete ? nil : "incomplete")
-        var messages: [Int: [String]] = [:]
+        var dialogs: [Int: [SafariBridge.BlockingDialog]] = [:]
         if reason == nil {
             for candidate in snapshot.candidates {
-                messages[candidate.windowID, default: []].append(candidate.dialog.message)
+                dialogs[candidate.windowID, default: []].append(candidate.dialog)
             }
         }
-        messagesByWindowID = messages
+        dialogsByWindowID = dialogs
     }
 
     private init(reason: String, scanResult: SafariBridge.DialogScan) {
         self.reason = reason
         self.scanResult = scanResult
         observedWindowIDs = []
-        messagesByWindowID = [:]
+        dialogsByWindowID = [:]
     }
 
     static func unavailable(reason: String) -> Self {
@@ -83,6 +83,15 @@ struct WindowDialogObservation: Sendable {
         }
     }
 
+    /// The targeted-listing warning uses the same complete observation and
+    /// ordered raw button details as the row metadata, never another AX scan.
+    func singleDialog(for windowID: Int?) -> SafariBridge.BlockingDialog? {
+        guard reason == nil, let windowID, windowID > 0,
+              observedWindowIDs.contains(windowID),
+              let dialogs = dialogsByWindowID[windowID], dialogs.count == 1 else { return nil }
+        return dialogs[0]
+    }
+
     func status(for windowID: Int?) -> WindowDialogStatus {
         if let reason { return .init(state: .unknown, windowID: windowID, messages: [], reason: reason) }
         guard let windowID, windowID > 0 else {
@@ -91,7 +100,7 @@ struct WindowDialogObservation: Sendable {
         guard observedWindowIDs.contains(windowID) else {
             return .init(state: .unknown, windowID: windowID, messages: [], reason: "notobserved")
         }
-        let messages = messagesByWindowID[windowID] ?? []
+        let messages = (dialogsByWindowID[windowID] ?? []).map(\.message)
         return .init(state: messages.isEmpty ? .clear : .present, windowID: windowID, messages: messages, reason: nil)
     }
 }

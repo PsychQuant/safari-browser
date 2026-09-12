@@ -2331,7 +2331,8 @@ enum SafariBridge {
         from target: TargetDocument,
         firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil,
-        profile: String? = nil
+        profile: String? = nil,
+        probeDialog: Bool = true
     ) async throws -> ResolvedWindowTarget {
         let resolved: ResolvedWindowTarget
         if profile != nil {
@@ -2350,7 +2351,7 @@ enum SafariBridge {
                     firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
             }
         }
-        BlockingDialogGate.shared.check(windowKey(for: resolved))
+        if probeDialog { BlockingDialogGate.shared.check(windowKey(for: resolved)) }
         return resolved
     }
 
@@ -2650,16 +2651,16 @@ enum SafariBridge {
     /// window (backward-compatible default). `tabs` / `switch-tab` only
     /// support window-level targeting because listing tabs at document
     /// granularity doesn't make sense.
-    static func listTabs(window: Int? = nil) async throws -> [TabInfo] {
+    static func listTabs(window: Int? = nil, probeDialog: Bool = true) async throws -> [TabInfo] {
         if let window {
-            return try await listTabs(in: resolveNativeTarget(from: .windowIndex(window)))
+            return try await listTabs(in: resolveNativeTarget(from: .windowIndex(window), probeDialog: probeDialog), probeDialog: probeDialog)
         }
         let id = await readWindowID(index: 1)
         return try await readTabs(windowRef: id.map { "window id \($0)" } ?? "front window", windowID: id)
     }
 
-    static func listTabs(in resolved: ResolvedWindowTarget) async throws -> [TabInfo] {
-        BlockingDialogGate.shared.check(windowKey(for: resolved))
+    static func listTabs(in resolved: ResolvedWindowTarget, probeDialog: Bool = true) async throws -> [TabInfo] {
+        if probeDialog { BlockingDialogGate.shared.check(windowKey(for: resolved)) }
         let windowRef: String
         if let id = resolved.windowID, id > 0 { windowRef = "window id \(id)" }
         else { windowRef = "window \(resolved.windowIndex)" }
