@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Safari-free checks for #131's GUI harness and destructive boundaries."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -244,6 +245,27 @@ class BackgroundHarnessTests(unittest.TestCase):
         self.assertTrue(gui.dismiss_attempted)
         self.assertFalse(gui.cleanup())
         self.assertEqual(gui.cli.call_count, 2)
+
+    def test_listing_checks_only_owned_rows_and_bound_window_identity(self):
+        for state in ('clear', 'present'):
+            with self.subTest(state=state):
+                gui = self.make_harness()
+                status = {'state': state, 'window_id': 42, 'reason': None,
+                          'messages': [gui.dialog_text] if state == 'present' else []}
+                rows = [{'window': 7, 'url': url, 'blocking_dialog': status} for url in (gui.url, gui.cover_url)]
+                documents = rows + [{'url': 'private unrelated row', 'title': 'not logged'}]
+                gui.cli = Mock(side_effect=[result(json.dumps(documents)), result(json.dumps(rows))])
+                gui.check_listing_rows(state)
+                self.assertEqual(gui.cli.call_args_list[1].args, ('tabs', '--window', '7', '--json'))
+
+    def test_listing_refuses_unknown_or_wrong_window_metadata(self):
+        for wrong in ({'state': 'unknown', 'window_id': 42, 'reason': 'incomplete', 'messages': []},
+                      {'state': 'clear', 'window_id': 99, 'reason': None, 'messages': []}):
+            gui = self.make_harness()
+            rows = [{'window': 7, 'url': url, 'blocking_dialog': wrong} for url in (gui.url, gui.cover_url)]
+            gui.cli = Mock(side_effect=[result(json.dumps(rows)), result(json.dumps(rows))])
+            with self.assertRaises(harness.VerificationError):
+                gui.check_listing_rows('clear')
 
     def test_unknown_dialog_cleanup_never_dismisses_or_closes(self):
         gui = self.make_harness()

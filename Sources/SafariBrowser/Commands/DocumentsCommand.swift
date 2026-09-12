@@ -46,42 +46,35 @@ struct DocumentsCommand: AsyncParsableCommand {
             documents = allDocuments
         }
 
+        guard !documents.isEmpty else {
+            if json { print("[]") }
+            return
+        }
+        // One bounded observation serves the entire filtered listing. Match
+        // stable IDs retained during enumeration, never current window order.
+        let observation = WindowDialogObservation.capture()
         if json {
-            let array = documents.map { doc in
-                [
-                    "index": doc.index,
-                    "window": doc.window,
-                    "tab_in_window": doc.tabInWindow,
-                    "is_current": doc.isCurrent,
-                    "url": doc.url,
-                    "title": doc.title,
-                    // profile is always present in JSON output (NSNull
-                    // when no profile detected) — additive change for
-                    // automation parsers, easier than conditional schema.
-                    "profile": doc.profile as Any? ?? NSNull(),
-                ] as [String: Any]
-            }
             let data = try JSONSerialization.data(
-                withJSONObject: array,
+                withJSONObject: Self.jsonRows(documents, observation: observation),
                 options: [.prettyPrinted, .sortedKeys]
             )
             print(String(data: data, encoding: .utf8) ?? "[]")
             return
         }
 
-        if documents.isEmpty {
-            return
-        }
         // #46: emit the active-tab legend to stderr so humans can decode the
         // '*' marker, while stdout stays a bit-stable parseable tab list
         // (scripts that pipe stdout are unaffected; for programmatic active
         // detection use --json's is_current field).
-        FileHandle.standardError.write(Data(DocumentsCommand.legendLine().utf8))
+        TargetOptions.stderrWarnWriter(Self.legendLine())
+        if documents.contains(where: { observation.status(for: $0.windowID).textSuffix != nil }) {
+            TargetOptions.stderrWarnWriter(Self.dialogLegendLine(commandName: "documents"))
+        }
         if let note = DocumentsCommand.tablessWindowNote(
             for: windows, profileFilter: profileFilter) {
-            FileHandle.standardError.write(Data(note.utf8))
+            TargetOptions.stderrWarnWriter(note)
         }
-        for line in DocumentsCommand.formatText(documents) {
+        for line in Self.formatText(documents, observation: observation) {
             print(line)
         }
     }
@@ -122,6 +115,31 @@ struct DocumentsCommand: AsyncParsableCommand {
             + "for scripting use the is_current field from --json).\n"
     }
 
+    /// Shared wording for window annotations in documents and tabs listings.
+    static func dialogLegendLine(commandName: String) -> String {
+        "\(commandName): [dialog: ...] / [dialogs: N] describe visible native dialogs of the window; "
+            + "unknown means observation was unavailable or incomplete (reason in the marker). "
+            + "This does not mean every tab is blocked or exclude background pending dialogs. "
+            + "For scripting use blocking_dialog from --json.\n"
+    }
+
+    static func jsonRows(
+        _ documents: [SafariBridge.DocumentInfo], observation: WindowDialogObservation
+    ) -> [[String: Any]] {
+        documents.map { doc in
+            [
+                "index": doc.index,
+                "window": doc.window,
+                "tab_in_window": doc.tabInWindow,
+                "is_current": doc.isCurrent,
+                "url": doc.url,
+                "title": doc.title,
+                "profile": doc.profile as Any? ?? NSNull(),
+                "blocking_dialog": observation.status(for: doc.windowID).jsonObject,
+            ]
+        }
+    }
+
     /// Pure formatter for the text output mode. Exposed for unit testing
     /// independently of Safari.
     ///
@@ -131,7 +149,9 @@ struct DocumentsCommand: AsyncParsableCommand {
     /// `profile == nil` (single-profile or pre-Safari 17 setups), the
     /// column is omitted — preserving bit-exact output for users who
     /// don't have multi-profile enabled (zero break for legacy parsers).
-    static func formatText(_ documents: [SafariBridge.DocumentInfo]) -> [String] {
+    static func formatText(
+        _ documents: [SafariBridge.DocumentInfo], observation: WindowDialogObservation? = nil
+    ) -> [String] {
         let hasAnyProfile = documents.contains { $0.profile != nil }
         // #56: pad the [profile] column to the widest bracketed value so the
         // URL column stays aligned across variable-length profile names.
@@ -144,12 +164,13 @@ struct DocumentsCommand: AsyncParsableCommand {
             let marker = doc.isCurrent ? "*" : " "
             let coords = "w\(doc.window).t\(doc.tabInWindow)"
             let body = "\(doc.url) — \(doc.title)"
+            let suffix = observation?.status(for: doc.windowID).textSuffix.map { " " + $0 } ?? ""
             if hasAnyProfile {
                 let raw = profileCols[index]
                 let profileCol = raw + String(repeating: " ", count: max(0, profileColWidth - raw.count))
-                return "[\(doc.index)] \(marker) \(coords)  \(profileCol)  \(body)"
+                return "[\(doc.index)] \(marker) \(coords)  \(profileCol)  \(body)\(suffix)"
             }
-            return "[\(doc.index)] \(marker) \(coords)  \(body)"
+            return "[\(doc.index)] \(marker) \(coords)  \(body)\(suffix)"
         }
     }
 }

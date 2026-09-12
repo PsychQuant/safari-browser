@@ -1866,6 +1866,11 @@ enum SafariBridge {
         let index: Int
         let title: String
         let url: String
+        let windowID: Int?
+
+        init(index: Int, title: String, url: String, windowID: Int? = nil) {
+            self.index = index; self.title = title; self.url = url; self.windowID = windowID
+        }
     }
 
     /// Metadata for a Safari tab, used by `listAllDocuments()` and
@@ -1899,6 +1904,7 @@ enum SafariBridge {
         /// same profile);propagated by `flattenWindowsToDocuments` from
         /// `WindowInfo.profile`. Issue #47.
         let profile: String?
+        let windowID: Int?
 
         /// Backwards-compatible initializer with `profile` defaulting
         /// to `nil`. Existing test fixtures and external callers that
@@ -1911,7 +1917,8 @@ enum SafariBridge {
             title: String,
             url: String,
             isCurrent: Bool,
-            profile: String? = nil
+            profile: String? = nil,
+            windowID: Int? = nil
         ) {
             self.index = index
             self.window = window
@@ -1920,6 +1927,7 @@ enum SafariBridge {
             self.url = url
             self.isCurrent = isCurrent
             self.profile = profile
+            self.windowID = windowID
         }
     }
 
@@ -1940,7 +1948,8 @@ enum SafariBridge {
                     title: tab.title,
                     url: tab.url,
                     isCurrent: tab.isCurrent,
-                    profile: window.profile
+                    profile: window.profile,
+                    windowID: window.windowID
                 ))
                 globalIndex += 1
             }
@@ -2645,7 +2654,8 @@ enum SafariBridge {
         if let window {
             return try await listTabs(in: resolveNativeTarget(from: .windowIndex(window)))
         }
-        return try await readTabs(windowRef: "front window")
+        let id = await readWindowID(index: 1)
+        return try await readTabs(windowRef: id.map { "window id \($0)" } ?? "front window", windowID: id)
     }
 
     static func listTabs(in resolved: ResolvedWindowTarget) async throws -> [TabInfo] {
@@ -2653,10 +2663,10 @@ enum SafariBridge {
         let windowRef: String
         if let id = resolved.windowID, id > 0 { windowRef = "window id \(id)" }
         else { windowRef = "window \(resolved.windowIndex)" }
-        return try await readTabs(windowRef: windowRef)
+        return try await readTabs(windowRef: windowRef, windowID: resolved.windowID)
     }
 
-    private static func readTabs(windowRef: String) async throws -> [TabInfo] {
+    private static func readTabs(windowRef: String, windowID: Int? = nil) async throws -> [TabInfo] {
         let countStr = try await runAppleScript("""
             tell application "Safari"
                 if (count of windows) = 0 then
@@ -2685,7 +2695,8 @@ enum SafariBridge {
             tabs.append(TabInfo(
                 index: i,
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                url: url.trimmingCharacters(in: .whitespacesAndNewlines)
+                url: url.trimmingCharacters(in: .whitespacesAndNewlines),
+                windowID: windowID
             ))
         }
         return tabs
