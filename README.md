@@ -31,6 +31,87 @@ Need login? ──── Yes → safari-browser
 - **2FA / MFA sites** — already authenticated in Safari
 - **Extract API tokens** — `safari-browser js "localStorage.getItem('token')"`
 
+## MCP stdio
+
+Run `safari-browser mcp` from an MCP client using the installed executable's
+absolute path. The server provides all 76 existing public CLI leaf commands,
+including `help`, `setup` and daemon controls. Names follow the command path:
+`wait` becomes `safari.wait`, and `tab focus` becomes `safari.tab.focus`.
+Hidden commands and the MCP transport are excluded. The catalog and input
+schemas come from the running ArgumentParser metadata; no separate command
+implementation or hand-maintained tool list is used.
+
+For a client's stdio server configuration, substitute your actual home path:
+
+```json
+{
+  "command": "/Users/YOUR_NAME/bin/safari-browser",
+  "args": ["mcp", "--timeout", "300"]
+}
+```
+
+Tool arguments have optional `options`, `positionals` and UTF-8 `stdin` fields;
+required CLI arguments remain required in their generated schema. Values stay
+strings because the metadata does not expose trustworthy Swift scalar types.
+A flag's `true` adds that flag and `false` omits it. CLI defaults, value ranges,
+mutually exclusive options and target checks still apply. For example:
+
+```json
+{
+  "name": "safari.wait",
+  "arguments": {"positionals": {"milliseconds": "0"}}
+}
+```
+
+The server supports MCP **2026-07-28** per-request metadata, plus legacy
+**2025-06-18** and **2025-11-25** initialization. Modern requests include
+`params._meta["io.modelcontextprotocol/protocolVersion"]` and
+`params._meta["io.modelcontextprotocol/clientCapabilities"]`; `server/discover`
+reports capabilities and versions. Legacy clients send `initialize`, then
+`notifications/initialized`. `tools/list` returns at most 50 tools and an opaque
+`nextCursor`; pass it as the next request's `cursor`. Only the tools capability
+is advertised. [MCP versioning](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
+
+Each call uses an isolated worker that parses and runs the existing CLI command.
+Within MCP, command subprocesses use POSIX spawn to inherit that worker’s process
+group from creation. Ordinary CLI subprocesses keep the existing Foundation
+launcher. This prevents nested `exec` and external commands from escaping MCP
+cancellation; an explicitly started daemon detaches into its own group.
+Workers use direct execution rather than implicit daemon routing; explicit daemon
+tools retain their usual behavior. CLI output cannot enter the MCP protocol
+stream. Results preserve separate `stdout` and `stderr` objects containing
+`encoding` (`utf-8` or `base64`) and `data`, plus `exit_code`, `capture_complete`
+and `failure`. Text content presents diagnostics before stdout. A nonzero exit,
+failed capture or transport limit produces `isError: true`. The output schema
+describes this common capture envelope; command-specific JSON remains in stdout.
+
+There is one active tool call per server. Other calls receive a busy error
+stating that they were not executed; ping, discovery and cancellation remain
+available. The default timeout is 300 seconds (`--timeout` accepts 0.001–86400).
+Pending replies are bounded to 64 frames and 16 MiB, including the frame being
+written; reaching that queue limit closes the transport. Input processing and
+EOF cleanup do not wait for the client to drain stdout. Limits are 2 MiB per
+captured output stream, 4 MiB for stdin and 8 MiB per RPC frame. Oversized or incomplete command capture is a tool error, never a successful
+silent truncation. Closing stdin means shutting down the transport: EOF cancels
+the active worker and discards pending replies. Keep stdin open until you receive
+the matching complete response. A missing or interrupted reply leaves the outcome
+unknown, regardless of the server process’s exit status, and must not trigger an
+automatic retry. Cancellation stops its process group and suppresses the active call’s response. Cancellation that arrives after
+a call has completed and submitted its final response has no effect, including
+when that response is still queued for delivery. Cancellation cannot undo earlier
+effects or an explicitly started persistent daemon. Calls are never retried automatically.
+
+Restart the server after updating its executable: workers check the loaded
+Mach-O build UUID before running a command, including nested CLI calls. This
+check is build consistency, not additional code-signing trust. MCP does not grant
+Accessibility, Automation, Screen Recording or Full Disk Access; the existing
+installation and permission requirements still apply. Tool metadata does not
+establish user authorization for a browser action.
+
+`make test-mcp` checks real stdio, every public help route and representative CLI
+parity without operating Safari UI or querying personal databases. It does not
+claim live GUI side-effect coverage for all tools.
+
 ## Install
 
 ```bash

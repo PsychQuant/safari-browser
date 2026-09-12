@@ -178,7 +178,7 @@ struct SetupCommand: AsyncParsableCommand {
     }
 
     private static func openURL(_ string: String) {
-        let proc = Process()
+        let proc = MCPCommandProcess()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         proc.arguments = [string]
         try? proc.run()

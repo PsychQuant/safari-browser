@@ -3310,7 +3310,7 @@ enum SafariBridge {
     /// `"Example — Extra"` — that was a latent bug surfaced by #23 verify.
     private static func getFrontWindowID() throws -> String {
         let frontBrowserWindowName: String? = {
-            let proc = Process()
+            let proc = MCPCommandProcess()
             proc.executableURL = URL(filePath: "/usr/bin/osascript")
             // #94: the probe used to read `current tab of front window` before
             // the name. That made the name unreadable for a 0-tab front window
@@ -3438,7 +3438,7 @@ enum SafariBridge {
             throw SafariBrowserError.invalidTimeout(timeout)
         }
 
-        let process = Process()
+        let process = MCPCommandProcess()
         process.executableURL = URL(filePath: executable)
         process.arguments = arguments
 
@@ -3463,7 +3463,7 @@ enum SafariBridge {
                 process.terminate() // SIGTERM
                 try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s grace
                 if process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
+                    process.forceKill()
                 }
             }
         }
