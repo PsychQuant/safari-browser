@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Window dialog annotations** (#129): documents/tabs retain stable window IDs and share one bounded observation per listing. JSON includes present/clear/unknown state; text preserves existing fields for unknown rows and reports diagnostics on stderr, including daemon execution. Explicit opt-out remains quiet.
+- **Background pending-dialog guidance** (#131): timeout/empty-result diagnostics identify a freshly checked background target and suggest explicit focus plus dialog inspection without switching or dismissing automatically.
+- **Guarded fixture recovery** (#156): optional paired window/message expectations are checked at dismissal and on the fresh press snapshot. Both live fixtures bind exact observed messages, never replay an uncertain press, and reject incomplete cleanup or skipped acceptance.
+- **MCP and ordinary subprocess compatibility** (#110): the metadata-derived façade preserves the original command validation and uses bounded isolated workers; ordinary Foundation children retain inherited environment values when no override is supplied. Explicit empty environments remain empty.
+- **Shared AX deadline correction** (#128): per-read timeouts now use the global remaining deadline, avoiding premature 40 ms failures while retaining the 800 ms caller bound. Integrated live verification passed 32 dialog checks with 15 windows and the separate background/listing fixture; scope and historical MCP review gaps are recorded in PR #158.
+
 - **Bounded global dialog inspection** (#128): global reads have an 800 ms waiting budget and share one in-flight worker with entry probes. Failed or truncated observations remain incomplete. Dismissal re-reads synchronously and selects the button element from the same text/title snapshot; abandoned background reads never perform actions. A non-running Safari is treated as having no dialogs rather than an Accessibility denial; root modal windows and nested candidates remain explicit.
 
 - **Read native alert bodies** (#127): entry warnings, dialog listings and dismissal preambles now read Safari’s read-only AXTextArea body alongside static source text. Editable prompt fields and duplicate dialog-group values are excluded.

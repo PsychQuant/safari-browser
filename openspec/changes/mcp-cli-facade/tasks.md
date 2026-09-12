@@ -9,4 +9,6 @@
 - [x] 2.3 Complete facade verification：完整公開catalog/help routing、原CLI regression、schema/stdio/輸出/cancel/error端到端，README與範圍界線。
 - [x] 2.4 凍結提交、獨立交叉審查、PR與issue狀態同步。
 
-- [ ] 修正實測發現的普通子程序 nil 環境未繼承；區分 explicit empty，補實際子程序回歸與重新審查。
+- [x] 修正實測發現的普通子程序 nil 環境未繼承；區分 explicit empty，補實際子程序回歸與重新審查。
+
+Verification: [https://github.com/PsychQuant/safari-browser/pull/158#issuecomment-5648836890](https://github.com/PsychQuant/safari-browser/pull/158#issuecomment-5648836890). Runtime `aea856786db106121f6d7b1cbfb00619bab62797`; GUI `5ca69601ceeba24eb15b28ac1f4cac0e4cc00c9f`. R4 僅診斷傳遞，完整測試與範圍限制見報告。
