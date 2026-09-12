@@ -6,7 +6,7 @@ import shlex
 import subprocess
 import tempfile
 import unittest
-from dialog_ownership import fixture_is_active
+from dialog_ownership import fixture_is_active, fixture_dialog_expectations, guarded_dismiss
 
 SCRIPT = Path(__file__).with_name('e2e-dialog.sh')
 
@@ -91,6 +91,44 @@ class DialogOwnershipTests(unittest.TestCase):
         def read(_):
             raise subprocess.TimeoutExpired('osascript', 3)
         self.assertFalse(fixture_is_active(self.warning, self.url, read))
+
+class GuardedFixtureTests(unittest.TestCase):
+    url = 'file:///tmp/dialog.html?own-nonce'
+    message = 'e2e dialog own-nonce'
+    warning = '⚠ BLOCKING DIALOG in window id 42: "e2e dialog own-nonce" — buttons: "OK"'
+
+    def listing(self, message):
+        import json
+        return 'blocking dialog present\n  message: ' + json.dumps(message) + '\n  buttons: "OK"\n'
+
+    def test_measured_prefix_keeps_exact_raw_expectation(self):
+        raw = 'JavaScript ' + self.message
+        self.assertEqual(fixture_dialog_expectations(self.warning, self.listing(raw), self.url,
+                         self.message, lambda _: self.url), (42, raw, 'OK'))
+        for raw in ('foreign', self.message + ' extra', 'Other ' + self.message):
+            self.assertIsNone(fixture_dialog_expectations(self.warning, self.listing(raw), self.url,
+                              self.message, lambda _: self.url))
+        self.assertIsNone(fixture_dialog_expectations(self.warning, self.listing(self.message), self.url,
+                          self.message, lambda _: 'file:///tmp/dialog.html?foreign'))
+
+    def test_uncertain_dispatch_is_guarded_and_never_repeated(self):
+        calls = []
+        raw = 'JavaScript ' + self.message
+        def run(args, **kwargs):
+            calls.append(args)
+            if args[0] == 'session-check': return subprocess.CompletedProcess(args, 0, '', '')
+            if args[1:3] == ['get', 'title']: return subprocess.CompletedProcess(args, 0, 'fixture', self.warning)
+            if args[1:3] == ['dialog', 'list']: return subprocess.CompletedProcess(args, 0, self.listing(raw), '')
+            self.assertEqual(args, ['binary', 'dialog', 'dismiss', '--button', 'OK',
+                                   '--expect-window-id', '42', '--expect-message', raw])
+            return subprocess.CompletedProcess(args, 1, 'unknown outcome', '')
+        with tempfile.TemporaryDirectory() as directory:
+            args = ('binary', self.url, self.message, 'OK', Path(directory)/'attempt', 'session-check')
+            first = guarded_dismiss(*args, run=run, read_current=lambda _: self.url)
+            second = guarded_dismiss(*args, run=run, read_current=lambda _: self.url)
+        self.assertNotEqual(first.returncode, 0)
+        self.assertNotEqual(second.returncode, 0)
+        self.assertEqual(sum(a[1:3] == ['dialog', 'dismiss'] for a in calls), 1)
 
 if __name__ == '__main__':
     unittest.main()

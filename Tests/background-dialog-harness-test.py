@@ -188,6 +188,19 @@ class BackgroundHarnessTests(unittest.TestCase):
         gui.current_url.return_value = gui.cover_url
         self.assertIsNone(gui.owned_button(title, listing))
 
+    def test_measured_safari_prefix_is_passed_as_exact_raw_expectation(self):
+        gui = self.make_harness()
+        title, listing = self.evidence(gui)
+        raw = 'JavaScript ' + gui.dialog_text
+        listing.stdout = listing.stdout.replace(gui.dialog_text, raw)
+        title.stderr = title.stderr.replace(gui.dialog_text, raw)
+        gui.target = Mock(return_value=title)
+        gui.cli = Mock(side_effect=[listing, result(raw + '\npressed; no dialog remains')])
+        gui.dismiss_owned()
+        gui.cli.assert_called_with('dialog', 'dismiss', '--button', 'OK',
+                                   '--expect-window-id', '42', '--expect-message', raw)
+        self.assertFalse(gui.armed)
+
     def test_replacement_after_observation_cannot_receive_a_press(self):
         gui = self.make_harness()
         title, listing = self.evidence(gui)

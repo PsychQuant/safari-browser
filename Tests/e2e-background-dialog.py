@@ -29,7 +29,7 @@ import tempfile
 import time
 import uuid
 
-from dialog_ownership import fixture_is_active
+from dialog_ownership import fixture_is_active, fixture_dialog_expectations
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI_TIMEOUT = 30
@@ -241,25 +241,15 @@ class Harness:
                     'fixture alert tab is not in the background')
 
     def owned_button(self, title, listing):
+        self.observed_dialog_message = None
         if title.returncode or listing.returncode:
             return None
-        ids = re.findall(r'^⚠ BLOCKING DIALOG in window id ([1-9][0-9]*):',
-                         title.stderr, re.MULTILINE)
-        if ids != [str(self.window_id)] or self.dialog_text not in title.stderr:
+        expected = fixture_dialog_expectations(title.stderr, listing.stdout, self.url,
+                                               self.dialog_text, self.current_url)
+        if expected is None or expected[0] != self.window_id:
             return None
-        lines = listing.stdout.splitlines()
-        if not lines or lines[0] != 'blocking dialog present':
-            return None
-        if [line for line in lines if line.startswith('  message: ')] != [
-                f'  message: "{self.dialog_text}"']:
-            return None
-        buttons = [line for line in lines if line.startswith('  buttons: ')]
-        if len(buttons) != 1:
-            return None
-        match = re.fullmatch(r'  buttons: "([^"\r\n]+)"', buttons[0])
-        if not match or not fixture_is_active(title.stderr, self.url, self.current_url):
-            return None
-        return match[1]
+        self.observed_dialog_message = expected[1]
+        return expected[2]
 
     def dismiss_owned(self):
         require(not self.dismiss_attempted,
@@ -275,7 +265,7 @@ class Harness:
         self.dismiss_attempted = True
         dismissed = self.cli('dialog', 'dismiss', '--button', button,
                              '--expect-window-id', str(self.window_id),
-                             '--expect-message', self.dialog_text)
+                             '--expect-message', self.observed_dialog_message)
         require(dismissed.returncode == 0 and self.dialog_text in dismissed.stdout,
                 'owned dialog dismissal was not confirmed: ' + dismissed.stderr)
         self.armed = 'pressed; no dialog remains' not in dismissed.stdout.splitlines()
