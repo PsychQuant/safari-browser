@@ -34,6 +34,7 @@ final class GlobalDialogProbe: @unchecked Sendable {
 enum DialogPressExecutor {
     static func perform<Node>(
         snapshot: DialogTreeSnapshot<Node>, deadline: DispatchTime, session: GUISession,
+        expectedWindowID: Int? = nil,
         decide: (SafariBridge.BlockingDialog) -> Int?,
         press: (Node, Float) -> SafariBridge.DialogPressOutcome
     ) -> SafariBridge.DialogPressOutcome {
@@ -55,6 +56,9 @@ enum DialogPressExecutor {
         guard let current = snapshot.candidates.first,
             current.buttons.map(\.title) == current.dialog.buttons
         else { return .inspectionIncomplete }
+        if let expectedWindowID, current.windowID != expectedWindowID {
+            return .refused(current: current.dialog)
+        }
         guard let index = decide(current.dialog) else { return .refused(current: current.dialog) }
         guard current.buttons.indices.contains(index) else {
             return .indexOutOfRange(buttonCount: current.buttons.count)
