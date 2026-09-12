@@ -35,3 +35,5 @@ GUI 鎖定使目前只能驗證程序 I/O、腳本建構與編譯；保留實機
 ## Subprocess execution evidence
 
 並行排空採 Dispatch stderr reader；Process.run 到 waitUntilExit 之間不引入 async suspension。開發時 async let 曾使 Foundation 在不同執行緒 wait 卡住；恢復原執行緒 launch/wait 後，原有 timeout 與 MCP process 測試均通過。新控制流程測試只把查找／click／Return 外部操作換成純 AppleScript 效果，實際執行產生的 try/catch；另以 osacompile 編譯四個 production scripts，皆不執行 Safari GUI。預檢亦拒絕目錄、NUL 與無法查驗的目標，lstat 將 dangling symlink 視為既有項目。
+
+審查補正：lstat 後對 symlink 再 stat 目標，拒絕 symlink→directory 與無法查驗的目標；dangling link 仍視為既有項目。late replacement 拒絕訊息明示手動取消面板後再重試。固定 0.5s 偵測與副檔名補齊是既有待量測項，#106/#102 實機驗收必須比對真正輸出路徑及面板清理，不以 exit 0 假定成功。

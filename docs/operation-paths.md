@@ -276,11 +276,12 @@ alone:
   take these as examples, not as a tally. Announced: `upload` swapping the JS
   route for the native one (`ℹ️ Using JS DataTransfer` — an explicit `--js` prints
   nothing and needs to print nothing, since no substitution occurred), and the
-  daemon's `[daemon fallback: <reason>]`. Silent: `screenshot` choosing between
-  the AX and the legacy window resolver (§5), and `keystroke return` standing in
-  for a default-button click that threw, in `pdf` and `upload` alike (§4.2) — the
-  keyboard warning does not cover that one, because it says the command will use
-  the keyboard, not that the accessible route failed. Until the inventory exists
+  daemon's `[daemon fallback: <reason>]`. Initial file-dialog lookup/title-read
+  fallback is also recorded through the bounded trace after subprocess completion;
+  a dispatched click is not retried. `screenshot` choosing between the AX and the
+  legacy window resolver (§5) remains an example without that route diagnostic.
+  The pre-GUI keyboard warning and the later mechanism trace serve different purposes.
+  Until the inventory exists
   this document should not claim the repo mostly keeps the discipline; it claims
   only that the discipline is the right one.
 - **HID conflicts with Non-Interference directly.** It moves the cursor, takes
@@ -542,3 +543,13 @@ representation. Execution paths are an instance of P02, not an extension of it.
 - **#103** — `dialog list` / `dialog dismiss`: proven non-HID, no opt-in command yet
 - **#67** — stuck native file dialog; the failure family that lives on the HID path
 - **#98** — `setup`: the other command that deliberately raises a system dialog, and why that is not a contradiction
+
+### File-confirmation acceptance limits (#106 / #107)
+
+Refusing a late replacement leaves the native sheet open; cancel the save dialog
+in Safari before retrying. The existing export flow checks its nested replacement
+sheet after a fixed 0.5-second delay, so the pending real #106 acceptance must check
+that the requested PDF exists and that the sheet actually closes, including delayed
+transitions. Script exit alone is not evidence of a successful file export. Native
+filename-extension behavior also needs that measurement; the current automated
+checks do not establish the effective path chosen by the save panel.

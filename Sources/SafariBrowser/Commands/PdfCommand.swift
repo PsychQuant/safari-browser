@@ -98,6 +98,14 @@ struct PdfCommand: AsyncParsableCommand {
             return
         }
         guard info.st_mode & S_IFMT != S_IFDIR else { throw ValidationError("PDF destination must be a file, not a directory.") }
+        if info.st_mode & S_IFMT == S_IFLNK {
+            var target = stat()
+            if stat(path, &target) == 0 {
+                guard target.st_mode & S_IFMT != S_IFDIR else { throw ValidationError("PDF destination must not link to a directory.") }
+            } else if errno != ENOENT {
+                throw ValidationError("Could not inspect PDF destination link target before export.")
+            }
+        }
         guard overwrite else { throw ValidationError("PDF destination already exists; replacement requires --overwrite in addition to --allow-hid.") }
     }
 
@@ -149,7 +157,7 @@ struct PdfCommand: AsyncParsableCommand {
     }
 
     static func replacementConfirmationScript(overwrite: Bool) -> String {
-        guard overwrite else { return "error \"PDF replacement requires --overwrite; no replacement button was pressed\"" }
+        guard overwrite else { return "error \"PDF replacement requires --overwrite; no replacement button was pressed. Cancel the save dialog in Safari before retrying\"" }
         return """
         if not frontmost then error "Safari lost focus before PDF replacement"
         set replacementButtons to (buttons of sheet 1 of sheet 1 of front window whose title is "Replace" or title is "取代")

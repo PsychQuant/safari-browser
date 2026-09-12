@@ -77,6 +77,23 @@ final class FileDialogConfirmationPolicyTests: XCTestCase {
         XCTAssertNoThrow(try PdfCommand.validateDestination(directory.appendingPathComponent("new.pdf").path, overwrite: false))
     }
 
+    func testSymlinkToDirectoryCannotReachNativeExporter() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let link = directory.appendingPathComponent("folder-link")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: directory.path)
+        XCTAssertThrowsError(try PdfCommand.validateDestination(link.path, overwrite: true))
+        let calls = ExecSubprocessOutputTests.Output()
+        do {
+            try await PdfCommand.$nativeExporter.withValue({ _ in calls.append("export") }) {
+                try await PdfCommand.parse(["--allow-hid", "--overwrite", link.path]).run()
+            }
+            XCTFail("a directory link is not a PDF file destination")
+        } catch { XCTAssertTrue(String(describing: error).contains("directory")) }
+        XCTAssertEqual(calls.text, "")
+    }
+
     func testGeneratedConfirmationControlFlowWithSyntheticOperations() async throws {
         // Execute the actual generated control flow, replacing only external
         // UI operations with pure AppleScript effects. Never address Safari.
