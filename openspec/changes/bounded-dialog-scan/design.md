@@ -15,13 +15,13 @@
 
 ### Complete global scanner
 
-新增 DialogTreeScanner，使用既有 DialogProbeProvider 與 DialogMessageText。scan 接受 DispatchTime deadline；每次讀取 timeout 為 min(剩餘時間,40ms)。最多64個視窗、每窗512節點與8層、每個dialog256節點與6層。超出界線、失敗、未知視窗ID或非AXWindow根、重複ID皆不完整。WebArea 是刻意排除的網頁內容；不任意略過原生 toolbar/group 分支。視窗根本身帶AXDialog/AXSystemDialog subrole也須辨識。深度優先找到最外層 native dialog 後讀它的訊息與按鈕，繼續其他分支以辨識多個候選。遇到巢狀已知native root須保留為另一個候選，其細節不混入外層；因已知歧義，巢狀候選訊息可明示未讀。Node以整次scan共用的Hashable身分集合去重（跨視窗、discovery與details）；只允許剛找到的dialog root交接details時的那一次既有身分。循環或重複引用須不完整，不能捏造更多候選。視窗根的role在實際走訪時驗證一次，不預先重讀。訊息與按鈕元素只讀一次並保留同序配對。詳細資料截斷/讀取失敗使嚴格全域結果不完整，不能支持按鈕決策。可選文字或title屬性回unsupported/noValue是明確不存在，依既有規則省略；無名稱的按鈕不列入選擇，但繼續走訪其子項。文字區域的可編輯性若未知則不完整，不能讀取其值。
+新增 DialogTreeScanner，使用既有 DialogProbeProvider 與 DialogMessageText。scan 接受 DispatchTime deadline；每次讀取 timeout 使用同一 deadline 的剩餘時間。最多64個視窗、每窗512節點與8層、每個dialog256節點與6層。超出界線、失敗、未知視窗ID或非AXWindow根、重複ID皆不完整。WebArea 是刻意排除的網頁內容；不任意略過原生 toolbar/group 分支。視窗根本身帶AXDialog/AXSystemDialog subrole也須辨識。深度優先找到最外層 native dialog 後讀它的訊息與按鈕，繼續其他分支以辨識多個候選。遇到巢狀已知native root須保留為另一個候選，其細節不混入外層；因已知歧義，巢狀候選訊息可明示未讀。Node以整次scan共用的Hashable身分集合去重（跨視窗、discovery與details）；只允許剛找到的dialog root交接details時的那一次既有身分。循環或重複引用須不完整，不能捏造更多候選。視窗根的role在實際走訪時驗證一次，不預先重讀。訊息與按鈕元素只讀一次並保留同序配對。詳細資料截斷/讀取失敗使嚴格全域結果不完整，不能支持按鈕決策。可選文字或title屬性回unsupported/noValue是明確不存在，依既有規則省略；無名稱的按鈕不列入選擇，但繼續走訪其子項。文字區域的可編輯性若未知則不完整，不能讀取其值。
 
 同步掃描結果保留 Node/按鈕引用供同一個執行緒立即按鈕；背景全域讀取只將 Sendable 的 DialogScan 值返回 caller，AX節點不跨 worker。已確認的多個候選可回 ambiguous；不完整的0/1候選不得回 none/one。
 
 ### Strict command integration
 
-DialogScan 與 DialogPressOutcome 新增 inspectionIncomplete，命令回非0並建議重新執行 list，不假稱沒有dialog或缺權限。GlobalDialogProbe 透過共享 worker 跑全域scanner；SafariBridge.scanBlockingDialogs 改接它。dismiss 以同步scanner重讀所有視窗，唯完整且單一候選可讓原本decide callback選index；使用同次快照中的button元素，按下前重查session與deadline。保留原有AXPress結果不確定性，絕不自動重試。40ms上限適用讀取；AXPress可使用同一個800ms deadline的剩餘時間，不額外把動作切成40ms。
+DialogScan 與 DialogPressOutcome 新增 inspectionIncomplete，命令回非0並建議重新執行 list，不假稱沒有dialog或缺權限。GlobalDialogProbe 透過共享 worker 跑全域scanner；SafariBridge.scanBlockingDialogs 改接它。dismiss 以同步scanner重讀所有視窗，唯完整且單一候選可讓原本decide callback選index；使用同次快照中的button元素，按下前重查session與deadline。保留原有AXPress結果不確定性，絕不自動重試。讀取與 AXPress 均使用同一個 800ms deadline 的剩餘時間。2026-09-13 實機 15 窗在約 595ms 時因 AXRole 的獨立 40ms 截斷回 -25204，故移除每次讀取的額外 40ms 上限；保留全域 caller 上限與失敗即 incomplete。
 
 ## Implementation Contract
 

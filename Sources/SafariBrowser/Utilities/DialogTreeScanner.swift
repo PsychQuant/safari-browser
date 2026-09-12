@@ -50,7 +50,9 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
     private func remaining(_ deadline: DispatchTime) throws -> Float {
         let now = DispatchTime.now().uptimeNanoseconds
         guard now < deadline.uptimeNanoseconds else { throw DialogProbeReadError.unavailable }
-        return min(0.04, Float(Double(deadline.uptimeNanoseconds - now) / 1_000_000_000))
+        // Share the overall deadline. A separate 40ms cap made readable
+        // Safari windows fail while hundreds of milliseconds remained.
+        return Float(Double(deadline.uptimeNanoseconds - now) / 1_000_000_000)
     }
 
     private func isDialog(role: String, subrole: String?) -> Bool {

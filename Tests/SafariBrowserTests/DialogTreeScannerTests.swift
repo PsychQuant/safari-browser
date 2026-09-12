@@ -20,6 +20,7 @@ final class DialogTreeScannerTests: XCTestCase {
         var deny = false
         var delayedOperation: String?
         var delay: TimeInterval = 0
+        var minimumRoleTimeout: Float = 0
         func check(_ op: String) throws {
             if delayedOperation == op { Thread.sleep(forTimeInterval: delay) }
             if fail == op { throw DialogProbeReadError.unavailable }
@@ -34,6 +35,7 @@ final class DialogTreeScannerTests: XCTestCase {
             return nodes[node]!.id
         }
         func role(_ node: Int, timeout: Float) throws -> String {
+            guard timeout >= minimumRoleTimeout else { throw DialogProbeReadError.unavailable }
             try check("role")
             return nodes[node]!.role
         }
@@ -72,6 +74,20 @@ final class DialogTreeScannerTests: XCTestCase {
     func scan(_ provider: Provider, _ scanner: DialogTreeScanner<Provider> = .init()) -> DialogTreeSnapshot<Int> {
         scanner.scan(provider: provider, deadline: .now() + 0.7)
     }
+    func testReadMayUseRemainingBudgetInsteadOfPrematurePerReadTimeout() {
+        // Real 15-window scan failed AXRole at a 40ms per-read timeout even
+        // though the complete scan returned after 595ms of an 800ms budget.
+        // Model a responsive provider requiring 60ms, within the caller budget.
+        let provider = Provider(minimumRoleTimeout: 0.06)
+        let result = DialogTreeScanner<Provider>().scan(provider: provider, deadline: .now() + 0.2)
+        XCTAssertTrue(result.isComplete)
+        XCTAssertEqual(result.scanResult, .none)
+        // A genuinely insufficient deadline must remain incomplete.
+        let short = DialogTreeScanner<Provider>().scan(provider: provider, deadline: .now() + 0.01)
+        XCTAssertFalse(short.isComplete)
+        XCTAssertEqual(short.scanResult, .inspectionIncomplete)
+    }
+
     func testFifteenClearWindowsAreCompletelyInspected() {
         let p = Provider(
             roots: Array(1...15),
