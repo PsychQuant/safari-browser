@@ -127,8 +127,15 @@ case "$SESSION_STATUS" in
     *) echo "FAIL: GUI-session preflight failed ($SESSION_STATUS)" >&2; exit 1 ;;
 esac
 
+PRE_START=$(now_ms) || exit 1
 PRE=$("$SB" dialog list 2>&1)
 PRE_EXIT=$?
+PRE_END=$(now_ms) || exit 1
+if [[ $((PRE_END - PRE_START)) -lt 1000 ]]; then
+    pass "global dialog list returns within 1 s ($((PRE_END - PRE_START)) ms)"
+else
+    fail "global dialog list returns within 1 s" "took $((PRE_END - PRE_START)) ms"
+fi
 if [[ "$PRE_EXIT" -ne 0 ]]; then
     if [[ "$PRE" == *"Accessibility"* || "$PRE" == *"windows are showing a dialog"* ]]; then
         echo "SKIP: dialog inspection unavailable or multiple dialogs present: $PRE"
@@ -383,7 +390,14 @@ fi
 # ── 5. list → dismiss by name → back to normal ───────────────────────────
 echo "## Recovery"
 "$SB" tab focus "${LOCK[@]}" >/dev/null 2>&1 || true
+LIST_START=$(now_ms) || exit 1
 LISTING=$("$SB" dialog list 2>&1)
+LIST_END=$(now_ms) || exit 1
+if [[ $((LIST_END - LIST_START)) -lt 1000 ]]; then
+    pass "global dialog list with alert returns within 1 s ($((LIST_END - LIST_START)) ms)"
+else
+    fail "global dialog list with alert returns within 1 s" "took $((LIST_END - LIST_START)) ms"
+fi
 if [[ "$LISTING" == *"$DIALOG_TEXT"* ]]; then
     pass "dialog list includes the alert body (#127)"
 else

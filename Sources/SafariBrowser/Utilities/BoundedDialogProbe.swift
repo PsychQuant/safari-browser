@@ -22,7 +22,7 @@ protocol DialogProbeProvider: Sendable {
 enum DialogProbeReadError: Error { case unavailable, accessibilityDenied }
 
 final class BoundedDialogProbe: @unchecked Sendable {
-    static let shared = BoundedDialogProbe { AXDialogProbeProvider() }
+    static let shared = BoundedDialogProbe(worker: .shared) { AXDialogProbeProvider() }
 
     private struct Budget: Sendable {
         let deadline: DispatchTime
@@ -34,31 +34,7 @@ final class BoundedDialogProbe: @unchecked Sendable {
         }
     }
 
-    /// A timeout abandons this call's result, not the worker or an AX IPC.
-    /// Completion never writes to the gate or another call's result box.
-    private final class ResultBox: @unchecked Sendable {
-        let ready = DispatchSemaphore(value: 0)
-        private let lock = NSLock()
-        private var acceptsResult = true
-        private var result: BlockingDialogState = .unprobed
-
-        func complete(_ value: BlockingDialogState) {
-            lock.lock()
-            if acceptsResult { result = value }
-            lock.unlock()
-            ready.signal()
-        }
-
-        func take(completed: Bool) -> BlockingDialogState {
-            lock.lock(); defer { lock.unlock() }
-            acceptsResult = false
-            return completed ? result : .unprobed
-        }
-    }
-
-    private let lock = NSLock()
-    private let queue = DispatchQueue(label: "safari-browser.dialog-probe", qos: .userInitiated)
-    private var inFlight = false
+    private let worker: BoundedAXWorker
     private let waitBudget: TimeInterval
     private let inspect: @Sendable (Int, Budget) -> BlockingDialogState
 
@@ -66,10 +42,12 @@ final class BoundedDialogProbe: @unchecked Sendable {
         waitBudget: TimeInterval = 0.095,
         maxDepth: Int = 5,
         maxNodes: Int = 128,
+        worker: BoundedAXWorker = BoundedAXWorker(),
         provider: @escaping @Sendable () -> P
     ) {
         // Keep the production ceiling even when a caller supplies a larger
         // test budget. Invalid inputs use the regular finite budget.
+        self.worker = worker
         self.waitBudget = waitBudget.isFinite && waitBudget > 0 ? min(waitBudget, 0.095) : 0.095
         self.inspect = { windowID, budget in
             Self.inspect(provider: provider(), windowID: windowID, budget: budget,
@@ -82,21 +60,9 @@ final class BoundedDialogProbe: @unchecked Sendable {
         let windowID: Int
         if case .id(let id) = windowKey, id > 0 { windowID = id }
         else { windowID = 0 }
-        let deadline = DispatchTime.now() + min(waitBudget, budget)
-        lock.lock()
-        guard !inFlight else { lock.unlock(); return .unprobed }
-        inFlight = true
-        lock.unlock()
-
-        let box = ResultBox()
-        queue.async { [self] in
-            let state = inspect(windowID, Budget(deadline: deadline))
-            lock.lock(); inFlight = false; lock.unlock()
-            box.complete(state)
+        return worker.run(budget: min(waitBudget, budget), fallback: .unprobed) { [self] deadline in
+            inspect(windowID, Budget(deadline: deadline))
         }
-        let completed = box.ready.wait(timeout: deadline) == .success
-            && DispatchTime.now().uptimeNanoseconds <= deadline.uptimeNanoseconds
-        return box.take(completed: completed)
     }
 
     private static func inspect<P: DialogProbeProvider>(

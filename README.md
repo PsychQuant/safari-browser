@@ -415,6 +415,8 @@ safari-browser tab new --window 2      # new tab in window 2
 
 ### Blocking Dialogs
 
+`dialog list` waits up to 800 ms for a complete global inspection. Unresponsive windows, failed reads or traversal limits produce a nonzero incomplete-inspection error, never a successful “no dialog” answer. Entry and global probes share one worker; retry after an in-flight inspection finishes. Dismissal re-reads synchronously and refuses an incomplete or expired observation before pressing a named button.
+
 Dialog messages include Safari’s read-only alert body as well as its source heading. Editable prompt fields are excluded; unreadable or incomplete AX details can still limit the message. Text output escapes control characters and marks truncation.
 
 ```bash

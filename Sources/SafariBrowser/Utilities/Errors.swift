@@ -79,6 +79,7 @@ enum SafariBrowserError: LocalizedError {
     /// print a usage block, telling a script its arguments were wrong when the
     /// world simply had no dialog in it.
     case noBlockingDialog
+    case dialogInspectionIncomplete
     /// More than one window is showing a dialog. Fail-closed per the repo's
     /// multi-match rule: silently taking the first is the silent-wrong-target
     /// failure that rule exists to forbid, and here it would press a button on
@@ -249,6 +250,8 @@ enum SafariBrowserError: LocalizedError {
 
         // MARK: Dialog (#103)
 
+        case .dialogInspectionIncomplete:
+            return "Dialog inspection could not inspect every Safari window completely within its budget. A blocking dialog may be present; run safari-browser dialog list again before choosing a button."
         case .noBlockingDialog:
             return "no blocking dialog found"
 
