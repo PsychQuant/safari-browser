@@ -126,10 +126,11 @@ def verify_timeout(outcome, elapsed):
 
 
 class Harness:
-    def __init__(self, binary, checker, image_id):
+    def __init__(self, binary, checker, image_id, check_listing=False):
         require(re.fullmatch(r'[0-9a-f]{32}', image_id) is not None,
                 'fixture isolation requires a verified Mach-O image UUID')
         self.binary = binary
+        self.check_listing = check_listing
         self.checker = checker
         self.nonce = 'background-' + uuid.uuid4().hex
         fixture = (ROOT / 'Tests/Fixtures/dialog-test.html').as_uri()
@@ -279,6 +280,43 @@ class Harness:
                 'owned dialog dismissal was not confirmed: ' + dismissed.stderr)
         self.armed = 'pressed; no dialog remains' not in dismissed.stdout.splitlines()
 
+    def check_listing_rows(self, expected_state):
+        """Inspect only fixture rows; never print or save other tabs' data."""
+        self.require_owned()
+        documents = self.cli('documents', '--json')
+        require(documents.returncode == 0, 'documents listing failed during fixture check')
+        rows = json.loads(documents.stdout)
+        require(isinstance(rows, list), 'documents output is not an array')
+        own = [row for row in rows if isinstance(row, dict) and row.get('url') in (self.url, self.cover_url)]
+        require(len(own) == 2 and {row.get('url') for row in own} == {self.url, self.cover_url},
+                'fixture rows are missing or ambiguous in documents')
+        window = own[0].get('window')
+        require(isinstance(window, int) and not isinstance(window, bool) and window > 0,
+                'fixture window index is invalid')
+        require(all(row.get('window') == window for row in own), 'fixture rows moved between windows')
+        tabs = self.cli('tabs', '--window', str(window), '--json')
+        require(tabs.returncode == 0, 'tabs listing failed during fixture check')
+        tab_rows = json.loads(tabs.stdout)
+        require(isinstance(tab_rows, list) and len(tab_rows) == 2
+                and all(isinstance(row, dict) for row in tab_rows)
+                and {row.get('url') for row in tab_rows} == {self.url, self.cover_url},
+                'tabs listing no longer belongs to the fixture')
+        for row in own + tab_rows:
+            status = row.get('blocking_dialog')
+            require(isinstance(status, dict), 'blocking_dialog metadata is missing')
+            require(type(status.get('window_id')) is int and status['window_id'] == self.window_id,
+                    'dialog metadata is attached to the wrong window')
+            require(status.get('state') == expected_state and status.get('reason') is None,
+                    'fixture dialog observation is incomplete or unexpected')
+            messages = status.get('messages')
+            require(isinstance(messages, list) and all(isinstance(value, str) for value in messages),
+                    'fixture dialog messages have invalid shape')
+            if expected_state == 'present':
+                require(any(self.dialog_text in message for message in messages), 'fixture dialog message is absent')
+            else:
+                require(messages == [], 'clear fixture unexpectedly has dialog messages')
+        self.require_owned()
+
     def exercise(self):
         if run(['/usr/bin/pgrep', '-x', 'Safari'], timeout=3).returncode:
             print('SKIP: Safari is not running; GUI acceptance was not performed.')
@@ -313,6 +351,8 @@ class Harness:
         require(title.returncode == 0 and 'Dialog Test Page' in title.stdout,
                 'native fixture title was not ready')
         require(self.current_url(self.window_id) == self.url, 'alert fixture is not active')
+        if self.check_listing:
+            self.check_listing_rows('clear')
 
         started = time.monotonic()
         self.armed = True  # An arming timeout may still have scheduled the alert.
@@ -346,6 +386,8 @@ class Harness:
         focused = self.target('tab', 'focus')
         require(focused.returncode == 0, 'explicit fixture focus failed')
         time.sleep(0.5)
+        if self.check_listing:
+            self.check_listing_rows('present')
         self.dismiss_owned()
         recovered = self.target('js', '1+1', timeout=45)
         require(recovered.returncode == 0 and recovered.stdout.strip() == '2',
@@ -382,6 +424,7 @@ class Harness:
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--preflight-only', action='store_true')
+    parser.add_argument('--check-listing', action='store_true', help='also verify #129 per-window listing metadata')
     args = parser.parse_args(argv)
     gui = None
     status = 1
@@ -397,7 +440,7 @@ def main(argv=None):
                 return 0
             binary = Path(os.environ.get('SAFARI_BROWSER_BIN', ROOT / '.build/debug/safari-browser')).resolve()
             image_id = image_identifier(binary)
-            gui = Harness(binary, checker, image_id)
+            gui = Harness(binary, checker, image_id, check_listing=args.check_listing)
             gui.verify_process_group()
             status = gui.exercise()
         except (VerificationError, OSError, ValueError, subprocess.SubprocessError, KeyboardInterrupt) as error:

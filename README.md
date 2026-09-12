@@ -544,9 +544,9 @@ that has to run JavaScript in that tab (`js`, `click`, `fill`, …) fails at onc
 with a non-zero exit instead of waiting for the 30-second osascript timeout;
 `get text` runs its AppleScript first and fails only if that came back empty.
 
-`documents` and unqualified `tabs` remain listings; marking all dialog-bearing
-windows there is #129. Exec relays diagnostics in both subprocess and daemon
-modes. A `--tab` deprecation notice or `--first-match` summary can precede the
+`documents` and `tabs` annotate listing rows with a visible native-dialog
+snapshot, as described below. Exec relays diagnostics in both subprocess and
+daemon modes. A `--tab` deprecation notice or `--first-match` summary can precede the
 dialog warning. `2>&1 | tail -1` still selects the last output line; use
 `set -o pipefail` or inspect the upstream command status to preserve failures.
 
@@ -837,6 +837,33 @@ safari-browser get title --window 2
 safari-browser fill "input#email" "user@example.com" --document 3
 ```
 
+`documents --json` and `tabs --json` include a `blocking_dialog` object on
+**every row**:
+
+```json
+{"state":"present","window_id":72,"messages":["Example alert"],"reason":null}
+```
+
+`window_id` is the retained stable Safari window ID, not its current listing
+index. All rows from a window share its observed state. `present` means that a
+visible native dialog was found; `clear` requires a complete observation of
+that window and has an empty `messages` array. `unknown` means the observation
+could not establish its state, with a `reason` such as `disabled`, `locked`,
+`unavailable`, `denied`, `incomplete`, `missingID`, or `notobserved`. A missing
+window ID is JSON `null`; unknown rows have no reported messages. This snapshot
+does not establish whether every tab is blocked or whether a background tab
+has a pending dialog that Safari has not exposed yet.
+
+Each nonempty listing uses one bounded observation without switching tabs or
+dismissing dialogs. Text output appends `[dialog: "…"]`, `[dialogs: N]`, or
+`[dialog: unknown (reason)]` only where needed, with a legend on stderr. Clear
+rows retain their original text; `tabs` keeps its first three TSV fields and
+puts the annotation in a fourth field. JSON is preferable for parsers needing
+a stable field layout. Setting `SAFARI_BROWSER_NO_DIALOG_PROBE=1` skips the
+observation and reports `unknown` / `disabled`, including through the daemon.
+An explicit per-request daemon setting takes precedence over its process
+environment.
+
 `tabs`, `tab <n>`, `tab new`, `open --new-tab`, and `open --new-window`
 only accept `--window` because they are window-level UI operations;
 supplying `--url`, `--tab`, or `--document` is rejected with a usage
@@ -1119,6 +1146,9 @@ GUI session, selected binary’s UUID and child-process-group behavior before
 creating its own nonce fixture. It uses the guarded internal worker to keep
 fixture subprocesses contained while exercising the original CLI commands.
 Exit 77 means the live check was not performed, including on a locked desktop.
+`make test-dialog-listing` extends that fixture with per-window JSON checks for
+`documents` and `tabs` before the alert and after it becomes visible. It is
+also a separate live test, excluded from `make test-all`.
 
 
 ```bash

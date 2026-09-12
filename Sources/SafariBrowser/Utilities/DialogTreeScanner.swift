@@ -8,6 +8,7 @@ struct CapturedDialog<Node> {
 }
 struct DialogTreeSnapshot<Node> {
     var candidates: [CapturedDialog<Node>] = []
+    var observedWindowIDs: Set<Int> = []
     var isComplete = true
     var accessibilityDenied = false
 }
@@ -32,6 +33,7 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
                         snapshot.isComplete = false
                         continue
                     }
+                    snapshot.observedWindowIDs.insert(id)
                     inspectWindow(
                         window, id: id, provider: provider, deadline: deadline,
                         snapshot: &snapshot, visited: &visited)

@@ -34,14 +34,41 @@ struct TabsCommand: AsyncParsableCommand {
         } else {
             tabs = try await SafariBridge.listTabs(window: target.window)
         }
+        guard !tabs.isEmpty else {
+            if json { print("[]") }
+            return
+        }
+        let observation = WindowDialogObservation.capture()
         if json {
-            let arr = tabs.map { ["index": $0.index, "title": $0.title, "url": $0.url] as [String: Any] }
+            let arr = Self.jsonRows(tabs, observation: observation)
             let data = try JSONSerialization.data(withJSONObject: arr, options: [.prettyPrinted, .sortedKeys])
             print(String(data: data, encoding: .utf8) ?? "[]")
         } else {
-            for tab in tabs {
-                print("\(tab.index)\t\(tab.title)\t\(tab.url)")
+            if tabs.contains(where: { observation.status(for: $0.windowID).textSuffix != nil }) {
+                TargetOptions.stderrWarnWriter(DocumentsCommand.dialogLegendLine(commandName: "tabs"))
             }
+            for line in Self.formatText(tabs, observation: observation) {
+                print(line)
+            }
+        }
+    }
+
+    static func jsonRows(
+        _ tabs: [SafariBridge.TabInfo], observation: WindowDialogObservation
+    ) -> [[String: Any]] {
+        tabs.map { tab in
+            ["index": tab.index, "title": tab.title, "url": tab.url,
+             "blocking_dialog": observation.status(for: tab.windowID).jsonObject]
+        }
+    }
+
+    static func formatText(
+        _ tabs: [SafariBridge.TabInfo], observation: WindowDialogObservation
+    ) -> [String] {
+        tabs.map { tab in
+            let row = "\(tab.index)\t\(tab.title)\t\(tab.url)"
+            guard let suffix = observation.status(for: tab.windowID).textSuffix else { return row }
+            return row + "\t" + suffix
         }
     }
 }

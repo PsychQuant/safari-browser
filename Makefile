@@ -329,3 +329,7 @@ test-background-dialog-harness:
 
 test-background-dialog: build-debug
 	python3 Tests/e2e-background-dialog.py
+
+.PHONY: test-dialog-listing
+test-dialog-listing: build-debug
+	python3 Tests/e2e-background-dialog.py --check-listing
