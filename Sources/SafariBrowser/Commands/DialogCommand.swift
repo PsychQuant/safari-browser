@@ -95,6 +95,19 @@ struct DialogDismissCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Exact title of the button to press, as shown by `dialog list`")
     var button: String
 
+    @Option(name: .customLong("expect-window-id"), help: "Expected stable Safari window ID; requires --expect-message")
+    var expectWindowID: Int?
+
+    @Option(name: .long, help: "Expected raw dialog message; requires --expect-window-id")
+    var expectMessage: String?
+
+    static let expectationMismatch = "Dialog does not match the supplied expectation; no button was pressed."
+
+    static func validateExpectedMessage(_ expected: String?, actual: SafariBridge.BlockingDialog) throws {
+        guard let expected else { return }
+        guard actual.message == expected else { throw ValidationError(expectationMismatch) }
+    }
+
     /// Which button a title names, or why it names none.
     ///
     /// Exact match after trimming — deliberately not a substring or fuzzy match.
@@ -170,6 +183,12 @@ struct DialogDismissCommand: AsyncParsableCommand {
     /// shows such a button as `""`, so the user cannot even see what they would
     /// be pressing. Rejected at parse time rather than handled later.
     func validate() throws {
+        guard (expectWindowID == nil) == (expectMessage == nil) else {
+            throw ValidationError("--expect-window-id and --expect-message must be supplied together")
+        }
+        if let expectWindowID, expectWindowID <= 0 {
+            throw ValidationError("--expect-window-id must be a positive stable window ID, not a window index")
+        }
         if button.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             throw ValidationError(
                 "--button needs the button's title. An empty or whitespace-only value names "
@@ -196,6 +215,7 @@ struct DialogDismissCommand: AsyncParsableCommand {
             dialog = d
         }
 
+        try Self.validateExpectedMessage(expectMessage, actual: dialog)
         switch DialogDismissCommand.selectButton(titled: button, from: dialog.buttons) {
         case .notFound(let available):
             throw SafariBrowserError.dialogButtonNotFound(titled: button, available: available)
@@ -209,7 +229,7 @@ struct DialogDismissCommand: AsyncParsableCommand {
             // pressed — deciding by position here is what would let a
             // replacement dialog absorb the click (#89's hazard).
             var refusal: DialogDismissCommand.PressDecision?
-            let outcome = SafariBridge.pressDialogButton { current in
+            let outcome = SafariBridge.pressDialogButton(expectedWindowID: expectWindowID) { current in
                 let decision = DialogDismissCommand.decidePress(
                     title: button, expected: dialog, current: current)
                 if case .press(let index) = decision { return index }
@@ -253,6 +273,7 @@ struct DialogDismissCommand: AsyncParsableCommand {
             case .ambiguous(let messages):
                 throw SafariBrowserError.ambiguousBlockingDialog(messages: messages)
             case .refused(let current):
+                if expectWindowID != nil { throw ValidationError(Self.expectationMismatch) }
                 switch refusal {
                 case .refuseButtonGone(let available):
                     throw SafariBrowserError.dialogButtonNotFound(titled: button, available: available)

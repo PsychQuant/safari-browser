@@ -187,6 +187,33 @@ class BackgroundHarnessTests(unittest.TestCase):
         gui.current_url.return_value = gui.cover_url
         self.assertIsNone(gui.owned_button(title, listing))
 
+    def test_replacement_after_observation_cannot_receive_a_press(self):
+        gui = self.make_harness()
+        title, listing = self.evidence(gui)
+        gui.target = Mock(return_value=title)
+        foreign_presses = []
+
+        def command(*args, **kwargs):
+            if args[:2] == ('dialog', 'list'):
+                return listing
+            self.assertEqual(args[:2], ('dialog', 'dismiss'))
+            # A different window/message appears after the last ownership read.
+            # Model the command boundary: supplied expectations reject it;
+            # an unguarded command instead adopts the new dialog.
+            expected = ('--expect-window-id' in args and '--expect-message' in args
+                        and args[args.index('--expect-window-id') + 1] == str(gui.window_id)
+                        and args[args.index('--expect-message') + 1] == gui.dialog_text)
+            if expected:
+                return result(stderr='expectation mismatch; no button pressed', code=64)
+            foreign_presses.append('user dialog')
+            return result(stdout='dismissing dialog: user dialog; pressed')
+
+        gui.cli = command
+        with self.assertRaises(harness.VerificationError):
+            gui.dismiss_owned()
+        self.assertEqual(foreign_presses, [])
+        self.assertTrue(gui.armed)
+
     def test_unknown_dialog_cleanup_never_dismisses_or_closes(self):
         gui = self.make_harness()
         gui.cli = Mock(return_value=result('no blocking dialog found'))
@@ -232,7 +259,9 @@ class BackgroundHarnessTests(unittest.TestCase):
         self.assertFalse(gui.armed)
         self.assertEqual(gui.cli.call_args_list[0].args,
                          ('get', 'title', '--url-exact', gui.url))
-        self.assertEqual(gui.cli.call_args_list[2].args, ('dialog', 'dismiss', '--button', 'OK'))
+        self.assertEqual(gui.cli.call_args_list[2].args, ('dialog', 'dismiss', '--button', 'OK',
+                                                                  '--expect-window-id', str(gui.window_id),
+                                                                  '--expect-message', gui.dialog_text))
 
     def test_incomplete_cleanup_prevents_acceptance_pass(self):
         with patch.object(harness, 'session_preflight', return_value=0), \

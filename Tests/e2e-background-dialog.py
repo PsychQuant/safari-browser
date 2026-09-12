@@ -268,7 +268,9 @@ class Harness:
         require(button is not None, 'dialog ownership/text/button is unconfirmed; no button pressed')
         self.require_owned()
         require(self.current_url(self.window_id) == self.url, 'active fixture changed before dismissal')
-        dismissed = self.cli('dialog', 'dismiss', '--button', button)
+        dismissed = self.cli('dialog', 'dismiss', '--button', button,
+                             '--expect-window-id', str(self.window_id),
+                             '--expect-message', self.dialog_text)
         require(dismissed.returncode == 0 and self.dialog_text in dismissed.stdout,
                 'owned dialog dismissal was not confirmed: ' + dismissed.stderr)
         self.armed = False

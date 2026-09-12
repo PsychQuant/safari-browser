@@ -520,6 +520,14 @@ safari-browser dialog list                     # show the dialog's text and butt
 safari-browser dialog dismiss --button "取消"   # press the button you named
 ```
 
+For an automated handoff, supply `--expect-window-id` and `--expect-message`
+together when dismissing. The ID is Safari’s stable window ID, not the index
+used by `--window`; the message is the exact raw text, not a truncated or
+escaped display string. The command rejects an initial message mismatch and
+checks the expected window on the fresh snapshot used to press the named
+button. Its existing message/button fingerprint check still applies. Omit both
+flags to keep the ordinary named-button workflow.
+
 Commands that resolve a target document or native window check that window
 for a blocking dialog before acting. This includes `get`, `js`, `click`,
 `fill`, `snapshot`, `close`, `pdf`, `tab focus`, `upload`, `save-image`,

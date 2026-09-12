@@ -3124,6 +3124,7 @@ enum SafariBridge {
     /// it currently reads and returns an index only if it still matches what the
     /// caller saw; every other answer presses nothing.
     static func pressDialogButton(
+        expectedWindowID: Int? = nil,
         session: GUISession = .live,
         press: (((BlockingDialog) -> Int?) -> DialogPressOutcome)? = nil,
         deciding decide: (BlockingDialog) -> Int?
@@ -3138,7 +3139,8 @@ enum SafariBridge {
             let deadline = DispatchTime.now() + 0.8
             let snapshot = DialogTreeScanner<AXDialogProbeProvider>().scan(
                 provider: AXDialogProbeProvider(session: session), deadline: deadline)
-            return DialogPressExecutor.perform(snapshot: snapshot, deadline: deadline, session: session, decide: decide) { element, timeout in
+            return DialogPressExecutor.perform(snapshot: snapshot, deadline: deadline, session: session,
+                expectedWindowID: expectedWindowID, decide: decide) { element, timeout in
                 guard AXUIElementSetMessagingTimeout(element, timeout) == .success,
                       DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { return .inspectionIncomplete }
                 let err = AXUIElementPerformAction(element, kAXPressAction as CFString)
