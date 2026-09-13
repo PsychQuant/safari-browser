@@ -107,6 +107,9 @@ its value reached `fatalError` — which the shebang form surfaced as `5`,
 "unrecognised shape, inspect it yourself", about a binary that was never
 opened. A caller cannot act on a code that means three things.
 
+The guard validates every architecture in a universal binary for both its seal
+and requirement, so damage to a non-native slice is rejected too (#139).
+
 The guard is **compiled** (`make .build/verify-install-signature`) rather than
 run as `swift scripts/...` for the same reason: the swift driver exits `1` when
 it cannot compile the script, and `1` is the verdict "this binary is ad-hoc".

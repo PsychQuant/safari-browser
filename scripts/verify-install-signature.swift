@@ -346,7 +346,10 @@ guard let staticCode = code else {
 // CFBundleIdentifier feeds the designated requirement itself, so a plist
 // that no longer matches its seal really does break the grant. What round 5
 // got wrong there was the WORDS, not the verdict — see below.
-let checkFlags = SecCSFlags(rawValue: kSecCSDoNotValidateResources)
+// A universal binary can have a valid native slice and a damaged other slice.
+// Validate every architecture, including when checking its requirement below.
+// @mutant(all-architecture-seals) kSecCSDoNotValidateResources | kSecCSCheckAllArchitectures => kSecCSDoNotValidateResources
+let checkFlags = SecCSFlags(rawValue: kSecCSDoNotValidateResources | kSecCSCheckAllArchitectures)
 let sealStatus = SecStaticCodeCheckValidity(staticCode, checkFlags, nil)
 
 /// Apple's own description of an OSStatus. Never this file's paraphrase.
