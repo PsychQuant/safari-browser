@@ -11,10 +11,11 @@ final class BoundedDialogProbeTests: XCTestCase {
         var text: String?
         var title: String?
         var roleDelay: TimeInterval = 0
+        var valueSettable: Bool? = false
     }
 
     private enum Operation: String, CaseIterable, Sendable {
-        case windows, windowID, role, subrole, children, text, buttonTitle
+        case windows, windowID, role, subrole, children, text, buttonTitle, valueSettable
     }
 
     private final class Calls: @unchecked Sendable {
@@ -23,6 +24,7 @@ final class BoundedDialogProbeTests: XCTestCase {
         private let lock = NSLock()
         private var recorded: [(Operation, Float)] = []
         private var factories = 0
+        private var valueReads: [Int] = []
         let blocked: Operation?
         let failed: Operation?
 
@@ -36,6 +38,9 @@ final class BoundedDialogProbeTests: XCTestCase {
             return factories
         }
         var count: Int { lock.lock(); defer { lock.unlock() }; return factories }
+        func recordValueRead(_ node: Int) { lock.lock(); valueReads.append(node); lock.unlock() }
+        var nodesRead: [Int] { lock.lock(); defer { lock.unlock() }; return valueReads }
+        var operations: [Operation] { lock.lock(); defer { lock.unlock() }; return recorded.map(\.0) }
         var timeouts: [Float] { lock.lock(); defer { lock.unlock() }; return recorded.map(\.1) }
         func touch(_ operation: Operation, timeout: Float) throws {
             lock.lock(); recorded.append((operation, timeout)); lock.unlock()
@@ -72,7 +77,11 @@ final class BoundedDialogProbeTests: XCTestCase {
             try calls.touch(.children, timeout: timeout); return nodes[node]!.children
         }
         func text(_ node: Int, timeout: Float) throws -> String? {
+            calls.recordValueRead(node)
             try calls.touch(.text, timeout: timeout); return nodes[node]!.text
+        }
+        func valueIsSettable(_ node: Int, timeout: Float) throws -> Bool? {
+            try calls.touch(.valueSettable, timeout: timeout); return nodes[node]!.valueSettable
         }
         func buttonTitle(_ node: Int, timeout: Float) throws -> String? {
             try calls.touch(.buttonTitle, timeout: timeout); return nodes[node]!.title
@@ -102,6 +111,52 @@ final class BoundedDialogProbeTests: XCTestCase {
     func testRecognizesDepthThreeDialogAndCollectsTextAndButtons() {
         let probe = makeProbe()
         XCTAssertEqual(probe.check(windowKey: .id(42)), .present(.init(message: "這是訊息", buttons: ["確定"])))
+    }
+
+    func testReadsSafariAlertBodyInsideScrollAreaWithoutPromptInputOrDuplicateGroupValue() {
+        var nodes = Self.dialogTree
+        nodes[4] = Node(subrole: "AXDialog", children: [5, 8, 6, 10], text: "actual body")
+        nodes[5] = Node(role: "AXStaticText", text: "JavaScript")
+        nodes[8] = Node(role: "AXScrollArea", children: [9])
+        nodes[9] = Node(role: "AXTextArea", text: "actual body")
+        nodes[10] = Node(role: "AXTextField", text: "private prompt answer")
+        let calls = Calls()
+        XCTAssertEqual(makeProbe(calls: calls, nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "JavaScript actual body", buttons: ["確定"])))
+        XCTAssertEqual(calls.nodesRead, [5, 9], "prompt and mirrored group values must not be read")
+    }
+
+    func testTextAreaMustBeConfirmedReadOnlyBeforeItsValueIsCollected() {
+        for editable: Bool? in [true, nil] {
+            var nodes = Self.dialogTree
+            nodes[4] = Node(subrole: "AXDialog", children: [5, 6, 8])
+            nodes[8] = Node(role: "AXTextArea", text: "private multiline answer", valueSettable: editable)
+            let calls = Calls()
+            XCTAssertEqual(makeProbe(calls: calls, nodes: nodes).check(windowKey: .id(42)),
+                           .present(.init(message: "這是訊息", buttons: ["確定"])))
+            XCTAssertEqual(calls.nodesRead, [5], "excluded input must not receive a value read")
+        }
+    }
+
+    func testFailedEditableAttributeSkipsValueWithoutHidingDialog() {
+        var nodes = Self.dialogTree
+        nodes[4] = Node(subrole: "AXDialog", children: [5, 6, 8])
+        nodes[8] = Node(role: "AXTextArea", text: "unverified value")
+        let calls = Calls(failed: .valueSettable)
+        XCTAssertEqual(makeProbe(calls: calls, nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "這是訊息", buttons: ["確定"])))
+        XCTAssertEqual(calls.nodesRead, [5])
+    }
+
+    func testWebAreaInsideDialogDoesNotContributeMessageValues() {
+        var nodes = Self.dialogTree
+        nodes[4] = Node(subrole: "AXDialog", children: [5, 6, 8])
+        nodes[8] = Node(role: "AXWebArea", children: [9])
+        nodes[9] = Node(role: "AXTextArea", text: "page content")
+        let calls = Calls()
+        XCTAssertEqual(makeProbe(calls: calls, nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "這是訊息", buttons: ["確定"])))
+        XCTAssertEqual(calls.nodesRead, [5])
     }
 
     func testDialogPathIsNotStarvedByLargeSiblingTabStrip() {
@@ -206,7 +261,11 @@ final class BoundedDialogProbeTests: XCTestCase {
     func testEveryBlockingProviderPhaseHasABoundedCallerWaitAndNoQueue() {
         for operation in Operation.allCases {
             let calls = Calls(blocked: operation)
-            let probe = makeProbe(calls: calls)
+            var nodes = Self.dialogTree
+            if operation == .valueSettable {
+                nodes[5] = Node(role: "AXTextArea", text: "這是訊息")
+            }
+            let probe = makeProbe(calls: calls, nodes: nodes)
             let started = Date()
             XCTAssertEqual(probe.check(windowKey: .id(42)), .unprobed, operation.rawValue)
             XCTAssertLessThan(Date().timeIntervalSince(started), 0.3, "scheduler tolerance for \(operation)")
@@ -242,7 +301,10 @@ final class BoundedDialogProbeTests: XCTestCase {
 
     func testEachProviderCallReceivesRemainingBudget() {
         let calls = Calls()
-        _ = makeProbe(calls: calls).check(windowKey: .id(42))
+        var nodes = Self.dialogTree
+        nodes[5] = Node(role: "AXTextArea", text: "body")
+        _ = makeProbe(calls: calls, nodes: nodes).check(windowKey: .id(42))
+        XCTAssertTrue(calls.operations.contains(.valueSettable))
         let timeouts = calls.timeouts
         XCTAssertGreaterThan(timeouts.count, 8)
         XCTAssertTrue(timeouts.allSatisfy { $0 > 0 && $0 <= 0.1 })

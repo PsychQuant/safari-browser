@@ -2974,7 +2974,7 @@ enum SafariBridge {
     /// #89: what a blocking JavaScript dialog looks like from outside the tab.
     struct BlockingDialog: Sendable, Equatable {
         /// The dialog's own text, as shown to the user. Empty when Safari
-        /// exposes no static text (rare, but a dialog with no readable message
+        /// exposes no readable message (rare, but a dialog with no readable message
         /// is still a dialog and still blocks).
         let message: String
         /// Button titles, in the order Safari lists them. Used to tell the
@@ -3006,7 +3006,7 @@ enum SafariBridge {
         for window in windows {
             if let dialog = findDialogElement(in: window, depth: 0) {
                 return BlockingDialog(
-                    message: axCollectStaticText(dialog).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines),
+                    message: axCollectDialogText(dialog).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines),
                     buttons: axCollectButtonTitles(dialog)
                 )
             }
@@ -3094,18 +3094,20 @@ enum SafariBridge {
 
     /// Depth-limited so a pathological tree cannot turn a diagnostic into a
     /// second hang — this runs while something is already stuck.
-    private static func axCollectStaticText(_ element: AXUIElement, depth: Int = 0) -> [String] {
+    private static func axCollectDialogText(_ element: AXUIElement, depth: Int = 0) -> [String] {
         guard depth < 4 else { return [] }
         var collected: [String] = []
-        if axRole(of: element) == kAXStaticTextRole,
-           let text = axStringAttribute(element, kAXValueAttribute), !text.isEmpty {
+        let role = axRole(of: element) ?? ""
+        guard role != "AXWebArea" else { return [] }
+        if let text = try? DialogMessageText.read(
+            element, role: role, provider: AXDialogProbeProvider(), remainingTimeout: { 2.0 }), !text.isEmpty {
             collected.append(text)
         }
         var childrenValue: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
            let children = childrenValue as? [AXUIElement] {
             for child in children.prefix(30) {
-                collected.append(contentsOf: axCollectStaticText(child, depth: depth + 1))
+                collected.append(contentsOf: axCollectDialogText(child, depth: depth + 1))
             }
         }
         return collected
@@ -3205,7 +3207,7 @@ enum SafariBridge {
             guard let element = findDialogElement(in: window, depth: 0) else { continue }
             let buttons = axCollectButtons(element)
             found.append((element, BlockingDialog(
-                message: axCollectStaticText(element)
+                message: axCollectDialogText(element)
                     .joined(separator: " ")
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                 buttons: buttons.map(\.title))))

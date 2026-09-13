@@ -12,9 +12,9 @@
 # cleanup — JsCommand.swift), and an alert that opens between two of them
 # lands the rest on the 30 s timeout path. Only a dialog in OUR tab's window
 # — as reported by the entry probe on the nonce-locked target — is ever
-# dismissed, never anybody else's. (Ownership cannot use the alert's text:
-# #127 — the probe reads the alert's title, not its body. Background-tab
-# invisibility is #131.) If a dialog is already up anywhere in Safari the
+# dismissed, never anybody else's. Ownership is independently anchored to
+# the active fixture URL in the warned window, even when the text is readable.
+# Background-tab invisibility is #131. If a dialog is already up anywhere in Safari the
 # test skips: `dialog list` refuses to pick one of several, and the test could
 # not tell whose it would be pressing.
 #
@@ -197,13 +197,18 @@ if [[ "$TITLE_EXIT" -eq 0 ]] && grep -q "Dialog Test Page" "$TMP/title.out"; the
 else
     fail "get title still succeeds" "exit=$TITLE_EXIT stdout=$(cat "$TMP/title.out") stderr=$(cat "$TMP/title.err")"
 fi
+if [[ "$FIRST" == *"$DIALOG_TEXT"* ]]; then
+    pass "entry warning includes the alert body (#127)"
+else
+    fail "entry warning includes the alert body" "$FIRST"
+fi
 if [[ "$FIRST" == *"BLOCKING DIALOG"* ]]; then
     pass "stderr FIRST line names the dialog"
 else
     fail "stderr first line names the dialog" "first line was: '$FIRST'"
 fi
 if [[ "$FIRST" == *'buttons: "'* ]]; then
-    pass "warning names the dialog's buttons (message text itself is #127)"
+    pass "warning names the dialog's buttons"
 else
     fail "warning names the dialog's buttons" "$FIRST"
 fi
@@ -379,6 +384,11 @@ fi
 echo "## Recovery"
 "$SB" tab focus "${LOCK[@]}" >/dev/null 2>&1 || true
 LISTING=$("$SB" dialog list 2>&1)
+if [[ "$LISTING" == *"$DIALOG_TEXT"* ]]; then
+    pass "dialog list includes the alert body (#127)"
+else
+    fail "dialog list includes the alert body" "$LISTING"
+fi
 BTN=$(echo "$LISTING" | dialog_button)
 if [[ -n "$BTN" ]]; then
     pass "dialog list shows a dialog with a button (\"$BTN\")"
@@ -389,6 +399,11 @@ if [[ -n "$BTN" ]] && dismiss_fixture_dialog "$BTN" >"$TMP/dismiss.out" 2>&1; th
     pass "dialog dismiss --button \"$BTN\""
 else
     fail "dialog dismiss" "$(cat "$TMP/dismiss.out" 2>/dev/null)"
+fi
+if grep -Fq "$DIALOG_TEXT" "$TMP/dismiss.out"; then
+    pass "dismiss preamble includes the alert body (#127)"
+else
+    fail "dismiss preamble includes the alert body" "$(cat "$TMP/dismiss.out" 2>/dev/null)"
 fi
 sleep 0.5
 AFTER=$(SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1 "$SB" js "${LOCK[@]}" "1+1" 2>"$TMP/after.err")

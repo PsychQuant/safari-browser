@@ -415,6 +415,8 @@ safari-browser tab new --window 2      # new tab in window 2
 
 ### Blocking Dialogs
 
+Dialog messages include Safari’s read-only alert body as well as its source heading. Editable prompt fields are excluded; unreadable or incomplete AX details can still limit the message. Text output escapes control characters and marks truncation.
+
 ```bash
 safari-browser dialog list                     # show the dialog's text and buttons
 safari-browser dialog dismiss --button "取消"   # press the button you named
