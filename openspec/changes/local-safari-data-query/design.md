@@ -43,10 +43,13 @@
 
 **決定**：不改變 `make install` 的預設（仍為 adhoc）。改為讓指令在權限失敗時讀取自身簽章狀態，給出分歧訊息：
 
-- adhoc build → 說明此 build 的授權在重新編譯後可能失效，指向 `make sign-developer-id`，並提供「改為授權終端機」作為替代路徑
-- Developer ID build → 直接指引將 binary 加入系統設定的「完全取用磁碟」
+- adhoc build → 說明此 build 的授權在重新編譯後可能失效，指向 `DEVELOPER_ID=<cert-sha1> make install-signed`，並提供「改為授權終端機」作為替代路徑
+- 經驗證具有 durable identity-bound DR 的 build → 指引將 binary 加入系統設定的「完全取用磁碟」，並說明跨重編保留授權須維持同一簽署身分與 DR
+- 無法證明 durable 的 build → 明示簽章狀態無法確認，提供 `make verify-install-signature` 與 `DEVELOPER_ID=<cert-sha1> make install-signed`，不因路徑或診斷文字出現 Developer ID 就保證授權可保留
 
-**為何不改預設安裝**：`make sign-developer-id` 需要 `DEVELOPER_ID` 環境變數，沒有 Apple Developer 憑證的使用者會直接失敗。把它變成預設會讓**所有**使用者的安裝流程壞掉，代價遠大於本功能。讓錯誤訊息說實話的成本近乎零。
+**為何不改預設安裝**：Developer ID 簽署需要 `DEVELOPER_ID` 環境變數及 Apple Developer 憑證；把它變成預設，會讓沒有憑證的使用者無法安裝。這是 #109 原始決策，仍然成立。#119 因此新增獨立的 `install-signed`，而未改變 `install` 的 ad-hoc 預設。
+
+**後續同步（#124，配合 #119/#122）**：本節與下方風險段改用完整的 `install-signed` 安裝路徑；它在暫存檔簽署及驗證後才原子替換正式 binary，並再次驗證正式路徑。identifier 沿用嵌入的 `Info.plist`，本機自行建置不需 notarization。這是安裝契約與指引的同步，不改寫 #109 當時的實測紀錄，也不擴充本 change 的 Makefile 實作範圍。
 
 **考慮過的替代方案**：
 - *一律指示授權終端機* — 被否決。那是範圍大得多的授權（終端機能讀的檔案遠超本工具所需），且實測證明沒有必要。
@@ -194,7 +197,7 @@ enum SafariDataStore {
 
 ## Risks / Trade-offs
 
-**[adhoc 簽章下 FDA 授權可能在重新編譯後靜默失效]** → 錯誤訊息在偵測到 adhoc build 時主動說明此風險並指向 `make sign-developer-id`。**誠實邊界：此失效機制是根據 TCC 以 cdhash 識別未簽章 binary 的運作方式所做的推論，未經實測。** 錯誤訊息的設計對這條推論不敏感——即使推論有誤，建議使用者改用簽章 build 仍然正確。
+**[adhoc 簽章下 FDA 授權可能在重新編譯後靜默失效]** → 錯誤訊息在偵測到 adhoc build 時主動說明此風險並指向 `DEVELOPER_ID=<cert-sha1> make install-signed`。**誠實邊界：此失效機制是根據 TCC 以 cdhash 識別未簽章 binary 的運作方式所做的推論，未經實測。** 錯誤訊息的設計對這條推論不敏感——即使推論有誤，建議使用者改用簽章 build 仍然正確。
 
 **[複製 `History.db` 的瞬間 Safari 正在寫入，取得撕裂狀態]** → 連同 `-wal` / `-shm` 一起複製；SQLite 的 WAL 設計對此有容忍度。實作時需明確驗證而非假設——若複製後開啟失敗，錯誤訊息須指出是複製一致性問題而非權限問題。
 

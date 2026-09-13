@@ -344,6 +344,13 @@ V1 wires marker 到 `ClickCommand` 作為 reference integration。其他 30+ com
 
 ## Install-signature guard：suite 本身被 gate 管（#119, round 10）
 
+#122 後的 authoritative policy 位於 `Sources/SafariBrowser/Utilities/SignatureAssessment.swift`，
+由 runtime 與 guard 共用；`scripts/verify-install-signature.swift` 只負責 CLI 參數、訊息與退出碼。
+使用 `scripts/build-signature-guard.py` 編譯：它將兩份原始碼組成臨時 compilation unit。
+Mutation gate 也以相同 helper 產生的完整 source 為輸入，因此把 policy 搬檔不會漏掉 mutant。
+新增修法的 `@mutant` 宣告放在實際修法旁，無論它位於 shared assessment 或 CLI wrapper。
+
+
 `scripts/verify-install-signature.swift` 回答一個問題：這支 binary 上的 Full Disk Access
 授權，之後還會不會生效？（TCC 存的是 designated requirement，ad-hoc 簽章的 DR 就是 cdhash
 本身，所以 rebuild 後授權安靜失效。）它的測試是 `Tests/install-signature-test.sh`。

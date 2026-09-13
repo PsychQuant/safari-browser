@@ -9,9 +9,9 @@ BINARY_NAME = safari-browser
 SAFARI_BROWSER_BIN ?= .build/debug/$(BINARY_NAME)
 export SAFARI_BROWSER_BIN
 
-.PHONY: test-mutation-gate test-daemon-executor test-dialog-harness
+.PHONY: test-mutation-gate test-daemon-executor test-dialog-harness test-install-atomic test-signature-entrypoint
 .PHONY: build build-debug install install-signed clean \
-        sign-developer-id verify-developer-id verify-install-signature \
+        verify-developer-id verify-install-signature \
         test test-unit test-smoke test-all test-install-signature \
         test-install-signature-strict \
         test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-dialog test-exec-script test-mark-tab test-csp test-target-identity test-reference-edges
@@ -36,11 +36,11 @@ build:
 VERIFY_BIN = .build/verify-install-signature
 VERIFY_SIG = $(VERIFY_BIN)
 
-$(VERIFY_BIN): scripts/verify-install-signature.swift
+$(VERIFY_BIN): scripts/verify-install-signature.swift Sources/SafariBrowser/Utilities/SignatureAssessment.swift scripts/build-signature-guard.py
 	@mkdir -p .build
-	@swiftc -O -o $@ $< || { echo "✗ could not compile the signature guard — this is a build"; \
+	@python3 scripts/build-signature-guard.py --output $@ || { echo "✗ could not compile the signature guard — this is a build"; \
 	  echo "  failure, not a verdict about any binary. Check that swift can compile:"; \
-	  echo "    swiftc -o /dev/null scripts/verify-install-signature.swift"; exit 1; }
+	  echo "    python3 scripts/build-signature-guard.py --output /tmp/verify-install-signature"; exit 1; }
 
 build-debug:
 	swift build
@@ -122,8 +122,8 @@ verify-developer-id:
 # requirement and silently invalidates existing grants; the filename does not.
 # An earlier version of this recipe passed `--identifier` to "pin the current
 # value", which was both redundant and harmful: it made this target's identifier
-# a second source of truth that sign-developer-id did not share, so editing
-# Info.plist would have made the two targets emit different requirements from
+# a second source of truth outside Info.plist, so editing
+# Info.plist could have made signing paths emit different requirements from
 # one source tree — the exact silent invalidation the pin claimed to prevent.
 #
 # Installs through a temporary file in $(INSTALL_DIR) and only replaces the
@@ -165,34 +165,8 @@ install-signed: verify-developer-id build $(VERIFY_BIN)
 	 echo "✓ Installed $(BINARY_NAME) to $(INSTALL_DIR)/$(BINARY_NAME) (Developer ID)"; \
 	 true
 	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
-	@echo "    it then persists across rebuilds and version bumps."
+	@echo "    it persists while the signing identity and designated requirement stay the same."
 	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
-
-# Sign the build-directory binary WITHOUT installing it.
-#
-# No AUTOMATION calls this target — there is no CI workflow and no release
-# script. It is not free-standing, though, and #123 should not be read as
-# saying so: the shipped binary tells users to run it
-# (Sources/SafariBrowser/Utilities/CodeSigningState.swift), three assertions in
-# CodeSigningStateTests.swift pin the string, and task 1.4 of the in-flight
-# openspec change local-safari-data-query names it as the remediation. Deleting
-# it without touching those leaves the product pointing at a make target that
-# does not exist.
-#
-# It is also the target whose existence made this bug hard to see: it looks
-# like "the signed install path" and is not one. It does NOT copy to
-# $(INSTALL_DIR), and following it with `make install` re-signs ad-hoc and
-# undoes the work. For a usable local install, use `install-signed`.
-#
-# Requires DEVELOPER_ID (certificate SHA-1) in the environment.
-sign-developer-id: verify-developer-id build
-	codesign --force --options runtime \
-	         --sign $(DEVELOPER_ID) \
-	         --entitlements Sources/SafariBrowser/Entitlements.plist \
-	         .build/release/$(BINARY_NAME)
-	@codesign -dv --entitlements - .build/release/$(BINARY_NAME) 2>&1 | grep -q apple-events \
-	  && echo "✓ signed with apple-events entitlement" \
-	  || { echo "✗ entitlement missing from the signed binary"; exit 1; }
 
 # Is the installed binary's grant rebuild-proof? Reads only — no certificate,
 # no Full Disk Access, no Safari.
@@ -210,6 +184,13 @@ verify-install-signature: $(VERIFY_BIN)
 
 test-install-signature: $(VERIFY_BIN)
 	./Tests/install-signature-test.sh
+
+# Requires a local Developer ID; writes only test fixtures in temporary installs.
+test-install-atomic: $(VERIFY_BIN)
+	python3 Tests/install-atomic-test.py --guard $(VERIFY_BIN) --mutation-check
+
+test-signature-entrypoint:
+	python3 Tests/signature-entrypoint-test.py
 
 # ── CI-safe tiers (no live Safari required) ──────────────────────────
 test:
@@ -273,7 +254,7 @@ test-mutation-gate:
 # test-install-signature-strict` refuses to pass on a partial run — that is
 # the target to use on a machine that has both identities, and the one this
 # repo's own verification uses.
-test-all: test-unit test-smoke test-daemon-executor test-dialog-harness
+test-all: test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint
 	@ALLOW_INCOMPLETE=1 $(MAKE) --no-print-directory test-install-signature
 	@echo "✓ unit + smoke + install-signature green"
 
