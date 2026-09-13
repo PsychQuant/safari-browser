@@ -4,14 +4,14 @@
 
 The `history`, `bookmarks`, `cloud-tabs`, and `downloads` commands SHALL be classified as **Non-interfering** under the conformance classification for new commands.
 
-These commands read copies of Safari's on-disk data files. They do not control input devices, do not display system dialogs, do not produce sound, do not steal window focus, and do not require Safari to be running. They are therefore non-interfering under the existing definition, and SHALL NOT require an opt-in flag.
+These commands read Safari sources through read-only access, then query in-memory SQLite snapshots or decode plist bytes in memory. SQLite may participate in normal read locks and WAL index maintenance, but source data content is not written. They do not control input devices, do not display system dialogs, do not produce sound, do not steal window focus, and do not require Safari to be running. They are therefore non-interfering under the existing definition, and SHALL NOT require an opt-in flag.
 
 Requiring Full Disk Access does not change this classification. Interference level describes what a command does to the user's concurrent activity; it does not describe what permission the command needs.
 
 #### Scenario: Local data query runs during unrelated user activity
 
 - **WHEN** a user runs `safari-browser history --search example` while typing in another application
-- **THEN** the command reads the copied history database and prints results without moving the cursor, changing window focus, producing sound, or interrupting the user's typing
+- **THEN** the command queries its in-memory history snapshot and prints results without moving the cursor, changing window focus, producing sound, or interrupting the user's typing
 
 #### Scenario: Local data query does not launch Safari
 

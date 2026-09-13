@@ -9,6 +9,11 @@ import Foundation
 /// does not apply — `--json` is the path for programmatic consumption.
 enum LocalDataOutput {
 
+    /// Keep every external value inside its own single-line text field.
+    static func sanitizeTextField(_ raw: String) -> String {
+        TerminalText.escaped(raw, localField: true)
+    }
+
     static func writeStderr(_ text: String) {
         FileHandle.standardError.write(Data(text.utf8))
     }

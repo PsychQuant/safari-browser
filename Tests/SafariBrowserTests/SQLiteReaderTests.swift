@@ -109,8 +109,8 @@ final class SQLiteReaderTests: XCTestCase {
         XCTAssertThrowsError(
             try SQLiteReader.query(at: missing, sql: "SELECT 1") { _ -> Int? in 1 }
         ) { error in
-            guard case SafariBrowserError.safariDataParseFailed = error else {
-                return XCTFail("expected safariDataParseFailed, got \(error)")
+            guard case SafariBrowserError.safariDataFileNotFound = error else {
+                return XCTFail("expected missing source, got \(error)")
             }
         }
     }
@@ -125,6 +125,64 @@ final class SQLiteReaderTests: XCTestCase {
             guard case SafariBrowserError.safariDataParseFailed = error else {
                 return XCTFail("expected safariDataParseFailed, got \(error)")
             }
+        }
+    }
+
+    func testPhysicalDamageBeyondLimitIsNotReadEvenThroughMemorySnapshot() throws {
+        let url = dir.appendingPathComponent("later-damage.db")
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(url.path,&db),SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db,"PRAGMA page_size=1024; CREATE TABLE t(n INTEGER PRIMARY KEY,s TEXT); WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20000) INSERT INTO t SELECT x,printf('%0200d',x) FROM n",nil,nil,nil),SQLITE_OK)
+        sqlite3_close(db)
+        var bytes = try Data(contentsOf:url)
+        // Table-leaf pages in this single-table fixture have type 0x0D.
+        // Damage a late leaf, leaving schema and early row traversal intact.
+        let leaves = stride(from:1024,to:bytes.count,by:1024).filter { bytes[$0] == 0x0D }
+        XCTAssertGreaterThan(leaves.count,100)
+        let damaged = leaves[leaves.count * 3 / 4]
+        bytes[damaged] = 0xFF
+        try bytes.write(to:url)
+        try SafariDataStore.withDatabaseSnapshot(sourceURL:url) { snapshot in
+            XCTAssertEqual(try SQLiteReader.query(in:snapshot,sql:"SELECT n FROM t ORDER BY rowid",maxResults:10) { $0[0].intValue },Array(1...10))
+            XCTAssertThrowsError(try SQLiteReader.query(in:snapshot,sql:"SELECT n FROM t ORDER BY rowid") { $0[0].intValue }) {
+                guard case SafariBrowserError.safariDataParseFailed(_,let detail) = $0 else { return XCTFail("\($0)") }
+                XCTAssertTrue(detail.contains("sqlite code 11"),detail)
+            }
+        }
+    }
+
+    func testAuxiliaryENOENTDoesNotBecomeMissingSource() throws {
+        let url = try makeDatabase(rows: 1)
+        let absent = dir.appendingPathComponent("absent-directory/aux.db")
+        try SQLiteReader.withDatabase(at:url) { db in
+            XCTAssertThrowsError(try SQLiteReader.query(in:db,sql:"ATTACH DATABASE ? AS aux",bindings:[.text(absent.path)]) { _ -> Int? in nil }) {
+                guard case SafariBrowserError.safariDataReadFailed(let path, _) = $0 else { return XCTFail("auxiliary error mislabeled: \($0)") }
+                XCTAssertEqual(path,url.path)
+            }
+        }
+    }
+
+    func testAcceptedLimitStopsBeforeLaterSQLFailure() throws {
+        let url = try makeDatabase(rows: 5)
+        // abs(Int64.min) fails only once the third row is stepped. Earlier
+        // accepted rows are a complete answer to maxResults=1.
+        let sql = "SELECT CASE WHEN n=2 THEN abs(-9223372036854775808) ELSE n END FROM t"
+        XCTAssertEqual(try SQLiteReader.query(at:url,sql:sql,maxResults:1) { $0[0].intValue },[0])
+        XCTAssertThrowsError(try SQLiteReader.query(at:url,sql:sql) { _ -> Int? in nil }) {
+            guard case SafariBrowserError.safariDataParseFailed(_,let detail) = $0 else { return XCTFail("\($0)") }
+            XCTAssertTrue(detail.contains("after 2 row(s), 0 accepted"),detail)
+        }
+    }
+
+    func testLimitCountsAcceptedRowsAndBindingsRetainUnicodeAndNUL() throws {
+        let url = try makeDatabase(rows:5)
+        XCTAssertEqual(try SQLiteReader.query(at:url,sql:"SELECT n FROM t",maxResults:2) { row -> Int? in
+            guard let n=row[0].intValue,n%2==1 else { return nil };return n
+        },[1,3])
+        let value="台灣\u{0}資料"
+        XCTAssertEqual(try SQLiteReader.query(at:url,sql:"SELECT ?",bindings:[.text(value)]) { $0[0].stringValue },[value])
+        for number in [Double.nan, Double.infinity, Double(Int.max), 1.5] {
+            XCTAssertNil(SQLiteReader.Value.double(number).intValue)
         }
     }
 

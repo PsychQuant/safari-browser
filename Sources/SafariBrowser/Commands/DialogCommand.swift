@@ -153,7 +153,7 @@ struct DialogDismissCommand: AsyncParsableCommand {
         """
             dismissing dialog
               message: \(BlockingDialogWarning.messageText(dialog))
-              pressing: "\(button)"
+              pressing: \(TerminalText.quotedDialogField(button))
             """
     }
 

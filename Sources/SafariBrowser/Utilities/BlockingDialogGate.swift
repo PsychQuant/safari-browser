@@ -25,8 +25,8 @@ enum BlockingDialogState: Sendable, Equatable {
 /// last), and for the JavaScript path the last line of the error is its
 /// closing sentence, not the dialog's text. Preserving the upstream non-zero
 /// exit requires `set -o pipefail` or inspecting the upstream command status;
-/// otherwise the pipeline reports `tail`'s status. Control characters, quoting
-/// and length are #114's job.
+/// otherwise the pipeline reports `tail`'s status. Text fields share the #114
+/// escaping boundary and an explicit rendered-length limit.
 enum BlockingDialogWarning {
     static func firstLine(windowKey: BlockingDialogGate.WindowKey, dialog: SafariBridge.BlockingDialog) -> String {
         "⚠ BLOCKING DIALOG in \(windowKey.humanDescription): \(messageText(dialog))"
@@ -48,14 +48,34 @@ enum BlockingDialogWarning {
     /// unreadable message would read as "no dialog" (see #127 for why the text
     /// can be missing even when the dialog is real).
     static func messageText(_ dialog: SafariBridge.BlockingDialog) -> String {
-        let text = oneLine(dialog.message)
-        return text.isEmpty ? "(no readable message)" : "\"\(text)\""
+        messageText(dialog.message)
+    }
+
+    static func messageText(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "(no readable message)" : TerminalText.quotedDialogField(raw)
     }
 
     static func buttonsText(_ dialog: SafariBridge.BlockingDialog) -> String {
-        dialog.buttons.isEmpty
-            ? "(none exposed)"
-            : dialog.buttons.map { "\"\(oneLine($0))\"" }.joined(separator: ", ")
+        buttonsText(dialog.buttons)
+    }
+
+    /// Bound the complete list as well as each individual title. Keep quotes
+    /// balanced and mark omitted buttons, without changing the raw AX titles.
+    static func buttonsText(_ buttons: [String]) -> String {
+        guard !buttons.isEmpty else { return "(none exposed)" }
+        let omitted = ", " + TerminalText.truncationMarker
+        var rendered = ""
+        for (index, button) in buttons.enumerated() {
+            let separator = rendered.isEmpty ? "" : ", "
+            let reserve = index < buttons.count - 1 ? omitted.unicodeScalars.count : 0
+            let available = TerminalText.dialogFieldLimit - rendered.unicodeScalars.count
+                - separator.unicodeScalars.count - reserve
+            if available < TerminalText.truncationMarker.unicodeScalars.count + 2 {
+                return rendered + omitted
+            }
+            rendered += separator + TerminalText.quotedDialogField(button, limit: available)
+        }
+        return rendered
     }
 
     /// Fold the seven scalars Foundation's `.newlines` counts as line breaks —

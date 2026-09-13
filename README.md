@@ -488,6 +488,11 @@ never saw. The dialog's full text is printed before the press so your log record
 what was dismissed. A title that matches nothing presses nothing and lists the
 real buttons instead — they are localized.
 
+Dialog text escapes control characters and internal quotes. Each message and the
+complete button list is limited to 256 Unicode scalars with explicit `[truncated]`
+markers. Matching still uses original button titles; display escapes are not part
+of a title. Inspect the dialog in Safari when the displayed text is incomplete.
+
 If the page swaps the dialog out between `list` and `dismiss`, the press is
 refused rather than aimed at whatever is there now, and the new dialog's text is
 printed so you can decide against it. Same reason: a button you named on one
@@ -507,13 +512,41 @@ currently open. Safari does not need to be running.
 
 ```bash
 safari-browser history --search "agent" --since 2026-01-01   # visited pages
-safari-browser bookmarks --folder AI                         # bookmarks + Reading List
+safari-browser bookmarks --folder AI --search "swift"        # bookmarks + Reading List
 safari-browser cloud-tabs                                    # tabs open on your other devices
 safari-browser downloads --limit 20                          # download history
 ```
 
-All four take `--json`. Explanatory text goes to stderr and data rows to
-stdout, so `safari-browser history 2>/dev/null` is directly parseable.
+All four take `--json`. Explanatory text goes to stderr and data rows to stdout.
+Text fields escape terminal controls, quotes, backslashes and embedded column
+separators; JSON preserves the original values. Use JSON for lossless processing.
+`bookmarks --search` matches title or URL case-insensitively and combines with
+`--folder` as an intersection.
+
+SQLite sources are opened read-only and backed up into memory using SQLite's
+[Backup API](https://sqlite.org/backup.html); plist bytes are read directly into
+memory. The commands create no new disk copies of browser data, so interruption
+cannot leave a new `safari-data-*` copy behind. SQLite participates in normal read
+locking and WAL index maintenance, while source database content stays read-only.
+The read transaction ends before parsing/querying the private snapshot. Busy
+retries have a five-second budget; filesystem calls themselves remain OS-managed.
+This replaces the old independent main/WAL/SHM copy strategy (#111–#113).
+If macOS SQLite cannot open a checkpointed WAL database with absent sidecars,
+a local APFS/HFS fallback holds an exclusive SQLite-compatible OFD lease before
+reading the held descriptor as immutable. The lease requires a read/write file
+descriptor solely for locking; no source content or sidecar is written. A nonempty
+WAL, unsupported filesystem, or unavailable lease fails explicitly. Only the first
+source open can report normal absence; missing auxiliary files cannot produce an
+empty success. The lease protects against cooperating POSIX SQLite writers, not
+arbitrary raw file modifications.
+
+Missing files are normal absence; source EACCES/EPERM means permission denial;
+other I/O errors are reported as I/O errors, with the original source path.
+Malformed required fields fail when no examined record is usable. Partial failures
+produce stderr counts and locations while retaining valid rows. Missing or
+unrepresentable optional dates/counts appear as JSON `null`, not invented facts.
+History stops stepping as soon as it has enough accepted matches. SQLite may still
+need an internal scan/sort before yielding rows if no suitable index exists (#117).
 
 `history` and `downloads` default to **50 rows** (override with `--limit`)
 because they expose a long-term record of behavior; `bookmarks` and

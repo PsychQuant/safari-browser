@@ -1,3 +1,5 @@
+> **歷史紀錄界線**：第 1–6 節保留 #109 原始工作與當時驗證紀錄（含 1.3 的更正）。其中 `withCopy`、WAL sidecar 磁碟複本及舊版驗收項目已由 #111/#112/#113/#115/#116/#117/#120 的 `local-data-correctness` 取代；舊勾選不代表新的記憶體存取／解析行為已完成驗證。當前契約見本 change 的 design/spec；後續證據見第 7 節。
+
 ## 1. 檔案存取層
 
 - [x] 1.1 撰寫 `SafariDataStoreTests` 中的 WAL sidecar 測試：建立含 `X.db`、`X.db-wal`、`X.db-shm` 的暫存 fixture，斷言 `withCopy` 交給 body 的目錄同時含有三者；再以只有主檔的 fixture 斷言不因缺 sidecar 而失敗。此測試在實作前必須失敗（滿足 `Safe copy of TCC-protected data files`）。驗證：`swift test --filter SafariDataStoreTests` 由紅轉綠。
@@ -45,3 +47,15 @@
 | Failure modes | 1.3、1.4、3.2 |
 | Acceptance criteria | 5.1 |
 | Scope boundaries | 5.1 |
+
+## 7. 後續替代契約與驗證（#111–#117、#120）
+
+本節補充新證據，不回填成 #109 當時已有的測試。
+
+- [x] 7.1 四個指令接記憶體 SQLite／Data parser，新增合成 parser 與實際 `run(sourceURL:)` 測試。`LocalDataParserTests` 紅燈為原程式 12 項測試、11 failures（含 1 unexpected）；更新後 20 項測試全過、沒有略過。涵蓋 Bookmarks 巢狀／無 type 容器與 Reading List、Downloads nil 日期排序、CloudTabs SQLite schema／join、必要欄位全壞與部分壞、History optional 日期／次數 JSON null、合法搜尋落空、accepted-result limit。
+- [x] 7.2 補齊 1.3 歷史缺口：四個指令都以實際 command body 執行合成缺檔與 POSIX permission-denied fixture，再使用 ArgumentParser 的 `exitCode(for:)` 判定錯誤。缺檔為 0，FDA 類別拒絕為非 0；JSON／文字 stdout 與通知／警告／legend stderr 分離均有斷言。本機執行非 root，拒絕測試未略過；這不代替 macOS TCC 的人工授權驗收。
+- [x] 7.3 Bookmarks 新增 `--search` 的 title／URL Unicode 大小寫不敏感搜尋，與 `--folder` 取交集。實際 command 測試同時驗證 Reading List 在 JSON／文字保留標記，資料夾名稱不被誤當成 search 欄位。
+
+- [x] 7.4 後續實測補正：明確 Bookmark List 缺 `Children` 是正常空資料夾；日期須能以 UTC 及當前 Gregorian 時區的 CE 0001–9999 表示，極端有限值／BCE 不得變成空日期或錯示年代。新增兩項 regression 的原行為紅燈為 2 測試、50 failures（含 1 unexpected）；加入日期邊界測試後，`LocalDataParserTests` 共 23 項全過、沒有略過。7.1 的 20 項數字保留為先前執行紀錄。
+
+記憶體快照一致性、來源錯誤映射、SQLite step 終止與完整整合驗證由 `local-data-correctness/tasks.md` 的 1.1／2.1／2.2 追蹤；不得以此處 parser 測試通過替代 storage／整合證據。原有殘留複本不以名稱前綴自動清理；新方案不產生新的資料磁碟複本。
