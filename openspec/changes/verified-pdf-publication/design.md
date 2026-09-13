@@ -16,7 +16,7 @@ PDFExportTransaction.run(destination: URL, overwrite: Bool, timeout: TimeInterva
 
 使用 mkdtemp 或等價 exclusive create 建立 0700 私有目錄與唯一 .pdf 路徑，不重用既有 staging。exporter 完成後，等待 staging 產生完整快照。複製來源時比對同一 fd 的 identity／size／時間與路徑 generation；來源改變則放棄該次快照、在原期限內再觀察，不重播 exporter。快照必須有 PDF header、結尾 EOF 與可由 CoreGraphics 讀取的非零頁數。複製採有界 buffer，不用 mmap 讓可變來源穿透快照，也不用固定靜默間隔宣告完成。
 
-以獨立 inode 發布已驗證快照，禁止直接 rename Safari 的 staging inode。最後一次發布使用同目錄 sibling 暫存項目與原子 rename/no-replace；no-overwrite 的 late EEXIST 不得降級成覆寫。目的 parent 以 directory fd 綁定；每個 publication 最多一次，失敗／未知結果不重播。
+以獨立 inode 發布已驗證快照，禁止直接 rename Safari 的 staging inode。最後一次發布使用目的 parent 內 exclusive 0700 sibling directory 中的快照與原子 rename/no-replace；chmod 在私有目錄內完成，避免發布前暴露最終權限；no-overwrite 的 late EEXIST 不得降級成覆寫。目的 parent 以 directory fd 綁定；每個 publication 最多一次，失敗／未知結果不重播。
 
 PDFExportTransaction.validateDestination(path: String, overwrite: Bool) throws 保留 NUL、目錄、symlink→directory 與無法查驗的拒絕，另拒絕特殊檔案。overwrite 替換所指定 directory entry；symlink→regular/dangling entry 可被明確取代，並不改寫其 referent。新檔沿用 staging 的一般檔案權限，既有 regular 目的檔保留其權限；暫存項目在發布前保持私有。錯誤／取消皆清理自有暫存項目，目的檔在 publication 前維持原狀。
 

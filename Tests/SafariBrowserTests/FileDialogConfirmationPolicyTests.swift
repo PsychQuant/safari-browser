@@ -48,8 +48,9 @@ final class FileDialogConfirmationPolicyTests: XCTestCase {
 
     func testDefaultExportRefusesLateReplacementInsteadOfConfirmingIt() {
         let script = PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1)
-        let replacement = script.components(separatedBy: "-- Replacement confirmation").last ?? script
-        XCTAssertTrue(replacement.contains("requires --overwrite"))
+        let replacement = PdfCommand.completionWaitScript()
+        XCTAssertTrue(script.contains(replacement))
+        XCTAssertTrue(replacement.contains("Unexpected PDF staging confirmation"))
         XCTAssertFalse(replacement.contains("click replaceBtn"))
         XCTAssertFalse(replacement.contains("keystroke return"))
     }
@@ -59,10 +60,15 @@ final class FileDialogConfirmationPolicyTests: XCTestCase {
         try Data("original".utf8).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
         let calls = ExecSubprocessOutputTests.Output()
-        try await PdfCommand.$nativeExporter.withValue({ path in calls.append(path) }) {
+        try await PdfCommand.$nativeExporter.withValue({ path in
+            calls.append(path)
+            try PDFCommandPublicationTests.writePDF(to: URL(fileURLWithPath: path))
+        }) {
             try await PdfCommand.parse(["--allow-hid", "--overwrite", file.path]).run()
         }
-        XCTAssertEqual(calls.text, file.path)
+        XCTAssertNotEqual(calls.text, file.path)
+        XCTAssertFalse(calls.text.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: calls.text))
         do {
             try await PdfCommand.$nativeExporter.withValue({ _ in XCTFail("missing HID authorization") }) {
                 try await PdfCommand.parse(["--overwrite", file.path]).run()
@@ -139,7 +145,7 @@ final class FileDialogConfirmationPolicyTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: directory) }
         let scripts = [PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1),
-                       PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1, overwrite: true),
+                       PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1, timeout: 2),
                        UploadCommand.nativeDialogScript(path: "/tmp/fixture.txt", window: 1),
                        SafariBridge.fileDialogNavigationOuterScript(path: "/tmp/fixture.txt")]
         for (index, script) in scripts.enumerated() {

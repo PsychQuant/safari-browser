@@ -138,7 +138,7 @@ final class FileDialogScriptSharingTests: XCTestCase {
     func testPdfExportIsOneScriptCarryingTheSharedFragment() {
         let s = PdfCommand.exportScript(path: path, windowIndex: 2)
 
-        XCTAssertTrue(s.contains(SafariBridge.fileDialogNavigationScript(path: path)),
+        XCTAssertTrue(s.contains(SafariBridge.fileDialogNavigationScript(path: path, pdfSave: true)),
                       "pdf must embed the shared fragment, not a private copy")
         // All three phases in the one script: if any had stayed behind, it would
         // need its own invocation and the gap would be back.
@@ -159,12 +159,11 @@ final class FileDialogScriptSharingTests: XCTestCase {
             "keystrokes and menu clicks reach the front window, so the target must be raised")
     }
 
-    /// Replacement has separate authorization and never retries via Return.
-    func testPdfAnnouncesTheReplaceConfirmation() {
-        let s = PdfCommand.replacementConfirmationScript(overwrite: true)
-        XCTAssertTrue(s.contains("log \"confirming replace sheet: pressing named button"))
-        XCTAssertFalse(s.contains("keystroke return"))
-        XCTAssertTrue(PdfCommand.exportScript(path: path, windowIndex: 1, overwrite: true).contains(s))
+    func testPdfRefusesExtraStagingConfirmationWithoutNativeReplacement() {
+        let s = PdfCommand.completionWaitScript()
+        XCTAssertTrue(s.contains("Unexpected PDF staging confirmation"))
+        XCTAssertFalse(s.contains("click"))
+        XCTAssertFalse(s.contains("keystroke"))
     }
 
     // Boundary of what the tests above can see: they reach `navigateFileDialog`

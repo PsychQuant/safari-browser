@@ -7,46 +7,35 @@ Define native Safari PDF export, shared file-dialog navigation, explicit overwri
 ## Requirements
 
 ### Requirement: Export page as PDF
+The PDF command SHALL export through one native script to a unique private staging `.pdf` path, using the same shared navigation generator as upload. It SHALL use clipboard path entry with restoration, named enabled initial confirmation without Return fallback, and polling under one shared deadline. Upload's default navigation behavior SHALL remain unchanged.
 
-The PDF export file dialog SHALL use the same shared dialog navigation function as upload:
-1. Clipboard paste (`Cmd+V`) for path input instead of `keystroke`
-2. `repeat until exists` polling instead of fixed `delay` for all dialog state transitions
-3. Initial confirmation of a unique enabled, named Open/Upload/Save button (including supported Traditional Chinese labels), after frontmost and non-nested-sheet checks; no Return fallback or retry
-4. Save and restore clipboard content
+The command SHALL observe native sheet closure and verify a complete independent PDF snapshot before atomically publishing to the effective destination. No extension SHALL resolve to `.pdf`; an explicit extension SHALL be preserved. Success SHALL identify the actual published path, not merely indicate that Save was dispatched.
+
+Replacement of a destination entry SHALL require `--overwrite` in addition to `--allow-hid`. Existing unauthorized destinations SHALL fail before GUI interaction; late unauthorized destinations SHALL fail through atomic no-replace. Authorized publication SHALL replace the entry without following a leaf symlink; directory and special-file targets SHALL be refused. A staging replacement or other additional native confirmation SHALL always be refused, even when final-destination overwrite is authorized.
+
+The runner SHALL retain bounded escaped action traces after the subprocess completes, including failure and timeout, and SHALL retain the pre-GUI keyboard-control warning. It SHALL NOT replay a dispatched Save, native confirmation or uncertain publication.
 
 #### Scenario: PDF export uses clipboard for path
-
-- **WHEN** user runs `safari-browser pdf --allow-hid /tmp/page.pdf`
-- **THEN** the path is entered via clipboard paste, not keystroke, completing in under 1 second of keyboard control
+- **WHEN** the user authorizes PDF export
+- **THEN** the staging path is pasted through the shared navigation generator with clipboard restoration
 
 #### Scenario: PDF export uses precise waits
-
-- **WHEN** user runs `safari-browser pdf --allow-hid /tmp/page.pdf`
-- **THEN** dialog transitions use `repeat until exists` polling, not fixed `delay 1`
-
-Replacement SHALL require `--overwrite` (default false) in addition to `--allow-hid`. An existing destination without authorization SHALL be rejected before target resolution or GUI operations; a replacement sheet appearing later SHALL also be refused without authorization. Authorized replacement SHALL use only a unique named `Replace` or `取代` button. Missing, ambiguous, and unsupported-language names SHALL be refused. Replacement SHALL NOT use Return fallback or retry a dispatched press after an error.
-
-Initial confirmation and replacement attempts SHALL be recorded by the file-dialog runner's bounded, terminal-escaped stderr trace after subprocess completion, including failure or timeout. This trace SHALL NOT replace the keyboard-control warning emitted before GUI interaction.
+- **WHEN** native dialog transitions or output creation are delayed
+- **THEN** they are observed under the common deadline without a fixed one-shot completion assumption
 
 #### Scenario: Existing destination without authorization
-
-- **WHEN** the destination exists and `--overwrite` is absent
-- **THEN** the PDF command refuses before target resolution or GUI interaction
+- **WHEN** the effective destination exists and overwrite is absent
+- **THEN** the command refuses before GUI interaction
 
 #### Scenario: Destination appears after preflight
-
-- **WHEN** the destination appears after the existence check and a replacement sheet opens
-- **AND** `--overwrite` is absent
-- **THEN** no replacement confirmation is dispatched
+- **WHEN** the effective destination is created after preflight and overwrite is absent
+- **THEN** publication refuses atomically without changing that entry
 
 #### Scenario: Authorized replacement
+- **WHEN** allow-hid and overwrite are supplied and a complete snapshot is ready
+- **THEN** the command atomically replaces the validated destination entry
+- **AND** Safari does not write directly to the published inode
 
-- **WHEN** the caller supplies both `--allow-hid` and `--overwrite`
-- **AND** the replacement sheet has a unique `Replace` or `取代` button
-- **THEN** the command records and dispatches that button press
-- **AND** a press error does not cause a Return retry
-
----
 ### Requirement: PDF export command accepts full TargetOptions
 
 The `pdf` command SHALL accept `--url <pattern>`, `--window <n>`, `--tab <n>`, and `--document <n>` targeting flags in addition to the existing `--allow-hid` requirement. When targeting flags are supplied, the system SHALL resolve the target to a physical window index via the native path resolver, switch to the target tab if needed, raise that window to the front, and dispatch the PDF file-dialog keystroke sequence against the resolved window.

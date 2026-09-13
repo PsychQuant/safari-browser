@@ -3754,11 +3754,19 @@ enum SafariBridge {
     /// The fragment assumes it is placed inside `tell process "Safari"`, with a
     /// file dialog sheet already open on `front window`. It defines its own
     /// `maxWait`, so a caller that also needs one may set its own beforehand.
-    static func fileDialogNavigationScript(path: String) -> String {
-        """
+    static func fileDialogNavigationScript(path: String, pdfSave: Bool = false) -> String {
+        let pdfGuard = pdfSave ? "my verifyPDFOwner(pdfWindowID, pdfPageURL)\nmy checkPDFDeadline(pdfEndTime)" : ""
+        let saveNameGuard = pdfSave ? """
+        set expectedSaveFields to {}
+        repeat with panelGroup in splitter groups of sheet 1 of front window
+            set expectedSaveFields to expectedSaveFields & (text fields of panelGroup whose value is "\((path as NSString).lastPathComponent.escapedForAppleScript)")
+        end repeat
+        if (count of expectedSaveFields) is not 1 then error "PDF staging filename changed; no Save was sent. Cancel the save dialog before retrying"
+        """ : ""
+        return """
                     -- Save user's clipboard
                     set oldClip to the clipboard
-                    set maxWait to 10
+                    set maxWait to \(pdfSave ? "60" : "10")
 
                     try
                         -- Re-check frontmost immediately before the first keystroke.
@@ -3772,11 +3780,13 @@ enum SafariBridge {
                         end if
 
                         -- Open "Go to Folder" panel
+                        \(pdfGuard)
                         keystroke "g" using {command down, shift down}
 
                         -- Wait for Go to Folder nested sheet to appear
                         set waited to 0
                         repeat until exists sheet 1 of sheet 1 of front window
+                            \(pdfGuard)
                             delay 0.2
                             set waited to waited + 0.2
                             if waited >= maxWait then
@@ -3786,13 +3796,16 @@ enum SafariBridge {
 
                         -- Paste path via clipboard (fast, supports all characters)
                         set the clipboard to "\(path.escapedForAppleScript)"
+                        \(pdfGuard)
                         keystroke "v" using command down
                         delay 0.3
+                        \(pdfGuard)
                         keystroke return
 
                         -- Wait for Go to Folder sheet to close (file selected)
                         set waited to 0
                         repeat until not (exists sheet 1 of sheet 1 of front window)
+                            \(pdfGuard)
                             delay 0.2
                             set waited to waited + 0.2
                             if waited >= maxWait then
@@ -3801,6 +3814,8 @@ enum SafariBridge {
                         end repeat
 
                         delay 0.3
+        \(pdfGuard)
+        \(saveNameGuard)
         \(fileDialogConfirmationScript())
 
                         -- Restore user's clipboard

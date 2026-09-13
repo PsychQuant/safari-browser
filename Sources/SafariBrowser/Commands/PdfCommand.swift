@@ -40,15 +40,32 @@ struct PdfCommand: AsyncParsableCommand {
             throw SafariBrowserError.appleScriptFailed("PDF export requires --allow-hid flag")
         }
 
-        let absolutePath = (path as NSString).standardizingPath
-        let fullPath = absolutePath.hasPrefix("/") ? absolutePath : FileManager.default.currentDirectoryPath + "/" + path
-        try Self.validateDestination(fullPath, overwrite: overwrite)
-
-        if let nativeExporter = Self.nativeExporter {
-            try await nativeExporter(fullPath)
-            return
+        let destination = try Self.effectiveDestination(path, overwrite: overwrite)
+        let published = try await PDFExportTransaction.run(destination: destination, overwrite: overwrite) { staging, deadline in
+            if let nativeExporter = Self.nativeExporter {
+                try await nativeExporter(staging.path)
+            } else {
+                try await exportNative(to: staging.path, deadline: deadline)
+            }
         }
+        print("PDF saved to \(TerminalText.escaped(published.path))")
+    }
 
+    /// Validate raw directory semantics before extension normalization, so an
+    /// existing directory or directory symlink cannot become a different file.
+    static func effectiveDestination(_ path: String, overwrite: Bool) throws -> URL {
+        guard !path.utf8.contains(0) else { throw ValidationError("PDF destination contains a NUL character.") }
+        guard !path.isEmpty, !path.hasSuffix("/") else { throw ValidationError("PDF destination must be a file, not a directory.") }
+        let expanded = (path as NSString).expandingTildeInPath
+        let raw = URL(fileURLWithPath: expanded)
+        try validateDestination(raw.path, overwrite: true)
+        let destination = raw.pathExtension.isEmpty ? raw.appendingPathExtension("pdf") : raw
+        try validateDestination(destination.path, overwrite: overwrite)
+        return destination
+    }
+
+    private func exportNative(to stagingPath: String, deadline: PDFExportDeadline) async throws {
+        try deadline.check()
         // #26: route through the native-path resolver. The resolver
         // short-circuits for .frontWindow / .windowIndex (preserving the
         // #23 behavior for --window N / no flag) and enumerates windows
@@ -69,6 +86,7 @@ struct PdfCommand: AsyncParsableCommand {
                 "ℹ️  Target tab will be brought to the front of its window before PDF export.\n".utf8
             ))
         }
+        try deadline.check()
         try await SafariBridge.performTabSwitchIfNeeded(
             window: resolved.windowIndex,
             tab: resolved.tabIndexInWindow
@@ -86,27 +104,19 @@ struct PdfCommand: AsyncParsableCommand {
         // for `upload` and #106 for this command. The navigation body is the
         // fragment `upload` embeds too (#105), so there is one source of truth
         // without either caller giving up atomicity.
-        try await SafariBridge.runFileDialogScript(
-            PdfCommand.exportScript(path: fullPath, windowIndex: resolved.windowIndex, overwrite: overwrite))
+        do {
+            let remaining = try deadline.remaining()
+            try await SafariBridge.runFileDialogScript(
+                PdfCommand.exportScript(path: stagingPath, windowIndex: resolved.windowIndex, timeout: remaining),
+                timeout: remaining)
+        } catch {
+            FileHandle.standardError.write(Data("PDF native export failed; inspect Safari and cancel any remaining save dialog before retrying. If the process was interrupted, the clipboard may need restoration.\n".utf8))
+            throw error
+        }
     }
 
     static func validateDestination(_ path: String, overwrite: Bool) throws {
-        guard !path.utf8.contains(0) else { throw ValidationError("PDF destination contains a NUL character.") }
-        var info = stat()
-        if lstat(path, &info) != 0 {
-            guard errno == ENOENT else { throw ValidationError("Could not inspect PDF destination before export.") }
-            return
-        }
-        guard info.st_mode & S_IFMT != S_IFDIR else { throw ValidationError("PDF destination must be a file, not a directory.") }
-        if info.st_mode & S_IFMT == S_IFLNK {
-            var target = stat()
-            if stat(path, &target) == 0 {
-                guard target.st_mode & S_IFMT != S_IFDIR else { throw ValidationError("PDF destination must not link to a directory.") }
-            } else if errno != ENOENT {
-                throw ValidationError("Could not inspect PDF destination link target before export.")
-            }
-        }
-        guard overwrite else { throw ValidationError("PDF destination already exists; replacement requires --overwrite in addition to --allow-hid.") }
+        try PDFExportTransaction.validateDestination(path: path, overwrite: overwrite)
     }
 
     /// The single combined script the export runs. Pure, so its atomicity and
@@ -117,59 +127,75 @@ struct PdfCommand: AsyncParsableCommand {
     /// save panel, and a failure there wedges every later Safari command (#67).
     /// The issue records that limitation rather than implying the unit tests
     /// cover it.
-    static func exportScript(path: String, windowIndex: Int, overwrite: Bool = false) -> String {
+    static func exportScript(path: String, windowIndex: Int, timeout: TimeInterval = 60) -> String {
         """
-        tell application "Safari" to set index of window \(windowIndex) to 1
-        tell application "Safari" to activate
+        on verifyPDFOwner(expectedID, expectedURL)
+            tell application "Safari"
+                if not (exists window id expectedID) then error "PDF target window disappeared"
+                if id of front window is not expectedID then error "PDF target window changed; cancel the save dialog before retrying"
+                if URL of current tab of front window is not expectedURL then error "PDF target page changed; cancel the save dialog before retrying"
+            end tell
+            tell application "System Events" to tell process "Safari"
+                if not frontmost then error "Safari lost focus during PDF export; cancel the save dialog before retrying"
+            end tell
+        end verifyPDFOwner
+
+        on checkPDFDeadline(endTime)
+            if (current date) >= endTime then error "PDF export deadline expired; cancel the save dialog before retrying"
+        end checkPDFDeadline
+
+        set pdfEndTime to (current date) + \(max(0, timeout))
+        tell application "Safari"
+            set pdfWindowID to id of window \(windowIndex)
+            set pdfPageURL to URL of current tab of window \(windowIndex)
+            set index of window \(windowIndex) to 1
+            activate
+        end tell
         delay 0.5
         tell application "System Events"
             tell process "Safari"
-                -- Verify Safari is frontmost before touching menus or keys
-                if not frontmost then
-                    error "Safari lost focus after activate — aborting to avoid acting on the wrong application"
-                end if
+                my verifyPDFOwner(pdfWindowID, pdfPageURL)
+                my checkPDFDeadline(pdfEndTime)
+                if exists sheet 1 of front window then error "Unexpected sheet before PDF export; no menu action was sent"
 
-                -- Resolve the measured English / Traditional Chinese menu
-                -- labels explicitly; unknown locales fail without a Print path.
+                -- Resolve only measured Export labels; never fall back to Print.
                 set fileMenus to (menu bar items of menu bar 1 whose name is "File" or name is "檔案")
                 if (count fileMenus) is not 1 then error "A unique File menu is unavailable for PDF export"
                 set exportItems to (menu items of menu 1 of item 1 of fileMenus whose name is "Export as PDF…" or name is "輸出為PDF⋯")
                 if (count exportItems) is not 1 then error "A unique Export as PDF menu item is unavailable"
                 set exportItem to item 1 of exportItems
                 if not (enabled of exportItem) then error "Export as PDF is disabled"
+                my verifyPDFOwner(pdfWindowID, pdfPageURL)
+                my checkPDFDeadline(pdfEndTime)
                 click exportItem
 
-                set maxWait to 10
-                set waited to 0
                 repeat until exists sheet 1 of front window
-                    delay 0.2
-                    set waited to waited + 0.2
-                    if waited >= maxWait then
-                        error "Save dialog did not appear within " & maxWait & " seconds"
-                    end if
+                    my verifyPDFOwner(pdfWindowID, pdfPageURL)
+                    my checkPDFDeadline(pdfEndTime)
+                    delay 0.1
                 end repeat
 
-        \(SafariBridge.fileDialogNavigationScript(path: path))
+        \(SafariBridge.fileDialogNavigationScript(path: path, pdfSave: true))
 
-                -- Replacement confirmation is separately authorized.
-                delay 0.5
-                if exists sheet 1 of sheet 1 of front window then
-                    \(replacementConfirmationScript(overwrite: overwrite))
-                end if
+        \(completionWaitScript())
             end tell
         end tell
         """
     }
 
-    static func replacementConfirmationScript(overwrite: Bool) -> String {
-        guard overwrite else { return "error \"PDF replacement requires --overwrite; no replacement button was pressed. Cancel the save dialog in Safari before retrying\"" }
-        return """
-        if not frontmost then error "Safari lost focus before PDF replacement"
-        set replacementButtons to (buttons of sheet 1 of sheet 1 of front window whose title is "Replace" or title is "取代")
-        if (count of replacementButtons) is not 1 then error "A unique named Replace button is unavailable; no replacement button was pressed"
-        set replaceBtn to item 1 of replacementButtons
-        log "confirming replace sheet: pressing named button \\"" & (title of replaceBtn) & "\\""
-        click replaceBtn
+    /// UI completion is necessary, but publication still requires an independent
+    /// valid PDF snapshot. No extra confirmation is expected at a unique path.
+    static func completionWaitScript() -> String {
+        """
+        repeat
+            my verifyPDFOwner(pdfWindowID, pdfPageURL)
+            my checkPDFDeadline(pdfEndTime)
+            if not (exists sheet 1 of front window) then exit repeat
+            if exists sheet 1 of sheet 1 of front window then error "Unexpected PDF staging confirmation; no replacement was sent. Cancel the save dialog before retrying"
+            delay 0.1
+        end repeat
+        my verifyPDFOwner(pdfWindowID, pdfPageURL)
+        my checkPDFDeadline(pdfEndTime)
         """
     }
 }

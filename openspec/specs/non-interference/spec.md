@@ -104,7 +104,7 @@ Initial Open/Save confirmation SHALL be a named exception within an authorized n
 
 The file-dialog runner SHALL relay captured stderr after the subprocess finishes, including success, failure, and timeout. The trace SHALL escape terminal controls, be bounded to 4096 rendered scalars, and mark truncation. This is a record of attempted actions, not proof of their success or an announcement delivered before the button press; the separate keyboard-control warning remains the pre-interaction announcement.
 
-PDF replacement SHALL require explicit `--overwrite` in addition to `--allow-hid`. An existing destination without overwrite authorization SHALL be rejected before target resolution or GUI interaction. A replacement sheet that appears later SHALL also be refused without authorization. With authorization, only a unique button named `Replace` or `取代` SHALL be pressed. Missing, ambiguous, or other-language names SHALL be refused; replacement SHALL never fall back to Return or retry a failed press.
+PDF final-destination replacement SHALL require explicit `--overwrite` in addition to `--allow-hid`. PDF SHALL use a unique private staging path and publish only a verified independent snapshot. Existing unauthorized destinations SHALL fail before GUI interaction, and late unauthorized destinations SHALL fail through atomic no-replace. Authorized publication SHALL replace the specified directory entry rather than following a leaf symlink. Any additional native staging confirmation SHALL be refused without a Replace or Return fallback. The native initial Save exception covers the staging step of the requested export, not arbitrary dialogs.
 
 This exception SHALL apply only to the file dialog opened by the requested operation. It SHALL NOT authorize confirmation of arbitrary JavaScript dialogs or other dialogs found on screen. The existing upload system-grant exception SHALL remain unchanged.
 
@@ -127,15 +127,14 @@ This exception SHALL apply only to the file dialog opened by the requested opera
 
 #### Scenario: Separate overwrite permission
 
-- **WHEN** PDF has only `--allow-hid` and a replacement sheet appears
-- **THEN** replacement is refused, including when the destination appeared after the initial existence check
+- **WHEN** PDF has only `--allow-hid` and the effective destination exists initially or appears later
+- **THEN** the destination is preserved and export fails before GUI or at atomic publication, respectively
 
-#### Scenario: Authorized replacement has no recognized unique button
+#### Scenario: Additional staging confirmation
 
-- **WHEN** PDF has `--overwrite` but no unique `Replace` or `取代` button can be located
-- **THEN** no replacement confirmation or Return fallback is dispatched
+- **WHEN** an unexpected native confirmation appears while exporting to the unique staging path
+- **THEN** the command refuses it without Replace, default-button or Return dispatch
 
----
 ### Requirement: Interference warning on stderr
 
 When a command activates an interfering operation — whether authorized by an opt-in flag or by the system-grant exception above — it MUST emit a warning to stderr before the interfering operation begins. The warning MUST indicate:
