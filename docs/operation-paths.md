@@ -387,7 +387,7 @@ The largest HID residue is one step later: `PdfCommand` uses the shared
 with `Cmd+Shift+G` → `Cmd+V` → `Return` inside its single export script. The
 initial named-button confirmation does not use Return. The separate authorized
 replacement branch now presses only a unique `Replace` / `取代` button and has
-no Return fallback. Retiring `--allow-hid` still needs evidence covering both
+no Return fallback. Retiring `--allow-hid` still needs evidence covering
 path entry.
 
 This matters for how the remaining work is scoped, and there are two separate
@@ -529,10 +529,20 @@ representation. Execution paths are an instance of P02, not an extension of it.
 
 ### File-confirmation acceptance limits (#106 / #107)
 
-Refusing a late replacement leaves the native sheet open; cancel the save dialog
-in Safari before retrying. The existing export flow checks its nested replacement
-sheet after a fixed 0.5-second delay, so the pending real #106 acceptance must check
-that the requested PDF exists and that the sheet actually closes, including delayed
-transitions. Script exit alone is not evidence of a successful file export. Native
-filename-extension behavior also needs that measurement; the current automated
-checks do not establish the effective path chosen by the save panel.
+Owned Upload, Save, authorized Replace, and late-created-file refusal were
+exercised on macOS 27.0 / Safari 27.0 on 2026-09-13. Upload checked the page's
+file count, name, and content; PDF checked the requested `.pdf` path and actual
+PDF bytes. All owned sheets and windows were cleaned up.
+
+These results do not make CLI return a file-completion guarantee. The current
+export script checks replacement once after 0.5 seconds; a later prompt can be
+missed, and a file write can finish after the CLI returns. The latter was
+observed during authorized replacement. [#160](https://github.com/PsychQuant/safari-browser/issues/160)
+tracks bounded terminal-state observation, effective filenames, and output
+completion, including the gap with the existing precise-waits specification.
+The late-created-file refusal test covered a prompt that appeared within the
+existing check; it did not simulate a prompt delayed beyond 0.5 seconds.
+
+A refused initial confirmation or late replacement can leave the native sheet
+open. Cancel it in Safari before retrying. Neither refusal authorizes an
+automatic extra confirmation.

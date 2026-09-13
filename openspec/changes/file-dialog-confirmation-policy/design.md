@@ -41,3 +41,7 @@ runFileDialogScript 回傳原 stdout；非檔案 caller 預設不新增 stderr�
 ## 2026-09-13 實機重新判定
 
 GUI 已可使用。舊 production native upload 在自有頁面確實取得正確 file name/content 並輸出 Return fallback trace。Save 具名 AXPress 可存檔，但將完整路徑直接寫入檔名欄＋AXConfirm 會把斜線換成冒號、落在原目錄；僅這項目的地候選被實測否定，不能宣稱所有 AX 路線均無解。上述證據取代先前 GUI 鎖定下暫留查找 fallback 的決定；最終具名 production Open/Save/Replace 已在 macOS 27.0 / Safari 27.0 完成；頁面檔案內容、PDF 真正落點、sentinel 覆寫與 late refusal 原內容保留皆確認，所有自有面板／視窗已清理。使用者目前沒有隔離 macOS 測試環境，Print 實驗保持未完成。
+
+## 後續範圍
+
+#160 獨立追蹤固定 0.5 秒 replacement 檢查、實際寫入完成／副檔名及外層期限；六方判定為既有非阻擋問題，不是本次授權或 #106 合併要求未達成。初始確認拒絕後若面板仍在，README 與盤點文件明示先在 Safari 取消再重試。
