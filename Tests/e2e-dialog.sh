@@ -82,23 +82,41 @@ owns_fixture_dialog() {
 dismiss_fixture_dialog() {
     local button="$1"
     [[ -n "$button" ]] && owns_fixture_dialog || return 1
-    "$SB" dialog dismiss --button "$button"
+    python3 "$(dirname "$0")/dialog_ownership.py" dismiss "$SB" "$URL" "$DIALOG_TEXT" "$button" "$TMP/dismiss-attempt" "$SESSION_CHECK"
 }
 
 cleanup() {
     [[ "$FIXTURE_OPENED" -eq 1 ]] || { rm -rf "$TMP"; return; }
     SAFARI_BROWSER_NAME="$NAME" "$SB" daemon stop >/dev/null 2>&1 || true
     local button n=0
-    if owns_fixture_dialog; then
+    if [[ ! -e "$TMP/dismiss-attempt" ]] && owns_fixture_dialog; then
         button=$("$SB" dialog list 2>/dev/null | dialog_button)
         dismiss_fixture_dialog "$button" >/dev/null 2>&1 || true
     fi
-    while "$SB" close "${LOCK[@]}" --first-match >/dev/null 2>&1; do
-        n=$((n + 1)); [ "$n" -gt 5 ] && break
-    done
+    # An uncertain press is never repeated. Prove the exact fixture's JS has
+    # recovered before closing it; an unresolved alert keeps the fixture intact.
+    local recovered
+    recovered=$("$SB" js --url-exact "$URL" "1+1" 2>/dev/null)
+    if [[ $? -ne 0 || "$recovered" != "2" ]]; then
+        echo "Fixture retained: JavaScript recovery unconfirmed; no press retry." >&2
+        return 1
+    fi
+    "$SB" close --url-exact "$URL" >/dev/null 2>&1 || {
+        echo "Fixture cleanup not confirmed; exact URL retained." >&2
+        return 1
+    }
     rm -rf "$TMP"
 }
-trap cleanup EXIT
+finish_harness() {
+    local original_status=$?
+    trap - EXIT
+    if ! cleanup; then
+        echo "FAIL: fixture cleanup is incomplete; acceptance not granted." >&2
+        [[ "$original_status" -ne 0 ]] || original_status=1
+    fi
+    exit "$original_status"
+}
+trap finish_harness EXIT
 
 echo "=== safari-browser blocking-dialog e2e (#126) ==="
 echo "Fixture: $URL"
@@ -127,10 +145,17 @@ case "$SESSION_STATUS" in
     *) echo "FAIL: GUI-session preflight failed ($SESSION_STATUS)" >&2; exit 1 ;;
 esac
 
+PRE_START=$(now_ms) || exit 1
 PRE=$("$SB" dialog list 2>&1)
 PRE_EXIT=$?
+PRE_END=$(now_ms) || exit 1
+if [[ $((PRE_END - PRE_START)) -lt 1000 ]]; then
+    pass "global dialog list returns within 1 s ($((PRE_END - PRE_START)) ms)"
+else
+    fail "global dialog list returns within 1 s" "took $((PRE_END - PRE_START)) ms"
+fi
 if [[ "$PRE_EXIT" -ne 0 ]]; then
-    if [[ "$PRE" == *"Accessibility"* || "$PRE" == *"windows are showing a dialog"* ]]; then
+    if [[ "$PRE" == *"Accessibility"* || "$PRE" == *"native dialog candidates were found"* ]]; then
         echo "SKIP: dialog inspection unavailable or multiple dialogs present: $PRE"
         exit 77
     fi
@@ -147,6 +172,13 @@ if [[ "$PRE" != "no blocking dialog found" ]]; then
 fi
 
 # ── Setup ────────────────────────────────────────────────────────────────
+# Reject older builds before creating any fixture: a caller precheck alone
+# cannot bind ownership at the production press boundary.
+DISMISS_HELP=$("$SB" dialog dismiss --help 2>&1) || exit 1
+if [[ "$DISMISS_HELP" != *"--expect-window-id"* || "$DISMISS_HELP" != *"--expect-message"* ]]; then
+    echo "FAIL: guarded dialog dismissal is required; build the current branch." >&2
+    exit 1
+fi
 "$SB" open "$URL" >/dev/null 2>&1 || exit 1
 FIXTURE_OPENED=1
 sleep 2
@@ -383,7 +415,14 @@ fi
 # ── 5. list → dismiss by name → back to normal ───────────────────────────
 echo "## Recovery"
 "$SB" tab focus "${LOCK[@]}" >/dev/null 2>&1 || true
+LIST_START=$(now_ms) || exit 1
 LISTING=$("$SB" dialog list 2>&1)
+LIST_END=$(now_ms) || exit 1
+if [[ $((LIST_END - LIST_START)) -lt 1000 ]]; then
+    pass "global dialog list with alert returns within 1 s ($((LIST_END - LIST_START)) ms)"
+else
+    fail "global dialog list with alert returns within 1 s" "took $((LIST_END - LIST_START)) ms"
+fi
 if [[ "$LISTING" == *"$DIALOG_TEXT"* ]]; then
     pass "dialog list includes the alert body (#127)"
 else
@@ -432,4 +471,7 @@ echo ""
 echo "=== Results: $PASS passed, $FAIL failed, $SKIP skipped ==="
 if [[ "$FAIL" -gt 0 ]]; then
     exit 1
+fi
+if [[ "$SKIP" -gt 0 ]]; then
+    exit 77
 fi

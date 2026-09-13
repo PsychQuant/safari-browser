@@ -31,6 +31,87 @@ Need login? ──── Yes → safari-browser
 - **2FA / MFA sites** — already authenticated in Safari
 - **Extract API tokens** — `safari-browser js "localStorage.getItem('token')"`
 
+## MCP stdio
+
+Run `safari-browser mcp` from an MCP client using the installed executable's
+absolute path. The server provides all 76 existing public CLI leaf commands,
+including `help`, `setup` and daemon controls. Names follow the command path:
+`wait` becomes `safari.wait`, and `tab focus` becomes `safari.tab.focus`.
+Hidden commands and the MCP transport are excluded. The catalog and input
+schemas come from the running ArgumentParser metadata; no separate command
+implementation or hand-maintained tool list is used.
+
+For a client's stdio server configuration, substitute your actual home path:
+
+```json
+{
+  "command": "/Users/YOUR_NAME/bin/safari-browser",
+  "args": ["mcp", "--timeout", "300"]
+}
+```
+
+Tool arguments have optional `options`, `positionals` and UTF-8 `stdin` fields;
+required CLI arguments remain required in their generated schema. Values stay
+strings because the metadata does not expose trustworthy Swift scalar types.
+A flag's `true` adds that flag and `false` omits it. CLI defaults, value ranges,
+mutually exclusive options and target checks still apply. For example:
+
+```json
+{
+  "name": "safari.wait",
+  "arguments": {"positionals": {"milliseconds": "0"}}
+}
+```
+
+The server supports MCP **2026-07-28** per-request metadata, plus legacy
+**2025-06-18** and **2025-11-25** initialization. Modern requests include
+`params._meta["io.modelcontextprotocol/protocolVersion"]` and
+`params._meta["io.modelcontextprotocol/clientCapabilities"]`; `server/discover`
+reports capabilities and versions. Legacy clients send `initialize`, then
+`notifications/initialized`. `tools/list` returns at most 50 tools and an opaque
+`nextCursor`; pass it as the next request's `cursor`. Only the tools capability
+is advertised. [MCP versioning](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
+
+Each call uses an isolated worker that parses and runs the existing CLI command.
+Within MCP, command subprocesses use POSIX spawn to inherit that worker’s process
+group from creation. Ordinary CLI subprocesses keep the existing Foundation
+launcher. This prevents nested `exec` and external commands from escaping MCP
+cancellation; an explicitly started daemon detaches into its own group.
+Workers use direct execution rather than implicit daemon routing; explicit daemon
+tools retain their usual behavior. CLI output cannot enter the MCP protocol
+stream. Results preserve separate `stdout` and `stderr` objects containing
+`encoding` (`utf-8` or `base64`) and `data`, plus `exit_code`, `capture_complete`
+and `failure`. Text content presents diagnostics before stdout. A nonzero exit,
+failed capture or transport limit produces `isError: true`. The output schema
+describes this common capture envelope; command-specific JSON remains in stdout.
+
+There is one active tool call per server. Other calls receive a busy error
+stating that they were not executed; ping, discovery and cancellation remain
+available. The default timeout is 300 seconds (`--timeout` accepts 0.001–86400).
+Pending replies are bounded to 64 frames and 16 MiB, including the frame being
+written; reaching that queue limit closes the transport. Input processing and
+EOF cleanup do not wait for the client to drain stdout. Limits are 2 MiB per
+captured output stream, 4 MiB for stdin and 8 MiB per RPC frame. Oversized or incomplete command capture is a tool error, never a successful
+silent truncation. Closing stdin means shutting down the transport: EOF cancels
+the active worker and discards pending replies. Keep stdin open until you receive
+the matching complete response. A missing or interrupted reply leaves the outcome
+unknown, regardless of the server process’s exit status, and must not trigger an
+automatic retry. Cancellation stops its process group and suppresses the active call’s response. Cancellation that arrives after
+a call has completed and submitted its final response has no effect, including
+when that response is still queued for delivery. Cancellation cannot undo earlier
+effects or an explicitly started persistent daemon. Calls are never retried automatically.
+
+Restart the server after updating its executable: workers check the loaded
+Mach-O build UUID before running a command, including nested CLI calls. This
+check is build consistency, not additional code-signing trust. MCP does not grant
+Accessibility, Automation, Screen Recording or Full Disk Access; the existing
+installation and permission requirements still apply. Tool metadata does not
+establish user authorization for a browser action.
+
+`make test-mcp` checks real stdio, every public help route and representative CLI
+parity without operating Safari UI or querying personal databases. It does not
+claim live GUI side-effect coverage for all tools.
+
 ## Install
 
 ```bash
@@ -415,12 +496,37 @@ safari-browser tab new --window 2      # new tab in window 2
 
 ### Blocking Dialogs
 
+A pending alert or confirm on a background tab may freeze its JavaScript while
+remaining absent from Safari’s visible dialog tree. After a process timeout or
+an empty `get text` result, fixed-tab targets get a bounded, read-only activity
+check. If the resolved tab is still in the background, stderr explains that a
+pending dialog may be hidden. This is a diagnostic possibility, not proof that
+a dialog exists; empty text keeps its original success status and timeouts keep
+their original error. Unknown/stale observations produce no background claim.
+
+Recheck the target, run `safari-browser tab focus` with the same target flags,
+then inspect `safari-browser dialog list`. These steps are not performed
+automatically, and a timed-out action must not be replayed merely because the
+target was in the background. Normal non-empty results add no activity query.
+The diagnostic uses a direct osascript call with a 0.3-second timeout plus the
+existing maximum one-second termination grace, without requiring AX permission.
+
+`dialog list` waits up to 800 ms for a complete global inspection. Unresponsive windows, failed reads or traversal limits produce a nonzero incomplete-inspection error, never a successful “no dialog” answer. Entry and global probes share one worker; retry after an in-flight inspection finishes. Dismissal re-reads synchronously and refuses an incomplete or expired observation before pressing a named button.
+
 Dialog messages include Safari’s read-only alert body as well as its source heading. Editable prompt fields are excluded; unreadable or incomplete AX details can still limit the message. Text output escapes control characters and marks truncation.
 
 ```bash
 safari-browser dialog list                     # show the dialog's text and buttons
 safari-browser dialog dismiss --button "取消"   # press the button you named
 ```
+
+For an automated handoff, supply `--expect-window-id` and `--expect-message`
+together when dismissing. The ID is Safari’s stable window ID, not the index
+used by `--window`; the message is the exact raw text, not a truncated or
+escaped display string. The command rejects an initial message mismatch and
+checks the expected window on the fresh snapshot used to press the named
+button. Its existing message/button fingerprint check still applies. Omit both
+flags to keep the ordinary named-button workflow.
 
 Commands that resolve a target document or native window check that window
 for a blocking dialog before acting. This includes `get`, `js`, `click`,
@@ -438,9 +544,9 @@ that has to run JavaScript in that tab (`js`, `click`, `fill`, …) fails at onc
 with a non-zero exit instead of waiting for the 30-second osascript timeout;
 `get text` runs its AppleScript first and fails only if that came back empty.
 
-`documents` and unqualified `tabs` remain listings; marking all dialog-bearing
-windows there is #129. Exec relays diagnostics in both subprocess and daemon
-modes. A `--tab` deprecation notice or `--first-match` summary can precede the
+`documents` and `tabs` annotate listing rows with a visible native-dialog
+snapshot, as described below. Exec relays diagnostics in both subprocess and
+daemon modes. A `--tab` deprecation notice or `--first-match` summary can precede the
 dialog warning. `2>&1 | tail -1` still selects the last output line; use
 `set -o pipefail` or inspect the upstream command status to preserve failures.
 
@@ -731,6 +837,38 @@ safari-browser get title --window 2
 safari-browser fill "input#email" "user@example.com" --document 3
 ```
 
+`documents --json` and `tabs --json` include a `blocking_dialog` object on
+**every row**:
+
+```json
+{"state":"present","window_id":72,"messages":["Example alert"],"reason":null}
+```
+
+`window_id` is the retained stable Safari window ID, not its current listing
+index. All rows from a window share its observed state. `present` means that a
+visible native dialog was found; `clear` requires a complete observation of
+that window and has an empty `messages` array. `unknown` means the observation
+could not establish its state, with a `reason` such as `disabled`, `locked`,
+`unavailable`, `denied`, `incomplete`, `missingID`, or `notobserved`. A missing
+window ID is JSON `null`; unknown rows have no reported messages. This snapshot
+does not establish whether every tab is blocked or whether a background tab
+has a pending dialog that Safari has not exposed yet.
+
+Each nonempty listing uses one bounded observation without switching tabs or
+dismissing dialogs. Text output appends `[dialog: "…"]` or `[dialogs: N]` only
+for a confirmed visible dialog, with a legend on stderr. Clear and unknown
+rows retain their original text; `tabs` keeps its first three TSV fields and
+puts a confirmed-dialog annotation in a fourth field. Unknown observations
+are explicitly reported on stderr, so an unmarked text row does **not** prove
+that its window is clear. Use JSON for a per-window state and reason.
+
+Setting `SAFARI_BROWSER_NO_DIALOG_PROBE=1` skips the observation and its text
+warnings, preserving the original text format. JSON still reports `unknown`
+with reason `disabled`. The daemon's in-process `exec` documents step uses the
+same JSON encoder and observation; its explicit per-request probe setting
+takes precedence over the daemon process environment. Bare `tabs --daemon`
+continues to render in the client after its AppleScript requests.
+
 `tabs`, `tab <n>`, `tab new`, `open --new-tab`, and `open --new-window`
 only accept `--window` because they are window-level UI operations;
 supplying `--url`, `--tab`, or `--document` is rejected with a usage
@@ -1006,6 +1144,17 @@ New flags:
 Design rationale lives in `openspec/changes/archive/*-tab-targeting-v2/` after archive (or `openspec/changes/tab-targeting-v2/` while in-flight). The new `human-emulation` principle is documented alongside `non-interference` in `CLAUDE.md`.
 
 ## Development
+
+`make test-background-dialog-harness` runs Safari-free fixture checks.
+`make test-background-dialog` is a separate live acceptance test: it checks the
+GUI session, selected binary’s UUID and child-process-group behavior before
+creating its own nonce fixture. It uses the guarded internal worker to keep
+fixture subprocesses contained while exercising the original CLI commands.
+Exit 77 means the live check was not performed, including on a locked desktop.
+`make test-dialog-listing` extends that fixture with per-window JSON checks for
+`documents` and `tabs` before the alert and after it becomes visible. It is
+also a separate live test, excluded from `make test-all`.
+
 
 ```bash
 make build      # debug build

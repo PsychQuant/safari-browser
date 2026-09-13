@@ -64,7 +64,7 @@ enum CommandDispatch {
     ) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
+                let process = MCPCommandProcess()
                 process.executableURL = URL(fileURLWithPath: executable)
                 process.arguments = arguments
                 let stdoutPipe = Pipe()

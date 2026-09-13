@@ -40,6 +40,11 @@ final class DaemonRequestContext: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         return messages
     }
+    var dialogProbeDisabled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return probeEnvironment[BlockingDialogGate.optOutVariable] == "1"
+    }
+
     var gate: BlockingDialogGate {
         lock.lock(); defer { lock.unlock() }
         if let gate = storedGate { return gate }

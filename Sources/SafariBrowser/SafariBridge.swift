@@ -202,6 +202,14 @@ enum SafariBridge {
     struct ResolvedScriptTarget {
         let reference: String
         let key: BlockingDialogGate.WindowKey
+        let diagnosticTarget: BackgroundTabDiagnosticTarget?
+
+        init(reference: String, key: BlockingDialogGate.WindowKey,
+             diagnosticTarget: BackgroundTabDiagnosticTarget? = nil) {
+            self.reference = reference
+            self.key = key
+            self.diagnosticTarget = diagnosticTarget
+        }
     }
 
     static func resolveToAppleScript(
@@ -216,14 +224,45 @@ enum SafariBridge {
         _ target: TargetDocument, firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil, profile: String? = nil
     ) async throws -> ResolvedScriptTarget {
-        if case .resolvedTab(let id, _, _, _) = target {
+        if case .resolvedTab(let id, let tab, let matcher, _) = target {
             let key = BlockingDialogGate.WindowKey.id(id)
             BlockingDialogGate.shared.check(key)
-            return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key)
+            return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key,
+                diagnosticTarget: BackgroundTabDiagnosticTarget(windowID: id, tabIndex: tab, matcher: matcher))
         }
         let resolved = try await resolveNativeTarget(from: target, firstMatch: firstMatch,
                                                     warnWriter: warnWriter, profile: profile)
-        return ResolvedScriptTarget(reference: docRefFromResolved(resolved), key: windowKey(for: resolved))
+        return ResolvedScriptTarget(reference: docRefFromResolved(resolved), key: windowKey(for: resolved),
+            diagnosticTarget: backgroundDiagnosticTarget(for: target, resolved: resolved))
+    }
+
+    static func backgroundDiagnosticTarget(
+        for target: TargetDocument, resolved: ResolvedWindowTarget
+    ) -> BackgroundTabDiagnosticTarget? {
+        switch target {
+        case .frontWindow, .windowIndex: return nil
+        default: break
+        }
+        guard let id = resolved.windowID, id > 0,
+              let tab = resolved.anchorTabIndex, tab > 0 else { return nil }
+        let matcher: UrlMatcher?
+        switch target {
+        case .urlMatch(let value): matcher = value
+        case .resolvedTab(_, _, let value, _): matcher = value
+        default: matcher = nil
+        }
+        return BackgroundTabDiagnosticTarget(windowID: id, tabIndex: tab, matcher: matcher)
+    }
+
+    private static func emitBackgroundTabHint(
+        for target: BackgroundTabDiagnosticTarget?, warnWriter: ((String) -> Void)?
+    ) async {
+        guard let target,
+              let warning = BackgroundTabDiagnostics.warning(for: await BackgroundTabDiagnostics.inspect(target)) else { return }
+        let line = warning + "\n"
+        if let warnWriter { warnWriter(line) }
+        else if let context = DaemonRequestContext.current { context.emit(line) }
+        else { FileHandle.standardError.write(Data(line.utf8)) }
     }
 
     /// Identity lookup is separate from the AX probe budget.
@@ -520,14 +559,19 @@ enum SafariBridge {
         _ script: String,
         target: TargetDocument,
         timeout: TimeInterval = SafariBridge.defaultProcessTimeout,
-        dialogKey: BlockingDialogGate.WindowKey? = nil
+        dialogKey: BlockingDialogGate.WindowKey? = nil,
+        diagnosticTarget: BackgroundTabDiagnosticTarget? = nil,
+        warnWriter: ((String) -> Void)? = nil
     ) async throws -> String {
         do {
             return try await runAppleScript(script, timeout: timeout)
         } catch let error as SafariBrowserError {
-            if let key = dialogKey, case .processTimedOut = error {
-                BlockingDialogGate.shared.check(key, forceRefresh: true)
-                try BlockingDialogGate.shared.throwIfBlocked(key)
+            if case .processTimedOut = error {
+                if let key = dialogKey {
+                    BlockingDialogGate.shared.check(key, forceRefresh: true)
+                    try BlockingDialogGate.shared.throwIfBlocked(key)
+                }
+                await emitBackgroundTabHint(for: diagnosticTarget, warnWriter: warnWriter)
             }
             // Only translate when the error is plausibly "document not found"
             // from a non-default target. AppleScript uses error codes -1719
@@ -1417,7 +1461,7 @@ enum SafariBridge {
         // instead of letting osascript find out after its 30 s timeout (#108).
         try BlockingDialogGate.shared.throwIfBlocked(scriptTarget.key)
         do {
-            return try await dispatchJS(code, docRef: scriptTarget.reference, target: target, dialogKey: scriptTarget.key)
+            return try await dispatchJS(code, docRef: scriptTarget.reference, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter)
         } catch let error as SafariBrowserError {
             // #79 bounded retry: the identity-anchored ref dangled
             // (window closed / tab moved / guard tripped). Re-resolve the
@@ -1464,7 +1508,7 @@ enum SafariBridge {
             // letting the retry pay the 30 s osascript timeout.
             try BlockingDialogGate.shared.throwIfBlocked(retry.key)
             do {
-                return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key)
+                return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key, diagnosticTarget: retry.diagnosticTarget, warnWriter: warnWriter)
             } catch let retryError as SafariBrowserError where isTargetDangleError(retryError) {
                 throw SafariBrowserError.targetTabChanged(
                     expected: matcher.description,
@@ -1482,14 +1526,15 @@ enum SafariBridge {
     private static func dispatchJS(
         _ code: String,
         docRef: String,
-        target: TargetDocument, dialogKey: BlockingDialogGate.WindowKey
+        target: TargetDocument, dialogKey: BlockingDialogGate.WindowKey,
+        diagnosticTarget: BackgroundTabDiagnosticTarget?, warnWriter: ((String) -> Void)?
     ) async throws -> String {
         guard case .resolvedTab(_, _, .some(let matcher), _) = target else {
             return try await runTargetedAppleScript("""
                 tell application "Safari"
                     do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
                 end tell
-                """, target: target, dialogKey: dialogKey)
+                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
         }
         if let guardClause = urlGuardClause(for: matcher) {
             return try await runTargetedAppleScript("""
@@ -1498,7 +1543,7 @@ enum SafariBridge {
                     \(guardClause)
                     do JavaScript "\(code.escapedForAppleScript)" in _t
                 end tell
-                """, target: target, dialogKey: dialogKey)
+                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
         }
         // Regex matcher: Swift-side pre-check. The gap between check and
         // dispatch is far narrower than resolve-to-execute was, and a miss
@@ -1507,7 +1552,7 @@ enum SafariBridge {
             tell application "Safari"
                 return URL of \(docRef)
             end tell
-            """, target: target, dialogKey: dialogKey)
+            """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
         guard matcher.matches(currentURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw SafariBrowserError.appleScriptFailed(
                 "SB_TARGET_CHANGED: URL of target tab no longer matches \(matcher.description)")
@@ -1516,7 +1561,7 @@ enum SafariBridge {
             tell application "Safari"
                 do JavaScript "\(code.escapedForAppleScript)" in \(docRef)
             end tell
-            """, target: target, dialogKey: dialogKey)
+            """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
     }
 
     /// Execute JS and read large results via chunked transfer.
@@ -1641,7 +1686,7 @@ enum SafariBridge {
             tell application "Safari"
                 get text of \(scriptTarget.reference)
             end tell
-            """, target: target, dialogKey: scriptTarget.key)
+            """, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter)
         // #89: this is the worst of the dialog symptoms — an empty string with
         // exit 0. A script reading it concludes "the page has no content",
         // which is the opposite of the truth: the page is fine and a dialog is
@@ -1651,6 +1696,7 @@ enum SafariBridge {
         if text.isEmpty {
             BlockingDialogGate.shared.check(scriptTarget.key, forceRefresh: true)
             try BlockingDialogGate.shared.throwIfBlocked(scriptTarget.key)
+            await emitBackgroundTabHint(for: scriptTarget.diagnosticTarget, warnWriter: warnWriter)
         }
         return text
     }
@@ -1820,6 +1866,11 @@ enum SafariBridge {
         let index: Int
         let title: String
         let url: String
+        let windowID: Int?
+
+        init(index: Int, title: String, url: String, windowID: Int? = nil) {
+            self.index = index; self.title = title; self.url = url; self.windowID = windowID
+        }
     }
 
     /// Metadata for a Safari tab, used by `listAllDocuments()` and
@@ -1853,6 +1904,7 @@ enum SafariBridge {
         /// same profile);propagated by `flattenWindowsToDocuments` from
         /// `WindowInfo.profile`. Issue #47.
         let profile: String?
+        let windowID: Int?
 
         /// Backwards-compatible initializer with `profile` defaulting
         /// to `nil`. Existing test fixtures and external callers that
@@ -1865,7 +1917,8 @@ enum SafariBridge {
             title: String,
             url: String,
             isCurrent: Bool,
-            profile: String? = nil
+            profile: String? = nil,
+            windowID: Int? = nil
         ) {
             self.index = index
             self.window = window
@@ -1874,6 +1927,7 @@ enum SafariBridge {
             self.url = url
             self.isCurrent = isCurrent
             self.profile = profile
+            self.windowID = windowID
         }
     }
 
@@ -1894,7 +1948,8 @@ enum SafariBridge {
                     title: tab.title,
                     url: tab.url,
                     isCurrent: tab.isCurrent,
-                    profile: window.profile
+                    profile: window.profile,
+                    windowID: window.windowID
                 ))
                 globalIndex += 1
             }
@@ -2276,7 +2331,8 @@ enum SafariBridge {
         from target: TargetDocument,
         firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil,
-        profile: String? = nil
+        profile: String? = nil,
+        probeDialog: Bool = true
     ) async throws -> ResolvedWindowTarget {
         let resolved: ResolvedWindowTarget
         if profile != nil {
@@ -2295,7 +2351,7 @@ enum SafariBridge {
                     firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
             }
         }
-        BlockingDialogGate.shared.check(windowKey(for: resolved))
+        if probeDialog { BlockingDialogGate.shared.check(windowKey(for: resolved)) }
         return resolved
     }
 
@@ -2595,22 +2651,23 @@ enum SafariBridge {
     /// window (backward-compatible default). `tabs` / `switch-tab` only
     /// support window-level targeting because listing tabs at document
     /// granularity doesn't make sense.
-    static func listTabs(window: Int? = nil) async throws -> [TabInfo] {
+    static func listTabs(window: Int? = nil, probeDialog: Bool = true) async throws -> [TabInfo] {
         if let window {
-            return try await listTabs(in: resolveNativeTarget(from: .windowIndex(window)))
+            return try await listTabs(in: resolveNativeTarget(from: .windowIndex(window), probeDialog: probeDialog), probeDialog: probeDialog)
         }
-        return try await readTabs(windowRef: "front window")
+        let id = await readWindowID(index: 1)
+        return try await readTabs(windowRef: id.map { "window id \($0)" } ?? "front window", windowID: id)
     }
 
-    static func listTabs(in resolved: ResolvedWindowTarget) async throws -> [TabInfo] {
-        BlockingDialogGate.shared.check(windowKey(for: resolved))
+    static func listTabs(in resolved: ResolvedWindowTarget, probeDialog: Bool = true) async throws -> [TabInfo] {
+        if probeDialog { BlockingDialogGate.shared.check(windowKey(for: resolved)) }
         let windowRef: String
         if let id = resolved.windowID, id > 0 { windowRef = "window id \(id)" }
         else { windowRef = "window \(resolved.windowIndex)" }
-        return try await readTabs(windowRef: windowRef)
+        return try await readTabs(windowRef: windowRef, windowID: resolved.windowID)
     }
 
-    private static func readTabs(windowRef: String) async throws -> [TabInfo] {
+    private static func readTabs(windowRef: String, windowID: Int? = nil) async throws -> [TabInfo] {
         let countStr = try await runAppleScript("""
             tell application "Safari"
                 if (count of windows) = 0 then
@@ -2639,7 +2696,8 @@ enum SafariBridge {
             tabs.append(TabInfo(
                 index: i,
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                url: url.trimmingCharacters(in: .whitespacesAndNewlines)
+                url: url.trimmingCharacters(in: .whitespacesAndNewlines),
+                windowID: windowID
             ))
         }
         return tabs
@@ -2982,81 +3040,6 @@ enum SafariBridge {
         let buttons: [String]
     }
 
-    /// Probe for a modal sheet on any Safari window (`alert` / `confirm` /
-    /// `beforeunload`). Read-only: it reads Accessibility attributes and
-    /// clicks nothing, so it does not dismiss the dialog or disturb the user.
-    ///
-    /// A dialog freezes that tab's JavaScript, which is why the symptoms are
-    /// so scattered — `js` times out after 30s, `get text` returns empty and
-    /// exits 0, `click` blames System Events. None of them name the cause, and
-    /// they contradict each other, so this exists to be called *on failure*
-    /// and turn any of those into the same honest answer. It is not called on
-    /// the happy path — the whole-app round-trip is not worth paying for every
-    /// command; #126's one-window probe (`detectBlockingDialog(windowKey:)`)
-    /// is what runs there, and this scan stays as the failure-path backstop.
-    ///
-    /// Returns nil when Accessibility is not granted — no permission means no
-    /// information, not "no dialog", and callers must not report the absence
-    /// of a probe as the absence of a dialog.
-    static func detectBlockingDialog() -> BlockingDialog? {
-        guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else { return nil }
-        var windowsValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
-              let windows = windowsValue as? [AXUIElement] else { return nil }
-        for window in windows {
-            if let dialog = findDialogElement(in: window, depth: 0) {
-                return BlockingDialog(
-                    message: axCollectDialogText(dialog).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines),
-                    buttons: axCollectButtonTitles(dialog)
-                )
-            }
-        }
-        return nil
-    }
-
-    /// Locate the element representing a blocking dialog, if the window has
-    /// one.
-    ///
-    /// A JavaScript `alert` is **not** an `AXSheet` and **not** a direct child
-    /// of the window — measured on Safari 26: it is an `AXGroup` whose subrole
-    /// is `AXDialog`, nested `AXWindow → AXSplitGroup → AXTabGroup → AXGroup`.
-    /// The first version of this function looked only for a top-level
-    /// `AXSheet`, which is a native file picker — so it detected the one dialog
-    /// shape that does *not* block JavaScript and missed the one that does.
-    ///
-    /// Both shapes are matched now: the sheet because a stuck file picker is
-    /// worth naming too, and the dialog subrole because that is the actual JS
-    /// blocker. Depth is bounded because this runs while something is already
-    /// stuck, and a diagnostic that hangs is worse than no diagnostic.
-    /// `maxDepth` / `timeout` are the #126 entry-point probe's knobs: a JS alert
-    /// sits three levels down (#103 measured it), and the timeout must be set on
-    /// EVERY element the walk touches — Apple's header says it does not
-    /// propagate to the equal-but-distinct refs a copy call returns. Existing
-    /// callers pass neither and keep the pre-#126 behaviour byte for byte.
-    private static func findDialogElement(
-        in element: AXUIElement, depth: Int, maxDepth: Int = 5, timeout: Float? = nil
-    ) -> AXUIElement? {
-        guard depth < maxDepth else { return nil }
-        if let timeout { AXUIElementSetMessagingTimeout(element, timeout) }
-        if depth > 0 {
-            let role = axRole(of: element)
-            if role == kAXSheetRole { return element }
-            if role == kAXGroupRole,
-               axStringAttribute(element, kAXSubroleAttribute as String) == "AXDialog" {
-                return element
-            }
-        }
-        var childrenValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-              let children = childrenValue as? [AXUIElement] else { return nil }
-        for child in children.prefix(30) {
-            if let found = findDialogElement(in: child, depth: depth + 1, maxDepth: maxDepth, timeout: timeout) {
-                return found
-            }
-        }
-        return nil
-    }
-
     // MARK: - #126 entry-point probe (one window, short timeout)
 
     /// Which window a target names, in the gate's terms — `nil` when the
@@ -3078,69 +3061,11 @@ enum SafariBridge {
         BoundedDialogProbe.shared.check(windowKey: windowKey, budget: budget)
     }
 
-    private static func axRole(of element: AXUIElement) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .success
-        else { return nil }
-        return value as? String
-    }
-
     private static func axStringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
         else { return nil }
         return value as? String
-    }
-
-    /// Depth-limited so a pathological tree cannot turn a diagnostic into a
-    /// second hang — this runs while something is already stuck.
-    private static func axCollectDialogText(_ element: AXUIElement, depth: Int = 0) -> [String] {
-        guard depth < 4 else { return [] }
-        var collected: [String] = []
-        let role = axRole(of: element) ?? ""
-        guard role != "AXWebArea" else { return [] }
-        if let text = try? DialogMessageText.read(
-            element, role: role, provider: AXDialogProbeProvider(), remainingTimeout: { 2.0 }), !text.isEmpty {
-            collected.append(text)
-        }
-        var childrenValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-           let children = childrenValue as? [AXUIElement] {
-            for child in children.prefix(30) {
-                collected.append(contentsOf: axCollectDialogText(child, depth: depth + 1))
-            }
-        }
-        return collected
-    }
-
-    private static func axCollectButtonTitles(_ element: AXUIElement, depth: Int = 0) -> [String] {
-        axCollectButtons(element, depth: depth).map(\.title)
-    }
-
-    /// Buttons paired with their titles, in Safari's own order.
-    ///
-    /// #103 needs to press a button the caller named, which means the titles it
-    /// was shown and the elements it can press have to be the *same* list in the
-    /// same order. Collecting them together rather than in two passes is what
-    /// guarantees an index means the same thing in both — filtering untitled
-    /// buttons out of one list but not the other would silently shift it.
-    private static func axCollectButtons(
-        _ element: AXUIElement, depth: Int = 0
-    ) -> [(element: AXUIElement, title: String)] {
-        guard depth < 4 else { return [] }
-        var collected: [(element: AXUIElement, title: String)] = []
-        if axRole(of: element) == kAXButtonRole,
-           let title = axStringAttribute(element, kAXTitleAttribute), !title.isEmpty {
-            collected.append((element, title))
-        }
-        var childrenValue: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-           let children = childrenValue as? [AXUIElement] {
-            for child in children.prefix(30) {
-                collected.append(contentsOf: axCollectButtons(child, depth: depth + 1))
-            }
-        }
-        return collected
     }
 
     /// Outcome of asking a dialog's button to activate itself.
@@ -3149,6 +3074,7 @@ enum SafariBridge {
     /// of a probe as the absence of a dialog, and #103 additionally must not
     /// pick between dialogs the user cannot see.
     enum DialogScan: Sendable, Equatable {
+        case inspectionIncomplete
         case none
         case one(BlockingDialog)
         /// Messages of every window carrying a dialog, for a fail-closed error.
@@ -3159,6 +3085,7 @@ enum SafariBridge {
     }
 
     enum DialogPressOutcome: Sendable, Equatable {
+        case inspectionIncomplete
         case pressed
         case noDialogFound
         case accessibilityDenied
@@ -3178,43 +3105,6 @@ enum SafariBridge {
         case pressUnconfirmed(axError: Int32, certainlyNotDelivered: Bool)
     }
 
-    /// Every window carrying a dialog, paired with its element.
-    ///
-    /// Separate from `detectBlockingDialog()` on purpose. That one answers "is
-    /// something blocking?" for #89's diagnostics, where the first hit is enough.
-    /// This one is for acting, where taking the first of several would be the
-    /// silent-wrong-target the repo's multi-match rule forbids — and here the
-    /// wrong target is a button on a dialog the user is not looking at.
-    /// Returns `nil` when Accessibility is unavailable — distinct from an empty
-    /// array, which means "looked, found none". #89's note forbids collapsing
-    /// the two.
-    private static func collectDialogs() -> [(element: AXUIElement, dialog: BlockingDialog)]? {
-        guard AXIsProcessTrusted(), let axApp = try? safariAXApplication() else {
-            return nil
-        }
-        var windowsValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
-              let windows = windowsValue as? [AXUIElement] else { return [] }
-
-        var found: [(element: AXUIElement, dialog: BlockingDialog)] = []
-        for window in windows {
-            // The timeout set in safariAXApplication() applies to that element
-            // alone — Apple's header is explicit that it does not propagate to
-            // equal-but-distinct refs. Every element the walk below touches came
-            // back from a copy call, so without this the walk runs on the 6s
-            // process default while something is already stuck.
-            AXUIElementSetMessagingTimeout(window, 2.0)
-            guard let element = findDialogElement(in: window, depth: 0) else { continue }
-            let buttons = axCollectButtons(element)
-            found.append((element, BlockingDialog(
-                message: axCollectDialogText(element)
-                    .joined(separator: " ")
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                buttons: buttons.map(\.title))))
-        }
-        return found
-    }
-
     /// Strict scan for the `dialog` command: refuses to collapse several
     /// dialogs into one, and reports missing permission as missing permission.
     static func scanBlockingDialogs(
@@ -3227,12 +3117,7 @@ enum SafariBridge {
         case .available: break
         }
         if let inspect { return inspect() }
-        guard let found = collectDialogs() else { return .accessibilityDenied }
-        switch found.count {
-        case 0: return .none
-        case 1: return .one(found[0].dialog)
-        default: return .many(messages: found.map { $0.dialog.message })
-        }
+        return GlobalDialogProbe.shared.scan()
     }
 
     /// Press a dialog button via `AXPress`, but only after re-reading the dialog
@@ -3251,6 +3136,7 @@ enum SafariBridge {
     /// it currently reads and returns an index only if it still matches what the
     /// caller saw; every other answer presses nothing.
     static func pressDialogButton(
+        expectedWindowID: Int? = nil,
         session: GUISession = .live,
         press: (((BlockingDialog) -> Int?) -> DialogPressOutcome)? = nil,
         deciding decide: (BlockingDialog) -> Int?
@@ -3261,37 +3147,22 @@ enum SafariBridge {
         case .available: break
         }
         if let press { return press(decide) }
-        guard let found = collectDialogs() else { return .accessibilityDenied }
-        guard !found.isEmpty else { return .noDialogFound }
-        guard found.count == 1 else {
-            // Same rule as the read side. A second dialog may have appeared in
-            // between, and pressing "the first one" would act on whichever
-            // window happens to sort first — not the one that was read.
-            return .ambiguous(messages: found.map { $0.dialog.message })
+        return BoundedAXWorker.shared.withExclusive(fallback: .inspectionIncomplete) {
+            let deadline = DispatchTime.now() + 0.8
+            let snapshot = DialogTreeScanner<AXDialogProbeProvider>().scan(
+                provider: AXDialogProbeProvider(session: session), deadline: deadline)
+            return DialogPressExecutor.perform(snapshot: snapshot, deadline: deadline, session: session,
+                expectedWindowID: expectedWindowID, decide: decide) { element, timeout in
+                guard AXUIElementSetMessagingTimeout(element, timeout) == .success,
+                      DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds else { return .inspectionIncomplete }
+                let err = AXUIElementPerformAction(element, kAXPressAction as CFString)
+                if err == .success { return .pressed }
+                // CannotComplete also means the application has not responded;
+                // it must not tell a caller that retrying is certainly safe.
+                let provesNoOp = (err == .actionUnsupported || err == .invalidUIElement)
+                return .pressUnconfirmed(axError: err.rawValue, certainlyNotDelivered: provesNoOp)
+            }
         }
-
-        let (element, current) = found[0]
-        guard let index = decide(current) else { return .refused(current: current) }
-        let buttons = axCollectButtons(element)
-        guard index >= 0, index < buttons.count else {
-            // decide() ruled on this very reading, so an out-of-range index
-            // means the decision logic disagrees with the list it was given.
-            return .indexOutOfRange(buttonCount: buttons.count)
-        }
-
-        switch session.state {
-        case .locked: return .sessionLocked
-        case .unavailable: return .sessionUnavailable
-        case .available: break
-        }
-        let err = AXUIElementPerformAction(buttons[index].element, kAXPressAction as CFString)
-        if err == .success { return .pressed }
-        // Only these two prove the action did not happen. `cannotComplete`
-        // explicitly also means "has not yet responded", which is the state a
-        // blocking dialog puts Safari in — reporting that as a no-op would tell
-        // the user to retry, and a retry is what can land on a different dialog.
-        let provesNoOp = (err == .actionUnsupported || err == .invalidUIElement)
-        return .pressUnconfirmed(axError: err.rawValue, certainlyNotDelivered: provesNoOp)
     }
 
     private static func safariAXApplication() throws -> AXUIElement {
@@ -3499,7 +3370,7 @@ enum SafariBridge {
     /// `"Example — Extra"` — that was a latent bug surfaced by #23 verify.
     private static func getFrontWindowID() throws -> String {
         let frontBrowserWindowName: String? = {
-            let proc = Process()
+            let proc = MCPCommandProcess()
             proc.executableURL = URL(filePath: "/usr/bin/osascript")
             // #94: the probe used to read `current tab of front window` before
             // the name. That made the name unreadable for a 0-tab front window
@@ -3627,7 +3498,7 @@ enum SafariBridge {
             throw SafariBrowserError.invalidTimeout(timeout)
         }
 
-        let process = Process()
+        let process = MCPCommandProcess()
         process.executableURL = URL(filePath: executable)
         process.arguments = arguments
 
@@ -3652,7 +3523,7 @@ enum SafariBridge {
                 process.terminate() // SIGTERM
                 try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s grace
                 if process.isRunning {
-                    kill(process.processIdentifier, SIGKILL)
+                    process.forceKill()
                 }
             }
         }

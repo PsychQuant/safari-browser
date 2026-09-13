@@ -53,6 +53,8 @@ struct SafariBrowser: AsyncParsableCommand {
             BookmarksCommand.self,
             CloudTabsCommand.self,
             DownloadsCommand.self,
+            MCPCommand.self,
+            MCPWorkerCommand.self,
         ]
     )
 
@@ -64,6 +66,8 @@ struct SafariBrowser: AsyncParsableCommand {
     /// `cmd "--url report"`. Everything else is byte-identical to the default.
     static func main() async {
         do {
+            try MCPWorkerContext.validate(environment: ProcessInfo.processInfo.environment,
+                                          currentImage: MCPWorkerContext.currentImageIdentifier)
             var command = try parseAsRoot()
             if var asyncCommand = command as? AsyncParsableCommand {
                 try await asyncCommand.run()

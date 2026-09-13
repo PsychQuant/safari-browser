@@ -254,7 +254,7 @@ test-mutation-gate:
 # test-install-signature-strict` refuses to pass on a partial run — that is
 # the target to use on a machine that has both identities, and the one this
 # repo's own verification uses.
-test-all: test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint test-data-interruption
+test-all: test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint test-data-interruption test-mcp test-background-dialog-harness
 	@ALLOW_INCOMPLETE=1 $(MAKE) --no-print-directory test-install-signature
 	@echo "✓ unit + smoke + install-signature green"
 
@@ -317,3 +317,19 @@ test-dialog-harness:
 # Synthetic fixtures only; production memory snapshot code is interrupted.
 test-data-interruption:
 	python3 Tests/data-snapshot-interruption.py
+
+# Metadata-generated MCP facade; uses only help and non-GUI validation paths.
+.PHONY: test-mcp
+test-mcp: build-debug
+	python3 Tests/mcp-stdio.py
+
+.PHONY: test-background-dialog-harness test-background-dialog
+test-background-dialog-harness:
+	python3 Tests/background-dialog-harness-test.py
+
+test-background-dialog: build-debug
+	python3 Tests/e2e-background-dialog.py
+
+.PHONY: test-dialog-listing
+test-dialog-listing: build-debug
+	python3 Tests/e2e-background-dialog.py --check-listing

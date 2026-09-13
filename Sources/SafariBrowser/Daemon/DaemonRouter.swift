@@ -89,6 +89,7 @@ extension SafariBridge {
         env: [String: String] = ProcessInfo.processInfo.environment,
         socketExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) -> Bool {
+        if env[MCPWorkerContext.directKey] == "1" { return false }
         if flag { return true }
         if env["SAFARI_BROWSER_DAEMON"] == "1" { return true }
         let name = DaemonClient.resolveName(flag: nil, env: env)
