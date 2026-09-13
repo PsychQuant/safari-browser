@@ -25,17 +25,17 @@ The query SHALL verify the same positive window ID before and after inspection. 
 
 ### Requirement: Conservative pending-dialog absence
 
-The query SHALL report clear only for a complete observation whose stable current window is non-minimized, on screen, and belongs to active Safari before and after inspection. A complete observation with a dialog SHALL report present. An empty observation without those clear conditions SHALL report unknown, because hidden pending dialogs are not excluded. Results SHALL describe an observation of the current window's selected tab and SHALL NOT promise that a future operation or every background tab is free of pending dialogs.
+The query SHALL report clear only for a complete observation whose stable current window is non-minimized and on screen before and after inspection. The query SHALL NOT require Safari to be the foreground application. A complete observation with a dialog SHALL report present. An empty observation without those clear conditions SHALL report unknown, because hidden pending dialogs are not excluded. Results SHALL describe an observation of the current window's selected tab and SHALL NOT promise that a future operation or every background tab is free of pending dialogs.
 
-#### Scenario: Inactive Safari has an empty visible native tree
+#### Scenario: Hidden window has an empty native tree
 
-- **WHEN** the current window has no observed dialog but Safari is inactive or the window is hidden or minimized
+- **WHEN** the current window has no observed dialog but the window is hidden or minimized
 - **THEN** the result is unknown, not clear
 
-#### Scenario: Stable active window is clear
+#### Scenario: Stable visible window is clear without foreground activation
 
-- **WHEN** a stable active on-screen non-minimized main window is completely inspected without a dialog
-- **THEN** the result is clear
+- **WHEN** a stable on-screen non-minimized main window is completely inspected without a dialog
+- **THEN** the result is clear even while another application is in the foreground
 
 ### Requirement: Three-state command contract
 
@@ -51,7 +51,7 @@ Explicit queries SHALL remain enabled independently of the automatic entry-probe
 
 ### Requirement: Live in-flight acceptance
 
-Acceptance SHALL use an owned localhost fixture whose click opens confirm. The query SHALL return present within three seconds while the click process is still waiting. The fixture SHALL verify clear before or after that pending state, verify exactly one handler execution, and confirm cleanup of every owned window and dialog. Recovery SHALL use the existing exact window/message guarded named dismissal without replay. Unavailable GUI SHALL be reported as a skipped test with exit 77, not a pass.
+Acceptance SHALL use an owned localhost fixture whose click opens confirm. The query SHALL return present within three seconds while the click process is still waiting. The fixture SHALL verify both clear and present while Safari is not the foreground application, verify clear before or after that pending state, verify exactly one handler execution, and confirm cleanup of every owned window and dialog. Recovery SHALL use the existing exact window/message guarded named dismissal without replay. Unavailable GUI SHALL be reported as a skipped test with exit 77, not a pass.
 
 #### Scenario: End-to-end pending query and recovery
 

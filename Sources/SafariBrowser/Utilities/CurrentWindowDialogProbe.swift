@@ -3,7 +3,9 @@ import Foundation
 /// AX nodes and visibility evidence stay on the worker that read them.
 struct CurrentDialogWindow<Node> {
     let element: Node
-    let allowsClear: Bool
+    let isOnScreen: Bool
+    let isMinimized: Bool?
+    var allowsClear: Bool { isOnScreen && isMinimized == false }
 }
 protocol CurrentWindowDialogProvider: DialogProbeProvider {
     func currentWindow(deadline: DispatchTime) throws -> CurrentDialogWindow<Node>
@@ -35,7 +37,7 @@ final class CurrentWindowDialogProbe: @unchecked Sendable {
                 _ = try Self.remaining(deadline)
                 let result = WindowDialogObservation(snapshot: snapshot).status(for: id)
                 if result.state == .clear && !(before.allowsClear && after.allowsClear) {
-                    return Self.unknown("inactiveOrHidden", windowID: id)
+                    return Self.unknown("visibilityUnconfirmed", windowID: id)
                 }
                 return result
             } catch DialogProbeReadError.accessibilityDenied {

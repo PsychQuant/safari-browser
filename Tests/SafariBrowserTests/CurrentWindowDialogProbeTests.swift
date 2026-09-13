@@ -21,7 +21,7 @@ final class CurrentWindowDialogProbeTests: XCTestCase {
             if contextDelay > 0 { Thread.sleep(forTimeInterval: contextDelay) }
             if let contextFailure { throw contextFailure }
             let initial = reads.next() == 1
-            return .init(element: initial ? first : second, allowsClear: initial ? allowsClear : secondAllowsClear)
+            return .init(element: initial ? first : second, isOnScreen: initial ? allowsClear : secondAllowsClear, isMinimized: false)
         }
         func windows(timeout: Float) throws -> [Int] { XCTFail("must not enumerate other windows"); return [] }
         func windowID(_ n: Int, timeout: Float) throws -> Int { try base.windowID(n, timeout: timeout) }
@@ -35,6 +35,12 @@ final class CurrentWindowDialogProbeTests: XCTestCase {
     static var available: GUISession { .init { [:] } }
     func observe(_ provider: Provider, budget: Double = 0.8) -> WindowDialogStatus {
         CurrentWindowDialogProbe { provider }.observe(budget: budget, session: Self.available)
+    }
+    func testVisibilityEvidenceDoesNotRequireApplicationActivation() {
+        XCTAssertTrue(CurrentDialogWindow(element: 1, isOnScreen: true, isMinimized: false).allowsClear)
+        XCTAssertFalse(CurrentDialogWindow(element: 1, isOnScreen: false, isMinimized: false).allowsClear)
+        XCTAssertFalse(CurrentDialogWindow(element: 1, isOnScreen: true, isMinimized: true).allowsClear)
+        XCTAssertFalse(CurrentDialogWindow<Int>(element: 1, isOnScreen: true, isMinimized: nil).allowsClear)
     }
     func testCurrentWindowClearAndPresent() {
         XCTAssertEqual(observe(.init()).state, .clear)
@@ -56,7 +62,7 @@ final class CurrentWindowDialogProbeTests: XCTestCase {
         p.base.nodes[9] = .init(role: "AXWindow", id: 99)
         XCTAssertEqual(observe(p).state, .unknown)
     }
-    func testInactiveOrHiddenAbsenceIsUnknownButObservedDialogIsPresent() {
+    func testHiddenAbsenceIsUnknownButObservedDialogIsPresent() {
         for (first, second) in [(false, true), (true, false), (false, false)] {
             XCTAssertEqual(observe(.init(allowsClear: first, secondAllowsClear: second)).state, .unknown)
             XCTAssertEqual(observe(.init(base: DialogTreeScannerTests.dialog, allowsClear: first, secondAllowsClear: second)).state, .present)

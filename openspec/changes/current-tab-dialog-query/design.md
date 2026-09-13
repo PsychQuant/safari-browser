@@ -12,9 +12,9 @@ Non-Goals：不提早中止或重播原 click、不新增自動 dismissal、不�
 
 ### Bounded current-window observation
 
-新增 CurrentWindowDialogProbe，factory 在 BoundedAXWorker 上建立 AX provider。主視窗只能來自 Safari app 的 AXMainWindow，缺值不得用第一個視窗或標題猜測。新增 provider 的 current-window context，包含 AX node 與允許排除隱藏 pending 的條件；其查詢中每個 AX 讀取共用剩餘期限。
+新增 CurrentWindowDialogProbe，factory 在 BoundedAXWorker 上建立 AX provider。主視窗只能來自 Safari app 的 AXMainWindow，缺值不得用第一個視窗或標題猜測。新增 provider 的 current-window context，包含 AX node、isOnScreen 與 optional isMinimized；其查詢中每個 AX 讀取共用剩餘期限。
 
-context 的 allowsClear 只有 Safari 作用中、目標非最小化且位於目前可見視窗集合時為 true。無法取得這些條件時保留 false。明確讀到 dialog 可以回 present；沒有讀到且 allowsClear=false 時改回 unknown，不能從隱藏視窗的空樹推論沒有 pending。
+context 的 allowsClear 由視窗可見且 isMinimized=false 推導；Safari 是否為前景 app 不參與判斷。無法取得這些條件時保留 false。明確讀到 dialog 可以回 present；沒有讀到且 allowsClear=false 時改回 unknown，不能從隱藏視窗的空樹推論沒有 pending。
 
 DialogTreeScanner 增加可選指定根視窗入口；未提供時保持既有全視窗行為。新 probe 只掃主視窗，仍使用同樣 depth/node budget、WebArea 排除與 incomplete 語意。AX node 不離開 worker。掃描前後讀取 context 與 window ID；身分變更、讀取失敗或期限用盡回 unknown，不採用其他視窗的 dialog。
 
@@ -30,13 +30,21 @@ IsCommand 註冊 IsDialog，新公開呼叫為 `is dialog [--json]`，不接受 
 
 ## Implementation Contract
 
-CurrentWindowDialogProbe 以 Sendable WindowDialogStatus 回傳結果；provider context 與 AX node 留在 worker。所有時間屬同一個 800 ms deadline，worker busy 不排隊；GUI locked/unavailable、denied、缺目前身分、read error、截斷、identity changed、inactive/hidden-clear 一律 unknown。只有完整且前後身分一致、可見作用中的目前視窗能得到 clear。
+CurrentWindowDialogProbe 以 Sendable WindowDialogStatus 回傳結果；provider context 與 AX node 留在 worker。所有時間屬同一個 800 ms deadline，worker busy 不排隊；GUI locked/unavailable、denied、缺目前身分、read error、截斷、identity changed、hidden/visibility-unconfirmed-clear 一律 unknown。只有完整且前後身分一致、可見的目前視窗能得到 clear。
 
 pure provider 測試涵蓋三態、他窗隔離、前後身分改變、各未知原因與 busy/deadline。command 測試執行真實 run 並注入 probe 邊界，確認 stdout／stderr／exit code／JSON 與無 JS 呼叫。GUI 不可用時 live fixture 退出 77，不標 verified；實測 clear／pending／恢復與所有自有 window cleanup 後才完成。
 
 ## Risks / Trade-offs
 
-- 不作用中或隱藏視窗的 absence 不足以排除 pending → unknown，不自動 activate 換取確定答案。
+- 隱藏視窗的 absence 不足以排除 pending → unknown，不自動 activate 換取確定答案。
 - AXMainWindow 不可用 → unknown，不沿用未有界 screenshot resolver 的 fallback。
 - 使用者可在快照後切換分頁／觸發新 dialog → 文件明示即時觀察不預測未來，也不保證所有背景分頁無 pending。
 - 共用 scanner 擴充可能影響 list/dismiss → 預設入口不變，跑既有 scanner、worker、global probe、listing 回歸。
+
+## R1 審查後修訂
+
+一般 Terminal 呼叫也能取得 clear 是本功能的驗收條件，因此移除額外的 app isActive 門檻。R1 關於 inactive／hidden 視窗 AX 行為的推論不冒充實機證據；本次保留 on-screen、非最小化與完整性條件，另補 Safari 非前景時 clear／pending 的實機案例。Fixture 只為建立這項條件而 activate Finder，不操作其檔案或視窗；查詢本身不得 activate Safari。程序清理逾時須保留 cleanup=false 紀錄，不能跳過 RETAINED 提示。
+
+## 實機結果
+
+macOS 27.0 / Safari 27.0：非前景 clear 0.172 秒，click 仍在等待時 present 0.096 秒，非前景 present 0.106 秒，恢復 clear 0.116 秒；handler count=1、answer=false，所有自有視窗／面板關閉。首輪 HTTP fixture 多了來源標頭而被嚴格比對拒絕，未送出 Cancel；核對自有 ID／URL／完整原文後一次具名取消並清理。驗收工具加入實測「來自『精確 localhost origin』」格式與 nonce 全文相等條件，錯誤 port 或額外文字仍拒絕，最終全流程才計為通過。

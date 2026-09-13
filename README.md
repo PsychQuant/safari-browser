@@ -428,11 +428,14 @@ or dismiss anything. Its AX observation has an 800 ms budget, separate from CLI
 startup. `true` and `false` exit 0; `unknown` exits 2 with a reason on stderr.
 JSON uses `present`, `clear`, or `unknown` and preserves the same exit behavior.
 
-A clear result requires a complete observation of the same active, visible,
+A clear result requires a complete observation of the same visible,
 non-minimized window. Missing permissions, unavailable GUI, changed identity,
-partial reads, or an empty observation while Safari is inactive/hidden produce
+partial reads, or an empty observation with unconfirmed window visibility produce
 `unknown`. A result is an observation, not a guarantee that a later click cannot
-open a dialog or that every background tab is free of pending dialogs. Explicit
+open a dialog or that every background tab is free of pending dialogs. Safari
+need not be the foreground app. Any native blocking sheet/dialog in the
+identified window counts as present; the result is not limited to JavaScript
+alerts. Explicit
 `is dialog` remains available when automatic entry probing is opted out.
 
 

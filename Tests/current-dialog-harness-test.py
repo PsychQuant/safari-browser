@@ -25,6 +25,13 @@ class FixtureTests(unittest.TestCase):
     def testExactNonceAndNamedCancel(self):
         for raw in (self.nonce, 'JavaScript ' + self.nonce):
             self.assertEqual(fixture.expected_cancel(self.status(messages=[raw]), self.listing(raw), 42, self.nonce), (raw, '取消'))
+    def testMeasuredHTTPOriginMustMatchExactly(self):
+        url = 'http://127.0.0.1:43123/' + self.nonce
+        raw = '來自「http://127.0.0.1:43123」： ' + self.nonce
+        self.assertEqual(fixture.expected_cancel(self.status(messages=[raw]), self.listing(raw), 42, self.nonce, url), (raw, '取消'))
+        for wrong in (raw + ' extra', raw.replace('43123', '43124')):
+            with self.assertRaises(fixture.common.VerificationError):
+                fixture.expected_cancel(self.status(messages=[wrong]), self.listing(wrong), 42, self.nonce, url)
     def testWrongIdentityPrefixUnknownOrAmbiguousButtonsRefuse(self):
         for status in (self.status(window_id=43), self.status(window_id=True), self.status(state='unknown'),
                        self.status(messages=[self.nonce + ' attacker']), self.status(messages=[self.nonce, 'other'])):
@@ -58,6 +65,15 @@ class FixtureTests(unittest.TestCase):
              patch.object(fixture.common, 'session_preflight', return_value=0), \
              patch.object(fixture.common, 'image_identifier', return_value='a' * 32), patch.object(fixture, 'Harness', Fake):
             self.assertEqual(fixture.main([]), 1)
+    def testProcessReapFailureRetainsFailureRecord(self):
+        class Process:
+            def poll(self): return 0
+            def communicate(self, timeout): raise subprocess.TimeoutExpired('owned click', timeout)
+        with tempfile.TemporaryDirectory() as directory:
+            h = fixture.Harness(Path('/missing'), Path('/missing'), 'a' * 32, Path(directory))
+            h.process = Process()
+            self.assertFalse(h.cleanup())
+            self.assertFalse(json.loads((Path(directory) / 'cleanup.json').read_text())['complete'])
     def testUncertainDismissalIsNeverRetried(self):
         with tempfile.TemporaryDirectory() as directory:
             h = fixture.Harness(Path('/missing'), Path('/missing'), 'a' * 32, Path(directory))

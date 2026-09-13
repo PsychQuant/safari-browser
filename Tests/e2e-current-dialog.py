@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('background_fixture', ROOT / 'Tests/e2e-background-dialog.py')
@@ -25,14 +26,28 @@ spec.loader.exec_module(common)
 require, run, quoted = common.require, common.run, common.quoted
 
 
-def expected_cancel(status, listing, window_id, nonce):
+def owned_messages(nonce, url=None):
+    allowed = (nonce, 'JavaScript ' + nonce)
+    if url is not None:
+        parsed = urlsplit(url)
+        require(parsed.scheme == 'http' and parsed.hostname == '127.0.0.1'
+                and parsed.port is not None and parsed.path == '/' + nonce
+                and not parsed.query and not parsed.fragment and not parsed.username,
+                'unexpected fixture origin')
+        # Measured on Safari 27 Traditional Chinese. Exact origin plus nonce,
+        # never prefix/substring matching against arbitrary dialog text.
+        allowed += (f'來自「http://127.0.0.1:{parsed.port}」： {nonce}',)
+    return allowed
+
+
+def expected_cancel(status, listing, window_id, nonce, url=None):
     """Require exact raw text and known ID; never select the default button."""
     require(type(window_id) is int and window_id > 0, 'missing owned window ID')
     require(status.get('state') == 'present' and type(status.get('window_id')) is int
             and status['window_id'] == window_id, 'query does not describe the owned dialog')
     messages = status.get('messages')
     require(isinstance(messages, list) and len(messages) == 1
-            and messages[0] in (nonce, 'JavaScript ' + nonce), 'unexpected raw dialog text')
+            and messages[0] in owned_messages(nonce, url), 'unexpected raw dialog text')
     lines = listing.splitlines()
     require(bool(lines) and lines[0] == 'blocking dialog present', 'global dialog ownership incomplete')
     message_rows = [line[11:] for line in lines if line.startswith('  message: ')]
@@ -121,6 +136,21 @@ class Harness(common.Harness):
         ready = self.target('wait', '--js', "document.getElementById('trigger') !== null", timeout=12)
         require(ready.returncode == 0, 'fixture was not ready: ' + ready.stderr)
 
+    def put_safari_in_background(self):
+        self.require_owned()
+        # Fixture setup only: Finder activation changes no documents or tabs.
+        # The query must not activate Safari to manufacture a clear result.
+        self.native('tell application "Finder" to activate')
+        for _ in range(20):
+            if self.native('tell application "System Events" to return frontmost of process "Safari"') == 'false':
+                return
+            time.sleep(0.1)
+        raise common.VerificationError('could not establish inactive Safari fixture')
+
+    def require_safari_background(self):
+        require(self.native('tell application "System Events" to return frontmost of process "Safari"') == 'false',
+                'query activated Safari or foreground changed')
+
     def dismiss_owned(self):
         require(not self.dismiss_attempted, 'an earlier dismissal is unresolved; no retry')
         self.require_owned()
@@ -128,7 +158,7 @@ class Harness(common.Harness):
         require(query.returncode == 0, 'cannot inspect owned pending dialog')
         listing = self.cli('dialog', 'list')
         require(listing.returncode == 0, 'dialog list is incomplete')
-        message, button = expected_cancel(json.loads(query.stdout), listing.stdout, self.window_id, self.nonce)
+        message, button = expected_cancel(json.loads(query.stdout), listing.stdout, self.window_id, self.nonce, self.url)
         self.require_owned()
         fd = os.open(self.artifacts / 'dismiss-attempt', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(fd)
@@ -149,9 +179,11 @@ class Harness(common.Harness):
                 'existing or unknown dialog; fixture not created')
         require(self.check_session(), 'GUI became unavailable')
         self.start_page()
+        self.put_safari_in_background()
         outcome, elapsed = self.query()
         verify_query(outcome, elapsed, 'clear', self.window_id)
-        print(f'Owned window {self.window_id}; clear query {elapsed:.3f}s', flush=True)
+        self.require_safari_background()
+        print(f'Owned window {self.window_id}; inactive clear query {elapsed:.3f}s', flush=True)
         self.armed = True
         self.persist()
         self.process = subprocess.Popen([str(self.binary), '__mcp-exec', 'click', '#trigger', '--url-exact', self.url],
@@ -170,8 +202,14 @@ class Harness(common.Harness):
             time.sleep(0.1)
         require(observed is not None, 'owned confirm was not observed during click')
         require(self.process.poll() is None, 'click is no longer waiting; cannot prove independence')
-        require(observed.get('messages') in ([self.nonce], ['JavaScript ' + self.nonce]), 'wrong native dialog observed')
+        require(observed.get('messages') in ([message] for message in owned_messages(self.nonce, self.url)), 'wrong native dialog observed')
         print(f'Pending query returned in {elapsed:.3f}s while click remained running', flush=True)
+        self.put_safari_in_background()
+        outcome, elapsed = self.query()
+        verify_query(outcome, elapsed, 'present', self.window_id)
+        self.require_safari_background()
+        require(self.process.poll() is None, 'click finished before inactive pending query')
+        print(f'Inactive pending query {elapsed:.3f}s; Safari was not activated', flush=True)
         self.dismiss_owned()
         stdout, stderr = self.process.communicate(timeout=8)
         (self.artifacts / 'click.json').write_text(json.dumps({'code': self.process.returncode, 'stdout': stdout, 'stderr': stderr}))
@@ -185,19 +223,23 @@ class Harness(common.Harness):
         clean = False
         try:
             clean = super().cleanup()
-            return clean
         finally:
-            if self.process is not None:
-                if self.process.poll() is None:
-                    try:
-                        os.killpg(self.process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                self.process.communicate(timeout=5)
+            try:
+                if self.process is not None:
+                    if self.process.poll() is None:
+                        try:
+                            os.killpg(self.process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    self.process.communicate(timeout=5)
+            except (OSError, subprocess.SubprocessError) as error:
+                clean = False
+                print(f'Owned click cleanup incomplete: {error}', file=sys.stderr)
             if self.server is not None:
                 self.server.shutdown()
             self.persist()
             (self.artifacts / 'cleanup.json').write_text(json.dumps({'complete': clean}))
+        return clean
 
 
 def main(argv=None):

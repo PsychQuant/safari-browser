@@ -184,14 +184,15 @@ struct AXDialogProbeProvider: CurrentWindowDialogProvider {
         try prepare(window, timeout: CurrentWindowDialogProbe.remaining(deadline))
         var minimized: CFTypeRef?
         let minimizedStatus = AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized)
-        let notMinimized = minimizedStatus == .success && minimized.map {
-            CFGetTypeID($0) == CFBooleanGetTypeID() && CFEqual($0, kCFBooleanFalse)
-        } == true
+        let isMinimized: Bool? = minimizedStatus == .success ? minimized.flatMap {
+            guard CFGetTypeID($0) == CFBooleanGetTypeID() else { return nil }
+            return CFEqual($0, kCFBooleanTrue)
+        } : nil
         _ = try CurrentWindowDialogProbe.remaining(deadline)
         let visible = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]]
         let onScreen = visible?.contains { ($0[kCGWindowNumber as String] as? Int) == id } == true
         _ = try CurrentWindowDialogProbe.remaining(deadline)
-        return .init(element: window, allowsClear: safari.isActive && notMinimized && onScreen)
+        return .init(element: window, isOnScreen: onScreen, isMinimized: isMinimized)
     }
 
     func windows(timeout: Float) throws -> [AXUIElement] {
