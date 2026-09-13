@@ -163,8 +163,38 @@ final class BoundedDialogProbe: @unchecked Sendable {
 
 /// Real AX elements are born on and stay on the worker. Every attribute read
 /// and window-ID SPI call first applies that operation's remaining budget.
-struct AXDialogProbeProvider: DialogProbeProvider {
+struct AXDialogProbeProvider: CurrentWindowDialogProvider {
     var session: GUISession = .live
+    func currentWindow(deadline: DispatchTime) throws -> CurrentDialogWindow<AXUIElement> {
+        guard session.state == .available else { throw DialogProbeReadError.unavailable }
+        guard AXIsProcessTrusted() else { throw DialogProbeReadError.accessibilityDenied }
+        let applications = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari")
+        guard applications.count == 1, let safari = applications.first else {
+            throw DialogProbeReadError.unavailable
+        }
+        let app = AXUIElementCreateApplication(safari.processIdentifier)
+        try prepare(app, timeout: CurrentWindowDialogProbe.remaining(deadline))
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXMainWindowAttribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID() else {
+            throw DialogProbeReadError.unavailable
+        }
+        let window = value as! AXUIElement // type ID validated above
+        let id = try windowID(window, timeout: CurrentWindowDialogProbe.remaining(deadline))
+        try prepare(window, timeout: CurrentWindowDialogProbe.remaining(deadline))
+        var minimized: CFTypeRef?
+        let minimizedStatus = AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimized)
+        let isMinimized: Bool? = minimizedStatus == .success ? minimized.flatMap {
+            guard CFGetTypeID($0) == CFBooleanGetTypeID() else { return nil }
+            return CFEqual($0, kCFBooleanTrue)
+        } : nil
+        _ = try CurrentWindowDialogProbe.remaining(deadline)
+        let visible = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]]
+        let onScreen = visible?.contains { ($0[kCGWindowNumber as String] as? Int) == id } == true
+        _ = try CurrentWindowDialogProbe.remaining(deadline)
+        return .init(element: window, isOnScreen: onScreen, isMinimized: isMinimized)
+    }
+
     func windows(timeout: Float) throws -> [AXUIElement] {
         guard session.state == .available else { throw DialogProbeReadError.unavailable }
         guard AXIsProcessTrusted() else { throw DialogProbeReadError.accessibilityDenied }

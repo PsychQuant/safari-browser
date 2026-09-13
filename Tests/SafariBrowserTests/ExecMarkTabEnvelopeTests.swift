@@ -25,7 +25,18 @@ final class ExecMarkTabEnvelopeTests: XCTestCase {
                 "markTab": value,
             ]
             let data = try JSONSerialization.data(withJSONObject: envelope, options: [])
-            let result = try await DaemonDispatch.Handlers.execRunScript(paramsData: data)
+            let titles = FixtureTitles()
+            let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+            let result = try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+                    try await titles.run(source)
+                }) {
+                    try await DaemonDispatch.Handlers.execRunScript(paramsData: data)
+                }
+            }
+            let calls = await titles.counts()
+            XCTAssertEqual(calls.reads, value == "off" ? 0 : value == "ephemeral" ? 2 : 1)
+            XCTAssertEqual(calls.writes, value == "off" ? 0 : value == "ephemeral" ? 2 : 1)
             // Empty steps yields {"results":"[]"}.
             let parsed = try JSONSerialization.jsonObject(with: result, options: []) as? [String: Any]
             XCTAssertEqual(parsed?["results"] as? String, "[]")
@@ -108,5 +119,34 @@ final class ExecMarkTabEnvelopeTests: XCTestCase {
     func testInProcessDispatcher_v2_1_supportsGetTextAndGetSource() {
         XCTAssertTrue(InProcessStepDispatcher.isSupported("get text"))
         XCTAssertTrue(InProcessStepDispatcher.isSupported("get source"))
+    }
+}
+
+/// Decode through the real daemon handler and marker lifecycle, replacing only
+/// the existing AppleScript boundary. No path can fall through to Safari.
+private actor FixtureTitles {
+    var reads = 0
+    var writes = 0
+    let original = "owned marker fixture"
+    var current = "owned marker fixture"
+    func counts() -> (reads: Int, writes: Int) { (reads, writes) }
+    func run(_ source: String) throws -> String {
+        if source.contains("document.title =") {
+            writes += 1
+            let expected = writes == 1 ? MarkerConstants.wrap(title: original) : original
+            XCTAssertTrue(source.contains(expected.jsStringLiteral.escapedForAppleScript))
+            current = expected
+            return expected
+        }
+        if source.contains("document.title") {
+            reads += 1
+            return current
+        }
+        // The native identity resolver is also inside the injected boundary.
+        guard source.contains("id of") else {
+            XCTFail("Unexpected native request in a pure envelope test")
+            throw SafariBrowserError.appleScriptFailed("Unexpected fixture request")
+        }
+        return "42"
     }
 }

@@ -10,7 +10,7 @@ final class MCPToolCatalogTests: XCTestCase {
 
     func testCurrentCatalogCoversEveryPublicLeafAndExpandedOptions() throws {
         let catalog = try current()
-        XCTAssertEqual(catalog.tools.count, 76)
+        XCTAssertEqual(catalog.tools.count, 77)
         XCTAssertEqual(catalog.tools.map(\.name), catalog.tools.map(\.name).sorted())
         XCTAssertTrue(catalog.tools.contains { $0.name == "safari.daemon.start" })
         XCTAssertTrue(catalog.tools.contains { $0.name == "safari.setup" })

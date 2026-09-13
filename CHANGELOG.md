@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Current native dialog query** (#108): `is dialog [--json]` uses a bounded, independent AX observation of Safari's main window while a JavaScript click is waiting. It reports true/false/unknown, with unknown exiting 2; it does not activate Safari or dismiss dialogs. Clear requires a complete stable on-screen, non-minimized window, including when another application is foreground. Native in-flight and inactive-window fixtures passed with guarded recovery and exactly one click handler execution.
+
 - **Named native file confirmations** (#107): Open/Upload/Save confirmation finds one enabled named button, including native split-group buttons, and never falls back to Return. PDF replacement requires explicit `--overwrite`; traces reach stderr after the subprocess completes. English and Traditional Chinese PDF export menu labels are supported. Owned Upload/Save/Replace and late-destination refusal were exercised on macOS/Safari 27.0; this supersedes the earlier unresolved confirmation-fallback entry below.
 - **Combined PDF flow accepted on a real save panel** (#106): the single export script produced the requested PDF and handled authorized replacement, supplementing its construction tests. This supersedes the earlier end-to-end verification limitation below. Completion timing and delayed replacement remain tracked separately in #160; CLI return still does not guarantee the file has finished writing.
 - **Direct AX destination experiment** (#102): setting the Save filename field to an absolute path and confirming produced a filename with colons in the previous directory. That candidate failed; it does not rule out other AX routes. Isolated Print testing remains pending.
