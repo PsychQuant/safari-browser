@@ -254,7 +254,7 @@ test-mutation-gate:
 # test-install-signature-strict` refuses to pass on a partial run — that is
 # the target to use on a machine that has both identities, and the one this
 # repo's own verification uses.
-test-all: test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint test-data-interruption test-mcp test-background-dialog-harness
+test-all: test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint test-data-interruption test-mcp test-background-dialog-harness test-current-dialog-harness
 	@ALLOW_INCOMPLETE=1 $(MAKE) --no-print-directory test-install-signature
 	@echo "✓ unit + smoke + install-signature green"
 
@@ -333,3 +333,10 @@ test-background-dialog: build-debug
 .PHONY: test-dialog-listing
 test-dialog-listing: build-debug
 	python3 Tests/e2e-background-dialog.py --check-listing
+
+.PHONY: test-current-dialog-harness test-current-dialog
+test-current-dialog-harness:
+	python3 Tests/current-dialog-harness-test.py
+
+test-current-dialog: build-debug
+	python3 Tests/e2e-current-dialog.py

@@ -18,10 +18,10 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
     var maxDepth = 8
     var maxDetailNodes = 256
     var maxDetailDepth = 6
-    func scan(provider: P, deadline: DispatchTime) -> DialogTreeSnapshot<P.Node> {
+    func scan(provider: P, deadline: DispatchTime, roots: [P.Node]? = nil) -> DialogTreeSnapshot<P.Node> {
         var snapshot = DialogTreeSnapshot<P.Node>()
         do {
-            let windows = try provider.windows(timeout: remaining(deadline))
+            let windows = try roots ?? provider.windows(timeout: remaining(deadline))
             let limit = max(0, maxWindows)
             if windows.count > limit { snapshot.isComplete = false }
             var identifiers = Set<Int>()

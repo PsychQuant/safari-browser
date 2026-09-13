@@ -57,7 +57,8 @@ final class MCPSessionTests: XCTestCase, @unchecked Sendable {
         let unknown = JSONValue.object(["jsonrpc": .string("2.0"), "id": .int(6), "method": .string("ping"), "params": .object(["_meta": .object([MCPSession.versionKey: .string("future"), MCPSession.capabilitiesKey: .object([:])])])])
         try await session.receive(unknown.encoded())
         values = await output.snapshot()
-        XCTAssertEqual(values[2]["result"]?["tools"]?.arrayValue?.count, 26)
+        let toolCount = try MCPToolCatalog(metadata: Data(SafariBrowser._dumpHelp().utf8)).tools.count
+        XCTAssertEqual(values[2]["result"]?["tools"]?.arrayValue?.count, toolCount - 50)
         XCTAssertNil(values[2]["result"]?["nextCursor"])
         XCTAssertEqual(values[3]["error"]?["code"], .int(-32602))
         XCTAssertEqual(values[4]["error"]?["code"], .int(-32602))

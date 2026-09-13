@@ -34,7 +34,7 @@ Need login? ──── Yes → safari-browser
 ## MCP stdio
 
 Run `safari-browser mcp` from an MCP client using the installed executable's
-absolute path. The server provides all 76 existing public CLI leaf commands,
+absolute path. The server provides all 77 public CLI leaf commands,
 including `help`, `setup` and daemon controls. Names follow the command path:
 `wait` becomes `safari.wait`, and `tab focus` becomes `safari.tab.focus`.
 Hidden commands and the MCP transport are excluded. The catalog and input
@@ -417,7 +417,24 @@ safari-browser is visible <sel>        # true/false
 safari-browser is exists <sel>
 safari-browser is enabled <sel>
 safari-browser is checked <sel>
+safari-browser is dialog               # true/false; unknown exits 2
+safari-browser is dialog --json        # state, window_id, messages, reason
 ```
+
+`is dialog` independently inspects the selected tab in Safari's main window using
+Accessibility, so it does not wait behind a blocked JavaScript invocation. It
+accepts no selector or target flags and does not activate Safari, change tabs,
+or dismiss anything. Its AX observation has an 800 ms budget, separate from CLI
+startup. `true` and `false` exit 0; `unknown` exits 2 with a reason on stderr.
+JSON uses `present`, `clear`, or `unknown` and preserves the same exit behavior.
+
+A clear result requires a complete observation of the same active, visible,
+non-minimized window. Missing permissions, unavailable GUI, changed identity,
+partial reads, or an empty observation while Safari is inactive/hidden produce
+`unknown`. A result is an observation, not a guarantee that a later click cannot
+open a dialog or that every background tab is free of pending dialogs. Explicit
+`is dialog` remains available when automatic entry probing is opted out.
+
 
 ### JavaScript
 
@@ -1172,3 +1189,12 @@ make clean      # remove build artifacts
 ## License
 
 MIT
+
+### Current native dialog acceptance
+
+`make test-current-dialog-harness` runs the pure fixture safety checks.
+`make test-current-dialog` exercises an owned localhost confirm while its click
+process is still waiting, checks the query latency and one handler execution,
+then performs guarded recovery and owned-window cleanup. Exit 77 means no GUI
+acceptance was performed. The query itself never activates or dismisses; fixture
+setup and cleanup perform those explicit actions.

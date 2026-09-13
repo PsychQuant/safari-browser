@@ -3,8 +3,9 @@ import ArgumentParser
 struct IsCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "is",
-        abstract: "Check element state",
+        abstract: "Check element or native dialog state",
         subcommands: [
+            IsDialog.self,
             IsVisible.self,
             IsExists.self,
             IsEnabled.self,
