@@ -54,33 +54,22 @@ final class FileDialogScriptSharingTests: XCTestCase {
                       "the success path must restore too")
     }
 
-    func testFragmentClicksTheDefaultButtonBeforeFallingBackToReturn() {
-        let s = SafariBridge.fileDialogNavigationScript(path: path)
-        XCTAssertTrue(s.contains("AXDefault"),
-                      "must click the default button by attribute — button labels are localized")
-        guard let click = s.range(of: "AXDefault"),
-              let fallback = s.range(of: "on error", range: click.upperBound..<s.endIndex) else {
-            return XCTFail("expected a keystroke-return fallback after the AXDefault click")
-        }
-        XCTAssertTrue(s[fallback.upperBound...].contains("keystroke return"),
-                      "the fallback after a failed AXDefault click must still confirm")
+    func testFragmentUsesNamedConfirmationWithoutReturnFallback() {
+        let s = SafariBridge.fileDialogConfirmationScript()
+        XCTAssertTrue(s.contains("splitter groups of sheet 1"))
+        XCTAssertTrue(s.contains("click defaultBtn"))
+        XCTAssertFalse(s.contains("AXDefault"))
+        XCTAssertFalse(s.contains("keystroke"))
+        XCTAssertFalse(s.contains("on error"))
     }
 
-    /// #107. The fragment confirms a sheet the caller never read, and when the
-    /// accessible press is unavailable it silently swaps in a synthetic
-    /// keystroke. Both are the hazard #89/#103 organise themselves around, in a
-    /// command that does not observe it — so at minimum the log has to be able
-    /// to reconstruct what was confirmed and by which mechanism.
-    func testFragmentAnnouncesTheConfirmationAndTheKeystrokeFallback() {
-        let s = SafariBridge.fileDialogNavigationScript(path: path)
-        XCTAssertTrue(s.contains("log \"confirming file dialog: pressing default button"),
-                      "must record which button confirmed the dialog — afterwards it is gone")
-        XCTAssertTrue(s.contains("falling back to Return keystroke"),
-                      "must record the silent swap from an accessible press to a synthetic keystroke")
-        // `log` in osascript writes to stderr, which is where interference
-        // notices belong (stdout carries command output).
-        XCTAssertFalse(s.contains("display dialog"),
-                       "the announcement must not itself raise a dialog")
+    /// Confirmation records its exact button name and never substitutes HID.
+    func testFragmentRecordsNamedConfirmationWithoutKeystrokeFallback() {
+        let s = SafariBridge.fileDialogConfirmationScript()
+        XCTAssertTrue(s.contains("log \"confirming file dialog: pressing named button"))
+        XCTAssertFalse(s.contains("falling back"))
+        XCTAssertFalse(s.contains("keystroke"))
+        XCTAssertFalse(s.contains("display dialog"))
     }
 
     func testFragmentRechecksFrontmostImmediatelyBeforeKeystrokes() {
@@ -153,7 +142,7 @@ final class FileDialogScriptSharingTests: XCTestCase {
                       "pdf must embed the shared fragment, not a private copy")
         // All three phases in the one script: if any had stayed behind, it would
         // need its own invocation and the gap would be back.
-        XCTAssertTrue(s.contains("click menu item \"Export as PDF…\""), "phase 1: open the sheet")
+        XCTAssertTrue(s.contains("click exportItem"), "phase 1: open the sheet")
         XCTAssertTrue(s.contains("repeat until exists sheet 1 of front window"), "phase 1: wait for it")
         XCTAssertTrue(s.contains("keystroke \"g\" using {command down, shift down}"), "phase 2: navigate")
         XCTAssertTrue(s.contains("sheet 1 of sheet 1 of front window"), "phase 3: the Replace? sheet")
@@ -170,12 +159,12 @@ final class FileDialogScriptSharingTests: XCTestCase {
             "keystrokes and menu clicks reach the front window, so the target must be raised")
     }
 
-    /// #107 rides along: the Replace? sheet confirms an overwrite the caller
-    /// never saw, so both the press and the keystroke fallback must be logged.
+    /// Replacement has separate authorization and never retries via Return.
     func testPdfAnnouncesTheReplaceConfirmation() {
-        let s = PdfCommand.exportScript(path: path, windowIndex: 1)
-        XCTAssertTrue(s.contains("log \"confirming replace sheet: pressing default button"))
-        XCTAssertTrue(s.contains("falling back to Return keystroke"))
+        let s = PdfCommand.replacementConfirmationScript(overwrite: true)
+        XCTAssertTrue(s.contains("log \"confirming replace sheet: pressing named button"))
+        XCTAssertFalse(s.contains("keystroke return"))
+        XCTAssertTrue(PdfCommand.exportScript(path: path, windowIndex: 1, overwrite: true).contains(s))
     }
 
     // Boundary of what the tests above can see: they reach `navigateFileDialog`

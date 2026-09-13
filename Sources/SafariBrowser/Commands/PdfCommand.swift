@@ -1,7 +1,11 @@
 import ArgumentParser
+import Darwin
 import Foundation
 
 struct PdfCommand: AsyncParsableCommand {
+    /// Replace the GUI boundary only in tests; real CLI runs use the native flow.
+    @TaskLocal static var nativeExporter: (@Sendable (String) async throws -> Void)?
+
     static let configuration = CommandConfiguration(
         commandName: "pdf",
         abstract: "Export page as PDF (requires --allow-hid for keyboard simulation)"
@@ -12,6 +16,9 @@ struct PdfCommand: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Allow keyboard/mouse simulation (required for PDF export)")
     var allowHid = false
+
+    @Flag(name: .long, help: "Allow replacing an existing PDF destination (also requires --allow-hid)")
+    var overwrite = false
 
     /// #26: pdf now accepts the full TargetOptions (`--url`, `--tab`,
     /// `--document`, `--window`). The native-path resolver maps each
@@ -35,6 +42,12 @@ struct PdfCommand: AsyncParsableCommand {
 
         let absolutePath = (path as NSString).standardizingPath
         let fullPath = absolutePath.hasPrefix("/") ? absolutePath : FileManager.default.currentDirectoryPath + "/" + path
+        try Self.validateDestination(fullPath, overwrite: overwrite)
+
+        if let nativeExporter = Self.nativeExporter {
+            try await nativeExporter(fullPath)
+            return
+        }
 
         // #26: route through the native-path resolver. The resolver
         // short-circuits for .frontWindow / .windowIndex (preserving the
@@ -73,9 +86,27 @@ struct PdfCommand: AsyncParsableCommand {
         // for `upload` and #106 for this command. The navigation body is the
         // fragment `upload` embeds too (#105), so there is one source of truth
         // without either caller giving up atomicity.
-        try await SafariBridge.runShell(
-            "/usr/bin/osascript",
-            ["-e", PdfCommand.exportScript(path: fullPath, windowIndex: resolved.windowIndex)])
+        try await SafariBridge.runFileDialogScript(
+            PdfCommand.exportScript(path: fullPath, windowIndex: resolved.windowIndex, overwrite: overwrite))
+    }
+
+    static func validateDestination(_ path: String, overwrite: Bool) throws {
+        guard !path.utf8.contains(0) else { throw ValidationError("PDF destination contains a NUL character.") }
+        var info = stat()
+        if lstat(path, &info) != 0 {
+            guard errno == ENOENT else { throw ValidationError("Could not inspect PDF destination before export.") }
+            return
+        }
+        guard info.st_mode & S_IFMT != S_IFDIR else { throw ValidationError("PDF destination must be a file, not a directory.") }
+        if info.st_mode & S_IFMT == S_IFLNK {
+            var target = stat()
+            if stat(path, &target) == 0 {
+                guard target.st_mode & S_IFMT != S_IFDIR else { throw ValidationError("PDF destination must not link to a directory.") }
+            } else if errno != ENOENT {
+                throw ValidationError("Could not inspect PDF destination link target before export.")
+            }
+        }
+        guard overwrite else { throw ValidationError("PDF destination already exists; replacement requires --overwrite in addition to --allow-hid.") }
     }
 
     /// The single combined script the export runs. Pure, so its atomicity and
@@ -86,7 +117,7 @@ struct PdfCommand: AsyncParsableCommand {
     /// save panel, and a failure there wedges every later Safari command (#67).
     /// The issue records that limitation rather than implying the unit tests
     /// cover it.
-    static func exportScript(path: String, windowIndex: Int) -> String {
+    static func exportScript(path: String, windowIndex: Int, overwrite: Bool = false) -> String {
         """
         tell application "Safari" to set index of window \(windowIndex) to 1
         tell application "Safari" to activate
@@ -98,10 +129,15 @@ struct PdfCommand: AsyncParsableCommand {
                     error "Safari lost focus after activate — aborting to avoid acting on the wrong application"
                 end if
 
-                -- NOTE: Menu labels are English. On non-English macOS this cannot
-                -- resolve, and the script aborts here rather than hanging — the
-                -- wait loop below is never reached. See docs/operation-paths.md §4.2.
-                click menu item "Export as PDF…" of menu "File" of menu bar 1
+                -- Resolve the measured English / Traditional Chinese menu
+                -- labels explicitly; unknown locales fail without a Print path.
+                set fileMenus to (menu bar items of menu bar 1 whose name is "File" or name is "檔案")
+                if (count fileMenus) is not 1 then error "A unique File menu is unavailable for PDF export"
+                set exportItems to (menu items of menu 1 of item 1 of fileMenus whose name is "Export as PDF…" or name is "輸出為PDF⋯")
+                if (count exportItems) is not 1 then error "A unique Export as PDF menu item is unavailable"
+                set exportItem to item 1 of exportItems
+                if not (enabled of exportItem) then error "Export as PDF is disabled"
+                click exportItem
 
                 set maxWait to 10
                 set waited to 0
@@ -115,22 +151,25 @@ struct PdfCommand: AsyncParsableCommand {
 
         \(SafariBridge.fileDialogNavigationScript(path: path))
 
-                -- "<file> already exists. Replace?" — only present when it is.
-                -- #107: announced, because pressing it confirms an overwrite the
-                -- caller never saw.
+                -- Replacement confirmation is separately authorized.
                 delay 0.5
                 if exists sheet 1 of sheet 1 of front window then
-                    try
-                        set replaceBtn to (first button of sheet 1 of sheet 1 of front window whose value of attribute "AXDefault" is true)
-                        log "confirming replace sheet: pressing default button \\"" & (title of replaceBtn) & "\\""
-                        click replaceBtn
-                    on error
-                        log "confirming replace sheet: default-button press unavailable, falling back to Return keystroke"
-                        keystroke return
-                    end try
+                    \(replacementConfirmationScript(overwrite: overwrite))
                 end if
             end tell
         end tell
+        """
+    }
+
+    static func replacementConfirmationScript(overwrite: Bool) -> String {
+        guard overwrite else { return "error \"PDF replacement requires --overwrite; no replacement button was pressed. Cancel the save dialog in Safari before retrying\"" }
+        return """
+        if not frontmost then error "Safari lost focus before PDF replacement"
+        set replacementButtons to (buttons of sheet 1 of sheet 1 of front window whose title is "Replace" or title is "取代")
+        if (count of replacementButtons) is not 1 then error "A unique named Replace button is unavailable; no replacement button was pressed"
+        set replaceBtn to item 1 of replacementButtons
+        log "confirming replace sheet: pressing named button \\"" & (title of replaceBtn) & "\\""
+        click replaceBtn
         """
     }
 }
