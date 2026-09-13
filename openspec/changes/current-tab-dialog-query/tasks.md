@@ -6,4 +6,4 @@
 ## 2. 實機與收尾
 
 - [x] 2.1 Live in-flight acceptance：自有 click-confirm fixture 在 click 尚未返回時讓 is dialog 三秒內回 true，驗 Safari 非前景時 clear 與 pending／handler 僅一次及 guarded recovery；GUI 77 不算通過，所有自有視窗／面板須清理。
-- [ ] 2.2 依實際驗收更新 README 的目前視窗與 unknown 邊界，完整回歸、獨立審查、嚴格 Spectra 驗證與 PR／issue 狀態同步；未完成 live acceptance 不標 verified。
+- [x] 2.2 依實際驗收更新 README 的目前視窗與 unknown 邊界，完整回歸、獨立審查、嚴格 Spectra 驗證與 PR／issue 狀態同步；未完成 live acceptance 不標 verified。
