@@ -7,4 +7,4 @@
 
 - [x] 2.1 Effective path and command integration：PdfCommand 接上 transaction，保留 allow-hid／overwrite 預檢，nativeExporter 僅替換 native 邊界；測無副檔名、明確副檔名、實際 stdout、MCP schema 與來源錯誤不發布。
 - [x] 2.2 Export page as PDF 與 Native file confirmation authorization：同步主規格／README 的 staging、成功、symlink 與授權契約；自有 GUI 驗新檔、no-extension、explicit-extension、overwrite、晚到目的檔保留與清理，未實測不得標 verified。
-- [ ] 2.3 完整回歸、交叉審查、嚴格 Spectra 驗證與逐 issue/PR 狀態同步；保留所有實機與推論的證據界線。
+- [x] 2.3 完整回歸、交叉審查、嚴格 Spectra 驗證與逐 issue/PR 狀態同步；保留所有實機與推論的證據界線。
