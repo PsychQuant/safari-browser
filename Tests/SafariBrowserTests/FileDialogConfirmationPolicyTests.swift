@@ -4,6 +4,14 @@ import XCTest
 @testable import SafariBrowser
 
 final class FileDialogConfirmationPolicyTests: XCTestCase {
+    func testPDFExportMenuSupportsMeasuredTraditionalChineseWithoutPrintFallback() {
+        let script = PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1)
+        XCTAssertTrue(script.contains("輸出為PDF⋯"))
+        XCTAssertTrue(script.contains("menu bar items of menu bar 1"))
+        XCTAssertTrue(script.contains("click exportItem"))
+        XCTAssertFalse(script.contains("keystroke \"p\""))
+    }
+
     func testOverwriteFlagIsExplicit() throws {
         XCTAssertNoThrow(try PdfCommand.parse(["--allow-hid", "--overwrite", "out.pdf"]))
     }
@@ -30,14 +38,12 @@ final class FileDialogConfirmationPolicyTests: XCTestCase {
 
     func testInitialConfirmationDoesNotRetryAnAttemptedClick() {
         let script = SafariBridge.fileDialogNavigationScript(path: "/tmp/fixture.pdf")
-        let attempted = script.range(of: "set confirmationAttempted to true")
-        let click = script.range(of: "click defaultBtn")
-        let refuse = script.range(of: "if confirmationAttempted then error")
-        XCTAssertNotNil(attempted)
-        XCTAssertNotNil(click)
-        XCTAssertNotNil(refuse)
-        if let attempted, let click { XCTAssertLessThan(attempted.lowerBound, click.lowerBound) }
-        if let click, let refuse { XCTAssertLessThan(click.lowerBound, refuse.lowerBound) }
+        XCTAssertTrue(script.contains("click defaultBtn"))
+        let confirmation = SafariBridge.fileDialogConfirmationScript()
+        XCTAssertFalse(confirmation.contains("keystroke"))
+        XCTAssertFalse(confirmation.contains("on error"))
+        XCTAssertTrue(confirmation.contains("count of confirmationButtons"))
+        XCTAssertTrue(confirmation.contains("enabled of defaultBtn"))
     }
 
     func testDefaultExportRefusesLateReplacementInsteadOfConfirmingIt() {
@@ -100,11 +106,14 @@ final class FileDialogConfirmationPolicyTests: XCTestCase {
         for (lookupFails, pressFails, lostFocus, nested, expected) in [
             (false, false, false, false, "true,false,false"),
             (false, true, false, false, "true,false,true"),
-            (true, false, false, false, "false,true,false"),
+            (true, false, false, false, "false,false,true"),
             (true, false, true, false, "false,false,true"),
             (true, false, false, true, "false,false,true")
         ] {
-            let lines = SafariBridge.fileDialogConfirmationScript().components(separatedBy: "\n").map { line -> String in
+            let lookup = lookupFails ? "error \"lookup\" number 7001" : "set defaultBtn to \"Open\""
+            let lines = SafariBridge.fileDialogConfirmationScript()
+                .replacingOccurrences(of: SafariBridge.fileDialogInitialButtonLookupScript(), with: lookup)
+                .components(separatedBy: "\n").map { line -> String in
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 if trimmed.hasPrefix("set defaultBtn to") { return lookupFails ? "error \"lookup\" number 7001" : "set defaultBtn to \"Open\"" }
                 if trimmed.hasPrefix("set defaultTitle to") { return "set defaultTitle to defaultBtn" }

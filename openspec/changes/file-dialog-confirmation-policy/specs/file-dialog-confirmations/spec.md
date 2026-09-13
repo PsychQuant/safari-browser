@@ -8,7 +8,7 @@ File-dialog execution SHALL relay captured stderr on success, failure and timeou
 - **THEN** the caller receives both the safe stderr trace and the unchanged stdout
 
 ### Requirement: No replay after dispatch
-Initial file confirmation SHALL use the located default button. Return fallback SHALL be restricted to lookup failure before click dispatch, with fresh frontmost and non-nested sheet checks and an explicit trace. Errors after click dispatch SHALL NOT cause a Return retry.
+Initial file confirmation SHALL use one enabled named Open/Upload/Save button, including the supported Traditional Chinese labels, from the sheet or its split groups. Frontmost and non-nested sheet checks SHALL precede confirmation. Lookup, ambiguity, disabled-state, and dispatched-click errors SHALL NOT cause a Return fallback or retry.
 
 #### Scenario: Uncertain press
 - **WHEN** click has been dispatched and reports an error

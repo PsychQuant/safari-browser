@@ -8,7 +8,7 @@
 
 ## Proposed Solution
 
-檔案對話框入口安全傳遞 trace，兩個 pipe 同時排空。Initial confirmation 僅在 dispatch 前查找失敗保留 Return fallback，dispatch 後失敗不重播。PDF 以 --overwrite 控制既有目的檔案及 replacement sheet，僅具名 Replace/取代可確認。文件明列初始確認例外與待實測的 AX 等價性。
+檔案對話框入口安全傳遞 trace，兩個 pipe 同時排空。Initial confirmation 查找唯一且 enabled 的具名按鈕，涵蓋實測 AXSplitGroup；查找或 dispatch 失敗均不以 Return 替代。PDF 以 --overwrite 控制既有目的檔案及 replacement sheet，僅具名 Replace/取代可確認。文件明列初始確認例外與待實測的 AX 等價性。
 
 ## Success Criteria
 

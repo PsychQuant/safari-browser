@@ -100,7 +100,7 @@ A native `upload` or an authorized `pdf` operation SHALL be permitted to confirm
 ---
 ### Requirement: Native file confirmation authorization
 
-Initial Open/Save confirmation SHALL be a named exception within an authorized native file operation for the caller-specified path. The command SHALL emit its existing keyboard-control warning before GUI interaction. The initial confirmation SHALL use the located default button and record its title. A Return fallback SHALL be permitted only when lookup or title reading fails before click dispatch, and only after freshly checking that Safari is frontmost, the file sheet remains present, and no nested sheet is present. The fallback SHALL be recorded as a mechanism change. Once click dispatch begins, an error SHALL propagate without a Return retry.
+Initial Open/Save confirmation SHALL be a named exception within an authorized native file operation for the caller-specified path. The command SHALL emit its existing keyboard-control warning before GUI interaction. The initial confirmation SHALL locate one enabled button named Open, Upload, Save, 打開, 開啟, 上傳, or 儲存 among the file sheet’s direct buttons and split-group buttons, and record its title. It SHALL check that Safari is frontmost, the file sheet remains present, and no nested sheet is present. Missing, ambiguous, disabled, or unsupported-language buttons SHALL fail without confirmation. Lookup and dispatched-click errors SHALL propagate without a Return fallback or retry.
 
 The file-dialog runner SHALL relay captured stderr after the subprocess finishes, including success, failure, and timeout. The trace SHALL escape terminal controls, be bounded to 4096 rendered scalars, and mark truncation. This is a record of attempted actions, not proof of their success or an announcement delivered before the button press; the separate keyboard-control warning remains the pre-interaction announcement.
 
@@ -111,14 +111,14 @@ This exception SHALL apply only to the file dialog opened by the requested opera
 #### Scenario: Initial native file selection
 
 - **WHEN** the caller authorizes native upload or PDF export for a specified path
-- **THEN** its initial confirmation is permitted and records the button title or the permitted Return fallback
+- **THEN** its initial confirmation is permitted and records the named button title
 - **AND** the captured trace is relayed safely after the subprocess finishes
 
 #### Scenario: Lookup failure before initial confirmation
 
 - **WHEN** initial button lookup fails before click dispatch
 - **AND** fresh checks confirm Safari is frontmost and the file sheet exists without a nested sheet
-- **THEN** Return fallback is permitted and recorded as a mechanism change
+- **THEN** the command fails without dispatching a confirmation or Return
 
 #### Scenario: Initial press has an uncertain result
 

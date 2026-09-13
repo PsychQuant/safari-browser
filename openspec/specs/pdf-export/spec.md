@@ -11,7 +11,7 @@ Define native Safari PDF export, shared file-dialog navigation, explicit overwri
 The PDF export file dialog SHALL use the same shared dialog navigation function as upload:
 1. Clipboard paste (`Cmd+V`) for path input instead of `keystroke`
 2. `repeat until exists` polling instead of fixed `delay` for all dialog state transitions
-3. Initial `AXDefault` confirmation with Return fallback only for lookup failure before click dispatch, after fresh frontmost and non-nested-sheet checks; no Return retry after dispatch
+3. Initial confirmation of a unique enabled, named Open/Upload/Save button (including supported Traditional Chinese labels), after frontmost and non-nested-sheet checks; no Return fallback or retry
 4. Save and restore clipboard content
 
 #### Scenario: PDF export uses clipboard for path

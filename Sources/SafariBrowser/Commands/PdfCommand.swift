@@ -129,10 +129,15 @@ struct PdfCommand: AsyncParsableCommand {
                     error "Safari lost focus after activate — aborting to avoid acting on the wrong application"
                 end if
 
-                -- NOTE: Menu labels are English. On non-English macOS this cannot
-                -- resolve, and the script aborts here rather than hanging — the
-                -- wait loop below is never reached. See docs/operation-paths.md §4.2.
-                click menu item "Export as PDF…" of menu "File" of menu bar 1
+                -- Resolve the measured English / Traditional Chinese menu
+                -- labels explicitly; unknown locales fail without a Print path.
+                set fileMenus to (menu bar items of menu bar 1 whose name is "File" or name is "檔案")
+                if (count fileMenus) is not 1 then error "A unique File menu is unavailable for PDF export"
+                set exportItems to (menu items of menu 1 of item 1 of fileMenus whose name is "Export as PDF…" or name is "輸出為PDF⋯")
+                if (count exportItems) is not 1 then error "A unique Export as PDF menu item is unavailable"
+                set exportItem to item 1 of exportItems
+                if not (enabled of exportItem) then error "Export as PDF is disabled"
+                click exportItem
 
                 set maxWait to 10
                 set waited to 0

@@ -107,9 +107,9 @@ rule in §3 is correctly vacuous over them.
 | Probe a resolved target window before a document/native operation (#133–#138) | Stable window ID → bounded native AX walk; 200 ms total per logical command, no queued work while busy; default screenshot uses its resolved capture ID | same | Accessibility — denied, failed or incomplete reads remain unknown; WebArea contents are outside native-dialog scope | already non-HID — read-only, no `AXPress` |
 | Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | JS-from-Apple-Events for this step; `upload --native` as a whole needs Accessibility for the steps after it | already non-HID |
 | **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | no AX interface for it — see §4.1 | Accessibility | **disproven** — see §4.1 |
-| **Name the save destination for a PDF** | same keystrokes, via shared `SafariBridge.fileDialogNavigationScript` | none found yet | Accessibility | **untested** — see §4.2 |
-| Open the PDF export sheet | `click menu item "Export as PDF…"` | same | Accessibility | already non-HID — **only where Safari's menus are English**; see §4.2 |
-| Confirm a native dialog sheet (Open / Save / "Replace?") | Initial: default-button press; Return only after lookup failure before dispatch and fresh frontmost/non-nested-sheet checks. PDF replacement: `--overwrite` plus a unique `Replace` / `取代` button; no Return fallback | Initial press already uses AX; equivalence when default lookup fails remains unmeasured | Accessibility; PDF still needs `--allow-hid`, and replacement separately needs `--overwrite` | **untested** — Save-panel AX equivalence and owned Open/Save/Replace GUI acceptance remain pending (#107) |
+| **Name the save destination for a PDF** | same keystrokes, via shared `SafariBridge.fileDialogNavigationScript` | AXValue of filename field → AXConfirm → named Save AXPress | Accessibility | **disproven** for this candidate (2026-09-13): slashes become colons and output remains in the old directory; other AX routes remain open — see §4.2 |
+| Open the PDF export sheet | Unique File/檔案 → Export as PDF…/輸出為PDF⋯ menu item click | same | Accessibility | already non-HID — English and Traditional Chinese labels supported; Traditional Chinese exercised end to end on 2026-09-13; other locales fail explicitly |
+| Confirm a native dialog sheet (Open / Save / "Replace?") | Unique enabled named Open/Upload/Save button, including supported Traditional Chinese labels; PDF replacement separately requires `--overwrite` and unique Replace/取代 | AX button press, including buttons in the sheet’s split group | Accessibility; PDF path entry still needs `--allow-hid` | **already non-HID** — owned Upload/Save/Replace exercised on 2026-09-13; initial confirmation Return fallback removed (#107). Path navigation is a separate row |
 
 ### Permissions do not track the HID split
 
@@ -195,54 +195,43 @@ replacement, removes a working capability and replaces it with nothing.
 records that one attempt failed, which is not the same as establishing that no
 non-HID path exists. §4.1 is `disproven` and still names an untried route.
 
-**Applied to the table as it stands today, this rule licenses zero deletions** —
-and the reason is one line rather than a walk: the rule fires only on a row
-marked `proven`, and **no row is**. Every row is `already non-HID` (nothing to
-displace), `disproven`, `untested`, or a pointer to other rows.
+The rule has now been applied to native file confirmation (#107). On
+2026-09-13 the owned Upload, Save, and Replace fixtures established named AX
+button presses, so the initial-confirmation Return fallback was removed. That
+row is now `already non-HID`; the remaining Go-to-Folder keystrokes belong to
+the separate path-selection and destination rows. No other deletion follows
+from this measurement.
 
-Stated that way on purpose. An earlier version enumerated the rows instead, and
-went stale the first time one was added — which is the failure mode of any list
-that has to stay exhaustive to stay true. The check that matters is mechanical:
-grep the Status column for `proven`. If it returns nothing, this paragraph holds.
+Initial confirmation searches the file sheet's direct buttons and split-group
+buttons for one enabled `Open`, `Upload`, `Save`, `打開`, `開啟`, `上傳`, or `儲存`
+button. Missing, ambiguous, disabled, and unsupported-language buttons fail
+explicitly. Safari must be frontmost and the sheet must exist without a nested
+sheet. Neither a lookup failure nor a dispatched-click error sends Return.
+The old `AXDefault` lookup missed the actual split-group buttons; an owned
+production upload reproduced its Return fallback before this correction.
 
-That bounds every worry in this section to the future: no capability can be lost
-by this document standing as written. The first row that reaches `proven` while
-an HID path still exists on the other side of it is the one to argue carefully
-about.
-
-The confirm-sheet row already records the initial Open/Save confirmation and
-PDF replacement; #107 updates its policy rather than adding another row. Initial
-confirmation uses the default button. Return fallback is now restricted to a
-lookup or title-read failure **before** click dispatch, followed by fresh checks
-that Safari is frontmost and the sheet is present without a nested sheet. An
-error after dispatch cannot trigger another confirmation.
-
-That restriction is a correction, not a description of the old code: its catch
-covered both lookup and click, so a click error could also send Return. Likewise,
-the presence of an AppleScript `log` statement did not previously prove the
-caller saw it; successful subprocess stderr was discarded. The file-dialog
-runner now relays captured stderr on success, failure, and timeout as a single
-terminal-escaped trace, bounded to 4096 rendered scalars with explicit truncation.
-It arrives **after subprocess completion**, records attempted actions rather
-than their success, and is separate from the keyboard-control warning emitted
-before GUI interaction.
+The file-dialog runner relays captured stderr on success, failure, and timeout
+as a terminal-escaped trace, bounded to 4096 rendered scalars with explicit
+truncation. It arrives **after subprocess completion**, records attempted
+actions rather than their success, and is separate from the keyboard-control
+warning emitted before GUI interaction. Previously, successful subprocess
+stderr was discarded despite the AppleScript `log` statements.
 
 The caller's native file operation authorizes initial confirmation for the
 specified path. PDF replacement requires the additional `--overwrite` flag;
 `--allow-hid` alone does not authorize it. Existing destinations are refused
-before GUI interaction without that flag, as are replacement prompts appearing
-later. Authorized replacement requires a unique `Replace` or `取代` button.
-Other languages, missing buttons, and ambiguous matches are refused; this branch
-has no Return fallback. See the named exception in the
-[non-interference specification](../openspec/specs/non-interference/spec.md).
+before GUI interaction without that flag, as are detected replacement prompts
+appearing later. Authorized replacement requires a unique `Replace` or `取代`
+button. Missing or ambiguous matches fail without Return. See the named
+exception in the [non-interference specification](../openspec/specs/non-interference/spec.md).
 
-#103's successful press of a *located, named* dialog button does not establish a
-Save-panel route that works when default-button lookup fails. That equivalence
-remains `untested`; no HID deletion follows from the construction or subprocess
-tests. The current #107 implementation session is GUI-locked, so its owned
-Open/Save/Replace acceptance is still pending. The initial-confirmation fallback
-must be reconsidered against that real measurement, without treating #101's
-file selection or #102's save destination as resolved.
+The owned upload fixture checked the page's file count, filename, and content.
+The PDF fixtures checked the requested output path and `%PDF-` content, including
+replacement of an owned sentinel. File writes may finish after the press and
+CLI return; verification waits for the actual file and confirms all fixture
+panels/windows are gone. These measurements do not resolve #101's file
+selection alternatives or #102's remaining destination and isolated Print
+experiments.
 
 The two dialog rows are worth a note, because they moved. They were `proven`
 while no command existed to act on them; #103 then shipped `dialog dismiss`,
@@ -276,9 +265,8 @@ alone:
   take these as examples, not as a tally. Announced: `upload` swapping the JS
   route for the native one (`ℹ️ Using JS DataTransfer` — an explicit `--js` prints
   nothing and needs to print nothing, since no substitution occurred), and the
-  daemon's `[daemon fallback: <reason>]`. Initial file-dialog lookup/title-read
-  fallback is also recorded through the bounded trace after subprocess completion;
-  a dispatched click is not retried. `screenshot` choosing between the AX and the
+  daemon's `[daemon fallback: <reason>]`. Initial file-dialog confirmation is recorded through the bounded trace after
+  subprocess completion; lookup and click errors have no Return fallback. `screenshot` choosing between the AX and the
   legacy window resolver (§5) remains an example without that route diagnostic.
   The pre-GUI keyboard warning and the later mechanism trace serve different purposes.
   Until the inventory exists
@@ -384,35 +372,23 @@ Tracked in **#101**, which now carries the measurement.
 Note also that `UploadCommand` embeds the shared navigation fragment rather than
 calling it (#105), so a replacement changes one generator and two embeddings.
 
-### 4.2 Naming a PDF's save destination — untested, and testing has side effects
+### 4.2 Naming a PDF's save destination — direct filename-path candidate disproven
 
-**`PdfCommand` does not drive `Cmd+P`.** It opens the export sheet with
-`click menu item "Export as PDF…" of menu "File" of menu bar 1` — a System Events
-element click, which by §1 is an `AXPress` and **not** HID. The only `Cmd+P` in
-this repository is a comment in `PdfCommand.swift`. So the invocation leg of PDF
-export is already on the preferred side of this document's own rule.
-
-**But only on an English system.** That comment is not a note about a road not
-taken; it is a warning that the implemented route is locale-dependent: *"Menu
-labels are English. On non-English macOS, use keyboard shortcut instead. `Cmd+P`
-→ 'PDF' dropdown → 'Save as PDF' is locale-independent but more complex."* There
-is no fallback in the code. On a system where Safari's menus are not in English,
-`click menu item "Export as PDF…"` cannot resolve its object specifier, and since
-nothing wraps that statement the script aborts there with an AppleScript `-1728`
-— immediately, not after a wait. (The 10-second timeout in the same block guards
-a *different* failure: the menu item resolved but no sheet appeared. The two are
-mutually exclusive.) So the non-HID invocation is conditional on Safari's UI
-language, and the locale-independent alternative the code itself names is the HID
-one.
+**`PdfCommand` does not drive `Cmd+P`.** It opens the export sheet by
+clicking the unique `Export as PDF…` / `輸出為PDF⋯` item in the `File` / `檔案`
+menu. This is an AX element click, not HID. The Traditional Chinese hierarchy
+was measured and exercised end to end on 2026-09-13. The earlier English-only
+specifier failed immediately on this system; the current implementation
+explicitly supports these two sets of labels and fails for others. It never
+falls back to Print or a keyboard shortcut.
 
 The largest HID residue is one step later: `PdfCommand` uses the shared
 `SafariBridge.fileDialogNavigationScript` fragment to enter the save destination
 with `Cmd+Shift+G` → `Cmd+V` → `Return` inside its single export script. The
-initial default-button confirmation retains Return only for a pre-dispatch
-lookup failure after fresh frontmost and sheet checks. The separate authorized
+initial named-button confirmation does not use Return. The separate authorized
 replacement branch now presses only a unique `Replace` / `取代` button and has
 no Return fallback. Retiring `--allow-hid` still needs evidence covering both
-path entry and the remaining initial-confirmation fallback.
+path entry.
 
 This matters for how the remaining work is scoped, and there are two separate
 open questions rather than one:
@@ -420,11 +396,11 @@ open questions rather than one:
 - **Can the save panel's destination be entered without keystrokes?** This is the
   one that gates `--allow-hid`, and it is measurable *today* — the shipping
   `Export as PDF…` route already opens that panel, so nothing has to be built or
-  routed around first. It is `untested` because nobody has enumerated that
-  panel's accessibility tree, not because it is blocked on anything.
+  routed around first. The direct filename-field candidate was tested below;
+  other AX destination-navigation techniques remain unproven.
 - **Is there a locale-independent way to open the export sheet?** Separate
-  problem, separate motivation: the current menu-item route is English-only (see
-  above), so this one is about `pdf` working at all on a localised system, not
+  problem, separate motivation: the current menu-item route supports English
+  and Traditional Chinese labels (see above), so wider locale support is not
   about retiring the flag.
 
 The route #102 originally proposed — an `AXPress` on the print sheet's PDF popup
@@ -478,19 +454,26 @@ of the problem.
 > read-only act, and it must be closed inside the same script that opened it —
 > the same cross-invocation gap that #15 and #106 are about.
 
-What is still untested is the save panel's own destination field. Unlike §4.1
-that is not obviously hopeless: naming a destination is a text field's job,
-whereas choosing an existing file needs a selection API the browser does not
-expose.
+**2026-09-13 direct Save-panel measurement.** A unique nonce page opened
+through the Export menu exposed a writable filename AXTextField, separately
+from Search and Tags. Writing an absolute path into its AXValue read back
+exactly; AXConfirm returned successfully but did not save. Pressing the unique
+named Save button then produced a valid PDF, but Safari replaced the path's
+slashes with colons and wrote that literal filename in the panel's previous
+directory. The requested destination remained absent. The owned test output
+was recovered into the private fixture directory and removed from that wrong
+location; every owned panel and window was cleaned up.
 
-Tracked in **#102**. Note that this row and §4.1 share the *keystroke sequence*
-but not necessarily the *problem*: `upload` drives an **open** panel and needs to
-select an existing file, whereas `pdf` drives a **save** panel and needs to name
-a destination, which a save panel would normally expose as an editable field
-rather than something to be navigated to — though that, too, is unmeasured.
-Techniques for the former do not automatically transfer to the latter, and the
-save panel may well be the easier of the two. Solving #101 does not automatically
-retire this row.
+This disproves **that candidate**, not all AX destination navigation. A Save
+button that closes its panel proves neither the intended directory nor the
+requested file exists. Native upload's Open-panel selection is a separate
+problem (#101); the direct filename-field failure does not settle it.
+
+The `print ... with properties {...}` experiment remains unperformed: the user
+confirmed on 2026-09-13 that no isolated macOS test host/VM is available. The
+historical accidental print job is reason to retain that isolation requirement,
+not evidence that PDF redirection is impossible. #102 remains open, and
+`--allow-hid` remains required for the current destination-navigation path.
 
 ---
 
@@ -512,7 +495,7 @@ three disciplines map directly onto this file:
 | P02 discipline | Here |
 |---|---|
 | **Name the representation** | §2 records, per operation, which path is taken — "clicked the button" is not a complete statement |
-| **Document transitions** | `upload` reports its native/JS route at entry; the 10 MB JS limit is not a runtime fallback for a larger native upload. Initial Open/Save lookup failures now record the permitted Return fallback, and errors after click dispatch do not replay it. File-dialog subprocess traces are escaped and bounded, then relayed on success, failure, or timeout after the subprocess finishes. This timing is separate from the pre-GUI keyboard warning. These examples do not establish a complete inventory of every command's fallback; see §3. |
+| **Document transitions** | `upload` reports its native/JS route at entry; the 10 MB JS limit is not a runtime fallback for a larger native upload. Initial Open/Save confirmation now records the unique named button; lookup and click errors do not send Return. File-dialog subprocess traces are escaped and bounded, then relayed on success, failure, or timeout after the subprocess finishes. This timing is separate from the pre-GUI keyboard warning. These examples do not establish a complete inventory of every command's fallback; see §3. |
 | **Debug along the chain** | locating *which path* failed is half the diagnosis — #67 is precisely a failure localised to one path |
 
 ### What this repo adds on top of P02
@@ -539,7 +522,7 @@ representation. Execution paths are an instance of P02, not an extension of it.
 
 - [`openspec/specs/non-interference/spec.md`](../openspec/specs/non-interference/spec.md) — the principle this document expands along the execution-path axis
 - **#101** — choosing a file in the open panel: measured, and the AX interface a non-HID route would need is absent (blocks retiring `upload`'s keystrokes)
-- **#102** — naming the save destination for a PDF: non-HID feasibility untested. Note the export *invocation* is already non-HID; only the save panel needs a route
+- **#102** — naming the save destination for a PDF: the direct filename-path candidate failed; other routes and isolated Print testing remain open. Note the export *invocation* is already non-HID; only the save panel needs a route
 - **#103** — `dialog list` / `dialog dismiss`: proven non-HID, no opt-in command yet
 - **#67** — stuck native file dialog; the failure family that lives on the HID path
 - **#98** — `setup`: the other command that deliberately raises a system dialog, and why that is not a contradiction

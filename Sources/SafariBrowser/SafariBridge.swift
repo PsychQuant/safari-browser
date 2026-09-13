@@ -3813,25 +3813,36 @@ enum SafariBridge {
         """
     }
 
-    /// Initial Open/Save confirmation only. A failed click has an unknown
-    /// delivery outcome and must never become an automatic Return retry.
+    /// Initial Open/Save confirmation only. Native panels put their buttons
+    /// either directly on the sheet or inside its split group. Missing or
+    /// ambiguous names fail without sending an implicit Return.
+    static func fileDialogInitialButtonLookupScript() -> String {
+        """
+        set fileButtons to buttons of sheet 1 of front window
+        repeat with panelGroup in splitter groups of sheet 1 of front window
+            set fileButtons to fileButtons & (buttons of panelGroup)
+        end repeat
+        set confirmationButtons to {}
+        repeat with candidateButton in fileButtons
+            if (title of candidateButton) is in {"Open", "Upload", "Save", "打開", "開啟", "上傳", "儲存"} then
+                set end of confirmationButtons to contents of candidateButton
+            end if
+        end repeat
+        if (count of confirmationButtons) is not 1 then error "A unique named Open/Upload/Save button is unavailable; no file confirmation was sent"
+        set defaultBtn to item 1 of confirmationButtons
+        if not (enabled of defaultBtn) then error "The named file confirmation button is disabled; no confirmation was sent"
+        """
+    }
+
     static func fileDialogConfirmationScript() -> String {
         """
-        set confirmationAttempted to false
-        try
-            set defaultBtn to (first button of sheet 1 of front window whose value of attribute "AXDefault" is true)
-            set defaultTitle to title of defaultBtn
-            log "confirming file dialog: pressing default button \\"" & defaultTitle & "\\""
-            set confirmationAttempted to true
-            click defaultBtn
-        on error confirmationError number confirmationNumber
-            if confirmationAttempted then error confirmationError number confirmationNumber
-            if not frontmost then error "Safari lost focus before file-dialog fallback"
-            if not (exists sheet 1 of front window) then error "File dialog is unavailable before fallback"
-            if exists sheet 1 of sheet 1 of front window then error "Nested sheet appeared; no Return fallback was sent"
-            log "confirming file dialog: default-button lookup unavailable, falling back to Return keystroke"
-            keystroke return
-        end try
+        if not frontmost then error "Safari lost focus before file confirmation"
+        if not (exists sheet 1 of front window) then error "File dialog is unavailable before confirmation"
+        if exists sheet 1 of sheet 1 of front window then error "Nested sheet appeared; no file confirmation was sent"
+        \(fileDialogInitialButtonLookupScript())
+        set defaultTitle to title of defaultBtn
+        log "confirming file dialog: pressing named button \\"" & defaultTitle & "\\""
+        click defaultBtn
         """
     }
 
