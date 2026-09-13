@@ -59,7 +59,7 @@ enum DaemonServeLoop {
     /// The idle watchdog task automatically triggers `stop()` when
     /// `DaemonServer.Instance.isIdle(now:)` becomes true.
     actor Server {
-        private let underlying = DaemonServer.Instance()
+        private let underlying: DaemonServer.Instance
         private let cache = PreCompiledScripts.CompileCache()
         private var socketPath: String?
         private var pidPath: String?
@@ -70,7 +70,9 @@ enum DaemonServeLoop {
         private var watchdogTask: Task<Void, Never>?
         private var isRunning = false
 
-        init() {}
+        init(shutdownWatchdog: (@Sendable () -> Void)? = nil) {
+            underlying = DaemonServer.Instance(shutdownWatchdog: shutdownWatchdog)
+        }
 
         /// Idempotent start. If already running, returns without error.
         /// Writes `pidPath`, binds `socketPath`, registers built-in methods,

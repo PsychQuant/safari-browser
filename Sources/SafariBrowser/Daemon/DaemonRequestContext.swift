@@ -8,8 +8,25 @@ final class DaemonRequestContext: @unchecked Sendable {
 
     let id = UUID()
     private let probe: ((BlockingDialogGate.WindowKey) -> BlockingDialogState)?
-    init(probe: ((BlockingDialogGate.WindowKey) -> BlockingDialogState)? = nil) {
+    private var probeEnvironment: [String: String]
+    init(
+        probe: ((BlockingDialogGate.WindowKey) -> BlockingDialogState)? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
         self.probe = probe
+        self.probeEnvironment = environment
+    }
+
+    /// Envelope options must be installed before a command creates its gate.
+    /// Absent options intentionally preserve the legacy daemon environment.
+    func configureDialogProbe(_ options: DialogProbeOptions?) throws {
+        guard let options else { return }
+        lock.lock(); defer { lock.unlock() }
+        guard storedGate == nil else {
+            throw DaemonDispatch.ExecRunScriptError.malformedEnvelope(
+                "dialogProbe cannot be configured after probing starts")
+        }
+        probeEnvironment = options.environment
     }
     private let lock = NSLock()
     private var messages: [String] = []
@@ -26,7 +43,8 @@ final class DaemonRequestContext: @unchecked Sendable {
     var gate: BlockingDialogGate {
         lock.lock(); defer { lock.unlock() }
         if let gate = storedGate { return gate }
-        let gate = BlockingDialogGate(probe: probe, stderr: { [weak self] in self?.emit($0) })
+        let gate = BlockingDialogGate(probe: probe, stderr: { [weak self] in self?.emit($0) },
+                                      environment: probeEnvironment)
         storedGate = gate
         return gate
     }

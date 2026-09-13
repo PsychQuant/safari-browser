@@ -283,9 +283,35 @@ EXEC_PY
 }
 check_exec_dialog "stateless exec" "no-daemon-exec-$$"
 
+# #143: explicit client flags override a daemon started with both flags on.
+# Native reads remain safe even when the probe is disabled; do not execute JS
+# in these opt-out cases while the fixture's dialog is open.
+check_exec_probe_options() {
+    local namespace="$1"
+    if python3 - "$SB" "$MARK" "$namespace" <<'OPTIONS_PY'
+import itertools,json,os,subprocess,sys
+binary,marker,namespace=sys.argv[1:]
+for disabled,debug in itertools.product([False,True],repeat=2):
+    env=dict(os.environ,SAFARI_BROWSER_NAME=namespace,
+             SAFARI_BROWSER_NO_DIALOG_PROBE=str(int(disabled)),
+             SAFARI_BROWSER_DIALOG_PROBE_DEBUG=str(int(debug)))
+    env.pop("SAFARI_BROWSER_DAEMON",None)
+    r=subprocess.run([binary,"exec","--url",marker],input='[{"cmd":"get title"}]',
+                     text=True,capture_output=True,env=env,timeout=20)
+    rows=json.loads(r.stdout)
+    assert r.returncode==0 and rows[0]["status"]=="ok",(disabled,debug,r.stderr,rows)
+    assert ("BLOCKING DIALOG" in r.stderr)==(not disabled),(disabled,debug,r.stderr)
+    assert ("dialog probe:" in r.stderr)==(debug and not disabled),(disabled,debug,r.stderr)
+    assert "[daemon fallback" not in r.stderr,r.stderr
+OPTIONS_PY
+    then pass "exec probe settings: all four disabled/debug combinations ($namespace)"
+    else fail "exec probe settings ($namespace)"; fi
+}
+check_exec_probe_options "no-daemon-options-$$"
+
 # ── 3. Daemon parity ─────────────────────────────────────────────────────
 echo "## Daemon path"
-if SAFARI_BROWSER_NAME="$NAME" "$SB" daemon start >"$TMP/daemon.out" 2>&1; then
+if SAFARI_BROWSER_NO_DIALOG_PROBE=1 SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1 SAFARI_BROWSER_NAME="$NAME" "$SB" daemon start >"$TMP/daemon.out" 2>&1; then
     # A fresh daemon can answer the first request with an empty response and
     # the client falls back to stateless (its own warning line); retry so the
     # assertion is about the daemon path, and skip if it never answers.
@@ -320,6 +346,7 @@ if SAFARI_BROWSER_NAME="$NAME" "$SB" daemon start >"$TMP/daemon.out" 2>&1; then
     fi
     check_exec_dialog "daemon exec request 1" "$NAME"
     check_exec_dialog "daemon exec request 2" "$NAME"
+    check_exec_probe_options "$NAME"
     SAFARI_BROWSER_NAME="$NAME" "$SB" daemon stop >/dev/null 2>&1 || true
 else
     skip "daemon parity (daemon start failed: $(head -1 "$TMP/daemon.out"))"

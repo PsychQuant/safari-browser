@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 
 repo = Path(sys.argv[1])
 binary = Path(sys.argv[2]).resolve()
@@ -67,6 +68,45 @@ with tempfile.TemporaryDirectory(prefix="sb-executor-") as directory:
         for iteration in range(3):
             request("return 42", iteration * 2 + 1)
             request("delay 0.3\nreturn 42", iteration * 2 + 2)
+        # #141: the real __serve process retains its five-second deadline
+        # even with MainActor occupied by synchronous AppleScript execution.
+        sent = threading.Event()
+        replies = []
+        def blocked_request():
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                    connection.settimeout(8)
+                    connection.connect(socket_path)
+                    reader = connection.makefile("rb")
+                    json.loads(reader.readline())
+                    connection.sendall((json.dumps({
+                        "method": "applescript.execute",
+                        "params": {"source": "delay 30\nreturn 42"}, "requestId": 141,
+                    }) + "\n").encode())
+                    sent.set()
+                    replies.append(reader.readline())
+            except (OSError, ValueError) as error:
+                replies.append(error)
+        worker = threading.Thread(target=blocked_request, daemon=True)
+        worker.start()
+        assert sent.wait(2), "blocking request was not sent"
+        time.sleep(0.3)
+        started = time.monotonic()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(2)
+            connection.connect(socket_path)
+            reader = connection.makefile("rb")
+            json.loads(reader.readline())
+            connection.sendall(b'{"method":"daemon.shutdown","params":{},"requestId":142}\n')
+            reply = json.loads(reader.readline())
+            assert reply.get("requestId") == 142 and "result" in reply, reply
+        daemon.wait(timeout=6.5)
+        elapsed = time.monotonic() - started
+        assert daemon.returncode == 0, daemon.returncode
+        worker.join(timeout=2)
+        assert not worker.is_alive(), "in-flight caller did not finish on shutdown"
+        assert replies, "missing cancellation/EOF outcome"
+        print(f"PASS production shutdown during blocked AppleScript: {elapsed:.3f} s", flush=True)
     finally:
         daemon.terminate()
         try:

@@ -38,6 +38,8 @@ enum SafariBrowserError: LocalizedError {
     case ambiguousWindowMatch(pattern: String, matches: [(windowIndex: Int, url: String)])
     case backgroundTabNotCapturable(windowIndex: Int, tabIndex: Int)
     case noSafariWindow
+    case guiSessionLocked
+    case guiSessionUnavailable
     case elementNotFound(String)
     case accessibilityNotGranted
     case accessibilityRequired(flag: String)
@@ -237,6 +239,10 @@ enum SafariBrowserError: LocalizedError {
                   2. Use --window N --tab-in-window M to target a specific tab by position.
                   3. Pass --first-match to accept the first match (with a stderr warning listing all candidates).
                 """
+        case .guiSessionLocked:
+            return "The macOS GUI session is locked. Unlock the screen and retry; Safari windows and dialogs cannot be inspected while locked."
+        case .guiSessionUnavailable:
+            return "The macOS GUI session is unavailable. Run this command from an active, logged-in desktop session; Safari windows and dialogs cannot be inspected here."
         case .noSafariWindow:
             return "No Safari window found"
 

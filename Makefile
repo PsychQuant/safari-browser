@@ -213,10 +213,11 @@ test-install-signature: $(VERIFY_BIN)
 
 # ── CI-safe tiers (no live Safari required) ──────────────────────────
 test:
-	SKIP_E2E=1 swift test
+	python3 scripts/run-unit-tests.py
 
 test-unit:
-	SKIP_E2E=1 swift test
+	python3 Tests/unit-runner-test.py
+	python3 scripts/run-unit-tests.py
 
 # Smoke: run the real binary's CLI contract (help/parse/validation errors)
 # WITHOUT Safari — ArgumentParser + our custom main() resolve before any

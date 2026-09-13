@@ -145,6 +145,7 @@ enum DaemonDispatch {
             guard let steps = envelope["steps"] as? [[String: Any]] else {
                 throw ExecRunScriptError.malformedEnvelope("missing or invalid 'steps' array")
             }
+            let probeOptions = try envelope["dialogProbe"].map { try DialogProbeOptions(jsonValue: $0) }
             let targetArgs = (envelope["targetArgs"] as? [String]) ?? []
             let maxSteps = (envelope["maxSteps"] as? Int) ?? ScriptInterpreter.defaultMaxSteps
             let markTabRaw = (envelope["markTab"] as? String) ?? "off"
@@ -176,6 +177,9 @@ enum DaemonDispatch {
                 throw ExecRunScriptError.parseError("invalidScriptFormat", "\(error)")
             }
 
+            let context = DaemonRequestContext.current ?? DaemonRequestContext()
+            try context.configureDialogProbe(probeOptions)
+
             let interpreter = ScriptInterpreter(
                 maxSteps: maxSteps,
                 dispatcher: InProcessStepDispatcher()
@@ -190,12 +194,14 @@ enum DaemonDispatch {
             // body runs directly, so the daemon path stays zero-overhead
             // when no marker is requested.
             let resolved = target.resolve()
-            let results: [StepResult] = try await SafariBridge.markTabIfRequested(
-                target: resolved,
-                mode: markTabMode,
-                firstMatch: target.firstMatch
-            ) {
-                try await interpreter.runSteps(parsedSteps, target: target)
+            let results: [StepResult] = try await DaemonRequestContext.$current.withValue(context) {
+                try await SafariBridge.markTabIfRequested(
+                    target: resolved,
+                    mode: markTabMode,
+                    firstMatch: target.firstMatch
+                ) {
+                    try await interpreter.runSteps(parsedSteps, target: target)
+                }
             }
 
             // Encode the results array back as JSON. `StepResult.encodeArray`
