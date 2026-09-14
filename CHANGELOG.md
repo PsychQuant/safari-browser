@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Repository checkout metadata** (#165): stop tracking generated SafariVision Xcode build data, including undeclared dependency gitlinks that broke standard GitHub checkout. The cache directory is ignored, and Git tracking/submodule regression checks protect the checkout path.
+
 - **Verified PDF publication** (#160): exports use a private staging `.pdf`, a shared native deadline and original-window/page checks. Success requires save-panel closure and a coherent, readable independent PDF snapshot, published atomically. Extensionless paths receive `.pdf`; explicit extensions are preserved and stdout names the actual output. `--overwrite` authorizes final entry replacement without following a leaf symlink; no native Replace action is sent. This supersedes the #106 completion-timing limitation below.
 
 - **Current native dialog query** (#108): `is dialog [--json]` uses a bounded, independent AX observation of Safari's main window while a JavaScript click is waiting. It reports true/false/unknown, with unknown exiting 2; it does not activate Safari or dismiss dialogs. Clear requires a complete stable on-screen, non-minimized window, including when another application is foreground. Native in-flight and inactive-window fixtures passed with guarded recovery and exactly one click handler execution.
