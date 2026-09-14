@@ -106,7 +106,8 @@ rule in §3 is correctly vacuous over them.
 | Cancel a native file dialog | `dialog dismiss --button` — same command | same | Accessibility | already non-HID |
 | Probe a resolved target window before a document/native operation (#133–#138) | Stable window ID → bounded native AX walk; 200 ms total per logical command, no queued work while busy; default screenshot uses its resolved capture ID | same | Accessibility — denied, failed or incomplete reads remain unknown; WebArea contents are outside native-dialog scope | already non-HID — read-only, no `AXPress` |
 | Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | JS-from-Apple-Events for this step; `upload --native` as a whole needs Accessibility for the steps after it | already non-HID |
-| **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | no AX interface for it — see §4.1 | Accessibility | **disproven** — see §4.1 |
+| **Choose an arbitrary file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | Location ancestor menu + list-row selection/disclosure; coverage remains incomplete | Accessibility | **disproven as a complete replacement**: tested hidden files/folders were not exposed by this candidate; retain HID — see §4.1 |
+| Choose an AX-exposed descendant from a confirmed ancestor | currently part of the same native HID path | Location menu → list mode → AXSelected/AXDisclosing → named Upload | Accessibility | **proven for the owned visible-tree case** (2026-09-14); not a generic path-replacement licence — see §4.1 |
 | **Name the save destination for a PDF** | same keystrokes, via shared `SafariBridge.fileDialogNavigationScript` | AXValue of filename field → AXConfirm → named Save AXPress | Accessibility | **disproven** for this candidate (2026-09-13): slashes become colons and output remains in the old directory; other AX routes remain open — see §4.2 |
 | Open the PDF export sheet | Unique File/檔案 → Export as PDF…/輸出為PDF⋯ menu item click | same | Accessibility | already non-HID — English and Traditional Chinese labels supported; Traditional Chinese exercised end to end on 2026-09-13; other locales fail explicitly |
 | Confirm a native dialog sheet (Open / Save / "Replace?") | Unique enabled named Open/Upload/Save button, including supported Traditional Chinese labels; PDF destination replacement uses verified atomic publication with `--overwrite`, never a native Replace action | AX button press, including buttons in the sheet’s split group | Accessibility; PDF path entry still needs `--allow-hid` | **already non-HID** — owned Upload/Save/Replace exercised on 2026-09-13; initial confirmation Return fallback removed (#107). Path navigation is a separate row |
@@ -193,7 +194,7 @@ replacement, removes a working capability and replaces it with nothing.
 
 `disproven` withholds the licence — it does not close the question. The status
 records that one attempt failed, which is not the same as establishing that no
-non-HID path exists. §4.1 is `disproven` and still names an untried route.
+non-HID path exists. §4.1 now records a proven visible-tree case and failed hidden-path coverage; the full replacement remains unproven.
 
 The rule has now been applied to native file confirmation (#107). On
 2026-09-13 the owned Upload, Save, and Replace fixtures established named AX
@@ -324,57 +325,73 @@ of historical curiosities.
 
 ## 4. Exceptions and open questions
 
-### 4.1 Choosing a file — the accessibility interface for it does not exist
+### 4.1 Choosing a file — list selection works; full path coverage remains open
 
-`upload --native` uses `Cmd+Shift+G` → `Cmd+V` → `Return`
-(`SafariBridge.swift`, `UploadCommand.swift`). This is **not** an oversight that
-the rule can simply retire.
+`upload --native` still uses `Cmd+Shift+G` → `Cmd+V` → `Return`
+through the shared navigation fragment. The earlier claim that no accessibility
+interface exists for file selection was too broad. It relied on a search-field
+experiment and a partial column-view inspection; the new list-view measurement
+contradicts it.
 
-Measured attempt: with the file dialog open, its accessibility tree contains
-exactly one `AXTextField` (offering `AXShowMenu` and `AXConfirm`). Writing the
-full path into it **succeeded** (the value read back correctly), `AXConfirm`
-**succeeded**, and pressing the Upload button **succeeded** — yet the page saw
-`input.files.length === 0` and the sheet stayed open.
+In the older experiment, setting an absolute path on the field described as
+`搜尋文字欄位` changed the search field, not the selected file. An AXConfirm or
+button acknowledgement was not proof that the page received a file. Subsequent
+native C AX measurements separated advertised capability from actual behavior:
 
-**Measured 2026-08-07, and the hypothesis held — but it was not the whole story.**
-The sheet has exactly one `AXTextField`, and its description is *"搜尋文字欄位"* —
-the search box. So the earlier attempt did write a path successfully, into the
-wrong field, which is why the value read back correctly while the page saw
-nothing.
+| Column-view candidate | Actual result |
+|---|---|
+| Inner AXList `AXSelectedChildren` | Advertised writable, but setter returned -25205 |
+| File AXGroup/AXTextField `AXOpen` | Returned -25205 |
+| Filename AXTextField `AXConfirm` | Returned 0, selected count remained 0 |
+| Filename AXTextField `AXPress` | Returned 0, but an A/B upload still delivered the original baseline file |
 
-The deeper finding is that the file browser cannot be driven at all. Its
-structure is legible:
+List view exposes a different useful structure:
 
+```text
+AXOutline
+  AXRow                       AXSelected writable; folders also AXDisclosing
+    AXCell
+      AXTextField             AXURL identifies the exact file or folder
 ```
-AXBrowser                    actions: AXShowMenu   (no AXPress)
-  AXScrollArea × 4           one per column
-    AXList
-      AXGroup × N            one per entry — the value is the filename
-```
 
-Entries are *readable*: the walk returns `CLAUDE.md`, `photo.jpg`, and so on. But
+An owned test first selected a baseline file, switched to list view, located a
+different target by exact AXURL, and set its row's `AXSelected=true` once.
+Readback confirmed selection, and the named Upload action delivered the target
+filename and content to the page. That first test still used HID for directory
+setup; it established selection, not a whole non-HID route.
 
-- an entry has **no actions at all** — no `AXPress`, nothing;
-- an entry has **no `AXSelected`** attribute;
-- its `AXCustomActions` reads as `missing value`;
-- the enclosing `AXList` does expose `AXSelectedChildren`, and it is **not
-  writable** — the attempt aborts.
+A later complete test started in a verified, remembered owned directory and
+used **no keystrokes, key codes, clipboard paste, or Go-to-Folder**. It selected
+a verified ancestor from the `位置：` menu, switched to list view, and traversed
+two folder levels with `AXSelected=true` plus `AXDisclosing=true`. The final
+row selection and named Upload delivered one file with the exact nonce name and
+content. The folder cell's `AXOpen` had failed with -25205; disclosure was the
+working operation. This is a proven route for that visible-tree case.
 
-Selection lives on the list rather than on the entries, and the list will not
-accept one. So there is no accessibility interface for *choosing* a file, and
-`#101`'s proposed route — drive the browser to select the target directly — is
-not blocked by the nested sheet at all. It is blocked one level earlier.
+Restoring column view **before** Upload lost the usable selection of the nested
+file and disabled Upload. The successful test uploaded in list view, then
+opened another owned chooser solely to restore column view and cancel it. All
+owned UI was cleaned up. A non-HID implementation must account for view
+preference restoration as well as selection; AX setters do not remove those
+side effects.
 
-That makes this row's `disproven` stronger than the label's definition. The
-status means "one attempt failed"; what was measured is that the interface an
-attempt would need is absent. Still not "impossible forever" — macOS can widen
-what it exposes — but a re-measurement should look for a *new* API rather than a
-better way to use the current one.
+The same candidate did not expose a hidden target folder or a hidden target
+file after successful parent disclosure: each exact-URL lookup returned zero
+candidates without an incomplete flag, and no upload was attempted. Those
+observations do not prove all hidden-path techniques impossible. Nor does the
+successful remembered-ancestor case establish navigation from every possible
+starting directory. Both coverage gaps remain in #101, so the generic HID
+sequence is retained and the issue is not yet verified.
 
-Tracked in **#101**, which now carries the measurement.
+The latest environment readback is macOS 27.0 (26A428), Safari 27.0
+(22625.1.29.11.27). These are owned measurements, not a portable automated
+acceptance harness. See the [selection evidence](https://github.com/PsychQuant/safari-browser/issues/101#issuecomment-5655838750)
+and [complete visible-tree case and hidden-path limits](https://github.com/PsychQuant/safari-browser/issues/101#issuecomment-5661369453).
+The deletion rule in §3 requires the same supported input domain; a positive
+subset cannot justify removing support for other paths.
 
-Note also that `UploadCommand` embeds the shared navigation fragment rather than
-calling it (#105), so a replacement changes one generator and two embeddings.
+`UploadCommand` embeds the shared navigation generator rather than invoking it
+separately (#105). No production navigation behavior is changed by this record.
 
 ### 4.2 Naming a PDF's save destination — direct filename-path candidate disproven
 
@@ -525,7 +542,7 @@ representation. Execution paths are an instance of P02, not an extension of it.
 ## See also
 
 - [`openspec/specs/non-interference/spec.md`](../openspec/specs/non-interference/spec.md) — the principle this document expands along the execution-path axis
-- **#101** — choosing a file in the open panel: measured, and the AX interface a non-HID route would need is absent (blocks retiring `upload`'s keystrokes)
+- **#101** — list-row selection and visible-tree disclosure have succeeded; hidden paths and arbitrary starting directories remain unproven, so the generic upload keystrokes remain
 - **#102** — naming the save destination for a PDF: the direct filename-path candidate failed; other routes and isolated Print testing remain open. Note the export *invocation* is already non-HID; only the save panel needs a route
 - **#103** — `dialog list` / `dialog dismiss`: proven non-HID, no opt-in command yet
 - **#67** — stuck native file dialog; the failure family that lives on the HID path
