@@ -1,0 +1,28 @@
+name: Repository Tracking
+on:
+  push:
+    branches: [main, codex/165-generated-build-cache]
+    paths:
+      - .gitignore
+      - Makefile
+      - Tests/repository-tracking-test.py
+      - .github/workflows/repository-tracking.yml
+      - safari-vision/.xcodebuild/**
+  pull_request:
+    paths:
+      - .gitignore
+      - Makefile
+      - Tests/repository-tracking-test.py
+      - .github/workflows/repository-tracking.yml
+      - safari-vision/.xcodebuild/**
+permissions:
+  contents: read
+jobs:
+  tracking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - run: make test-repository-tracking
