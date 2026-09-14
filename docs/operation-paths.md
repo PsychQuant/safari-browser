@@ -383,6 +383,22 @@ successful remembered-ancestor case establish navigation from every possible
 starting directory. Both coverage gaps remain in #101, so the generic HID
 sequence is retained and the issue is not yet verified.
 
+Further [owned probes](https://github.com/PsychQuant/safari-browser/issues/101#issuecomment-5661753178) did not establish a direct path-entry substitute. The
+native Open panel's Edit → Paste menu item was disabled in the observed state
+(no clipboard content was changed by that probe). The sheet and browser/list
+attribute inventories exposed no dedicated directory or hidden-file setting.
+`AXReplaceRangeWithText` was advertised on the browser, but the attempted
+range/path invocation returned `kAXErrorNoValue` and did not open Go-to-Folder.
+A separate attempt to focus the browser returned an acknowledgement while
+`AXFocused` read back false, so that trial did not proceed to text insertion.
+These are scoped negative results, not proof that every possible AX technique
+is impossible.
+
+AppKit does offer an application-side [`showsHiddenFiles` property](https://developer.apple.com/documentation/appkit/nssavepanel/showshiddenfiles).
+Its existence does not establish a remotely writable Safari AX attribute; the
+measured external interface must be assessed separately. No global hidden-file
+preference was changed during these probes.
+
 The latest environment readback is macOS 27.0 (26A428), Safari 27.0
 (22625.1.29.11.27). These are owned measurements, not a portable automated
 acceptance harness. See the [selection evidence](https://github.com/PsychQuant/safari-browser/issues/101#issuecomment-5655838750)
