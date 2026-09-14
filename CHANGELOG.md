@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Verified PDF publication** (#160): exports use a private staging `.pdf`, a shared native deadline and original-window/page checks. Success requires save-panel closure and a coherent, readable independent PDF snapshot, published atomically. Extensionless paths receive `.pdf`; explicit extensions are preserved and stdout names the actual output. `--overwrite` authorizes final entry replacement without following a leaf symlink; no native Replace action is sent. This supersedes the #106 completion-timing limitation below.
+
 - **Current native dialog query** (#108): `is dialog [--json]` uses a bounded, independent AX observation of Safari's main window while a JavaScript click is waiting. It reports true/false/unknown, with unknown exiting 2; it does not activate Safari or dismiss dialogs. Clear requires a complete stable on-screen, non-minimized window, including when another application is foreground. Native in-flight and inactive-window fixtures passed with guarded recovery and exactly one click handler execution.
 
 - **Named native file confirmations** (#107): Open/Upload/Save confirmation finds one enabled named button, including native split-group buttons, and never falls back to Return. PDF replacement requires explicit `--overwrite`; traces reach stderr after the subprocess completes. English and Traditional Chinese PDF export menu labels are supported. Owned Upload/Save/Replace and late-destination refusal were exercised on macOS/Safari 27.0; this supersedes the earlier unresolved confirmation-fallback entry below.

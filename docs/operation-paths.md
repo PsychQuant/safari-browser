@@ -109,7 +109,7 @@ rule in §3 is correctly vacuous over them.
 | **Choose a file in that dialog** | `Cmd+Shift+G` → `Cmd+V` → `Return` | no AX interface for it — see §4.1 | Accessibility | **disproven** — see §4.1 |
 | **Name the save destination for a PDF** | same keystrokes, via shared `SafariBridge.fileDialogNavigationScript` | AXValue of filename field → AXConfirm → named Save AXPress | Accessibility | **disproven** for this candidate (2026-09-13): slashes become colons and output remains in the old directory; other AX routes remain open — see §4.2 |
 | Open the PDF export sheet | Unique File/檔案 → Export as PDF…/輸出為PDF⋯ menu item click | same | Accessibility | already non-HID — English and Traditional Chinese labels supported; Traditional Chinese exercised end to end on 2026-09-13; other locales fail explicitly |
-| Confirm a native dialog sheet (Open / Save / "Replace?") | Unique enabled named Open/Upload/Save button, including supported Traditional Chinese labels; PDF replacement separately requires `--overwrite` and unique Replace/取代 | AX button press, including buttons in the sheet’s split group | Accessibility; PDF path entry still needs `--allow-hid` | **already non-HID** — owned Upload/Save/Replace exercised on 2026-09-13; initial confirmation Return fallback removed (#107). Path navigation is a separate row |
+| Confirm a native dialog sheet (Open / Save / "Replace?") | Unique enabled named Open/Upload/Save button, including supported Traditional Chinese labels; PDF destination replacement uses verified atomic publication with `--overwrite`, never a native Replace action | AX button press, including buttons in the sheet’s split group | Accessibility; PDF path entry still needs `--allow-hid` | **already non-HID** — owned Upload/Save/Replace exercised on 2026-09-13; initial confirmation Return fallback removed (#107). Path navigation is a separate row |
 
 ### Permissions do not track the HID split
 
@@ -219,17 +219,21 @@ stderr was discarded despite the AppleScript `log` statements.
 
 The caller's native file operation authorizes initial confirmation for the
 specified path. PDF replacement requires the additional `--overwrite` flag;
-`--allow-hid` alone does not authorize it. Existing destinations are refused
-before GUI interaction without that flag, as are detected replacement prompts
-appearing later. Authorized replacement requires a unique `Replace` or `取代`
-button. Missing or ambiguous matches fail without Return. See the named
+`--allow-hid` alone does not authorize it. Existing effective destinations are
+refused before GUI interaction without that flag; late destinations are preserved
+by atomic no-replace. Safari writes to a unique private staging `.pdf`, so any
+additional native confirmation is refused regardless of overwrite authorization.
+The independent verified snapshot replaces the final directory entry only after
+native sheet closure. A leaf symlink is replaced without writing its referent;
+directories, links to directories, and special files are refused. See the named
 exception in the [non-interference specification](../openspec/specs/non-interference/spec.md).
 
 The owned upload fixture checked the page's file count, filename, and content.
 The PDF fixtures checked the requested output path and `%PDF-` content, including
-replacement of an owned sentinel. File writes may finish after the press and
-CLI return; verification waits for the actual file and confirms all fixture
-panels/windows are gone. These measurements do not resolve #101's file
+replacement of an owned sentinel. Those #107 measurements observed writes after
+CLI return; #160 changes the completion contract to require native sheet closure
+and a validated independent PDF snapshot before publication. The original
+measurements alone do not validate that new lifecycle. These measurements do not resolve #101's file
 selection alternatives or #102's remaining destination and isolated Print
 experiments.
 
@@ -385,9 +389,9 @@ falls back to Print or a keyboard shortcut.
 The largest HID residue is one step later: `PdfCommand` uses the shared
 `SafariBridge.fileDialogNavigationScript` fragment to enter the save destination
 with `Cmd+Shift+G` → `Cmd+V` → `Return` inside its single export script. The
-initial named-button confirmation does not use Return. The separate authorized
-replacement branch now presses only a unique `Replace` / `取代` button and has
-no Return fallback. Retiring `--allow-hid` still needs evidence covering
+initial named-button confirmation does not use Return. Final destination
+replacement is handled through atomic filesystem publication under `--overwrite`;
+no native Replace confirmation is dispatched. Retiring `--allow-hid` still needs evidence covering
 path entry.
 
 This matters for how the remaining work is scoped, and there are two separate
@@ -534,15 +538,29 @@ exercised on macOS 27.0 / Safari 27.0 on 2026-09-13. Upload checked the page's
 file count, name, and content; PDF checked the requested `.pdf` path and actual
 PDF bytes. All owned sheets and windows were cleaned up.
 
-These results do not make CLI return a file-completion guarantee. The current
-export script checks replacement once after 0.5 seconds; a later prompt can be
-missed, and a file write can finish after the CLI returns. The latter was
-observed during authorized replacement. [#160](https://github.com/PsychQuant/safari-browser/issues/160)
-tracks bounded terminal-state observation, effective filenames, and output
-completion, including the gap with the existing precise-waits specification.
-The late-created-file refusal test covered a prompt that appeared within the
-existing check; it did not simulate a prompt delayed beyond 0.5 seconds.
+Those #107 results did not make CLI return a file-completion guarantee. That
+script checked replacement once after 0.5 seconds, and a file write was observed
+to finish after CLI return. The late-created-file test covered a prompt within
+that interval, not a later prompt. [#160](https://github.com/PsychQuant/safari-browser/issues/160)
+replaces that flow with a common deadline, owner and staging-name checks,
+terminal sheet observation, coherent PDF snapshot validation, and a single atomic
+publication. The #160 acceptance record supplies evidence for the new flow;
+these older measurements remain scoped to the prior confirmation behavior.
 
 A refused initial confirmation or late replacement can leave the native sheet
 open. Cancel it in Safari before retrying. Neither refusal authorizes an
 automatic extra confirmation.
+
+### Verified PDF publication acceptance (#160)
+
+On 2026-09-14, owned localhost fixtures on macOS/Safari 27.0 exercised new PDF,
+extensionless output, explicit `.txt` output, authorized replacement of a sentinel,
+and a destination created after the pre-GUI warning. Successful CLI returns
+identified the actual path and `pdfinfo` immediately read the PDF; the late
+sentinel remained byte-for-byte intact with a nonzero exit and no success output.
+All owned sheets/windows were cleaned up. Two other trials lost focus before
+path-entry keystrokes, failed without creating output, and required guarded
+cancellation of their owned panels. These establish observed fail-closed behavior,
+not complete GUI isolation against every timing race. Unit tests additionally
+exercise source mutation/replacement during copy, independent inode publication,
+atomic no-replace, invalid PDFs, deadline/cancellation, permissions and symlinks.
