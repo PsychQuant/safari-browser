@@ -3,6 +3,8 @@ on:
   push:
     branches: [codex/102-isolated-print-verification]
     paths:
+      - .gitignore
+      - safari-vision/.xcodebuild/**
       - .github/workflows/isolated-print-qualification.yml
       - Tests/isolated-print-qualification.py
       - Tests/isolated-print-qualification-test.py
