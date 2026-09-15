@@ -9,6 +9,7 @@ BINARY_NAME = safari-browser
 SAFARI_BROWSER_BIN ?= .build/debug/$(BINARY_NAME)
 export SAFARI_BROWSER_BIN
 
+.PHONY: test-repository-tracking
 .PHONY: test-data-interruption test-mutation-gate test-daemon-executor test-dialog-harness test-install-atomic test-signature-entrypoint
 .PHONY: build build-debug install install-signed clean \
         verify-developer-id verify-install-signature \
@@ -196,6 +197,9 @@ test-signature-entrypoint:
 test:
 	python3 scripts/run-unit-tests.py
 
+test-repository-tracking:
+	python3 Tests/repository-tracking-test.py
+
 test-unit:
 	python3 Tests/unit-runner-test.py
 	python3 scripts/run-unit-tests.py
@@ -254,7 +258,7 @@ test-mutation-gate:
 # test-install-signature-strict` refuses to pass on a partial run — that is
 # the target to use on a machine that has both identities, and the one this
 # repo's own verification uses.
-test-all: test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint test-data-interruption test-mcp test-background-dialog-harness test-current-dialog-harness
+test-all: test-repository-tracking test-unit test-smoke test-daemon-executor test-dialog-harness test-signature-entrypoint test-data-interruption test-mcp test-background-dialog-harness test-current-dialog-harness
 	@ALLOW_INCOMPLETE=1 $(MAKE) --no-print-directory test-install-signature
 	@echo "✓ unit + smoke + install-signature green"
 
