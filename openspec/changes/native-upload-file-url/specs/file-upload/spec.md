@@ -6,7 +6,7 @@ The system SHALL use the native macOS file dialog by default when Accessibility 
 
 The native operation SHALL preserve a complete bounded snapshot of readable pasteboard items/types before changing it, refuse unreadable or oversized snapshots, restore on success/error/timeout while its changeCount still matches, and preserve observed newer content. It SHALL warn on retained newer content or restoration failure. It SHALL NOT promise restoration after forced process termination or atomicity against other processes.
 
-The native operation SHALL capture the intended window ID, document nonce/URL and input identity before opening a chooser in the same bounded script. It SHALL refuse pre-existing sheets, changed ownership, lost focus, changed pasteboard ownership, unexpected nested sheets, ambiguous/disabled confirmation, or timeout without a keyboard fallback or replay. Success SHALL require evidence of a new input change for this operation and sheet completion and one actual File matching the caller file's normalized name, size and modification time within 1 ms.
+The native operation SHALL capture the intended window ID, document nonce/URL and input identity before opening a chooser in the same bounded script. It SHALL refuse pre-existing sheets, changed ownership, lost focus, changed pasteboard ownership, unexpected nested sheets, ambiguous/disabled confirmation, or timeout without a keyboard fallback or replay. Success SHALL require evidence of a new input change for this operation and sheet completion and one actual File matching the caller file's normalized name, size and modification time either within 1 ms of the expected millisecond value or exactly equal to that value truncated toward zero to whole seconds. It SHALL NOT accept an arbitrary one-second tolerance.
 
 #### Scenario: Hidden and special paths
 - **WHEN** native upload receives a hidden file with Chinese characters, spaces or quotes in its path from an unrelated chooser directory
@@ -40,3 +40,15 @@ The command SHALL preserve the pre-existing input selection while opening the ch
 #### Scenario: Cancel with an already matching file
 - **WHEN** the original input already contains matching metadata and the chooser is cancelled
 - **THEN** the command SHALL fail for missing new-selection evidence and SHALL preserve the previous selection
+
+### Requirement: Native file timestamp representation is verified with WebKit
+The timestamp validator SHALL accept the exact millisecond representation and the measured whole-second truncation representation of a native WebKit File. Names, sizes and fresh-selection evidence SHALL remain required. Tests SHALL exercise real WebKit File objects through an owned public open-panel delegate without displaying a chooser; this SHALL NOT be treated as Safari AX acceptance.
+
+#### Scenario: Native timestamp loses fractional seconds
+- **WHEN** a file has modification time 1700000000627 ms and WebKit exposes 1700000000000 ms
+- **THEN** metadata validation SHALL accept that exact whole-second representation
+- **AND** it SHALL reject 1700000001000 ms and 1700000000100 ms for that expected time
+
+#### Scenario: Pre-epoch native timestamp
+- **WHEN** a file has modification time -1999 ms and WebKit exposes -1000 ms
+- **THEN** validation SHALL use truncation toward zero and SHALL NOT construct invalid JavaScript by joining two minus signs

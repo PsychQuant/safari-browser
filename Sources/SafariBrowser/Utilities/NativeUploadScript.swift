@@ -58,7 +58,12 @@ enum NativeUploadScript {
             var f=files[0];
             if(typeof f.name!=='string' || f.name.normalize('NFC')!=='\(fileName.escapedForJS)'.normalize('NFC')) return 'MISMATCH_NAME';
             if(f.size!==\(fileSize)) return 'MISMATCH_SIZE';
-            if(!Number.isFinite(f.lastModified) || Math.abs(f.lastModified-\(modificationTimeMilliseconds))>1) return 'MISMATCH_TIME';
+            var expectedModified=\(modificationTimeMilliseconds);
+            // Native WebKit File timestamps can be whole seconds, truncated
+            // toward zero. Accept that exact representation, not a 1s range.
+            if(!Number.isFinite(f.lastModified) ||
+               (Math.abs(f.lastModified-expectedModified)>1 &&
+                f.lastModified!==Math.trunc(expectedModified/1000)*1000)) return 'MISMATCH_TIME';
             return 'OK';
         })()
         """

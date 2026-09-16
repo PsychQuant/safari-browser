@@ -19,7 +19,7 @@ NativeUploadScript.make 接受 selector、absolute path、fileSize、modificatio
 
 ### 實際選取完成
 
-在固定頁面上保留原 input 的 JavaScript reference，逐次確認仍為同一元素及文件。本次捕捉 input change 事件作為新選取證據，避免 Cancel＋舊匹配檔案誤判；未觀察新事件的相同檔案重選明確失敗且不清空舊 input。待 sheet 消失後，檢查 exactly one File，其 NFC 正規化檔名、size 與 lastModified（允許 1 ms 時間精度差）符合開始時檔案 metadata；若頁面改變、元素被替換、數值不符或截止則失敗。metadata 是結果一致性檢查，並非所有檔案內容的密碼學證明；實測 fixture 另驗證內容。頁面私有 nonce 變數在可安全存取原頁面時清理。
+在固定頁面上保留原 input 的 JavaScript reference，逐次確認仍為同一元素及文件。本次捕捉 input change 事件作為新選取證據，避免 Cancel＋舊匹配檔案誤判；未觀察新事件的相同檔案重選明確失敗且不清空舊 input。待 sheet 消失後，檢查 exactly one File，其 NFC 正規化檔名、size 與 lastModified（毫秒值允許 1 ms 精度差，或恰為朝零截斷到整秒的值；不接受一般 ±1 秒範圍）符合開始時檔案 metadata；若頁面改變、元素被替換、數值不符或截止則失敗。metadata 是結果一致性檢查，並非所有檔案內容的密碼學證明；實測 fixture 另驗證內容。頁面私有 nonce 變數在可安全存取原頁面時清理。
 
 ## Implementation Contract
 
@@ -46,3 +46,5 @@ NativeUploadScript.make 接受 selector、absolute path、fileSize、modificatio
 無待使用者裁決事項；實作中若 metadata 或 Safari 操作觀察與設計不同，以新的實測修正 artifact 並記錄。
 
 正常輪詢到期會先進腳本錯誤清理；清理 AppleEvents 各使用 1 秒上限。Stalled IPC、SIGKILL 或清理期間失去 owner 仍不能保證選單／頁面狀態被移除，這時不重送操作，需使用者檢查殘留面板。
+
+本機公開 WKUIDelegate 無視窗測試提供真實 File：原樣本 1789595607627 ms 被回報為 1789595607000 ms；正負時間及秒邊界均呈現朝零截斷。NativeUploadWebKitTests 直接將真實 File 交給正式 validator，補足假 DOM 模型的缺口；此測試不涵蓋 Safari AX／選單整段流程。

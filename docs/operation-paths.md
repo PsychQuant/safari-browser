@@ -369,9 +369,14 @@ file without a fresh change event is an explicit unverified outcome.
 
 **CLI acceptance remains in progress:** the integrated CLI delivered the
 correct owned filename/content, but its final metadata check returned a
-mismatch. Field-specific diagnostics and size/mtime capture are prepared for
-the next live run. This is not yet a verified production delivery; the
-prototype evidence above must not be confused with that remaining check.
+mismatch. A subsequent no-window WKWebView test reproduced MISMATCH_TIME using
+real File objects: millisecond timestamps are exposed as whole seconds,
+truncated toward zero on the measured installed WebKit. The validator now
+accepts that exact representation (or a matching millisecond value), not an
+arbitrary one-second range. Positive/negative times and second boundaries are
+covered by runtime and JavaScript tests. This isolates an actual validator
+compatibility defect, but does not replace the pending Safari CLI retest or
+its prepared size/mtime capture. This is not yet a verified production delivery.
 
 Historical candidates remain useful negative evidence:
 

@@ -77,6 +77,24 @@ final class NativeUploadScriptTests: XCTestCase {
         XCTAssertNil(context.exception)
     }
 
+    func testTimestampAcceptsOnlyExactOrWholeSecondTruncation() throws {
+        for (expected, observed, verdict) in [
+            (123456, 123000, "OK"), (123999, 123000, "OK"),
+            (-1999, -1000, "OK"), (-627, 0, "OK"),
+            (123456, 124000, "MISMATCH_TIME"), (123456, 123100, "MISMATCH_TIME"),
+            (123456, 122000, "MISMATCH_TIME"), (-1999, -2000, "OK"),
+            (-1999, -3000, "MISMATCH_TIME")
+        ] {
+            let context = try context()
+            initialize(context)
+            context.evaluateScript("input.files=[{name:'café.txt',size:17,lastModified:\(observed)}];listener({target:input,isTrusted:true});")
+            let script = NativeUploadScript.completionJS(selector: "#upload", nonce: "fixture",
+                fileName: "café.txt", fileSize: 17, modificationTimeMilliseconds: Int64(expected))
+            XCTAssertEqual(context.evaluateScript(script)?.toString(), verdict, "\(expected) → \(observed)")
+            XCTAssertNil(context.exception, "negative timestamps must remain valid JavaScript")
+        }
+    }
+
     func testOldSelectionAndChangedOwnerCannotSucceed() throws {
         let context = try context()
         initialize(context)
