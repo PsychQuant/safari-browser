@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Native file-selection evidence corrected** (#101): list-row `AXSelected` and folder `AXDisclosing` delivered the intended file through a tested non-HID visible-tree route. The earlier claim that file selection has no AX interface was too broad. Hidden files/folders were not exposed by the tested candidate, and arbitrary starting-directory coverage remains open; the generic HID path is retained.
+- **Repository checkout metadata** (#165): stop tracking generated SafariVision Xcode build data, including undeclared dependency gitlinks that broke standard GitHub checkout. The cache directory is ignored, and Git tracking/submodule regression checks protect the checkout path.
 
 - **Verified PDF publication** (#160): exports use a private staging `.pdf`, a shared native deadline and original-window/page checks. Success requires save-panel closure and a coherent, readable independent PDF snapshot, published atomically. Extensionless paths receive `.pdf`; explicit extensions are preserved and stdout names the actual output. `--overwrite` authorizes final entry replacement without following a leaf symlink; no native Replace action is sent. This supersedes the #106 completion-timing limitation below.
 

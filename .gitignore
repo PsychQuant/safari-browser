@@ -15,3 +15,6 @@ references/
 .claude/.idd/*
 !.claude/.idd/issue-runs/
 .claude/issue-driven-dev.local.json
+
+# SafariVision Xcode derived data and nested Swift package checkouts.
+/safari-vision/.xcodebuild/
