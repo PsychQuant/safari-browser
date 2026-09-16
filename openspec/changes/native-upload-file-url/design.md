@@ -11,11 +11,11 @@ Non-Goals：不修改 PDF 導航、不重寫 JS DataTransfer、不新增平台�
 
 ### 有界剪貼簿 lease
 
-新增上傳專用 FileURLClipboard，使用 AppKit 保存全部項目與型別（資料上限 64 MiB），在完整快照與穩定 changeCount 後寫入一個 NSURL。同程序以 pasteboard identity registry、一般剪貼簿跨程序以 UID 私有目錄的非阻塞 advisory lock 拒絕重疊 lease，避免把另一筆暫時內容當成原始快照；所有終態及 init 失敗／解構都釋放鎖。暴露寫入後 changeCount 給腳本檢查。結束時僅在仍為本次 changeCount 時還原；其他內容保留並警告。NSPasteboard 沒有跨程序 CAS，明示最後檢查與寫入間的競爭、SIGKILL／程序崩潰無法保證還原。
+新增上傳專用 FileURLClipboard，使用 AppKit 保存全部項目與型別（資料上限 64 MiB），在完整快照與穩定 changeCount 後寫入一個 NSURL。同程序以 pasteboard identity registry、一般剪貼簿跨程序以 Darwin confstr 每使用者私有暫存目錄的非阻塞 advisory lock 拒絕重疊 lease，避免把另一筆暫時內容當成原始快照；所有終態及 init 失敗／解構都釋放鎖。暴露寫入後 changeCount 給腳本檢查。結束時僅在仍為本次 changeCount 時還原；其他內容保留並警告。NSPasteboard 沒有跨程序 CAS，明示最後檢查與寫入間的競爭、SIGKILL／程序崩潰無法保證還原。
 
 ### 單一原生腳本
 
-NativeUploadScript.make 接受 selector、absolute path、fileSize、modificationTimeMilliseconds、clipboardChangeCount、window（可選 index）、timeout 與 nonce。腳本先固定 window ID、目前 tab 的頁面 nonce 與 URL，確認沒有既有 sheet；啟動 input 前檢查元素為 file input。所有 AX 動作只指向該視窗的唯一原生 sheet，檢查前景、頁面身分、剪貼簿 changeCount 與單一 deadline。以 AXPress 開啟 Edit 選單、按唯一可用 Paste；選單追蹤期間僅使用 AX owner／title／sheet、clock 與剪貼簿檢查，禁止 Safari AppleEvent／JS；Paste 後對同一選單單次 AXCancel，成功才恢復完整頁面 owner 檢查。如 sheet 尚在且無巢狀 sheet，再按唯一可用具名 Upload/Open/上傳/打開/開啟。初始按鈕確認維持 #107 的 stderr trace，不送鍵盤、不碰 default button、不重試。
+NativeUploadScript.make 接受 selector、absolute path、fileSize、modificationTimeMilliseconds、clipboardChangeCount、window（可選 index）、timeout 與 nonce。target preparation（包含 System Events recovery 與依 stable window ID 切換指定 tab）在排他 lease 內。Swift 在 spawn 前計算 absolute uptime deadline，從原本的程序 timeout 內預留 min(3 秒, timeout/4) 給 best-effort cleanup；外部 watchdog 不延長。腳本先固定 window ID、目前 tab 的頁面 nonce 與 URL，確認沒有既有 sheet；啟動 input 前檢查元素為 file input。所有 AX 動作只指向該視窗的唯一原生 sheet，檢查前景、頁面身分、剪貼簿 changeCount 與單一 deadline。以 AXPress 開啟 Edit 選單、按唯一可用 Paste；選單追蹤期間僅使用 AX owner／title／sheet、clock 與剪貼簿檢查，禁止 Safari AppleEvent／JS；Paste 後對同一選單單次 AXCancel，成功才恢復完整頁面 owner 檢查。如 sheet 尚在且無巢狀 sheet，再按唯一可用具名 Upload/Open/上傳/打開/開啟。初始按鈕確認維持 #107 的 stderr trace，不送鍵盤、不碰 default button、不重試。
 
 ### 實際選取完成
 
@@ -26,7 +26,7 @@ NativeUploadScript.make 接受 selector、absolute path、fileSize、modificatio
 - CLI flags、JS 10 MB 上限與 native routing 保持；--allow-hid 作相容旗標，native 不再控制鍵盤。
 - FileURLClipboard 在主執行緒使用，init(fileURL:pasteboard:) 預設 general，可用私人 pasteboard 測試；ownedChangeCount 為 Int；restore() 回傳 restored 或 preservedNewer，還原失敗拋出錯誤。defer／catch 涵蓋 script 錯誤與逾時。
 - NativeUploadScript.make 為純 Swift script builder，字串使用既有 escaping 與 selector.resolveRefJS。前景／owner／deadline／clipboard 等拒絕均為明確 AppleScript error，交由既有有界 runner 傳回；沒有 HID fallback。
-- NativeUploadEffects 保留 warning-before-native 的可測 interpreter；開啟面板移入同一個 script，不能留在先前獨立 JavaScript 呼叫。
+- performNativeUpload 是可測的實際生命週期：warning → 取得排他 lease／剪貼簿快照 → target preparation → 單一 script → restore。既有 NativeUploadEffects 改由這個流程取代；開啟面板不能留在先前獨立 JavaScript 呼叫。
 - stdout 不新增除錯資料。stderr 先警告原生面板、焦點及剪貼簿干擾；具名按鈕 trace 由既有 runner 經控制字元清理後轉送。
 - 測試先行：private pasteboard 多型別／錯誤／較新內容測試、script compile 與實際 interpreter 順序／錯誤傳遞、輸入結果判定。完整測試與實際特殊路徑、大檔、拒絕／逾時案例需完成，再進六方 review。
 
@@ -44,3 +44,5 @@ NativeUploadScript.make 接受 selector、absolute path、fileSize、modificatio
 ## Open Questions
 
 無待使用者裁決事項；實作中若 metadata 或 Safari 操作觀察與設計不同，以新的實測修正 artifact 並記錄。
+
+正常輪詢到期會先進腳本錯誤清理；清理 AppleEvents 各使用 1 秒上限。Stalled IPC、SIGKILL 或清理期間失去 owner 仍不能保證選單／頁面狀態被移除，這時不重送操作，需使用者檢查殘留面板。

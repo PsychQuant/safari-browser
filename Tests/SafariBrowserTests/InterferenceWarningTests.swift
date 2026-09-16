@@ -136,6 +136,39 @@ final class InterferenceWarningTests: XCTestCase {
         }
     }
 
+    func testOverlappingUploadDoesNotPrepareOrSwitchTarget() async throws {
+        let (file, board) = try fixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let first = try FileURLClipboard(fileURL: file, pasteboard: board)
+        var switched = false
+        var ran = false
+        do {
+            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: 2, timeout: 4, pasteboard: board,
+                prepareTarget: { switched = true }, warn: { _ in }, runScript: { _ in ran = true })
+            XCTFail("overlap must fail")
+        } catch FileURLClipboard.ClipboardError.overlappingLease { }
+        XCTAssertFalse(switched, "a refused second upload must not change the first upload's target")
+        XCTAssertFalse(ran)
+        XCTAssertEqual(board.changeCount, first.ownedChangeCount)
+        XCTAssertEqual(try first.restore(), .restored)
+        XCTAssertEqual(board.string(forType: .string), "previous clipboard")
+    }
+
+    func testStableWindowAndTabArePassedToNativeScript() async throws {
+        let (file, board) = try fixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        var prepared = false
+        try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: 2, timeout: 4, pasteboard: board,
+            windowID: 8128, tabIndex: 3, prepareTarget: {
+                prepared = true
+                XCTAssertNotNil(board.string(forType: .fileURL), "exclusion and clipboard lease must precede target mutation")
+            }, warn: { _ in }, runScript: { script in
+                XCTAssertTrue(prepared)
+                XCTAssertTrue(script.contains("set uploadWindowID to id of window id 8128"))
+                XCTAssertTrue(script.contains("if uploadTabIndex is not 3"))
+            })
+    }
+
     // MARK: - Routing: truth table and short-circuit
 
     /// All eight combinations. The earlier version tested four and left the

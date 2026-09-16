@@ -58,6 +58,8 @@ struct UploadCommand: AsyncParsableCommand {
     @MainActor
     static func performNativeUpload(fileURL: URL, selector: String, window: Int?, timeout: Double,
                                     pasteboard: NSPasteboard = .general,
+                                    windowID: Int? = nil, tabIndex: Int? = nil,
+                                    prepareTarget: () async throws -> Void = {},
                                     warn: (String) -> Void,
                                     runScript: (String) async throws -> Void) async throws {
         guard fileURL.isFileURL else { throw ValidationError("Native upload requires a local file URL") }
@@ -84,11 +86,17 @@ struct UploadCommand: AsyncParsableCommand {
         let clipboard = try FileURLClipboard(fileURL: resolvedURL, pasteboard: pasteboard)
         var operationError: Error?
         do {
+            // Exclusion covers every cooperating native mutation, including
+            // System Events recovery and target-tab preparation.
+            try await prepareTarget()
+            let cleanupReserve = min(3.0, timeout / 4)
+            let deadline = ProcessInfo.processInfo.systemUptime + timeout - cleanupReserve
             let script = NativeUploadScript.make(
                 selector: selector, path: resolvedURL.path, fileSize: size.int64Value,
                 modificationTimeMilliseconds: Int64(milliseconds),
                 clipboardChangeCount: clipboard.ownedChangeCount, window: window,
-                timeout: timeout, nonce: UUID().uuidString)
+                timeout: timeout, nonce: UUID().uuidString,
+                windowID: windowID, tabIndex: tabIndex, deadlineUptime: deadline)
             try await runScript(script)
         } catch { operationError = error }
 
@@ -241,71 +249,50 @@ struct UploadCommand: AsyncParsableCommand {
         let scoped = try await target.resolveProfileScoped()
         let resolved = try await SafariBridge.resolveNativeTarget(from: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
 
-        // Tab switch is a passively interfering side effect transitively
-        // authorized by --native / --allow-hid. The stderr warning in
-        // uploadViaNativeDialog covers native dialog and clipboard interference; here we add a
-        // tab-switch addendum when applicable so the user knows what
-        // extra interaction is about to happen.
-        if resolved.tabIndexInWindow != nil {
-            FileHandle.standardError.write(Data(
-                "ℹ️  Target tab will be brought to the front of its window before upload.\n".utf8
-            ))
-        }
-        try await SafariBridge.performTabSwitchIfNeeded(
-            window: resolved.windowIndex,
-            tab: resolved.tabIndexInWindow
-        )
-
-        do {
-            try await uploadViaNativeDialog(
-                selector: selector,
-                path: expandedPath,
-                timeout: timeout,
-                window: resolved.windowIndex
-            )
-        } catch {
-            // Preserve recovery hints for legacy dialog diagnostics. Current
-            // file URL upload errors remain explicit and are never retried.
-            if let guidance = Self.staleDialogGuidance(forErrorText: "\(error)") {
-                throw SafariBrowserError.appleScriptFailed("\(error)\n\n\(guidance)")
-            }
-            throw error
-        }
-    }
-
-    /// #67: detect the stale-file-dialog signature (the native dialog is
-    /// visible but rejecting keystrokes, typically after a prior aborted
-    /// attempt) and return actionable recovery guidance. Returns nil for
-    /// unrelated errors so they propagate unchanged. Pure — unit-tested.
-    static func staleDialogGuidance(forErrorText text: String) -> String? {
-        let signatures = [
-            "Go to Folder panel did not appear",
-            "File dialog did not appear",
-            "Go to Folder did not close",
-        ]
-        guard signatures.contains(where: { text.contains($0) }) else { return nil }
-        return """
-        The native file dialog opened but stopped accepting keystrokes — most likely a prior
-        aborted attempt left it in a non-interactive state (focus race / expired user gesture, #67).
-        Recover by either:
-          • Dismiss any open file dialog (press Esc), then retry from a clean state.
-          • Complete it manually: drag-and-drop the file into the upload area, OR switch to an
-            English input source, press Cmd+Shift+G, and paste the path.
-        Note: --js (DataTransfer) is capped at 10 MB (#24), so it is not a fallback for large files.
-        """
+        try await uploadViaNativeDialog(
+            selector: selector, path: expandedPath, timeout: timeout, resolved: resolved)
     }
 
     // MARK: - Native file dialog
 
     /// Click file input to open dialog, then navigate via a single combined osascript.
-    /// The chooser and AX confirmation run in one owner-bound subprocess.
-    private func uploadViaNativeDialog(selector: String, path: String, timeout: Double, window: Int? = nil) async throws {
-        if let window { _ = try await SafariBridge.getCurrentURL(target: .windowIndex(window)) }
-        try await SafariBridge.ensureSystemEventsLive()
+    /// Preparation is inside the same exclusion lease as the chooser itself.
+    private func uploadViaNativeDialog(selector: String, path: String, timeout: Double,
+                                       resolved: SafariBridge.ResolvedWindowTarget) async throws {
+        guard let windowID = resolved.windowID, windowID > 0 else {
+            throw SafariBrowserError.appleScriptFailed("Native upload could not bind a stable target window; no chooser was opened")
+        }
         try await Self.performNativeUpload(
-            fileURL: URL(fileURLWithPath: path), selector: selector, window: window, timeout: timeout,
+            fileURL: URL(fileURLWithPath: path), selector: selector,
+            window: resolved.windowIndex, timeout: timeout,
+            windowID: windowID, tabIndex: resolved.anchorTabIndex,
+            prepareTarget: {
+                try await SafariBridge.ensureSystemEventsLive()
+                if resolved.anchorTabIndex != nil {
+                    FileHandle.standardError.write(Data("ℹ️  Target tab will be brought to the front of its window before upload.\n".utf8))
+                }
+                _ = try await SafariBridge.runAppleScript(Self.nativeTargetPreparationScript(
+                    windowID: windowID, tabIndex: resolved.anchorTabIndex))
+            },
             warn: { FileHandle.standardError.write(Data($0.utf8)) },
             runScript: { script in try await SafariBridge.runFileDialogScript(script, timeout: timeout) })
+    }
+
+    static func nativeTargetPreparationScript(windowID: Int, tabIndex: Int?) -> String {
+        let selection = tabIndex.map { tab in
+            """
+            if \(tab) < 1 or \(tab) > (count tabs of window id \(windowID)) then error "Native upload target tab disappeared"
+            if index of current tab of window id \(windowID) is not \(tab) then
+                set current tab of window id \(windowID) to tab \(tab) of window id \(windowID)
+            end if
+            """
+        } ?? ""
+        return """
+        tell application "Safari"
+            if not (exists window id \(windowID)) then error "Native upload target window disappeared before preparation"
+            \(selection)
+        end tell
+        """
     }
 
     // MARK: - JS DataTransfer (--js flag)

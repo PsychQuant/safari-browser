@@ -84,7 +84,7 @@ final class FileURLClipboardTests: XCTestCase {
         try withBoard { board in
             seed(board)
             let count = board.changeCount, before = contents(board)
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             operations.readItems = { [[.init(type: .string, data: { nil })]] }
             XCTAssertThrowsError(try FileURLClipboard(fileURL: url, operations: operations))
             XCTAssertEqual(board.changeCount, count)
@@ -95,7 +95,7 @@ final class FileURLClipboardTests: XCTestCase {
     func testChangeDuringSnapshotPreservesNewerContent() throws {
         try withBoard { board in
             seed(board)
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             operations.readItems = {
                 [[.init(type: .string, data: {
                     board.clearContents()
@@ -112,7 +112,7 @@ final class FileURLClipboardTests: XCTestCase {
         try withBoard { board in
             seed(board)
             let before = contents(board)
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             operations.writeFileURL = { _ in false }
             XCTAssertThrowsError(try FileURLClipboard(fileURL: url, operations: operations)) { error in
                 XCTAssertTrue(error.localizedDescription.contains("restored"))
@@ -124,7 +124,7 @@ final class FileURLClipboardTests: XCTestCase {
     func testFailedFileURLWritePreservesDetectedConcurrentCopy() throws {
         try withBoard { board in
             seed(board)
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             operations.writeFileURL = { _ in
                 board.clearContents()
                 board.setString("concurrent writer", forType: .string)
@@ -138,7 +138,7 @@ final class FileURLClipboardTests: XCTestCase {
     func testRestorationFailureIsExplicit() throws {
         try withBoard { board in
             seed(board)
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             operations.writeItems = { _ in false }
             let lease = try FileURLClipboard(fileURL: url, operations: operations)
             XCTAssertThrowsError(try lease.restore())
@@ -162,7 +162,7 @@ final class FileURLClipboardTests: XCTestCase {
     func testNewerCopyDuringRestoreClearIsNotOverwritten() throws {
         try withBoard { board in
             seed(board)
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             var clears = 0
             operations.clear = {
                 clears += 1
@@ -182,7 +182,7 @@ final class FileURLClipboardTests: XCTestCase {
     func testWriteAndRollbackFailureAreBothReported() throws {
         try withBoard { board in
             seed(board)
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             operations.writeFileURL = { _ in false }
             operations.writeItems = { _ in false }
             XCTAssertThrowsError(try FileURLClipboard(fileURL: url, operations: operations)) { error in
@@ -216,6 +216,34 @@ final class FileURLClipboardTests: XCTestCase {
         return directory
     }
 
+    func testGeneralLockUsesOSUserNamespaceInsteadOfSharedTmp() throws {
+        let osDirectory = try FileURLClipboard.darwinUserTemporaryDirectory()
+        let directory = try XCTUnwrap(FileURLClipboard.lockDirectory(for: .general))
+        XCTAssertEqual(directory.deletingLastPathComponent().standardizedFileURL, osDirectory.standardizedFileURL)
+        XCTAssertEqual(directory.lastPathComponent, "safari-browser-native-upload")
+        XCTAssertEqual(try FileURLClipboard.lockDirectory(for: .general), directory)
+        let fixtureDirectory = try privateLockDirectory()
+        let chosen = try XCTUnwrap(FileURLClipboard.lockDirectory(for: .general, userTemporaryDirectory: { fixtureDirectory }))
+        XCTAssertEqual(chosen.deletingLastPathComponent().path, fixtureDirectory.path)
+    }
+
+    func testNamespaceResolutionFailureCannotSilentlySkipLock() throws {
+        enum Failure: Error { case unavailable }
+        try withBoard { board in
+            seed(board)
+            let count = board.changeCount, original = contents(board)
+            XCTAssertThrowsError(try {
+                var operations = try FileURLClipboard.Operations(pasteboard: board)
+                operations.lockDirectory = try FileURLClipboard.lockDirectory(for: .general, userTemporaryDirectory: { throw Failure.unavailable })
+                let lease = try FileURLClipboard(fileURL: url, operations: operations)
+                _ = try lease.restore()
+            }())
+            XCTAssertEqual(board.changeCount, count)
+            XCTAssertEqual(contents(board), original)
+            XCTAssertNil(try FileURLClipboard.lockDirectory(for: board.name, userTemporaryDirectory: { throw Failure.unavailable }))
+        }
+    }
+
     func testPrivateAdvisoryLockContentionAndReacquisition() throws {
         let directory = try privateLockDirectory()
         try withBoard { board in
@@ -230,7 +258,7 @@ final class FileURLClipboardTests: XCTestCase {
             try process.run()
             defer { try? input.fileHandleForWriting.close(); if process.isRunning { process.terminate() }; process.waitUntilExit() }
             XCTAssertEqual(String(data: output.fileHandleForReading.readData(ofLength: 6), encoding: .utf8), "READY\n")
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             operations.lockDirectory = directory
             XCTAssertThrowsError(try FileURLClipboard(fileURL: url, operations: operations))
             XCTAssertEqual(board.changeCount, count)
@@ -252,7 +280,7 @@ final class FileURLClipboardTests: XCTestCase {
         try withBoard { board in
             seed(board)
             let before = contents(board), count = board.changeCount
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             operations.lockDirectory = directory
             try FileManager.default.createSymbolicLink(at: file, withDestinationURL: directory.appendingPathComponent("absent-target"))
             XCTAssertThrowsError(try FileURLClipboard(fileURL: url, operations: operations))
@@ -271,7 +299,7 @@ final class FileURLClipboardTests: XCTestCase {
         let directory = try privateLockDirectory()
         try withBoard { board in
             seed(board)
-            var operations = FileURLClipboard.Operations(pasteboard: board)
+            var operations = try FileURLClipboard.Operations(pasteboard: board)
             operations.lockDirectory = directory
             XCTAssertThrowsError(try FileURLClipboard(fileURL: url, operations: operations, maximumBytes: 0))
             var abandoned: FileURLClipboard? = try FileURLClipboard(fileURL: url, operations: operations)

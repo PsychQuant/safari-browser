@@ -4,17 +4,17 @@ import XCTest
 @testable import SafariBrowser
 
 final class NativeUploadScriptTests: XCTestCase {
-    private func script(window: Int? = 2) -> String {
-        NativeUploadScript.make(selector: "input[data-name=\"a'\\b\"]", path: "/tmp/隱藏 ' café.txt", fileSize: 17, modificationTimeMilliseconds: 123456, clipboardChangeCount: 42, window: window, timeout: 8, nonce: "test-'\\nonce")
+    private func script(window: Int? = 2, windowID: Int? = nil, tabIndex: Int? = nil, deadlineUptime: Double? = nil) -> String {
+        NativeUploadScript.make(selector: "input[data-name=\"a'\\b\"]", path: "/tmp/隱藏 ' café.txt", fileSize: 17, modificationTimeMilliseconds: 123456, clipboardChangeCount: 42, window: window, timeout: 8, nonce: "test-'\\nonce", windowID: windowID, tabIndex: tabIndex, deadlineUptime: deadlineUptime)
     }
 
     func testGeneratedScriptCompilesWithoutRunningSafari() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: dir) }
-        for window in [nil, 2] as [Int?] {
+        for generated in [script(window: nil), script(window: 2), script(windowID: 901, tabIndex: 4, deadlineUptime: 1234.5)] {
             let source = dir.appendingPathComponent("upload.applescript")
-            try script(window: window).write(to: source, atomically: true, encoding: .utf8)
+            try generated.write(to: source, atomically: true, encoding: .utf8)
             _ = try await SafariBridge.runShell("/usr/bin/osacompile", ["-o", dir.appendingPathComponent("upload.scpt").path, source.path], timeout: 10)
         }
     }
@@ -258,6 +258,68 @@ final class NativeUploadScriptTests: XCTestCase {
             let outcome = try await SafariBridge.runShell("/usr/bin/osascript", ["-e", isolated], timeout: 3)
             XCTAssertEqual(outcome, expected)
         }
+    }
+
+    func testAbsoluteDeadlineAndStableTargetContract() throws {
+        let source = script(window: 2, windowID: 901, tabIndex: 4, deadlineUptime: 1234.5)
+        XCTAssertTrue(source.contains("set uploadEndTime to 1234.5"))
+        XCTAssertFalse(source.contains("systemUptime()) as real) + 8"))
+        XCTAssertTrue(source.contains("set uploadWindowID to id of window id 901"))
+        XCTAssertTrue(source.contains("if uploadTabIndex is not 4 then error"))
+        XCTAssertTrue(source.contains("with timeout of 1 second"))
+        let tabCheck = try XCTUnwrap(source.range(of: "if uploadTabIndex is not 4 then error"))
+        let raise = try XCTUnwrap(source.range(of: "set index of window id uploadWindowID to 1"))
+        XCTAssertLessThan(tabCheck.lowerBound, raise.lowerBound)
+        for name in ["cancelOwnedUploadMenu", "cleanupUploadPage"] {
+            let begin = try XCTUnwrap(source.range(of: "on \(name)()"))
+            let end = try XCTUnwrap(source.range(of: "end \(name)", range: begin.lowerBound..<source.endIndex))
+            XCTAssertTrue(source[begin.lowerBound..<end.upperBound].contains("with timeout of 1 second"))
+        }
+    }
+
+    func testOrdinaryPendingExpiryDispatchesCleanupBeforeOuterWatchdog() async throws {
+        let startTime = ProcessInfo.processInfo.systemUptime
+        let source = script(deadlineUptime: startTime + 0.8)
+        let deadlineAssignment = try XCTUnwrap(source.split(separator: "\n").first { $0.hasPrefix("set uploadEndTime to ") })
+        let begin = try XCTUnwrap(source.range(of: "on checkUploadDeadline()"))
+        let end = try XCTUnwrap(source.range(of: "end checkUploadDeadline", range: begin.lowerBound..<source.endIndex))
+        let deadlineHandler = String(source[begin.lowerBound..<end.upperBound])
+        let uiRead = "tell application \"System Events\" to tell process \"Safari\" to set panelStillOpen to exists sheet 1 of front window"
+        let readRange = try XCTUnwrap(source.range(of: uiRead))
+        let loop = try XCTUnwrap(source.range(of: "repeat\n", options: .backwards, range: source.startIndex..<readRange.lowerBound))
+        var terminal = String(source[loop.lowerBound...])
+            .replacingOccurrences(of: uiRead, with: "set panelStillOpen to false")
+        let selectionLine = try XCTUnwrap(terminal.split(separator: "\n").first { $0.contains("to set selectionResult to do JavaScript") })
+        terminal = terminal.replacingOccurrences(of: String(selectionLine), with: "set selectionResult to \"PENDING\"")
+        XCTAssertFalse(terminal.contains("tell application"))
+        let isolated = """
+        use framework "Foundation"
+        use scripting additions
+        property uploadEndTime : 0
+        property menuCleanupCalled : false
+        property pageCleanupCalled : false
+        \(deadlineHandler)
+        on verifyUploadState()
+            my checkUploadDeadline()
+        end verifyUploadState
+        on cancelOwnedUploadMenu()
+            set menuCleanupCalled to true
+        end cancelOwnedUploadMenu
+        on cleanupUploadPage()
+            set pageCleanupCalled to true
+        end cleanupUploadPage
+        \(deadlineAssignment)
+        try
+            try
+                \(terminal)
+        on error finalError
+            return finalError & "|" & menuCleanupCalled & "|" & pageCleanupCalled
+        end try
+        """
+        let result = try await SafariBridge.runShell("/usr/bin/osascript", ["-e", isolated], timeout: 3)
+        XCTAssertTrue(result.hasPrefix("Native upload deadline expired"), result)
+        XCTAssertTrue(result.hasSuffix("|true|true"), result)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - startTime, 3)
     }
 
 }

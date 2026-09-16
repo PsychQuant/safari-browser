@@ -46,10 +46,9 @@ final class FileURLClipboard {
         var writeFileURL: (URL) -> Bool
         var writeItems: ([NSPasteboardItem]) -> Bool
 
-        init(pasteboard: NSPasteboard) {
+        init(pasteboard: NSPasteboard) throws {
             boardIdentity = pasteboard.name.rawValue
-            lockDirectory = pasteboard.name == .general
-                ? URL(fileURLWithPath: "/tmp/safari-browser-native-upload-\(getuid())", isDirectory: true) : nil
+            lockDirectory = try FileURLClipboard.lockDirectory(for: pasteboard.name)
             changeCount = { pasteboard.changeCount }
             readItems = {
                 guard let items = pasteboard.pasteboardItems else {
@@ -63,6 +62,29 @@ final class FileURLClipboard {
             writeFileURL = { pasteboard.writeObjects([$0 as NSURL]) }
             writeItems = { pasteboard.writeObjects($0) }
         }
+    }
+
+    nonisolated static func lockDirectory(for name: NSPasteboard.Name,
+                              userTemporaryDirectory: () throws -> URL = darwinUserTemporaryDirectory) throws -> URL? {
+        guard name == .general else { return nil }
+        // Darwin's per-user namespace is stable across cooperating processes
+        // with different TMPDIR environments and cannot be pre-created by an
+        // unrelated UID like a predictable child of the shared /tmp directory.
+        let parent = try userTemporaryDirectory()
+        guard parent.isFileURL, parent.path.hasPrefix("/") else { throw ClipboardError.lockUnavailable }
+        return parent.appendingPathComponent("safari-browser-native-upload", isDirectory: true)
+    }
+
+    nonisolated static func darwinUserTemporaryDirectory() throws -> URL {
+        let size = confstr(_CS_DARWIN_USER_TEMP_DIR, nil, 0)
+        guard size > 1, size <= 1024 * 1024 else { throw ClipboardError.lockUnavailable }
+        var buffer = [CChar](repeating: 0, count: size)
+        let actual = confstr(_CS_DARWIN_USER_TEMP_DIR, &buffer, size)
+        guard actual > 1, actual <= size, buffer[actual - 1] == 0 else { throw ClipboardError.lockUnavailable }
+        let bytes = buffer.prefix(actual - 1).map { UInt8(bitPattern: $0) }
+        guard let path = String(bytes: bytes, encoding: .utf8), path.hasPrefix("/"),
+              !path.utf8.contains(0) else { throw ClipboardError.lockUnavailable }
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     let ownedChangeCount: Int

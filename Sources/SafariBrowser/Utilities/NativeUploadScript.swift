@@ -88,13 +88,18 @@ enum NativeUploadScript {
         """
     }
 
-    static func make(selector: String, path: String, fileSize: Int64, modificationTimeMilliseconds: Int64, clipboardChangeCount: Int, window: Int?, timeout: Double, nonce: String) -> String {
+    static func make(selector: String, path: String, fileSize: Int64, modificationTimeMilliseconds: Int64, clipboardChangeCount: Int, window: Int?, timeout: Double, nonce: String, windowID: Int? = nil, tabIndex: Int? = nil, deadlineUptime: Double? = nil) -> String {
         let initial = initializeJS(selector: selector, nonce: nonce).escapedForAppleScript
         let owner = ownerJS(selector: selector, nonce: nonce).escapedForAppleScript
         let open = openJS(selector: selector, nonce: nonce).escapedForAppleScript
         let completion = completionJS(selector: selector, nonce: nonce, fileName: URL(fileURLWithPath: path).lastPathComponent, fileSize: fileSize, modificationTimeMilliseconds: modificationTimeMilliseconds).escapedForAppleScript
         let cleanup = cleanupJS(nonce: nonce).escapedForAppleScript
-        let targetWindow = window.map { "window \($0)" } ?? "front window"
+        let targetWindow = windowID.map { "window id \($0)" } ?? window.map { "window \($0)" } ?? "front window"
+        let expectedTabGuard = tabIndex.map { "if uploadTabIndex is not \($0) then error \"Native upload target tab changed before capture\"" } ?? ""
+        // Production provides an absolute monotonic deadline before spawning
+        // osascript, reserving time within its unchanged watchdog for cleanup.
+        let endTime = deadlineUptime.map(String.init(describing:))
+            ?? "((current application's NSProcessInfo's processInfo()'s systemUptime()) as real) + \(timeout)"
         return """
         use framework "Foundation"
         use framework "AppKit"
@@ -198,30 +203,37 @@ enum NativeUploadScript {
             if not uploadMenuTracking then return
             if uploadMenuCancelAttempted then return
             try
-                my closeOwnedUploadMenu()
+                with timeout of 1 second
+                    my closeOwnedUploadMenu()
+                end timeout
             end try
         end cancelOwnedUploadMenu
 
         on cleanupUploadPage()
             if uploadMenuTracking then return
             if not uploadInitialized then return
+            -- Best effort only: each cleanup AppleEvent has a short timeout;
+            -- the outer watchdog still bounds stalled IPC or process death.
             try
-                tell application "Safari"
-                    if exists window id uploadWindowID then
-                        if URL of current tab of window id uploadWindowID is uploadPageURL then
-                            do JavaScript "\(cleanup)" in current tab of window id uploadWindowID
+                with timeout of 1 second
+                    tell application "Safari"
+                        if exists window id uploadWindowID then
+                            if URL of current tab of window id uploadWindowID is uploadPageURL then
+                                do JavaScript "\(cleanup)" in current tab of window id uploadWindowID
+                            end if
                         end if
-                    end if
-                end tell
+                    end tell
+                end timeout
             end try
         end cleanupUploadPage
 
-        set uploadEndTime to ((current application's NSProcessInfo's processInfo()'s systemUptime()) as real) + \(timeout)
+        set uploadEndTime to \(endTime)
         my checkUploadDeadline()
         my checkUploadClipboard()
         tell application "Safari"
             set uploadWindowID to id of \(targetWindow)
             set uploadTabIndex to index of current tab of window id uploadWindowID
+            \(expectedTabGuard)
             set uploadPageURL to URL of current tab of window id uploadWindowID
             my checkUploadDeadline()
             my checkUploadClipboard()
