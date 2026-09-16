@@ -1,3 +1,4 @@
+import AppKit
 import ArgumentParser
 import Foundation
 
@@ -19,15 +20,14 @@ struct UploadCommand: AsyncParsableCommand {
     @Flag(name: .long, help: "Use native file dialog (default behavior, kept for backward compatibility)")
     var native = false
 
-    @Flag(name: .long, help: "Allow keyboard/mouse simulation (kept for backward compatibility)")
+    @Flag(name: .long, help: "Compatibility alias for native file dialog upload; no keyboard/mouse simulation")
     var allowHid = false
 
     @Option(
         name: .long,
         help: """
             Seconds before the native file dialog subprocess is terminated (default: 60). \
-            Default 60 accommodates the inner AppleScript's three 10-second maxWait loops \
-            (dialog-open, Go-to-Folder-open, Go-to-Folder-close).
+            The same deadline bounds chooser opening, AX Paste/Upload and selected-file verification.
             """
     )
     var timeout: Double = 60.0
@@ -41,39 +41,83 @@ struct UploadCommand: AsyncParsableCommand {
     /// is the canonical path.
     private static let jsHardCapBytes = 10 * 1_048_576   // 10 MB
 
-    /// The stderr warning emitted before the native path takes the keyboard.
-    ///
-    /// Extracted from the call site and pinned by a test (#104) because of what
-    /// it is load-bearing for. The `non-interference` spec normally requires an
-    /// explicit opt-in flag before any interference; `upload` is the one command
-    /// allowed to substitute a macOS Accessibility grant for that flag, and the
-    /// exception holds only while this warning is still emitted. Soften it or
-    /// drop it and the exception becomes what the spec exists to forbid —
-    /// interference the user was never told about.
-    ///
-    /// The spec asks the warning to say two things: which kind of interference,
-    /// and that the user's input is unavailable meanwhile. Both are asserted.
-    static let keyboardControlWarning =
-        "⚠️  Controlling keyboard for file dialog (~1s). Do not type in Safari until complete.\n"
+    /// Native upload still changes focus and temporarily owns the clipboard.
+    /// The warning precedes both the clipboard write and the native chooser.
+    static let nativeInterferenceWarning =
+        "⚠️  Native file dialog upload changes Safari focus and temporarily uses the clipboard. Avoid interacting with Safari or copying until complete.\n"
 
-    /// Whether a run takes the native file-dialog path (keystrokes) or the JS
-    /// DataTransfer path (no interference).
-    ///
-    /// The probe is a parameter rather than a `Bool` for two reasons. It keeps
-    /// the routing testable without a TCC grant, and it makes the short-circuit
-    /// *observable*: an explicit flag decides on its own, so the permission API
-    /// is never consulted in that case. Passing a pre-computed `Bool` would have
-    /// hidden an eager probe behind an identical truth table.
-    ///
-    /// Note the direction, which surprises people: holding the grant moves you
-    /// *onto* the interfering path, not off it. A caller without it gets the JS
-    /// path — which is the only reason the spec's `upload` exemption is
-    /// defensible, and the reason it stops being defensible above the 10 MB cap.
+    /// Preserve explicit flag routing and the upload Accessibility-grant exception.
     static func resolveNativeRouting(
         native: Bool, allowHid: Bool, accessibilityProbe: () -> Bool
     ) -> Bool {
         if native || allowHid { return true }
         return accessibilityProbe()
+    }
+    /// Execute the actual clipboard/script lifecycle. Tests use a private
+    /// pasteboard and replace only the external Safari subprocess boundary.
+    @MainActor
+    static func performNativeUpload(fileURL: URL, selector: String, window: Int?, timeout: Double,
+                                    pasteboard: NSPasteboard = .general,
+                                    warn: (String) -> Void,
+                                    runScript: (String) async throws -> Void) async throws {
+        guard fileURL.isFileURL else { throw ValidationError("Native upload requires a local file URL") }
+        guard timeout.isFinite, timeout >= 0.001, timeout <= 86_400 else {
+            throw ValidationError("Native upload timeout must be between 0.001 and 86400 seconds")
+        }
+        let resolvedURL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard FileManager.default.fileExists(atPath: resolvedURL.path) else {
+            throw SafariBrowserError.fileNotFound(fileURL.path)
+        }
+        let attributes = try FileManager.default.attributesOfItem(atPath: resolvedURL.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber,
+              let modified = attributes[.modificationDate] as? Date else {
+            throw ValidationError("Native upload requires a readable regular file with size and modification time")
+        }
+        let milliseconds = (modified.timeIntervalSince1970 * 1000).rounded(.down)
+        guard size.int64Value >= 0, milliseconds.isFinite,
+              milliseconds > Double(Int64.min), milliseconds < Double(Int64.max) else {
+            throw ValidationError("Native upload file metadata is outside the supported range")
+        }
+
+        warn(nativeInterferenceWarning)
+        let clipboard = try FileURLClipboard(fileURL: resolvedURL, pasteboard: pasteboard)
+        var operationError: Error?
+        do {
+            let script = NativeUploadScript.make(
+                selector: selector, path: resolvedURL.path, fileSize: size.int64Value,
+                modificationTimeMilliseconds: Int64(milliseconds),
+                clipboardChangeCount: clipboard.ownedChangeCount, window: window,
+                timeout: timeout, nonce: UUID().uuidString)
+            try await runScript(script)
+        } catch { operationError = error }
+
+        do {
+            if try clipboard.restore() == .preservedNewer {
+                warn("ℹ️  Clipboard changed during upload; newer contents were preserved.\n")
+            }
+        } catch {
+            if let operationError {
+                throw SafariBrowserError.appleScriptFailed(
+                    "\(operationError); clipboard restoration also failed: \(error.localizedDescription)")
+            }
+            throw error
+        }
+        if let operationError {
+            if let safariError = operationError as? SafariBrowserError {
+                switch safariError {
+                case .appleScriptFailed(let message)
+                    where message.hasSuffix(": execution error: SB_UPLOAD_INPUT_NOT_FOUND (-2700)"):
+                    throw SafariBrowserError.elementNotFound(selector)
+                case .processTimedOut(_, let seconds):
+                    // The runner carries the entire generated script in command;
+                    // it is diagnostic context, not an executed error marker.
+                    throw SafariBrowserError.processTimedOut(command: "native file URL upload", seconds: seconds)
+                default: break
+                }
+            }
+            throw operationError
+        }
     }
     private static let jsSoftWarnBytes = 5 * 1_048_576   // 5 MB
 
@@ -88,7 +132,7 @@ struct UploadCommand: AsyncParsableCommand {
         // #26: --native / --allow-hid no longer rejects --url / --tab /
         // --document. The native-path resolver (SafariBridge.resolveNativeTarget)
         // maps those targeting flags to a concrete (window, tab) pair at
-        // runtime and performs tab-switch + raise before keystroke dispatch.
+        // runtime and performs tab-switch + raise before native interaction.
         // The previous #23 R5 reject was removed here; see proposal #26.
 
         // #24: hard cap --js at 10 MB. The cap fires for explicit --js
@@ -158,7 +202,7 @@ struct UploadCommand: AsyncParsableCommand {
         //   - OR Accessibility permission is granted (smart default)
         // In both cases, #26 routes through the resolver so --url /
         // --tab / --document all land on a concrete (window, tab) pair
-        // before keystroke dispatch.
+        // before native interaction.
         let wantNative = UploadCommand.resolveNativeRouting(
             native: native,
             allowHid: allowHid,
@@ -185,7 +229,7 @@ struct UploadCommand: AsyncParsableCommand {
 
     /// Resolve the target to a (windowIndex, tabIndexInWindow) pair via
     /// `SafariBridge.resolveNativeTarget`, perform the tab switch if
-    /// needed, then dispatch the native file-dialog keystroke path to
+    /// needed, then dispatch the native file-dialog AX path to
     /// the resolved window.
     ///
     /// This is the #26 replacement for the old "native only accepts
@@ -199,7 +243,7 @@ struct UploadCommand: AsyncParsableCommand {
 
         // Tab switch is a passively interfering side effect transitively
         // authorized by --native / --allow-hid. The stderr warning in
-        // uploadViaNativeDialog covers keyboard control; here we add a
+        // uploadViaNativeDialog covers native dialog and clipboard interference; here we add a
         // tab-switch addendum when applicable so the user knows what
         // extra interaction is about to happen.
         if resolved.tabIndexInWindow != nil {
@@ -220,11 +264,8 @@ struct UploadCommand: AsyncParsableCommand {
                 window: resolved.windowIndex
             )
         } catch {
-            // #67: the native file dialog can enter a stale state after a
-            // prior aborted attempt (focus race / expired user gesture) where
-            // it's visible but no longer accepts keystrokes — the Cmd+Shift+G
-            // "Go to Folder" panel never appears, and bare retries loop. Rewrap
-            // that opaque AppleScript timeout with actionable recovery guidance.
+            // Preserve recovery hints for legacy dialog diagnostics. Current
+            // file URL upload errors remain explicit and are never retried.
             if let guidance = Self.staleDialogGuidance(forErrorText: "\(error)") {
                 throw SafariBrowserError.appleScriptFailed("\(error)\n\n\(guidance)")
             }
@@ -257,146 +298,14 @@ struct UploadCommand: AsyncParsableCommand {
     // MARK: - Native file dialog
 
     /// Click file input to open dialog, then navigate via a single combined osascript.
-    /// Merges activate + wait + keystroke navigation into one osascript invocation
-    /// to prevent focus-stealing race conditions between separate calls (fixes #15).
-    ///
-    /// `window` selects which Safari window the keystrokes target. `nil`
-    /// preserves the legacy front-window behavior; an explicit index
-    /// raises `window N` to the front before activating Safari (#23).
+    /// The chooser and AX confirmation run in one owner-bound subprocess.
     private func uploadViaNativeDialog(selector: String, path: String, timeout: Double, window: Int? = nil) async throws {
-        // #23 verify R1: preflight the window so a bad `--window 99`
-        // surfaces `documentNotFound` with the available-docs listing
-        // before we touch System Events. The subsequent doJavaScript call
-        // on `.windowIndex(window)` would already error, but we want the
-        // error BEFORE we warn the user about keyboard takeover below.
-        if let window {
-            _ = try await SafariBridge.getCurrentURL(target: .windowIndex(window))
-        }
-
-        // #20: probe System Events before sending any keystrokes. A silent hang
-        // inside the combined osascript is the single worst failure mode of this
-        // command, and System Events being down is by far the most common cause.
+        if let window { _ = try await SafariBridge.getCurrentURL(target: .windowIndex(window)) }
         try await SafariBridge.ensureSystemEventsLive()
-
-        // Everything below is the injectable interpreter, wired to its real
-        // implementations. The wiring is the only part a test cannot reach.
-        try await UploadCommand.runNativeUploadEffects(
-            UploadCommand.nativeUploadEffects(selector: selector, path: path, window: window),
-            // `.forWindow` enforces `--window N` → `.windowIndex(N)`, never
-            // `.documentIndex(N)` (#23 verify R1→R2).
-            jsTarget: SafariBridge.TargetDocument.forWindow(window),
+        try await Self.performNativeUpload(
+            fileURL: URL(fileURLWithPath: path), selector: selector, window: window, timeout: timeout,
             warn: { FileHandle.standardError.write(Data($0.utf8)) },
-            runJS: { js, target in try await SafariBridge.doJavaScript(js, target: target) },
-            // Subprocess-level timeout (#19) bounds the whole invocation in case
-            // System Events or Safari's Apple Event dispatcher is blocked and
-            // the inner `maxWait to 10` loops never progress.
-            runScript: { script in
-                try await SafariBridge.runFileDialogScript(script, timeout: timeout)
-            })
-    }
-
-    /// Executes the native path's effects in order.
-    ///
-    /// #104 round 2. The previous cut described the sequence as data and tested
-    /// the description — which could not see the interpreter drifting away from
-    /// it. An interpreter that skipped the warning, ran it after the chooser, or
-    /// ignored the plan entirely would have left every test green. Injecting the
-    /// three side effects lets a test run *this* function and watch what it
-    /// actually does.
-    ///
-    /// What remains beyond reach is the wiring in `uploadViaNativeDialog` that
-    /// binds `warn` to stderr and the runners to `SafariBridge` — three closure
-    /// literals with no branching.
-    static func runNativeUploadEffects(
-        _ effects: [NativeUploadEffect],
-        jsTarget: SafariBridge.TargetDocument,
-        warn: (String) -> Void,
-        runJS: (String, SafariBridge.TargetDocument) async throws -> String,
-        runScript: (String) async throws -> Void
-    ) async throws {
-        for effect in effects {
-            switch effect {
-            case .warnOnStderr(let text):
-                warn(text)
-
-            case .openDialogByClickingFileInput(let sel, let js):
-                if try await runJS(js, jsTarget) == "NOT_FOUND" {
-                    throw SafariBrowserError.elementNotFound(sel)
-                }
-
-            case .runCombinedScript(let script):
-                try await runScript(script)
-            }
-        }
-    }
-
-    /// What the native path does, in order, as data.
-    ///
-    /// #104. The spec's `upload` exemption rests on the user being warned
-    /// *before* the interference starts — and interference here begins when the
-    /// file chooser opens, not when the first keystroke lands. A test that only
-    /// asserts on the warning's wording cannot see whether it is emitted at all,
-    /// or when. Describing the sequence as a value puts both under test and
-    /// leaves only a mechanical interpreter above.
-    enum NativeUploadEffect: Equatable {
-        /// Text that MUST go to stderr — never stdout — before anything below.
-        case warnOnStderr(String)
-        /// Opening the chooser. Interference in its own right, per the spec's
-        /// "Display system dialogs, file choosers, or modal windows".
-        case openDialogByClickingFileInput(selector: String, js: String)
-        /// The one combined osascript. Must stay one (#15).
-        case runCombinedScript(String)
-    }
-
-    static func nativeUploadEffects(
-        selector: String, path: String, window: Int?
-    ) -> [NativeUploadEffect] {
-        [
-            .warnOnStderr(keyboardControlWarning),
-            .openDialogByClickingFileInput(
-                selector: selector,
-                js: "(function(){ var el = \(selector.resolveRefJS); "
-                    + "if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()"),
-            .runCombinedScript(nativeDialogScript(path: path, window: window)),
-        ]
-    }
-
-    /// The single combined script the native path runs. Pure, so both its
-    /// atomicity and its use of the shared navigation fragment are testable
-    /// without a Safari or a file dialog (#105).
-    ///
-    /// `window` raises that window first: keystrokes only ever reach the front
-    /// window, so an explicit target has to be brought forward before the
-    /// activate (#23).
-    static func nativeDialogScript(path: String, window: Int?) -> String {
-        let raisePrelude = window.map { idx in
-            "tell application \"Safari\" to set index of window \(idx) to 1\n"
-        } ?? ""
-
-        return """
-            \(raisePrelude)tell application "Safari" to activate
-            tell application "System Events"
-                tell process "Safari"
-                    -- Verify Safari is frontmost before sending any keystrokes
-                    if not frontmost then
-                        error "Safari lost focus after activate — aborting to avoid sending keystrokes to wrong application"
-                    end if
-
-                    -- Wait for file dialog sheet to appear
-                    set maxWait to 10
-                    set waited to 0
-                    repeat until exists sheet 1 of front window
-                        delay 0.3
-                        set waited to waited + 0.3
-                        if waited >= maxWait then
-                            error "File dialog did not appear within " & maxWait & " seconds"
-                        end if
-                    end repeat
-
-            \(SafariBridge.fileDialogNavigationScript(path: path))
-                end tell
-            end tell
-            """
+            runScript: { script in try await SafariBridge.runFileDialogScript(script, timeout: timeout) })
     }
 
     // MARK: - JS DataTransfer (--js flag)

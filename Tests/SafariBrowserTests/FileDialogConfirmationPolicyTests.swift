@@ -146,7 +146,7 @@ final class FileDialogConfirmationPolicyTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let scripts = [PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1),
                        PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1, timeout: 2),
-                       UploadCommand.nativeDialogScript(path: "/tmp/fixture.txt", window: 1),
+                       NativeUploadScript.make(selector: "input[type=file]", path: "/tmp/fixture.txt", fileSize: 7, modificationTimeMilliseconds: 1_700_000_000_000, clipboardChangeCount: 12, window: 1, timeout: 2, nonce: "fixture"),
                        SafariBridge.fileDialogNavigationOuterScript(path: "/tmp/fixture.txt")]
         for (index, script) in scripts.enumerated() {
             let source = directory.appendingPathComponent("\(index).applescript")
