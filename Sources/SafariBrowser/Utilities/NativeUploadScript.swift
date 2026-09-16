@@ -13,11 +13,16 @@ enum NativeUploadScript {
             if (Object.prototype.hasOwnProperty.call(window,key)) return 'STATE_COLLISION';
             var el=\(selector.resolveRefJS);
             if (!el) return 'NOT_FOUND';
-            if (el.tagName!=='INPUT' || el.type!=='file' || el.disabled || !el.isConnected || el.ownerDocument!==document) return 'INVALID_INPUT';
-            var state={nonce:'\(nonce.escapedForJS)', doc:document, input:el, url:window.location.href, changed:false};
-            state.listener=function(event){if(event.target===el && event.isTrusted===true) state.changed=true;};
+            if (el.tagName!=='INPUT' || el.type!=='file' || el.webkitdirectory || el.hasAttribute('webkitdirectory') || el.disabled || !el.isConnected || el.ownerDocument!==document) return 'INVALID_INPUT';
+            var state={nonce:'\(nonce.escapedForJS)', doc:document, input:el, url:window.location.href, selection:null, rejected:false};
+            state.listener=function(event){
+                if(event.target!==el || event.isTrusted!==true || state.selection!==null || state.rejected) return;
+                var owner=(function(){\(ownerPrelude(selector: selector, nonce: nonce))return 'OK';})();
+                if(owner!=='OK'){state.rejected=true;return;}
+                state.selection=Array.from(el.files, function(f){return {name:f.name,size:f.size,lastModified:f.lastModified};});
+            };
             Object.defineProperty(window,key,{value:state,configurable:true});
-            el.addEventListener('change',state.listener,true);
+            window.addEventListener('change',state.listener,true);
             return 'OK';
         })()
         """
@@ -27,7 +32,7 @@ enum NativeUploadScript {
         """
         var state=window['\(stateKey(nonce).escapedForJS)'];
         if(!state || state.nonce!=='\(nonce.escapedForJS)' || state.doc!==document || state.url!==window.location.href ||
-           !state.input.isConnected || state.input.disabled || state.input.ownerDocument!==document || state.input.type!=='file' ||
+           !state.input.isConnected || state.input.disabled || state.input.ownerDocument!==document || state.input.type!=='file' || state.input.webkitdirectory || state.input.hasAttribute('webkitdirectory') ||
            state.input!==\(selector.resolveRefJS)) return 'OWNER_CHANGED';
         """
     }
@@ -51,9 +56,11 @@ enum NativeUploadScript {
     /// pre-existing selections when the user cancels the chooser.
     static func completionJS(selector: String, nonce: String, fileName: String, fileSize: Int64, modificationTimeMilliseconds: Int64) -> String {
         """
-        (function(){\(ownerPrelude(selector: selector, nonce: nonce))
-            if(!state.changed) return 'PENDING';
-            var files=state.input.files;
+        (function(){
+            var state=window['\(stateKey(nonce).escapedForJS)'];
+            if(!state || state.nonce!=='\(nonce.escapedForJS)' || state.doc!==document || state.rejected) return 'OWNER_CHANGED';
+            if(state.selection===null){\(ownerPrelude(selector: selector, nonce: nonce))return 'PENDING';}
+            var files=state.selection;
             if(!files || files.length!==1) return 'MISMATCH_COUNT';
             var f=files[0];
             if(typeof f.name!=='string' || f.name.normalize('NFC')!=='\(fileName.escapedForJS)'.normalize('NFC')) return 'MISMATCH_NAME';
@@ -73,8 +80,8 @@ enum NativeUploadScript {
         """
         (function(){
             var key='\(stateKey(nonce).escapedForJS)', state=window[key];
-            if(!state || state.nonce!=='\(nonce.escapedForJS)' || state.doc!==document || state.url!==window.location.href) return 'SKIPPED';
-            state.input.removeEventListener('change',state.listener,true);
+            if(!state || state.nonce!=='\(nonce.escapedForJS)' || state.doc!==document) return 'SKIPPED';
+            window.removeEventListener('change',state.listener,true);
             delete window[key];
             return 'OK';
         })()
@@ -153,6 +160,26 @@ enum NativeUploadScript {
             \(stateGuardScript())
         end verifyUploadState
 
+        -- After delivery, page handlers can consume the input or change its
+        -- same-document URL. This read-only phase still binds window/tab and
+        -- foreground; completion JS checks the original document/event snapshot.
+        on verifyUploadCompletionTarget()
+            my checkUploadDeadline()
+            my checkUploadClipboard()
+            tell application "Safari"
+                if not (exists window id uploadWindowID) then error "Native upload target window disappeared"
+                if index of current tab of window id uploadWindowID is not uploadTabIndex then error "Native upload target tab changed"
+                if id of front window is not uploadWindowID then error "Native upload target window changed"
+            end tell
+            tell application "System Events" to tell process "Safari"
+                if not frontmost then error "Safari lost focus during native upload"
+                if not (exists uploadAXWindow) then error "Native upload AX window disappeared"
+                if front window is not uploadAXWindow then error "Native upload AX window changed"
+            end tell
+            my checkUploadDeadline()
+            my checkUploadClipboard()
+        end verifyUploadCompletionTarget
+
         on verifyUploadAXOwner()
             tell application "System Events" to tell process "Safari"
                 if not frontmost then error "Safari lost focus during native upload"
@@ -223,7 +250,7 @@ enum NativeUploadScript {
                 with timeout of 1 second
                     tell application "Safari"
                         if exists window id uploadWindowID then
-                            if URL of current tab of window id uploadWindowID is uploadPageURL then
+                            if index of current tab of window id uploadWindowID is uploadTabIndex then
                                 do JavaScript "\(cleanup)" in current tab of window id uploadWindowID
                             end if
                         end if
@@ -317,7 +344,7 @@ enum NativeUploadScript {
 
             -- Paste can accept directly or leave an initial confirmation.
             delay 0.1
-            my verifyUploadState()
+            my verifyUploadCompletionTarget()
             tell application "System Events" to tell process "Safari"
                 if exists sheet 1 of front window then
                     my verifyUploadPanel()
@@ -343,7 +370,7 @@ enum NativeUploadScript {
             end tell
 
             repeat
-                my verifyUploadState()
+                my verifyUploadCompletionTarget()
                 tell application "System Events" to tell process "Safari" to set panelStillOpen to exists sheet 1 of front window
                 if panelStillOpen then
                     my verifyUploadPanel()
@@ -354,7 +381,7 @@ enum NativeUploadScript {
                 end if
                 delay 0.1
             end repeat
-            my verifyUploadState()
+            my verifyUploadCompletionTarget()
             my cleanupUploadPage()
         on error uploadError number uploadErrorNumber
             my cancelOwnedUploadMenu()

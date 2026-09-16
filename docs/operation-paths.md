@@ -548,7 +548,7 @@ representation. Execution paths are an instance of P02, not an extension of it.
 ## See also
 
 - [`openspec/specs/non-interference/spec.md`](../openspec/specs/non-interference/spec.md) — the principle this document expands along the execution-path axis
-- **#101** — list-row selection and visible-tree disclosure have succeeded; hidden paths and arbitrary starting directories remain unproven, so the generic upload keystrokes remain
+- **#101** — file URL Paste prototypes have delivered hidden and special paths from an unrelated chooser directory; the implementation removes upload keystrokes, while full production CLI acceptance remains pending
 - **#102** — naming the save destination for a PDF: the direct filename-path candidate failed; other routes and isolated Print testing remain open. Note the export *invocation* is already non-HID; only the save panel needs a route
 - **#103** — `dialog list` / `dialog dismiss`: proven non-HID, no opt-in command yet
 - **#67** — stuck native file dialog; the failure family that lives on the HID path

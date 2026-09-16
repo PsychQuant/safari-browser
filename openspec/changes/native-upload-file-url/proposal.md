@@ -31,3 +31,7 @@
 ## Impact
 
 UploadCommand、上傳專用剪貼簿 helper、Swift 回歸與本機驗收腳本、CLI 說明、docs/operation-paths.md、CHANGELOG 與上述兩份規格。PDF 路徑由 #102 獨立處理。
+
+## 審查補充
+
+R2 要求事件當下保存檔案交付證據、拒絕資料夾欄位，並補實際 WebKit 頁面事件順序與負時間邊界測試；仍屬同一原生單檔上傳範圍。

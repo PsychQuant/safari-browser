@@ -53,6 +53,14 @@ struct UploadCommand: AsyncParsableCommand {
         if native || allowHid { return true }
         return accessibilityProbe()
     }
+    static func nativeModificationTimeMilliseconds(_ date: Date) throws -> Int64 {
+        let milliseconds = (date.timeIntervalSince1970 * 1000).rounded(.towardZero)
+        guard milliseconds.isFinite, milliseconds > Double(Int64.min), milliseconds < Double(Int64.max) else {
+            throw ValidationError("Native upload file metadata is outside the supported range")
+        }
+        return Int64(milliseconds)
+    }
+
     /// Execute the actual clipboard/script lifecycle. Tests use a private
     /// pasteboard and replace only the external Safari subprocess boundary.
     @MainActor
@@ -76,9 +84,8 @@ struct UploadCommand: AsyncParsableCommand {
               let modified = attributes[.modificationDate] as? Date else {
             throw ValidationError("Native upload requires a readable regular file with size and modification time")
         }
-        let milliseconds = (modified.timeIntervalSince1970 * 1000).rounded(.down)
-        guard size.int64Value >= 0, milliseconds.isFinite,
-              milliseconds > Double(Int64.min), milliseconds < Double(Int64.max) else {
+        let milliseconds = try nativeModificationTimeMilliseconds(modified)
+        guard size.int64Value >= 0 else {
             throw ValidationError("Native upload file metadata is outside the supported range")
         }
 
@@ -93,7 +100,7 @@ struct UploadCommand: AsyncParsableCommand {
             let deadline = ProcessInfo.processInfo.systemUptime + timeout - cleanupReserve
             let script = NativeUploadScript.make(
                 selector: selector, path: resolvedURL.path, fileSize: size.int64Value,
-                modificationTimeMilliseconds: Int64(milliseconds),
+                modificationTimeMilliseconds: milliseconds,
                 clipboardChangeCount: clipboard.ownedChangeCount, window: window,
                 timeout: timeout, nonce: UUID().uuidString,
                 windowID: windowID, tabIndex: tabIndex, deadlineUptime: deadline)

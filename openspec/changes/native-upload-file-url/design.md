@@ -15,11 +15,11 @@ Non-Goals：不修改 PDF 導航、不重寫 JS DataTransfer、不新增平台�
 
 ### 單一原生腳本
 
-NativeUploadScript.make 接受 selector、absolute path、fileSize、modificationTimeMilliseconds、clipboardChangeCount、window（可選 index）、timeout 與 nonce。target preparation（包含 System Events recovery 與依 stable window ID 切換指定 tab）在排他 lease 內。Swift 在 spawn 前計算 absolute uptime deadline，從原本的程序 timeout 內預留 min(3 秒, timeout/4) 給 best-effort cleanup；外部 watchdog 不延長。腳本先固定 window ID、目前 tab 的頁面 nonce 與 URL，確認沒有既有 sheet；啟動 input 前檢查元素為 file input。所有 AX 動作只指向該視窗的唯一原生 sheet，檢查前景、頁面身分、剪貼簿 changeCount 與單一 deadline。以 AXPress 開啟 Edit 選單、按唯一可用 Paste；選單追蹤期間僅使用 AX owner／title／sheet、clock 與剪貼簿檢查，禁止 Safari AppleEvent／JS；Paste 後對同一選單單次 AXCancel，成功才恢復完整頁面 owner 檢查。如 sheet 尚在且無巢狀 sheet，再按唯一可用具名 Upload/Open/上傳/打開/開啟。初始按鈕確認維持 #107 的 stderr trace，不送鍵盤、不碰 default button、不重試。
+NativeUploadScript.make 接受 selector、absolute path、fileSize、modificationTimeMilliseconds、clipboardChangeCount、window（可選 index）、timeout 與 nonce。target preparation（包含 System Events recovery 與依 stable window ID 切換指定 tab）在排他 lease 內。Swift 在 spawn 前計算 absolute uptime deadline，從原本的程序 timeout 內預留 min(3 秒, timeout/4) 給 best-effort cleanup；外部 watchdog 不延長。腳本先固定 window ID、目前 tab 的頁面 nonce 與 URL，確認沒有既有 sheet；啟動 input 前檢查元素為 file input。所有 AX 動作只指向該視窗的唯一原生 sheet，檢查前景、頁面身分、剪貼簿 changeCount 與單一 deadline。以 AXPress 開啟 Edit 選單、按唯一可用 Paste；選單追蹤期間僅使用 AX owner／title／sheet、clock 與剪貼簿檢查，禁止 Safari AppleEvent／JS；Paste 後對同一選單單次 AXCancel，成功後如仍需檔案確認則恢復完整頁面 owner 檢查；若已交付則轉為快照完成檢查。如 sheet 尚在且無巢狀 sheet，再按唯一可用具名 Upload/Open/上傳/打開/開啟。初始按鈕確認維持 #107 的 stderr trace，不送鍵盤、不碰 default button、不重試。
 
 ### 實際選取完成
 
-在固定頁面上保留原 input 的 JavaScript reference，逐次確認仍為同一元素及文件。本次捕捉 input change 事件作為新選取證據，避免 Cancel＋舊匹配檔案誤判；未觀察新事件的相同檔案重選明確失敗且不清空舊 input。待 sheet 消失後，檢查 exactly one File，其 NFC 正規化檔名、size 與 lastModified（毫秒值允許 1 ms 精度差，或恰為朝零截斷到整秒的值；不接受一般 ±1 秒範圍）符合開始時檔案 metadata；若頁面改變、元素被替換、數值不符或截止則失敗。metadata 是結果一致性檢查，並非所有檔案內容的密碼學證明；實測 fixture 另驗證內容。頁面私有 nonce 變數在可安全存取原頁面時清理。
+在固定頁面上保留原 input 的 JavaScript reference，交付前逐次確認仍為同一元素及文件。本次捕捉 input change 事件作為新選取證據，避免 Cancel＋舊匹配檔案誤判；未觀察新事件的相同檔案重選明確失敗且不清空舊 input。待 sheet 消失後，檢查事件當下 exactly one File 的快照，其 NFC 正規化檔名、size 與 lastModified（毫秒值允許 1 ms 精度差，或恰為朝零截斷到整秒的值；不接受一般 ±1 秒範圍）符合開始時檔案 metadata；交付前頁面／元素改變、事件快照數值不符或截止則失敗；可信交付後的同文件頁面處理依下方 R2 修正。metadata 是結果一致性檢查，並非所有檔案內容的密碼學證明；實測 fixture 另驗證內容。頁面私有 nonce 變數在可安全存取原頁面時清理。
 
 ## Implementation Contract
 
@@ -48,3 +48,10 @@ NativeUploadScript.make 接受 selector、absolute path、fileSize、modificatio
 正常輪詢到期會先進腳本錯誤清理；清理 AppleEvents 各使用 1 秒上限。Stalled IPC、SIGKILL 或清理期間失去 owner 仍不能保證選單／頁面狀態被移除，這時不重送操作，需使用者檢查殘留面板。
 
 本機公開 WKUIDelegate 無視窗測試提供真實 File：原樣本 1789595607627 ms 被回報為 1789595607000 ms；正負時間及秒邊界均呈現朝零截斷。NativeUploadWebKitTests 直接將真實 File 交給正式 validator，補足假 DOM 模型的缺口；此測試不涵蓋 Safari AX／選單整段流程。
+
+## R2 審查修正
+
+- 以 window capture listener 在一般 input change handler 前保存第一次可信事件的檔案 metadata；事件當下仍檢查原文件、URL、selector、input 身分與模式。先前守衛維持於所有會再送檔案的 AX 動作；sheet 關閉後只讀取快照並檢查原視窗／分頁與文件 nonce，不再要求已消耗的 input 留在 DOM 或同文件 URL 不變。完整換頁仍因原文件證據消失而無法確認，不自動重試。
+- 初始化及每次交付前 owner 檢查都拒絕 webkitdirectory；multiple 保留，仍只交付一個指定 regular file。這項拒絕不代表普通面板的非同步 Paste 時序已完成 GUI 驗收。
+- 毫秒換算朝零取整，使負時間小數毫秒不先跨到前一個整秒；精確毫秒誤差仍限 1 ms，整秒表示仍要求完全相等。
+- 無視窗 WebKit 回歸測試實際包含同步清空 input、替換 input、更新 URL 與負時間邊界。這些測試不操作 Safari、AX 或 Print。

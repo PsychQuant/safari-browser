@@ -505,6 +505,14 @@ safari-browser upload --js <sel> <file>  # JS DataTransfer injection (no permiss
 
 Native upload uses a file URL clipboard item and named AX Paste/Upload actions, without keyboard simulation or Go-to-Folder. It temporarily changes Safari focus and the clipboard; avoid interacting with that chooser or copying until it completes. Readable clipboard items/types are saved and restored on normal completion, failure or timeout while still owned; newer clipboard contents are preserved. Overlapping native uploads are refused. Forced termination and races with unrelated clipboard writers cannot guarantee restoration. The command verifies a fresh selection on the original input, not merely a button acknowledgement; cancelling or reselecting an unchanged file does not count as a new upload.
 
+Native upload verifies a snapshot captured when the original input receives its
+first trusted file-change event. A page can then clear or replace that input or
+update its same-document URL without losing delivery evidence. Directory inputs
+(`webkitdirectory`) are rejected; the command accepts one regular file. A full
+navigation that removes the original document can still leave delivery uncertain;
+inspect the page before retrying. This behavior still awaits full Safari GUI
+acceptance for the current change.
+
 `pdf --overwrite` is a separate opt-in for replacing a destination and still requires `--allow-hid`. Without it, an existing effective path is rejected before GUI interaction; a path created later is preserved by an atomic no-replace operation. A path without an extension receives `.pdf`; an explicit extension (including `.txt`) is kept. A successful command prints the actual published path with terminal control characters escaped.
 
 Safari exports to a unique private staging `.pdf`. The command waits for the original save panel to close, then copies and validates a coherent, readable PDF with at least one page before atomically publishing that independent snapshot. Old output, a Save acknowledgement, or a quiet interval cannot establish success. Native steps and file observation share a 60-second budget; this is not a hard real-time guarantee for a stalled filesystem syscall. No Save or uncertain publication is replayed. Any additional staging confirmation is refused, even with `--overwrite`; cancel the remaining save dialog before retrying. If the native process was interrupted, inspect the clipboard too.

@@ -40,10 +40,10 @@ final class NativeUploadScriptTests: XCTestCase {
         var listener;
         var document = {};
         var input = {tagName:'INPUT', type:'file', isConnected:true, ownerDocument:document,
-          disabled:false, files:[], addEventListener:function(_, f){listener=f;},
+          disabled:false, hasAttribute:function(){return false;}, files:[], addEventListener:function(_, f){listener=f;},
           removeEventListener:function(){listener=null;}, click:function(){}};
         document.querySelector = function(){return input;};
-        var window = {location:{href:'https://fixture.invalid/upload'}};
+        var window = {location:{href:'https://fixture.invalid/upload'},addEventListener:function(_,f){listener=f;},removeEventListener:function(){listener=null;}};
         """)
         return context
     }
@@ -71,8 +71,10 @@ final class NativeUploadScriptTests: XCTestCase {
             ("input.files[0].lastModified=123458", "MISMATCH_TIME"),
             ("input.files[0].lastModified=NaN", "MISMATCH_TIME")
         ] {
-            context.evaluateScript("input.files=[{name:'café.txt',size:17,lastModified:123456}];" + mutation)
-            XCTAssertEqual(result(context), expected, mutation)
+            let fresh = try self.context()
+            initialize(fresh)
+            fresh.evaluateScript("input.files=[{name:'café.txt',size:17,lastModified:123456}];" + mutation + ";listener({target:input,isTrusted:true});")
+            XCTAssertEqual(result(fresh), expected, mutation)
         }
         XCTAssertNil(context.exception)
     }
@@ -95,12 +97,67 @@ final class NativeUploadScriptTests: XCTestCase {
         }
     }
 
+    func testDirectoryInputRejectedInitiallyAndBeforeOpen() throws {
+        for property in ["input.webkitdirectory=true", "input.hasAttribute=function(name){return name==='webkitdirectory'}"] {
+            let c = try context()
+            c.evaluateScript(property)
+            XCTAssertEqual(c.evaluateScript(NativeUploadScript.initializeJS(selector: "#upload", nonce: "fixture"))?.toString(), "INVALID_INPUT")
+            let d = try context()
+            initialize(d)
+            d.evaluateScript("var clicked=false;input.click=function(){clicked=true};" + property)
+            XCTAssertEqual(d.evaluateScript(NativeUploadScript.openJS(selector: "#upload", nonce: "fixture"))?.toString(), "OWNER_CHANGED")
+            XCTAssertFalse(d.evaluateScript("clicked")!.toBool())
+        }
+    }
+
+    func testFirstDeliverySnapshotSurvivesLaterPageChanges() throws {
+        let c = try context()
+        initialize(c)
+        c.evaluateScript("input.files=[{name:'café.txt',size:17,lastModified:123456}];listener({target:input,isTrusted:true});")
+        c.evaluateScript("input.files[0].name='wrong.txt';input.files=[];input.isConnected=false;window.location.href='#received';listener({target:input,isTrusted:true});")
+        XCTAssertEqual(result(c), "OK", "First delivery metadata must be copied, not reread or replaced")
+        XCTAssertEqual(c.evaluateScript(NativeUploadScript.ownerJS(selector: "#upload", nonce: "fixture"))?.toString(), "OWNER_CHANGED", "A delivery snapshot must not authorize further file actions")
+        XCTAssertEqual(c.evaluateScript(NativeUploadScript.cleanupJS(nonce: "fixture"))?.toString(), "OK")
+        XCTAssertTrue(c.evaluateScript("listener===null")!.toBool())
+    }
+
+    func testCompletionLoopDoesNotRevalidateConsumedInput() async throws {
+        let source = script()
+        let uiRead = "tell application \"System Events\" to tell process \"Safari\" to set panelStillOpen to exists sheet 1 of front window"
+        let read = try XCTUnwrap(source.range(of: uiRead))
+        let loop = try XCTUnwrap(source.range(of: "repeat\n", options: .backwards, range: source.startIndex..<read.lowerBound))
+        var terminal = String(source[loop.lowerBound...]).replacingOccurrences(of: uiRead, with: "set panelStillOpen to false")
+        let selectionLine = try XCTUnwrap(terminal.split(separator: "\n").first { $0.contains("to set selectionResult to do JavaScript") })
+        terminal = terminal.replacingOccurrences(of: String(selectionLine), with: "set selectionResult to \"OK\"")
+        XCTAssertFalse(terminal.contains("tell application"))
+        let isolated = """
+        property checks : 0
+        property cleaned : false
+        on verifyUploadCompletionTarget()
+            set checks to checks + 1
+        end verifyUploadCompletionTarget
+        on verifyUploadState()
+            error "Consumed input must not be revalidated"
+        end verifyUploadState
+        on cancelOwnedUploadMenu()
+        end cancelOwnedUploadMenu
+        on cleanupUploadPage()
+            set cleaned to true
+        end cleanupUploadPage
+        try
+            \(terminal)
+        return (checks as text) & ":" & cleaned
+        """
+        let result = try await SafariBridge.runShell("/usr/bin/osascript", ["-e", isolated], timeout: 3)
+        XCTAssertEqual(result, "2:true")
+    }
+
     func testOldSelectionAndChangedOwnerCannotSucceed() throws {
         let context = try context()
         initialize(context)
         context.evaluateScript("input.files=[{name:'café.txt',size:17,lastModified:123456}]")
         XCTAssertEqual(result(context), "PENDING", "Old selection cannot prove this attempt succeeded")
-        context.evaluateScript("listener({target:input,isTrusted:true});window.location.href='https://fixture.invalid/elsewhere'")
+        context.evaluateScript("window.location.href='https://fixture.invalid/elsewhere';listener({target:input,isTrusted:true})")
         XCTAssertEqual(result(context), "OWNER_CHANGED")
     }
 
@@ -227,7 +284,7 @@ final class NativeUploadScriptTests: XCTestCase {
         XCTAssertTrue(source.contains("set uploadAXWindowName to name of uploadAXWindow"))
         XCTAssertTrue(source.contains("if name of uploadAXWindow is not uploadAXWindowName"))
         let pasted = try XCTUnwrap(source.range(of: "perform action \"AXPress\" of pasteItem"))
-        let resumed = try XCTUnwrap(source.range(of: "my verifyUploadState()", range: pasted.upperBound..<source.endIndex))
+        let resumed = try XCTUnwrap(source.range(of: "my verifyUploadCompletionTarget()", range: pasted.upperBound..<source.endIndex))
         XCTAssertTrue(source[pasted.upperBound..<resumed.lowerBound].contains("my closeOwnedUploadMenu()"))
     }
 
@@ -317,9 +374,9 @@ final class NativeUploadScriptTests: XCTestCase {
         property menuCleanupCalled : false
         property pageCleanupCalled : false
         \(deadlineHandler)
-        on verifyUploadState()
+        on verifyUploadCompletionTarget()
             my checkUploadDeadline()
-        end verifyUploadState
+        end verifyUploadCompletionTarget
         on cancelOwnedUploadMenu()
             set menuCleanupCalled to true
         end cancelOwnedUploadMenu
