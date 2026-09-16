@@ -12,6 +12,8 @@
 
 程序註記：1.1／1.2 初始子代理的 missing-type 編譯失敗不算行為 RED；第一次元件變異案例在初版之後補做。舊程式整合測試與後續缺陷回歸先 RED 再修正的紀錄保留，不能宣稱全程先測後寫。
 
+- [x] 2.4 補齊 Native upload records delivery before page handlers consume the input 的 input 事件順序與面板關閉等待：真實 WebKit 先重現 input handler 三種變動，實際 AppleScript adapter 先重現 sheet 尚在分支，再同時監聽 input／change，交付後只讀等待並禁止再次確認。
+
 ## 3. 實際驗證與交付
 
 - [ ] 3.1 執行完整 make test-all 及自有 GUI 特殊路徑、不同起始資料夾、大檔、焦點／錯誤／逾時案例；核對實際檔名／內容、自有面板清理及剪貼簿還原。

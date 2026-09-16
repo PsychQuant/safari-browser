@@ -37,13 +37,13 @@ final class NativeUploadScriptTests: XCTestCase {
     private func context() throws -> JSContext {
         let context = try XCTUnwrap(JSContext())
         context.evaluateScript("""
-        var listener;
+        var listener;var registered={};
         var document = {};
         var input = {tagName:'INPUT', type:'file', isConnected:true, ownerDocument:document,
           disabled:false, hasAttribute:function(){return false;}, files:[], addEventListener:function(_, f){listener=f;},
           removeEventListener:function(){listener=null;}, click:function(){}};
         document.querySelector = function(){return input;};
-        var window = {location:{href:'https://fixture.invalid/upload'},addEventListener:function(_,f){listener=f;},removeEventListener:function(){listener=null;}};
+        var window = {location:{href:'https://fixture.invalid/upload'},addEventListener:function(t,f){registered[t]=f;listener=f;},removeEventListener:function(t){delete registered[t];listener=null;}};
         """)
         return context
     }
@@ -118,7 +118,7 @@ final class NativeUploadScriptTests: XCTestCase {
         XCTAssertEqual(result(c), "OK", "First delivery metadata must be copied, not reread or replaced")
         XCTAssertEqual(c.evaluateScript(NativeUploadScript.ownerJS(selector: "#upload", nonce: "fixture"))?.toString(), "OWNER_CHANGED", "A delivery snapshot must not authorize further file actions")
         XCTAssertEqual(c.evaluateScript(NativeUploadScript.cleanupJS(nonce: "fixture"))?.toString(), "OK")
-        XCTAssertTrue(c.evaluateScript("listener===null")!.toBool())
+        XCTAssertTrue(c.evaluateScript("listener===null && Object.keys(registered).length===0")!.toBool())
     }
 
     func testCompletionLoopDoesNotRevalidateConsumedInput() async throws {
@@ -126,13 +126,24 @@ final class NativeUploadScriptTests: XCTestCase {
         let uiRead = "tell application \"System Events\" to tell process \"Safari\" to set panelStillOpen to exists sheet 1 of front window"
         let read = try XCTUnwrap(source.range(of: uiRead))
         let loop = try XCTUnwrap(source.range(of: "repeat\n", options: .backwards, range: source.startIndex..<read.lowerBound))
-        var terminal = String(source[loop.lowerBound...]).replacingOccurrences(of: uiRead, with: "set panelStillOpen to false")
+        for panelInitiallyPresent in [false, true] {
+        var terminal = String(source[loop.lowerBound...]).replacingOccurrences(of: uiRead, with: "set panelStillOpen to my nextPanelState()")
         let selectionLine = try XCTUnwrap(terminal.split(separator: "\n").first { $0.contains("to set selectionResult to do JavaScript") })
         terminal = terminal.replacingOccurrences(of: String(selectionLine), with: "set selectionResult to \"OK\"")
         XCTAssertFalse(terminal.contains("tell application"))
         let isolated = """
         property checks : 0
         property cleaned : false
+        property panelReads : 0
+        on nextPanelState()
+            set panelReads to panelReads + 1
+            return \(panelInitiallyPresent ? "true" : "false") and panelReads is 1
+        end nextPanelState
+        on verifyUploadPanel()
+            error "Post-delivery input must not be revalidated while sheet closes"
+        end verifyUploadPanel
+        on verifyUploadCompletionPanel()
+        end verifyUploadCompletionPanel
         on verifyUploadCompletionTarget()
             set checks to checks + 1
         end verifyUploadCompletionTarget
@@ -149,7 +160,8 @@ final class NativeUploadScriptTests: XCTestCase {
         return (checks as text) & ":" & cleaned
         """
         let result = try await SafariBridge.runShell("/usr/bin/osascript", ["-e", isolated], timeout: 3)
-        XCTAssertEqual(result, "2:true")
+        XCTAssertEqual(result, panelInitiallyPresent ? "3:true" : "2:true")
+        }
     }
 
     func testOldSelectionAndChangedOwnerCannotSucceed() throws {

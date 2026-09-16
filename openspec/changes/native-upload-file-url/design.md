@@ -19,7 +19,7 @@ NativeUploadScript.make 接受 selector、absolute path、fileSize、modificatio
 
 ### 實際選取完成
 
-在固定頁面上保留原 input 的 JavaScript reference，交付前逐次確認仍為同一元素及文件。本次捕捉 input change 事件作為新選取證據，避免 Cancel＋舊匹配檔案誤判；未觀察新事件的相同檔案重選明確失敗且不清空舊 input。待 sheet 消失後，檢查事件當下 exactly one File 的快照，其 NFC 正規化檔名、size 與 lastModified（毫秒值允許 1 ms 精度差，或恰為朝零截斷到整秒的值；不接受一般 ±1 秒範圍）符合開始時檔案 metadata；交付前頁面／元素改變、事件快照數值不符或截止則失敗；可信交付後的同文件頁面處理依下方 R2 修正。metadata 是結果一致性檢查，並非所有檔案內容的密碼學證明；實測 fixture 另驗證內容。頁面私有 nonce 變數在可安全存取原頁面時清理。
+在固定頁面上保留原 input 的 JavaScript reference，交付前逐次確認仍為同一元素及文件。本次捕捉 input／change 事件作為新選取證據，避免 Cancel＋舊匹配檔案誤判；未觀察新事件的相同檔案重選明確失敗且不清空舊 input。待 sheet 消失後，檢查事件當下 exactly one File 的快照，其 NFC 正規化檔名、size 與 lastModified（毫秒值允許 1 ms 精度差，或恰為朝零截斷到整秒的值；不接受一般 ±1 秒範圍）符合開始時檔案 metadata；交付前頁面／元素改變、事件快照數值不符或截止則失敗；可信交付後的同文件頁面處理依下方 R2 修正。metadata 是結果一致性檢查，並非所有檔案內容的密碼學證明；實測 fixture 另驗證內容。頁面私有 nonce 變數在可安全存取原頁面時清理。
 
 ## Implementation Contract
 
@@ -51,7 +51,11 @@ NativeUploadScript.make 接受 selector、absolute path、fileSize、modificatio
 
 ## R2 審查修正
 
-- 以 window capture listener 在一般 input change handler 前保存第一次可信事件的檔案 metadata；事件當下仍檢查原文件、URL、selector、input 身分與模式。先前守衛維持於所有會再送檔案的 AX 動作；sheet 關閉後只讀取快照並檢查原視窗／分頁與文件 nonce，不再要求已消耗的 input 留在 DOM 或同文件 URL 不變。完整換頁仍因原文件證據消失而無法確認，不自動重試。
+- 以 window capture listener 在一般 input／change handler 前保存第一次可信事件的檔案 metadata；事件當下仍檢查原文件、URL、selector、input 身分與模式。先前守衛維持於所有會再送檔案的 AX 動作；sheet 關閉後只讀取快照並檢查原視窗／分頁與文件 nonce，不再要求已消耗的 input 留在 DOM 或同文件 URL 不變。完整換頁仍因原文件證據消失而無法確認，不自動重試。
 - 初始化及每次交付前 owner 檢查都拒絕 webkitdirectory；multiple 保留，仍只交付一個指定 regular file。這項拒絕不代表普通面板的非同步 Paste 時序已完成 GUI 驗收。
 - 毫秒換算朝零取整，使負時間小數毫秒不先跨到前一個整秒；精確毫秒誤差仍限 1 ms，整秒表示仍要求完全相等。
 - 無視窗 WebKit 回歸測試實際包含同步清空 input、替換 input、更新 URL 與負時間邊界。這些測試不操作 Safari、AX 或 Print。
+
+## R3 事件順序與關閉等待
+
+先監聽可信 input，再以 change 作為相同 listener 的第二個入口，兩者共用第一次交付快照。Paste 後先讀完成結果；若已交付，即使 sheet 尚在也不再按 Upload。確認後的等待只有視窗／分頁、前景、原面板單一／無巢狀檢查，不重新要求 input／URL 維持交付前狀態。普通面板的選取就緒證據仍需 GUI 實測，不能把固定延遲或事後檢查當成事前證明。

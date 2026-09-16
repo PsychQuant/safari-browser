@@ -22,6 +22,7 @@ enum NativeUploadScript {
                 state.selection=Array.from(el.files, function(f){return {name:f.name,size:f.size,lastModified:f.lastModified};});
             };
             Object.defineProperty(window,key,{value:state,configurable:true});
+            window.addEventListener('input',state.listener,true);
             window.addEventListener('change',state.listener,true);
             return 'OK';
         })()
@@ -81,6 +82,7 @@ enum NativeUploadScript {
         (function(){
             var key='\(stateKey(nonce).escapedForJS)', state=window[key];
             if(!state || state.nonce!=='\(nonce.escapedForJS)' || state.doc!==document) return 'SKIPPED';
+            window.removeEventListener('input',state.listener,true);
             window.removeEventListener('change',state.listener,true);
             delete window[key];
             return 'OK';
@@ -179,6 +181,19 @@ enum NativeUploadScript {
             my checkUploadDeadline()
             my checkUploadClipboard()
         end verifyUploadCompletionTarget
+
+        -- A delivered file can trigger page handlers before AX removes the
+        -- closing sheet. Waiting here never authorizes another file action.
+        on verifyUploadCompletionPanel()
+            my verifyUploadCompletionTarget()
+            tell application "System Events" to tell process "Safari"
+                if (count of sheets of uploadAXWindow) is 0 then return
+                if (count of sheets of uploadAXWindow) is not 1 then error "The unique owned file dialog is unavailable"
+                if not (exists uploadPanel) then error "Owned file dialog disappeared"
+                if sheet 1 of uploadAXWindow is not uploadPanel then error "File dialog ownership changed"
+                if exists sheet 1 of uploadPanel then error "Nested sheet appeared; no file confirmation was sent"
+            end tell
+        end verifyUploadCompletionPanel
 
         on verifyUploadAXOwner()
             tell application "System Events" to tell process "Safari"
@@ -345,8 +360,10 @@ enum NativeUploadScript {
             -- Paste can accept directly or leave an initial confirmation.
             delay 0.1
             my verifyUploadCompletionTarget()
+            tell application "Safari" to set selectionResult to do JavaScript "\(completion)" in current tab of window id uploadWindowID
+            if selectionResult is not "OK" and selectionResult is not "PENDING" then error "Native upload selected file verification failed: " & selectionResult
             tell application "System Events" to tell process "Safari"
-                if exists sheet 1 of front window then
+                if (exists sheet 1 of front window) and selectionResult is not "OK" then
                     my verifyUploadPanel()
                     set fileButtons to buttons of uploadPanel
                     repeat with panelGroup in splitter groups of uploadPanel
@@ -373,7 +390,7 @@ enum NativeUploadScript {
                 my verifyUploadCompletionTarget()
                 tell application "System Events" to tell process "Safari" to set panelStillOpen to exists sheet 1 of front window
                 if panelStillOpen then
-                    my verifyUploadPanel()
+                    my verifyUploadCompletionPanel()
                 else
                     tell application "Safari" to set selectionResult to do JavaScript "\(completion)" in current tab of window id uploadWindowID
                     if selectionResult is "OK" then exit repeat

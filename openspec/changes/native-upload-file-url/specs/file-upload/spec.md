@@ -54,12 +54,21 @@ The timestamp validator SHALL accept the exact millisecond representation and th
 - **THEN** validation SHALL use truncation toward zero and SHALL NOT construct invalid JavaScript by joining two minus signs
 
 ### Requirement: Native upload records delivery before page handlers consume the input
-The command SHALL capture file count, name, size and modification time on a trusted change for the original input while its document, URL, selector and file-input mode still match. It SHALL retain the first such snapshot and SHALL NOT replace it with later events. After delivery, same-document URL updates, clearing the input or replacing it SHALL NOT invalidate that snapshot. Completion SHALL still require the captured window and tab, the original document state and a closed chooser; untrusted events or ownership changes before delivery SHALL NOT establish success.
+The command SHALL capture file count, name, size and modification time on the first trusted input or change event for the original input while its document, URL, selector and file-input mode still match. It SHALL retain the first such snapshot and SHALL NOT replace it with later events. After delivery, same-document URL updates, clearing the input or replacing it SHALL NOT invalidate that snapshot. Completion SHALL still require the captured window and tab, the original document state and a closed chooser; untrusted events or ownership changes before delivery SHALL NOT establish success.
 
 #### Scenario: Application consumes the selected file immediately
 - **WHEN** a page change handler clears or replaces the original input or updates its same-document URL after receiving the selected file
 - **THEN** verification SHALL use the event-time metadata rather than the subsequent live FileList
 - **AND** it SHALL NOT send another file action
+
+#### Scenario: Input event precedes change
+- **WHEN** the page consumes the file in its input handler before change fires
+- **THEN** the earlier trusted input event SHALL preserve the delivery snapshot
+
+#### Scenario: Delivered chooser remains briefly observable
+- **WHEN** the original input has delivered matching file metadata and its sheet remains observable during closure
+- **THEN** the command SHALL wait using only completion ownership checks and SHALL NOT send another confirmation
+- **AND** success SHALL still require the sheet to disappear
 
 ### Requirement: Native upload rejects directory selectors
 Native upload SHALL reject a webkitdirectory file input before opening a chooser and SHALL recheck its mode before further file actions. This command authorizes one regular file, not directory selection.

@@ -38,12 +38,14 @@ final class NativeUploadWebKitTests: XCTestCase {
         let attrs = try FileManager.default.attributesOfItem(atPath: file.path)
         let date = try XCTUnwrap(attrs[.modificationDate] as? Date)
         let expected = try UploadCommand.nativeModificationTimeMilliseconds(date)
+        for pageEvent in ["input", "change"] {
         for mutation in ["event.target.value='';", "event.target.replaceWith(event.target.cloneNode());", "history.pushState({},'', '#received');"] {
-            let probe = UploadWebKitMetadataProbe(file: file, size: 13, milliseconds: expected, afterSelection: mutation)
+            let probe = UploadWebKitMetadataProbe(file: file, size: 13, milliseconds: expected, afterSelection: mutation, pageEvent: pageEvent)
             let text = try await probe.run()
             let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
             XCTAssertEqual(result["verdict"] as? String, "OK", "page consumption must preserve delivery evidence: \(mutation) → \(text)")
             XCTAssertEqual(result["trusted"] as? Bool, true)
+        }
         }
     }
 
@@ -55,13 +57,14 @@ private final class UploadWebKitMetadataProbe: NSObject, WKUIDelegate, WKNavigat
     private let size: Int64
     private let milliseconds: Int64
     private let afterSelection: String
+    private let pageEvent: String
     private let nonce = UUID().uuidString
     private var webView: WKWebView?
     private var continuation: CheckedContinuation<String, Error>?
 
-    init(file: URL, size: Int64, milliseconds: Int64, afterSelection: String = "") {
+    init(file: URL, size: Int64, milliseconds: Int64, afterSelection: String = "", pageEvent: String = "change") {
         self.file = file; self.size = size; self.milliseconds = milliseconds
-        self.afterSelection = afterSelection
+        self.afterSelection = afterSelection; self.pageEvent = pageEvent
     }
 
     func run() async throws -> String {
@@ -85,9 +88,9 @@ private final class UploadWebKitMetadataProbe: NSObject, WKUIDelegate, WKNavigat
         let validate = NativeUploadScript.completionJS(selector: "#fixture", nonce: nonce,
             fileName: file.lastPathComponent, fileSize: size, modificationTimeMilliseconds: milliseconds)
         let script = """
-        document.getElementById('fixture').addEventListener('change', event => { \(afterSelection) });
+        document.getElementById('fixture').addEventListener('\(pageEvent)', event => { \(afterSelection) });
         if (\(initialize) !== 'OK') throw new Error('initialization failed');
-        document.addEventListener('change', event => {
+        document.addEventListener('\(pageEvent)', event => {
           const f=event.target.files[0];
           setTimeout(() => window.webkit.messageHandlers.result.postMessage(JSON.stringify({
             verdict:\(validate), trusted:event.isTrusted, name:f.name, size:f.size, lastModified:f.lastModified

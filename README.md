@@ -506,7 +506,7 @@ safari-browser upload --js <sel> <file>  # JS DataTransfer injection (no permiss
 Native upload uses a file URL clipboard item and named AX Paste/Upload actions, without keyboard simulation or Go-to-Folder. It temporarily changes Safari focus and the clipboard; avoid interacting with that chooser or copying until it completes. Readable clipboard items/types are saved and restored on normal completion, failure or timeout while still owned; newer clipboard contents are preserved. Overlapping native uploads are refused. Forced termination and races with unrelated clipboard writers cannot guarantee restoration. The command verifies a fresh selection on the original input, not merely a button acknowledgement; cancelling or reselecting an unchanged file does not count as a new upload.
 
 Native upload verifies a snapshot captured when the original input receives its
-first trusted file-change event. A page can then clear or replace that input or
+first trusted input or change event. A page can then clear or replace that input or
 update its same-document URL without losing delivery evidence. Directory inputs
 (`webkitdirectory`) are rejected; the command accepts one regular file. A full
 navigation that removes the original document can still leave delivery uncertain;
