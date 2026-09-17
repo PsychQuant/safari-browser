@@ -218,19 +218,22 @@ enum DaemonDispatch {
             cache: PreCompiledScripts.CompileCache
         ) async throws -> Data {
             struct Params: Decodable {
-                let source: String
+                // Retain the original decode error so opted-in malformed
+                // requests are measured without decoding the script twice.
+                let source: Result<String, Error>
                 let timing: Bool
                 enum CodingKeys: String, CodingKey { case source, timing }
                 init(from decoder: Decoder) throws {
                     let values = try decoder.container(keyedBy: CodingKeys.self)
-                    source = try values.decode(String.self, forKey: .source)
+                    source = Result { try values.decode(String.self, forKey: .source) }
                     timing = (try? values.decode(Bool.self, forKey: .timing)) ?? false
                 }
             }
             let params = try JSONDecoder().decode(Params.self, from: paramsData)
             return try await PerformanceTrace.withDaemonTiming(enabled: params.timing) {
+            let source = try params.source.get()
             do {
-                let result = try await cache.execute(source: params.source)
+                let result = try await cache.execute(source: source)
                 let response: [String: Any] = [
                     "status": "ok",
                     "output": result.stringValue ?? "",

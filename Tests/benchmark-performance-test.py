@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -96,6 +97,13 @@ class TraceTests(unittest.TestCase):
 
 
 class ProcessTests(unittest.TestCase):
+    def test_daemon_fallback_diagnostic_is_only_a_boolean_in_report(self):
+        source = "import sys; sys.stderr.write('[daemon fallback: private /Users/secret]\\n')"
+        result = bench.run_process([sys.executable, '-c', source], dict(os.environ), 2)
+        self.assertEqual(result.get('daemonFallback'), True)
+        self.assertNotIn('private', json.dumps(result))
+        self.assertNotIn('/Users/secret', json.dumps(result))
+
     def test_run_process_selects_its_actual_pid_trace(self):
         source = 'import os,sys,json\nt=' + repr(trace()) + "\nfor p,n in [(os.getpid()+1,1),(os.getpid()+2,2),(os.getpid(),333)]:\n t.update(processID=p,totalNanoseconds=n)\n sys.stderr.write('[safari-browser timing] '+json.dumps(t)+'\\n')\n"
         result = bench.run_process([sys.executable, '-c', source], dict(os.environ), 2)
@@ -104,12 +112,35 @@ class ProcessTests(unittest.TestCase):
         self.assertEqual(result['trace']['totalNanoseconds'], 333)
         self.assertGreater(result['trace']['processID'], 0)
 
-    def test_closed_stderr_short_process_wall_has_no_50ms_polling_penalty(self):
-        results = [bench.run_process(['/bin/sh', '-c', 'exec 2>&-; sleep 0.005'], dict(os.environ), 2) for _ in range(3)]
-        self.assertTrue(all(r['status'] == 'ok' for r in results))
-        median = sorted(r['wallNanoseconds'] for r in results)[1]
-        self.assertLess(median, 35_000_000)
-        self.assertGreater(median, 4_000_000)
+    def test_closed_stderr_wall_uses_exit_observation_and_excludes_delayed_cleanup(self):
+        observers, clock_reads = [], []
+        actual_observer = bench.ExitObservation
+        actual_clock = time.monotonic_ns
+        actual_cleanup = bench.kill_group
+        cleanup_delay = .08
+        def capture_clock():
+            value = actual_clock()
+            clock_reads.append(value)
+            return value
+        def capture_observer(process):
+            observer = actual_observer(process)
+            observers.append(observer)
+            return observer
+        def delayed_cleanup(process, **kwargs):
+            actual_cleanup(process, **kwargs)
+            time.sleep(cleanup_delay)
+        with mock.patch.object(bench.time, 'monotonic_ns', capture_clock), \
+                mock.patch.object(bench, 'ExitObservation', capture_observer), \
+                mock.patch.object(bench, 'kill_group', delayed_cleanup):
+            result = bench.run_process(['/bin/sh', '-c', 'exec 2>&-; sleep 0.005'], dict(os.environ), 30)
+        returned_ns = actual_clock()
+        self.assertEqual(result['status'], 'ok')
+        self.assertEqual(result['exitCode'], 0)
+        self.assertEqual(len(observers), 1)
+        observer = observers[0]
+        self.assertTrue(observer.finished.is_set())
+        self.assertEqual(result['wallNanoseconds'], observer.completed_ns - clock_reads[0])
+        self.assertGreaterEqual(returned_ns - clock_reads[0] - result['wallNanoseconds'], int(cleanup_delay * 1e9))
 
     def test_reaped_leader_is_never_used_as_group_identity(self):
         process = subprocess.Popen([sys.executable, '-c', 'pass'], start_new_session=True)
@@ -198,7 +229,9 @@ err = '[safari-browser timing] ' + json.dumps(record) + '\n' if os.environ.get('
 if args[:2] == ['daemon','__serve']:
     name = args[args.index('--name')+1]
     directory = args[args.index('--socket-dir')+1]
-    pathlib.Path(directory, 'safari-browser-'+name+'.sock').touch()
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(pathlib.Path(directory, 'safari-browser-'+name+'.sock')))
+    listener.listen(16)
     time.sleep(30)
 elif args[:1] == ['mcp']:
     for line in sys.stdin:
@@ -220,6 +253,192 @@ else:
         assert steps == [{'cmd':'wait','args':['0']}] * 3
     sys.stderr.write(err)
 '''
+
+
+class ServiceRobustnessTests(unittest.TestCase):
+    def test_observer_pipe_closes_while_waiter_is_still_running(self):
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], start_new_session=True)
+        observer = bench.ExitObservation(process)
+        read_fd, write_fd = observer.read_fd, observer.write_fd
+        try:
+            observer.close()
+            for descriptor in (read_fd, write_fd):
+                with self.assertRaises(OSError): os.fstat(descriptor)
+        finally:
+            bench.kill_group(process, observer=observer)
+            observer.close()
+
+    def test_refused_signal_returns_failed_sample_without_waiting_for_live_leader(self):
+        observers = []
+        actual_observer = bench.ExitObservation
+        def capture_observer(process):
+            observer = actual_observer(process)
+            observers.append(observer)
+            return observer
+        result = None
+        started = time.monotonic()
+        try:
+            with mock.patch.object(bench, 'ExitObservation', capture_observer), \
+                    mock.patch.object(bench, 'signal_owned_group', side_effect=PermissionError('private-denied')):
+                try:
+                    result = bench.run_process([sys.executable, '-c', 'import time; time.sleep(30)'], dict(os.environ), .1)
+                except PermissionError:
+                    pass
+            self.assertIsNotNone(result, 'refused signal discarded sample')
+            self.assertTrue(result.get('cleanupFailed'))
+            self.assertNotEqual(result['status'], 'ok')
+            self.assertLess(time.monotonic() - started, .8)
+            self.assertIsNone(bench.observe_exit(observers[0].process))
+        finally:
+            for observer in observers:
+                bench.kill_group(observer.process, observer=observer)
+                observer.close()
+
+
+    def test_daemon_readiness_requires_connect_without_sending_a_request(self):
+        with tempfile.TemporaryDirectory(prefix='sb-test-', dir='/tmp') as directory:
+            env = bench.isolated_environment(directory, False)
+            binary = Path(directory, 'daemon')
+            ready, received = Path(directory, 'listening'), Path(directory, 'received')
+            binary.write_text('#!/usr/bin/env python3\nimport os,socket,time,pathlib\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(os.path.join(os.environ["TMPDIR"],"safari-browser-"+os.environ["SAFARI_BROWSER_NAME"]+".sock"))\ntime.sleep(.15)\npathlib.Path(' + repr(str(ready)) + ').touch()\ns.listen(1)\nc,_=s.accept()\npathlib.Path(' + repr(str(received)) + ').write_bytes(c.recv(10))\nc.close()\ntime.sleep(30)\n')
+            binary.chmod(0o700)
+            service = bench.Service(str(binary), env, 'daemon', 2)
+            try:
+                self.assertTrue(ready.exists(), 'socket path was accepted before listen')
+                deadline = time.monotonic() + 1
+                while not received.exists() and time.monotonic() < deadline: time.sleep(.01)
+                self.assertTrue(received.exists())
+                self.assertEqual(received.read_bytes(), b'')
+            finally:
+                service.close()
+
+    def test_daemon_stderr_after_readiness_cannot_block_host(self):
+        with tempfile.TemporaryDirectory(prefix='sb-test-', dir='/tmp') as directory:
+            env = bench.isolated_environment(directory, False)
+            trigger, finished = Path(directory, 'trigger'), Path(directory, 'finished')
+            binary = Path(directory, 'daemon')
+            binary.write_text('#!/usr/bin/env python3\nimport os,socket,time,pathlib,sys\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(os.path.join(os.environ["TMPDIR"],"safari-browser-"+os.environ["SAFARI_BROWSER_NAME"]+".sock"))\ns.listen(1)\nwhile not pathlib.Path(' + repr(str(trigger)) + ').exists(): time.sleep(.01)\nsys.stderr.write("private"*100000)\nsys.stderr.flush()\npathlib.Path(' + repr(str(finished)) + ').touch()\ntime.sleep(30)\n')
+            binary.chmod(0o700)
+            service = bench.Service(str(binary), env, 'daemon', 2)
+            try:
+                trigger.touch()
+                deadline = time.monotonic() + .5
+                while not finished.exists() and time.monotonic() < deadline: time.sleep(.01)
+                self.assertTrue(finished.exists(), 'host blocked on undrained stderr')
+            finally:
+                service.close()
+
+    def test_process_cleanup_failure_keeps_result_and_closes_streams(self):
+        actual = bench.kill_group
+        observed = []
+        def cleanup_fault(process, **kwargs):
+            actual(process, **kwargs)
+            observed.append(process)
+            raise PermissionError('private-cleanup-error')
+        result = None
+        with mock.patch.object(bench, 'kill_group', cleanup_fault):
+            try:
+                result, output = bench.run_process([sys.executable, '-c', 'print("ok")'], dict(os.environ), 2, capture_stdout=True)
+            except PermissionError:
+                pass
+        closed = all(stream.closed for process in observed for stream in (process.stdout, process.stderr) if stream)
+        for process in observed:
+            for stream in (process.stdout, process.stderr):
+                if stream: stream.close()
+        self.assertTrue(closed, 'cleanup exception leaked command streams')
+        self.assertIsNotNone(result, 'cleanup exception discarded sample report')
+        self.assertEqual(result['status'], 'error')
+        self.assertTrue(result.get('cleanupFailed'))
+        self.assertNotIn('private-cleanup-error', json.dumps(result))
+
+    def test_pgrep_timeout_in_main_signal_path_keeps_failed_report(self):
+        observers = []
+        actual_observer, actual_run = bench.ExitObservation, bench.subprocess.run
+        def capture_observer(process):
+            observer = actual_observer(process)
+            observers.append(observer)
+            return observer
+        def timeout_pgrep(argv, *args, **kwargs):
+            if argv[0] == '/usr/bin/pgrep':
+                raise subprocess.TimeoutExpired(argv, 1, output=b'private-error')
+            return actual_run(argv, *args, **kwargs)
+        result = None
+        try:
+            with mock.patch.object(bench, 'ExitObservation', capture_observer), \
+                    mock.patch.object(bench.subprocess, 'run', timeout_pgrep):
+                try:
+                    result = bench.run_process([sys.executable, '-c', 'pass'], dict(os.environ), 2)
+                except subprocess.TimeoutExpired:
+                    pass
+            self.assertIsNotNone(result, 'main signal path lost report on pgrep timeout')
+            self.assertEqual(result['status'], 'error')
+            self.assertTrue(result.get('cleanupFailed'))
+            self.assertNotIn('private-error', json.dumps(result))
+        finally:
+            for observer in observers:
+                bench.kill_group(observer.process, observer=observer)
+                observer.close()
+
+    def test_observer_close_failure_is_recorded_without_losing_result(self):
+        actual = bench.ExitObservation.close
+        def close_fault(observer):
+            actual(observer)
+            raise OSError('private-observer-close')
+        result = None
+        with mock.patch.object(bench.ExitObservation, 'close', close_fault):
+            try:
+                result = bench.run_process([sys.executable, '-c', 'pass'], dict(os.environ), 2)
+            except OSError:
+                pass
+        self.assertIsNotNone(result)
+        self.assertTrue(result.get('cleanupFailed'))
+        self.assertEqual(result['status'], 'error')
+
+    def test_startup_cleanup_failure_is_explicit_for_cold_and_warm_service(self):
+        for cold in (False, True):
+            with self.subTest(cold=cold), tempfile.TemporaryDirectory() as directory:
+                binary = Path(directory, 'fake')
+                binary.write_text(FAKE)
+                binary.chmod(0o700)
+                old = dict(os.environ)
+                os.environ.update(BENCH_TEST_LOG=str(Path(directory, 'log')), BENCH_RPC_MODE='bad-init')
+                actual = bench.kill_group
+                def cleanup_fault(process, **kwargs):
+                    actual(process, **kwargs)
+                    raise PermissionError('private-startup-cleanup')
+                try:
+                    with mock.patch.object(bench, 'kill_group', cleanup_fault):
+                        report = bench.service_scenario(str(binary), 'mcp', cold, True, 1, 0, 2)
+                finally:
+                    os.environ.clear(); os.environ.update(old)
+                self.assertTrue(report['samples'][0].get('cleanupFailed'))
+                self.assertTrue(report.get('cleanupFailed'))
+                self.assertEqual(report['statistics']['successful'], 0)
+                self.assertNotIn('private-startup-cleanup', json.dumps(report))
+
+    def test_service_cleanup_failure_keeps_report_and_excludes_quantiles(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory, 'fake')
+            binary.write_text(FAKE)
+            binary.chmod(0o700)
+            old = dict(os.environ)
+            os.environ['BENCH_TEST_LOG'] = str(Path(directory, 'log'))
+            actual = bench.kill_group
+            def cleanup_fault(process, **kwargs):
+                actual(process, **kwargs)
+                if 'mcp' in process.args: raise PermissionError('private-cleanup-error')
+            try:
+                with mock.patch.object(bench, 'kill_group', cleanup_fault):
+                    try:
+                        report = bench.service_scenario(str(binary), 'mcp', False, True, 2, 0, 2)
+                    except (PermissionError, ChildProcessError):
+                        report = None
+            finally:
+                os.environ.clear(); os.environ.update(old)
+            self.assertIsNotNone(report, 'service cleanup exception discarded report')
+            self.assertTrue(report.get('cleanupFailed'))
+            self.assertEqual(report['statistics']['successful'], 0)
+            self.assertIsNone(report['statistics']['p50Nanoseconds'])
 
 
 class LifecycleTests(unittest.TestCase):
@@ -315,18 +534,36 @@ class ProtocolFailureTests(unittest.TestCase):
                 events, rpc = Path(directory, 'events'), Path(directory, 'rpc')
                 old = dict(os.environ)
                 os.environ.update(BENCH_TEST_LOG=str(events), BENCH_RPC_LOG=str(rpc), BENCH_RPC_MODE=mode)
+                actual_service = bench.Service
+                started_hosts = []
+                # Host launch and protocol handshake are fixture setup. The
+                # production scenario still applies its own request deadline.
+                def ready_service(executable, environment, kind, timeout):
+                    service = actual_service(executable, environment, kind, 30)
+                    started_hosts.append(service)
+                    methods = rpc.read_text().splitlines()
+                    self.assertEqual(methods.count('initialize'), 1)
+                    self.assertNotIn('tools/call', methods)
+                    return service
+                call_timeout = .15 if mode == 'timeout' else 5
                 try:
-                    report = bench.service_scenario(str(binary), 'mcp', False, True, 2, 0, .15)
+                    with mock.patch.object(bench, 'Service', ready_service):
+                        report = bench.service_scenario(str(binary), 'mcp', False, True, 2, 0, call_timeout)
                 finally:
                     os.environ.clear()
                     os.environ.update(old)
+                    for service in started_hosts:
+                        service.close()
+                self.assertEqual(len(started_hosts), 1)
+                self.assertEqual(report['samples'][0]['status'], 'timeout' if mode == 'timeout' else 'error')
+                self.assertEqual(report['samples'][1]['reason'], 'service_unavailable')
                 self.assertEqual(report['statistics']['successful'], 0)
                 self.assertEqual(report['statistics']['failed'], 2)
                 self.assertEqual(rpc.read_text().splitlines().count('tools/call'), 1)
                 event = json.loads(events.read_text().splitlines()[0])
                 with self.assertRaises(ProcessLookupError): os.kill(event['pid'], 0)
                 self.assertFalse(Path(event['tmp']).exists())
-                self.assertEqual(event['args'], ['mcp', '--timeout', '0.15'])
+                self.assertEqual(event['args'], ['mcp', '--timeout', '30'])
 
 
 class LiveTests(unittest.TestCase):
@@ -350,11 +587,13 @@ class LiveTests(unittest.TestCase):
             self.assertEqual(len(log.read_text().splitlines()), 1)
             self.assertNotIn(directory, json.dumps(reports))
 
-    def live_fixture(self, *, output='correct', ready=True, retained=False, samples=1, timeout=2):
+    def live_fixture(self, *, output='correct', ready=True, retained=False, samples=1, timeout=2, daemon_mode='normal', timing=True, readiness_budget=None):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory, 'fake')
             source = FAKE.replace("else:\n    if args[0]", "elif args == ['dialog', 'list']:\n    print('no blocking dialog found')\nelse:\n    if args[0]")
             source = source.replace("    sys.stderr.write(err)", "    if args[0] == 'get':\n        value = 'Benchmark fixture' if args[1] == 'title' else args[-1]\n        mode = os.environ.get('BENCH_GET_OUTPUT', 'correct')\n        print(value if mode == 'correct' else 'private-wrong-output' if mode == 'wrong' else '')\n    sys.stderr.write(err)")
+            source = source.replace("    time.sleep(30)", "    pathlib.Path(directory, 'owned-daemon.pid').write_text(str(os.getpid()))\n    time.sleep(.02 if os.environ.get('BENCH_DAEMON_MODE') == 'exit-before' else 30)")
+            source = source.replace("        value = 'Benchmark fixture'", "        if pathlib.Path(os.environ['TMPDIR'], 'owned-daemon.pid').exists():\n            mode = os.environ.get('BENCH_DAEMON_MODE')\n            if mode == 'fallback': sys.stderr.write('[daemon fallback: private /Users/secret]\\n')\n            if mode == 'truncated': sys.stderr.write('x' * 65536 + '[daemon fallback: private /Users/secret]\\n')\n            if mode == 'exit-during':\n                import signal\n                os.kill(int(pathlib.Path(os.environ['TMPDIR'], 'owned-daemon.pid').read_text()), signal.SIGTERM)\n                time.sleep(.03)\n        value = 'Benchmark fixture'")
             binary.write_text(source)
             binary.chmod(0o700)
             native = Path(directory, 'native.py')
@@ -363,38 +602,94 @@ class LiveTests(unittest.TestCase):
             native_events = Path(directory, 'native-events')
             old = dict(os.environ)
             os.environ.update(BENCH_TEST_LOG=str(events), BENCH_NATIVE_LOG=str(native_events),
-                BENCH_RETAIN='1' if retained else '0', BENCH_GET_OUTPUT=output, BENCH_READY='1' if ready else '0')
-            actual = bench.run_process
-            def redirect(argv, *args, **kwargs):
+                BENCH_RETAIN='1' if retained else '0', BENCH_GET_OUTPUT=output, BENCH_READY='1' if ready else '0', BENCH_DAEMON_MODE=daemon_mode)
+            actual, real_time = bench.run_process, bench.time
+            logical_time = [time.monotonic()]
+            self.readiness_deadlines = []
+            def advance(seconds):
+                logical_time[0] += seconds
+            controlled_time = types.SimpleNamespace(monotonic=lambda: logical_time[0],
+                monotonic_ns=real_time.monotonic_ns, sleep=advance)
+            def redirect(argv, environment, command_timeout, **kwargs):
+                is_readiness = argv[0] == '/usr/bin/osascript' and 'return name of tab 1 of w' in argv[-1]
                 if argv[0] == '/usr/bin/osascript':
                     argv = [sys.executable, str(native), *argv[1:]]
-                return actual(argv, *args, **kwargs)
+                if readiness_budget is None:
+                    return actual(argv, environment, command_timeout, **kwargs)
+                # Real fixture subprocess startup has its own watchdog. It
+                # does not consume the controlled readiness-logic clock.
+                with mock.patch.object(bench, 'time', real_time):
+                    result = actual(argv, environment, 30, **kwargs)
+                if is_readiness:
+                    self.readiness_deadlines.append(command_timeout)
+                    self.assertEqual(result[0]['status'], 'ok')
+                    self.assertEqual(result[1], b'\n')
+                    advance(readiness_budget)
+                return result
             started = time.monotonic()
             try:
-                with mock.patch.object(bench, 'run_process', redirect):
-                    reports = bench.live_scenarios(str(binary), True, samples, 0, timeout)
+                with mock.patch.object(bench, 'run_process', redirect), \
+                        mock.patch.object(bench, 'time', controlled_time if readiness_budget is not None else real_time):
+                    reports = bench.live_scenarios(str(binary), timing, samples, 0, timeout)
             finally:
                 os.environ.clear()
                 os.environ.update(old)
             elapsed = time.monotonic() - started
-            commands = [json.loads(line)['args'] for line in events.read_text().splitlines()]
+            self.live_events = [json.loads(line) for line in events.read_text().splitlines()]
+            commands = [event['args'] for event in self.live_events]
             native_calls = [json.loads(line)[-1] for line in native_events.read_text().splitlines()]
             self.assertNotIn('127.0.0.1', json.dumps(reports))
             self.assertNotIn('private-wrong-output', json.dumps(reports))
+            self.assertNotIn('/Users/secret', json.dumps(reports))
             self.assertNotIn(directory, json.dumps(reports))
             return reports, commands, native_calls, elapsed
+
+    def test_second_preflight_skip_reports_not_created_cleanup(self):
+        answers = [({'status':'ok'}, b'no blocking dialog found\n'),
+                   ({'status':'ok'}, b'blocking dialog present\n')]
+        with mock.patch.object(bench, 'run_process', side_effect=answers) as execute:
+            reports = bench.live_scenarios('/unused', False, 1, 0, 1)
+        self.assertEqual(execute.call_count, 2)
+        self.assertEqual([r['statistics']['skipped'] for r in reports], [1, 1, 1, 1])
+        self.assertTrue(all(r.get('fixtureCleanup') == 'not-created' for r in reports))
 
     def test_live_fixture_measures_only_exact_target_and_closes_once(self):
         for retained in (False, True):
             with self.subTest(retained=retained):
                 reports, commands, native_calls, _ = self.live_fixture(retained=retained, samples=2)
-                self.assertEqual([r['statistics']['successful'] for r in reports], [2, 2, 2, 2])
+                self.assertEqual([r['statistics']['successful'] for r in reports], [0, 0, 0, 0] if retained else [2, 2, 2, 2])
                 self.assertTrue(all(r.get('cleanupFailed', False) == retained for r in reports))
                 gets = [cmd for cmd in commands if cmd[0] == 'get']
                 self.assertEqual(len(gets), 8)
                 self.assertTrue(all(cmd[2] == '--url-exact' and cmd[3].startswith('http://127.0.0.1:') for cmd in gets))
                 self.assertEqual(sum('make new document' in script for script in native_calls), 1)
                 self.assertEqual(sum('close w' in script for script in native_calls), 1)
+
+    def test_warm_daemon_exit_fallback_and_truncation_fail_without_replay(self):
+        for timing in (False, True):
+            for mode in ('exit-before', 'exit-during', 'fallback', 'truncated'):
+                with self.subTest(timing=timing, mode=mode):
+                    reports, commands, _, _ = self.live_fixture(daemon_mode=mode, timing=timing, samples=2)
+                    direct, warm = reports[:2], reports[2:]
+                    self.assertEqual([r['statistics']['successful'] for r in direct], [2, 2])
+                    self.assertEqual([r['statistics']['successful'] for r in warm], [0, 0])
+                    self.assertEqual([r['statistics']['failed'] for r in warm], [2, 2])
+                    expected = {'exit-before':'service_exited', 'exit-during':'service_exited',
+                                'fallback':'daemon_fallback', 'truncated':'daemon_route_unconfirmed'}[mode]
+                    self.assertTrue(all(s['reason'] == expected for r in warm for s in r['samples']))
+                    self.assertEqual(sum(command[:2] == ['daemon', '__serve'] for command in commands), 1)
+                    gets = [event for event in self.live_events if event['args'][0] == 'get']
+                    self.assertEqual(len(gets), 4 + (0 if mode == 'exit-before' else 1))
+                    self.assertTrue(all(event['daemon'] == '1' for event in gets[4:]))
+
+    def test_warm_daemon_normal_samples_force_route_with_timing_on_and_off(self):
+        for timing in (False, True):
+            with self.subTest(timing=timing):
+                reports, _, _, _ = self.live_fixture(timing=timing)
+                self.assertEqual([r['statistics']['successful'] for r in reports], [1, 1, 1, 1])
+                gets = [event for event in self.live_events if event['args'][0] == 'get']
+                self.assertEqual([event['daemon'] for event in gets], [None, None, '1', '1'])
+                self.assertTrue(all(s.get('daemonFallback') is False for r in reports for s in r['samples']))
 
     def test_live_rejects_wrong_or_empty_output_without_disclosing_it(self):
         for output in ('wrong', 'empty'):
@@ -405,18 +700,19 @@ class LiveTests(unittest.TestCase):
                 self.assertTrue(all(r['samples'][0].get('reason') == 'fixture_output_mismatch' for r in reports))
 
     def test_live_readiness_times_out_without_recreating_window_or_measuring(self):
-        reports, commands, native_calls, elapsed = self.live_fixture(ready=False, timeout=.35)
+        reports, commands, native_calls, _ = self.live_fixture(ready=False, timeout=.35, readiness_budget=.35)
         self.assertEqual([r['statistics']['failed'] for r in reports], [1, 1, 1, 1])
         self.assertTrue(all(r['samples'][0].get('reason') == 'fixture_readiness_timeout' for r in reports))
         self.assertFalse(any(cmd[0] == 'get' for cmd in commands))
         self.assertEqual(sum('make new document' in script for script in native_calls), 1)
         readiness = [script for script in native_calls if 'return name of tab 1 of w' in script]
-        self.assertGreater(len(readiness), 0)
+        self.assertEqual(len(readiness), 1)
+        self.assertEqual(len(self.readiness_deadlines), 1)
+        self.assertAlmostEqual(self.readiness_deadlines[0], .35, places=7)
         for script in readiness:
             for guard in ('exists window id 42', 'count tabs of w', 'URL of tab 1 of w', 'count sheets'):
                 self.assertIn(guard, script)
                 self.assertLess(script.index(guard), script.index('return name of tab 1 of w'))
-        self.assertLess(elapsed, 3)
 
     def test_cleanup_script_requires_id_exact_url_one_tab_and_no_sheets(self):
         url = 'http://127.0.0.1:1234/0123456789abcdef/'

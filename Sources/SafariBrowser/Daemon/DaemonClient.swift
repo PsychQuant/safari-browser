@@ -240,6 +240,7 @@ enum DaemonClient {
                     throw Error.protocolError("version mismatch after request transmission")
                 }
                 remoteError = .remoteError(code: code, message: message)
+                PerformanceTrace.consumeRemote(object["timing"])
             } else {
                 if PerformanceTrace.isActive, let payload = object["result"] as? [String: Any] {
                     PerformanceTrace.consumeRemote(payload["timing"])

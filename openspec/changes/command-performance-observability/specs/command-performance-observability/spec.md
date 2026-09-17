@@ -37,6 +37,11 @@ A daemon request SHALL enable service timing only with a literal Boolean timing 
 - **WHEN** a successful daemon response contains no timing metadata
 - **THEN** the command SHALL return its original result and report only measurable client-side phases
 
+#### Scenario: Opted-in handler throws
+- **WHEN** a timing-enabled handler throws after accepting an opted-in envelope
+- **THEN** the server SHALL finalize the failed request's timing and attach it beside the original error envelope
+- **AND** the client SHALL import valid timing without changing error classification or retrying the operation
+
 ### Requirement: Reproducible performance benchmark
 The benchmark SHALL provide bounded, fixed safe scenarios for CLI, exec, daemon and MCP. It SHALL report external monotonic wall time separately from main-entry timing, identify fresh process versus warm service, retain failure and SKIP counts, and compute nearest-rank p50 and p95 from successful samples. It SHALL record executable digest, OS build, architecture, sample counts and warmup counts without publishing private executable paths or page data. It SHALL use only its own process groups, daemon namespace and GUI fixtures, and SHALL NOT perform Print or arbitrary repeated mutations.
 
@@ -47,3 +52,8 @@ The benchmark SHALL provide bounded, fixed safe scenarios for CLI, exec, daemon 
 #### Scenario: Timed out sample
 - **WHEN** a sample exceeds its deadline
 - **THEN** its owned process group SHALL be cleaned up and the sample SHALL remain failed without automatic retry
+
+#### Scenario: Warm daemon exits or falls back
+- **WHEN** the owned warm service exits or a sample falls back to direct execution
+- **THEN** the benchmark SHALL reject the sample, even when the command returns the expected output
+- **AND** it SHALL NOT replace the service or retry uncertain samples

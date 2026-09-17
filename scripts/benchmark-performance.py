@@ -11,6 +11,7 @@ import platform
 import re
 import selectors
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -119,6 +120,7 @@ class ExitObservation:
         self.failed = False
         self.finished = threading.Event()
         self.read_fd, self.write_fd = os.pipe()
+        self.pipe_lock = threading.Lock()
         self.thread = threading.Thread(target=self._wait, daemon=True)
         self.thread.start()
 
@@ -131,10 +133,13 @@ class ExitObservation:
             self.failed = True
         finally:
             self.finished.set()
-            try:
-                os.write(self.write_fd, b'1')
-            finally:
-                os.close(self.write_fd)
+            with self.pipe_lock:
+                if self.write_fd is not None:
+                    try:
+                        os.write(self.write_fd, b'1')
+                    finally:
+                        os.close(self.write_fd)
+                        self.write_fd = None
 
     def join_before_reap(self):
         self.thread.join(timeout=2)
@@ -142,8 +147,14 @@ class ExitObservation:
             raise OSError('Child exit observer did not finish')
 
     def close(self):
-        if not self.thread.is_alive():
-            os.close(self.read_fd)
+        # Closing the notification channel must not wait for an unkillable
+        # child. The writer uses the same lock, so a reused fd is never used.
+        with self.pipe_lock:
+            for name in ('read_fd', 'write_fd'):
+                descriptor = getattr(self, name)
+                if descriptor is not None:
+                    os.close(descriptor)
+                    setattr(self, name, None)
 
 
 def signal_owned_group(process):
@@ -175,6 +186,28 @@ def kill_group(process, *, group_signalled=False, observer=None):
     process.wait(timeout=2)
 
 
+def close_process_streams(process):
+    failed = False
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                failed = True
+    return not failed
+
+
+def mark_cleanup_failed(result):
+    result['cleanupFailed'] = True
+    if 'samples' in result:
+        for sample in result['samples'] + result['warmups']:
+            mark_cleanup_failed(sample)
+        result['statistics'] = summarize(result['samples'])
+    else:
+        result['status'] = 'error'
+        result.setdefault('reason', 'cleanup_failed')
+
+
 def run_process(argv, env, timeout, *, capture_stdout=False):
     started = time.monotonic_ns()
     captured = {'stderr': bytearray(), 'stdout': bytearray()}
@@ -184,6 +217,7 @@ def run_process(argv, env, timeout, *, capture_stdout=False):
     status = 'error'
     completion_wall = None
     descendants_stopped = False
+    cleanup_failed = False
     try:
         require_waitid()
         process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
@@ -228,22 +262,30 @@ def run_process(argv, env, timeout, *, capture_stdout=False):
                     available = MAX_CAPTURE - len(captured[kind])
                     captured[kind].extend(data[:available])
                     truncated[kind] |= len(data) > available
-    except (OSError, ValueError):
+    except (OSError, ValueError, subprocess.SubprocessError):
         status = 'error'
     finally:
         elapsed = completion_wall if completion_wall is not None and status != 'timeout' else time.monotonic_ns() - started
         if process is not None:
             try:
                 kill_group(process, group_signalled=descendants_stopped, observer=observer)
+            except (OSError, subprocess.SubprocessError):
+                cleanup_failed = True
             finally:
-                if observer:
-                    observer.close()
-            process.stderr.close()
-            if process.stdout:
-                process.stdout.close()
+                try:
+                    if observer:
+                        observer.close()
+                except (OSError, ValueError):
+                    cleanup_failed = True
+                finally:
+                    if not close_process_streams(process):
+                        cleanup_failed = True
     result = {'status': status, 'wallNanoseconds': elapsed,
               'exitCode': process.returncode if process is not None else None,
+              'daemonFallback': b'[daemon fallback:' in captured['stderr'],
               'trace': parse_trace(bytes(captured['stderr']), process_id=process.pid if process else None), 'stderrTruncated': truncated['stderr']}
+    if cleanup_failed:
+        mark_cleanup_failed(result)
     if capture_stdout:
         # Internal ownership/protocol checks only. Never included in a report.
         return result, bytes(captured['stdout']) if not truncated['stdout'] else b''
@@ -258,13 +300,17 @@ def isolated_environment(directory, timing):
     return env
 
 
+class ServiceCleanupError(OSError):
+    """Service startup failed and its owned cleanup could not be confirmed."""
+
+
 class Service:
     """An owned foreground daemon or MCP host. No daemon start/stop discovery."""
     def __init__(self, binary, env, kind, timeout):
         self.kind, self.timeout = kind, timeout
         self.process = None
         self.pending = bytearray()
-        self.stderr_bytes = 0
+        self.cleanup_failed = False
         self.identifier = 0
         self.selector = selectors.DefaultSelector()
         self.started = time.monotonic_ns()
@@ -273,8 +319,7 @@ class Service:
             args = ['mcp', '--timeout', str(timeout)] if kind == 'mcp' else ['daemon', '__serve', '--name', env['SAFARI_BROWSER_NAME'], '--socket-dir', env['TMPDIR']]
             self.process = subprocess.Popen([binary, *args], env=env, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE if kind == 'mcp' else subprocess.DEVNULL,
-                stderr=subprocess.PIPE, start_new_session=True)
-            self.selector.register(self.process.stderr, selectors.EVENT_READ, 'stderr')
+                stderr=subprocess.DEVNULL, start_new_session=True)
             if kind == 'mcp':
                 self.selector.register(self.process.stdout, selectors.EVENT_READ, 'stdout')
                 reply = self.request('initialize', {'protocolVersion': '2025-11-25', 'capabilities': {},
@@ -284,14 +329,24 @@ class Service:
                 self.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
             else:
                 path = Path(env['TMPDIR'], 'safari-browser-' + env['SAFARI_BROWSER_NAME'] + '.sock')
-                while not path.exists():
-                    if time.monotonic() >= self.started / 1e9 + timeout:
+                deadline = self.started / 1e9 + timeout
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
                         raise TimeoutError()
                     if observe_exit(self.process) is not None:
                         raise ValueError('host_exit')
-                    self.drain(.01)
-        except BaseException:
-            self.close()
+                    try:
+                        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                            probe.settimeout(remaining)
+                            # Connect-only probe: never send a handler request.
+                            probe.connect(str(path))
+                        break
+                    except OSError:
+                        self.drain(min(.01, max(0, deadline - time.monotonic())))
+        except BaseException as error:
+            if not self.close() and isinstance(error, Exception):
+                raise ServiceCleanupError() from error
             raise
         self.setup_nanoseconds = time.monotonic_ns() - self.started
 
@@ -306,8 +361,6 @@ class Service:
                 # MCP responses duplicate stdout/stderr in content; bound the whole frame.
                 if len(self.pending) > 1024 * 1024:
                     raise ValueError('frame_limit')
-            else:
-                self.stderr_bytes = min(MAX_CAPTURE + 1, self.stderr_bytes + len(data))
 
     def send(self, request):
         self.process.stdin.write(json.dumps(request).encode() + b'\n')
@@ -359,24 +412,31 @@ class Service:
         return result
 
     def close(self):
-        if self.process is not None:
-            if self.process.stdin and not self.process.stdin.closed:
-                try:
-                    self.process.stdin.close()
-                except OSError:
-                    pass
-            # MCP EOF cancels workers, which own separate process groups. Allow
-            # that cancellation before terminating the host group itself.
-            if self.kind == 'mcp':
-                deadline = time.monotonic() + 2
-                while observe_exit(self.process) is None and time.monotonic() < deadline:
-                    time.sleep(.01)
-            kill_group(self.process)
-            for stream in (self.process.stdout, self.process.stderr):
-                if stream:
-                    stream.close()
-            self.process = None
-        self.selector.close()
+        try:
+            if self.process is not None:
+                if self.process.stdin and not self.process.stdin.closed:
+                    try:
+                        self.process.stdin.close()
+                    except OSError:
+                        self.cleanup_failed = True
+                # EOF lets MCP cancel its workers before we signal the host.
+                if self.kind == 'mcp':
+                    deadline = time.monotonic() + 2
+                    while observe_exit(self.process) is None and time.monotonic() < deadline:
+                        time.sleep(.01)
+                kill_group(self.process)
+        except (OSError, subprocess.SubprocessError):
+            self.cleanup_failed = True
+        finally:
+            if self.process is not None:
+                if not close_process_streams(self.process):
+                    self.cleanup_failed = True
+                self.process = None
+            try:
+                self.selector.close()
+            except (OSError, ValueError):
+                self.cleanup_failed = True
+        return not self.cleanup_failed
 
 
 def scenario_report(name, timing, samples, warmups, measure, setup=None):
@@ -387,6 +447,8 @@ def scenario_report(name, timing, samples, warmups, measure, setup=None):
               'statistics': summarize(results)}
     if setup is not None:
         report['serviceSetupNanoseconds'] = setup
+    if any(sample.get('cleanupFailed') for sample in results + warmup_results):
+        mark_cleanup_failed(report)
     return report
 
 
@@ -406,6 +468,7 @@ def service_scenario(binary, kind, cold, timing, samples, warmups, timeout):
             nonlocal service
             started = time.monotonic_ns()
             owned_directory = None
+            result = None
             try:
                 current_env = env
                 if cold:
@@ -413,7 +476,8 @@ def service_scenario(binary, kind, cold, timing, samples, warmups, timeout):
                     current_env = isolated_environment(owned_directory.name, timing)
                     service = Service(binary, current_env, kind, timeout)
                 if service is None or observe_exit(service.process) is not None:
-                    return failure('service_unavailable')
+                    result = failure('service_unavailable')
+                    return result
                 deadline = started / 1e9 + timeout
                 before_request = time.monotonic_ns() - started
                 if kind == 'mcp':
@@ -426,30 +490,42 @@ def service_scenario(binary, kind, cold, timing, samples, warmups, timeout):
                     result['wallNanoseconds'] += before_request
                 # A failed call is never retried or sent to a replacement warm host.
                 if result['status'] != 'ok' and not cold:
-                    service.close()
+                    if not service.close():
+                        mark_cleanup_failed(result)
                     service = None
                 return result
             except TimeoutError:
-                return failure('service_start_timeout', 'timeout')
-            except (OSError, ValueError, TypeError):
-                return failure('service_start_failed')
+                result = failure('service_start_timeout', 'timeout')
+                return result
+            except (OSError, ValueError, TypeError) as error:
+                result = failure('service_start_failed')
+                if isinstance(error, ServiceCleanupError):
+                    mark_cleanup_failed(result)
+                return result
             finally:
                 if cold and service is not None:
-                    service.close()
+                    if not service.close() and result is not None:
+                        mark_cleanup_failed(result)
                     service = None
                 if owned_directory:
                     owned_directory.cleanup()
+        report = None
         try:
             if not cold:
                 try:
                     service = Service(binary, env, kind, timeout)
-                except (OSError, ValueError, TimeoutError, TypeError):
-                    return scenario_report(name, timing, samples, warmups, lambda: failure('service_start_failed'))
-            return scenario_report(name, timing, samples, warmups, measure,
-                                   setup=service.setup_nanoseconds if service else None)
+                except (OSError, ValueError, TimeoutError, TypeError) as error:
+                    report = scenario_report(name, timing, samples, warmups, lambda: failure('service_start_failed'))
+                    if isinstance(error, ServiceCleanupError):
+                        mark_cleanup_failed(report)
+                    return report
+            report = scenario_report(name, timing, samples, warmups, measure,
+                                     setup=service.setup_nanoseconds if service else None)
+            return report
         finally:
             if service is not None:
-                service.close()
+                if not service.close() and report is not None:
+                    mark_cleanup_failed(report)
 
 
 def benchmark(binary, *, samples, warmups, timeout, timing='both', live=False):
@@ -584,7 +660,8 @@ def live_scenarios(binary, timing, samples, warmups, timeout):
         try:
             # Recheck immediately before the only create attempt.
             if not clear():
-                return live_skip_reports(timing, samples, warmups, 'gui_preflight_not_clear')
+                reports = live_skip_reports(timing, samples, warmups, 'gui_preflight_not_clear')
+                return reports
             attempted = True
             answer = native(f'''considering case
             tell application "Safari"
@@ -605,21 +682,39 @@ def live_scenarios(binary, timing, samples, warmups, timeout):
             else:
                 for mode in ('direct-fresh-process', 'warm-daemon-fresh-process'):
                     service = None
-                    service_error = False
+                    service_error = None
+                    service_failure = None
+                    sample_env = dict(env)
+                    if mode == 'warm-daemon-fresh-process':
+                        sample_env['SAFARI_BROWSER_DAEMON'] = '1'
                     try:
                         if mode == 'warm-daemon-fresh-process':
                             try:
                                 service = Service(binary, env, 'daemon', timeout)
-                            except (OSError, ValueError, TimeoutError):
-                                service_error = True
+                            except (OSError, ValueError, TimeoutError) as error:
+                                service_error = error
                         for operation in ('title', 'url'):
                             def measure(operation=operation):
-                                if service_error:
-                                    return failure('service_start_failed')
+                                nonlocal service_failure
+                                if service_failure is not None:
+                                    return failure(service_failure)
+                                if service_error is not None:
+                                    result = failure('service_start_failed')
+                                    if isinstance(service_error, ServiceCleanupError):
+                                        mark_cleanup_failed(result)
+                                    return result
+                                if service is not None and observe_exit(service.process) is not None:
+                                    service_failure = 'service_exited'
+                                    return failure(service_failure)
                                 if not owned():
                                     return failure('fixture_ownership_changed')
+                                # Ownership inspection can take time. Recheck
+                                # the unreaped host immediately before the CLI.
+                                if service is not None and observe_exit(service.process) is not None:
+                                    service_failure = 'service_exited'
+                                    return failure(service_failure)
                                 result, output = run_process([binary, 'get', operation, '--url-exact', url],
-                                    env, timeout, capture_stdout=True)
+                                    sample_env, timeout, capture_stdout=True)
                                 expected = FIXTURE_TITLE if operation == 'title' else url
                                 if result['status'] == 'ok' and output != (expected + '\n').encode():
                                     result['status'] = 'error'
@@ -627,13 +722,27 @@ def live_scenarios(binary, timing, samples, warmups, timeout):
                                 if not owned():
                                     result['status'] = 'error'
                                     result['reason'] = 'fixture_ownership_changed'
+                                if service is not None:
+                                    if observe_exit(service.process) is not None:
+                                        service_failure = 'service_exited'
+                                    elif result['daemonFallback']:
+                                        service_failure = 'daemon_fallback'
+                                    elif result['stderrTruncated']:
+                                        service_failure = 'daemon_route_unconfirmed'
+                                    if service_failure is not None:
+                                        # Never restart or retry an ambiguous
+                                        # warm path, including later samples.
+                                        result['status'] = 'error'
+                                        result['reason'] = service_failure
                                 return result
                             reports.append(scenario_report('live.' + mode + '.get-' + operation,
                                 timing, samples, warmups, measure,
                                 setup=service.setup_nanoseconds if service else None))
                     finally:
-                        if service:
-                            service.close()
+                        if service and not service.close():
+                            for row in reports:
+                                if row['name'].startswith('live.' + mode + '.'):
+                                    mark_cleanup_failed(row)
         finally:
             # One guarded close only. Unknown outcomes and changed windows are
             # retained; never find another window by URL and never retry close.
@@ -649,7 +758,7 @@ def live_scenarios(binary, timing, samples, warmups, timeout):
             for report in reports:
                 report['fixtureCleanup'] = cleanup
                 if cleanup.startswith('retained'):
-                    report['cleanupFailed'] = True
+                    mark_cleanup_failed(report)
         return reports
 
 

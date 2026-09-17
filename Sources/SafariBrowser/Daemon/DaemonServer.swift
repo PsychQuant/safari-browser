@@ -540,7 +540,9 @@ enum DaemonServer {
             let context = DaemonRequestContext()
             do {
                 let resultData = try await DaemonRequestContext.$current.withValue(context) {
-                    try await handler(paramsData)
+                    try await PerformanceTrace.$daemonErrorTimingSink.withValue({ context.recordErrorTiming($0) }) {
+                        try await handler(paramsData)
+                    }
                 }
                 await instance.clearInFlight(fd: fd)
                 let resp = encodeResult(requestId: requestId, resultData: resultData, diagnostics: context.diagnostics)
@@ -548,7 +550,7 @@ enum DaemonServer {
                 return resp
             } catch {
                 await instance.clearInFlight(fd: fd)
-                let resp = encodeError(requestId: requestId, code: .handlerError, message: "\(error)", diagnostics: context.diagnostics)
+                let resp = encodeError(requestId: requestId, code: .handlerError, message: "\(error)", diagnostics: context.diagnostics, timing: context.errorTiming)
                 await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: nil, errorMessage: "\(error)")
                 return resp
             }
@@ -601,12 +603,16 @@ enum DaemonServer {
             return (try? JSONSerialization.data(withJSONObject: envelope, options: [])) ?? Data("{}".utf8)
         }
 
-        private static func encodeError(requestId: Any?, code: ErrorCode, message: String, diagnostics: [String] = []) -> Data {
+        private static func encodeError(requestId: Any?, code: ErrorCode, message: String, diagnostics: [String] = [], timing: PerformanceTrace.Summary? = nil) -> Data {
             var envelope: [String: Any] = [
                 "requestId": requestId ?? NSNull(),
                 "error": ["code": code.rawValue, "message": message] as [String: Any],
             ]
             if !diagnostics.isEmpty { envelope["diagnostics"] = diagnostics }
+            if let timing, let data = try? JSONEncoder().encode(timing), data.count <= 65536,
+               let object = try? JSONSerialization.jsonObject(with: data) {
+                envelope["timing"] = object
+            }
             return (try? JSONSerialization.data(withJSONObject: envelope, options: [])) ?? Data("{}".utf8)
         }
 

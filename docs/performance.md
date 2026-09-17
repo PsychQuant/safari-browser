@@ -7,7 +7,8 @@ opted-in handler or CLI worker has its own request context.
 
 ## Trace format
 
-A final stderr line begins with `[safari-browser timing] `, followed by JSON:
+A stderr line begins with `[safari-browser timing] `, followed by JSON. Select
+that prefix: ordinary error/help diagnostics can follow the timing line.
 
 - `schemaVersion`: `1`.
 - `requestID`: fresh UUID; `processID`: the producing process ID.
@@ -34,6 +35,11 @@ request. External wall time is the end-to-end measurement. A killed process can
 produce no summary; an unfinished read worker is marked rather than invented as
 completed, and late callbacks cannot modify an emitted trace.
 
+`daemon.request` appears at both sides of the RPC: the outer span measures client
+transport, and its imported child measures the handler. A returned application
+error can have an `ok` handler span (the handler returned normally) while its
+summary status is `error`; a thrown handler has an `error` span.
+
 `exec` can forward several child summaries. Readers should select the unique
 record whose `processID` matches the actual root process, not guess by order or
 largest duration. A single older summary without `processID` remains readable.
@@ -42,7 +48,9 @@ largest duration. A single older summary without `processID` remains readable.
 
 Opted-in `applescript.execute` and `exec.runScript` requests send an optional
 literal Boolean `timing: true`. Only that request collects service timing; its
-response can attach a `timing` object with the same bounded schema. Clients
+response can attach a `timing` object with the same bounded schema: successful
+RPC envelopes use `result.timing`, while thrown handler errors use top-level
+`timing` beside the unchanged `error` object. Clients
 validate, bound and reparent imported spans under the RPC. Missing metadata from
 an older daemon, or invalid metadata, does not change the execution result and
 never causes replay. Compile/execute remain on their existing main actor; the
@@ -64,17 +72,29 @@ benchmark reserves its child leader identity with non-reaping observation until
 its process group is cleaned up; normal exit status is retained. Capture is
 bounded and raw stdout/stderr is not copied into the report.
 
+Host readiness requires a private socket connection, not merely a socket path;
+the probe sends no handler request. Service stderr is discarded to avoid pipe
+backpressure; MCP worker timing is read from its structured response. A cleanup
+failure is reported as `cleanupFailed` and its samples are excluded from success
+quantiles. The benchmark cannot force cleanup when the OS refuses a signal.
+
 `--live` additionally creates one owned localhost static page per timing mode,
-then measures direct and warm-daemon `get title`/`get url`. It verifies the window
+and may launch Safari if it is not running (including Safari's normal session
+restoration). It then measures direct and warm-daemon `get title`/`get url`. It verifies the window
 ID, exact URL, one-tab identity and clear-dialog state. Changed or uncertain
 ownership prevents cleanup actions and marks the report; an uncertain close is
 not retried. No upload, PDF, Print or arbitrary repeated mutation is supported.
 Without explicit live mode, or without a clear GUI preflight, GUI rows are SKIP.
+Warm-daemon samples force the daemon route and reject host exit, direct fallback,
+or truncated routing diagnostics, with timing both on and off. Rejected routes
+stop subsequent warm samples without restarting the service or retrying the read.
 
 The JSON report identifies executable digest, OS build and architecture, timing
 mode, warmups, measured samples, failures and skips. Fresh process means a new CLI
 process, not flushed OS caches. Cold host measurements include host setup; warm
 host measurements retain the service but still launch the documented CLI/worker.
+Host readiness is polled, so cold-host wall time also includes readiness-detection
+latency (up to one polling interval under normal scheduling), not only startup.
 Daemon status rows measure transport/lifecycle, not compilation or Safari work.
 The exec wait batch is not supported by the in-process daemon dispatcher and is
 therefore labelled separately.

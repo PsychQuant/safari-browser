@@ -28,6 +28,7 @@ enum PerformanceTrace {
     }
     struct Context: Sendable { let collector: Collector; let parentID: Int? }
     @TaskLocal static var context: Context?
+    @TaskLocal static var daemonErrorTimingSink: (@Sendable (Summary?) -> Void)?
     static var isActive: Bool { context?.collector.isRecording == true }
     static let prefix = "[safari-browser timing] "
     static func isEnabled(_ environment: [String: String]) -> Bool { environment["SAFARI_BROWSER_TRACE_TIMING"] == "1" }
@@ -149,8 +150,15 @@ enum PerformanceTrace {
     static func withDaemonTiming(enabled: Bool, operation: () async throws -> Data) async rethrows -> Data {
         guard enabled else { return try await $context.withValue(nil) { try await operation() } }
         let collector = Collector()
-        let result = try await $context.withValue(Context(collector: collector, parentID: nil)) {
-            try await spanAsync(.daemonRequest, operation: operation)
+        let result: Data
+        do {
+            result = try await $context.withValue(Context(collector: collector, parentID: nil)) {
+                try await spanAsync(.daemonRequest, operation: operation)
+            }
+        } catch {
+            let summary = collector.finish(status: .error)
+            daemonErrorTimingSink?(summary)
+            throw error
         }
         guard var payload = (try? JSONSerialization.jsonObject(with: result)) as? [String: Any],
               let summary = collector.finish(status: payload["status"] as? String == "error" ? .error : .ok),
