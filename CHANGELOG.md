@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Native file URL upload** (#101, acceptance in progress): replaces upload keyboard navigation with a file URL clipboard lease, named AX Paste/Upload, bounded target checks and selected-file validation. Preserves newer clipboard contents and refuses overlapping native uploads. Mechanism fixtures cover hidden and special paths; real WebKit timestamps and delivery before page input handlers are regression-tested; directory inputs are rejected; final Safari CLI acceptance remains pending.
+- **Native file URL upload** (#101, #169, acceptance in progress): replaces upload keyboard navigation with a file URL clipboard lease, named AX Paste/Upload, bounded direct AX selected-path checks before confirmation, and delivery validation. A fixed internal worker preserves the single upload transaction and bounded diagnostics. Preserves newer clipboard contents and refuses overlapping native uploads. Mechanism fixtures cover hidden and special paths; real WebKit timestamps and delivery before page input handlers are regression-tested; directory inputs are rejected; final Safari CLI acceptance remains pending.
 
 - **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
 

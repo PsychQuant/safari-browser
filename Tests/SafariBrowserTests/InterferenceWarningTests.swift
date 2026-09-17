@@ -20,12 +20,13 @@ final class InterferenceWarningTests: XCTestCase {
         let (file, board) = try fixture()
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         var events: [String] = []
-        try await UploadCommand.performNativeUpload(fileURL: file, selector: "input[type=file]", window: 2, timeout: 4, pasteboard: board,
+        try await UploadCommand.performNativeUpload(fileURL: file, selector: "input[type=file]", window: 2, timeout: 4, pasteboard: board, windowID: 8128,
             warn: { text in
                 events.append("warn")
                 XCTAssertEqual(board.string(forType: .string), "previous clipboard", "warn before clipboard interference")
                 XCTAssertEqual(text, UploadCommand.nativeInterferenceWarning)
-            }, runScript: { script in
+            }, runRequest: { request in
+                let script = request.makeScript()
                 events.append("script")
                 let urls = board.readObjects(forClasses: [NSURL.self]) as? [URL]
                 XCTAssertEqual(urls, [file.resolvingSymlinksInPath()])
@@ -39,8 +40,9 @@ final class InterferenceWarningTests: XCTestCase {
         let (file, board) = try fixture()
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         var calls = 0
-        try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 4, pasteboard: board,
-            warn: { _ in }, runScript: { script in
+        try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 4, pasteboard: board, windowID: 8128,
+            warn: { _ in }, runRequest: { request in
+                let script = request.makeScript()
                 calls += 1
                 XCTAssertFalse(script.contains("keystroke"))
                 XCTAssertFalse(script.contains("key code"))
@@ -65,8 +67,8 @@ final class InterferenceWarningTests: XCTestCase {
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         var calls = 0
         do {
-            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 4, pasteboard: board,
-                warn: { _ in }, runScript: { _ in calls += 1; throw Failure.timeout })
+            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 4, pasteboard: board, windowID: 8128,
+                warn: { _ in }, runRequest: { _ in calls += 1; throw Failure.timeout })
             XCTFail("runner failure must propagate")
         } catch Failure.timeout { }
         XCTAssertEqual(calls, 1)
@@ -78,8 +80,8 @@ final class InterferenceWarningTests: XCTestCase {
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         var warnings: [String] = []
         do {
-            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 4, pasteboard: board,
-                warn: { warnings.append($0) }, runScript: { _ in
+            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 4, pasteboard: board, windowID: 8128,
+                warn: { warnings.append($0) }, runRequest: { _ in
                     board.clearContents(); board.setString("new copy", forType: .string)
                     throw CancellationError()
                 })
@@ -94,8 +96,8 @@ final class InterferenceWarningTests: XCTestCase {
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         try FileManager.default.removeItem(at: file)
         do {
-            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 4, pasteboard: board,
-                warn: { _ in XCTFail("missing file must fail before interference") }, runScript: { _ in XCTFail("unexpected native operation") })
+            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 4, pasteboard: board, windowID: 8128,
+                warn: { _ in XCTFail("missing file must fail before interference") }, runRequest: { _ in XCTFail("unexpected native operation") })
             XCTFail("missing file must fail")
         } catch { }
         XCTAssertEqual(board.string(forType: .string), "previous clipboard")
@@ -105,8 +107,8 @@ final class InterferenceWarningTests: XCTestCase {
         let (file, board) = try fixture()
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         do {
-            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 3, pasteboard: board,
-                warn: { _ in }, runScript: { _ in
+            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 3, pasteboard: board, windowID: 8128,
+                warn: { _ in }, runRequest: { _ in
                     throw SafariBrowserError.processTimedOut(command: "osascript -e error SB_UPLOAD_INPUT_NOT_FOUND", seconds: 3)
                 })
             XCTFail("expected timeout")
@@ -123,8 +125,8 @@ final class InterferenceWarningTests: XCTestCase {
         defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
         for message in ["10:20: execution error: SB_UPLOAD_INPUT_NOT_FOUND (-2700)", "syntax error near SB_UPLOAD_INPUT_NOT_FOUND"] {
             do {
-                try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 3, pasteboard: board,
-                    warn: { _ in }, runScript: { _ in throw SafariBrowserError.appleScriptFailed(message) })
+                try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: nil, timeout: 3, pasteboard: board, windowID: 8128,
+                    warn: { _ in }, runRequest: { _ in throw SafariBrowserError.appleScriptFailed(message) })
                 XCTFail("expected failure")
             } catch let error as SafariBrowserError {
                 if message.contains("execution error") {
@@ -143,8 +145,8 @@ final class InterferenceWarningTests: XCTestCase {
         var switched = false
         var ran = false
         do {
-            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: 2, timeout: 4, pasteboard: board,
-                prepareTarget: { switched = true }, warn: { _ in }, runScript: { _ in ran = true })
+            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: 2, timeout: 4, pasteboard: board, windowID: 8128,
+                prepareTarget: { switched = true }, warn: { _ in }, runRequest: { _ in ran = true })
             XCTFail("overlap must fail")
         } catch FileURLClipboard.ClipboardError.overlappingLease { }
         XCTAssertFalse(switched, "a refused second upload must not change the first upload's target")
@@ -162,7 +164,8 @@ final class InterferenceWarningTests: XCTestCase {
             windowID: 8128, tabIndex: 3, prepareTarget: {
                 prepared = true
                 XCTAssertNotNil(board.string(forType: .fileURL), "exclusion and clipboard lease must precede target mutation")
-            }, warn: { _ in }, runScript: { script in
+            }, warn: { _ in }, runRequest: { request in
+                let script = request.makeScript()
                 XCTAssertTrue(prepared)
                 XCTAssertTrue(script.contains("set uploadWindowID to id of window id 8128"))
                 XCTAssertTrue(script.contains("if uploadTabIndex is not 3"))

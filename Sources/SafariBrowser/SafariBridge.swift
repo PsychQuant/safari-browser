@@ -3451,9 +3451,10 @@ enum SafariBridge {
         _ executable: String,
         _ arguments: [String],
         timeout: TimeInterval = SafariBridge.defaultProcessTimeout,
-        stderrWriter: (@Sendable (String) -> Void)? = nil
+        stderrWriter: (@Sendable (String) -> Void)? = nil,
+        importOwnTiming: Bool = false
     ) async throws -> String {
-        try await runProcessWithTimeout(executable, arguments, timeout: timeout, stderrWriter: stderrWriter)
+        try await runProcessWithTimeout(executable, arguments, timeout: timeout, stderrWriter: stderrWriter, importOwnTiming: importOwnTiming)
     }
 
     /// File-dialog logs are delivered after the subprocess finishes, including
@@ -3527,7 +3528,8 @@ enum SafariBridge {
         _ executable: String,
         _ arguments: [String],
         timeout: TimeInterval,
-        stderrWriter: (@Sendable (String) -> Void)? = nil
+        stderrWriter: (@Sendable (String) -> Void)? = nil,
+        importOwnTiming: Bool = false
     ) async throws -> String {
         // #19 F1 + R2-F1' + R2-F1'': reject any timeout that can't survive the
         // UInt64(timeout * 1e9) conversion or that rounds to 0 nanoseconds.
@@ -3581,9 +3583,11 @@ enum SafariBridge {
         }
         watchdog.cancel()
 
-        if !errorData.isEmpty {
-            stderrWriter?(String(decoding: errorData, as: UTF8.self))
-        }
+        let rawErrors = String(decoding: errorData, as: UTF8.self)
+        let errors = importOwnTiming
+            ? PerformanceTrace.consumingOwnSummaryLines(from: rawErrors, processID: process.processIdentifier)
+            : rawErrors
+        if !errors.isEmpty { stderrWriter?(errors) }
 
         // Only report processTimedOut when the watchdog actually fired AND the
         // subprocess didn't exit cleanly. The extra terminationStatus check
@@ -3606,8 +3610,8 @@ enum SafariBridge {
         }
 
         if process.terminationStatus != 0 {
-            let errorMessage = String(data: errorData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error"
+            let errorMessage = importOwnTiming ? errors.trimmingCharacters(in: .whitespacesAndNewlines)
+                : (String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Unknown error")
             // #73: name the process that actually failed. Every subprocess
             // failure used to render as "AppleScript error:", so a
             // `screencapture` that ran out of disk sent the reader looking at

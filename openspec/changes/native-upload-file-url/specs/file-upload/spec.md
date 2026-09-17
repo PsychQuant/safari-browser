@@ -76,3 +76,31 @@ Native upload SHALL reject a webkitdirectory file input before opening a chooser
 #### Scenario: Directory attribute is present or added before opening
 - **WHEN** the selected input has webkitdirectory initially or gains it before click
 - **THEN** the command SHALL refuse without opening that directory chooser
+
+### Requirement: Native upload proves the selected path before confirmation
+
+The native upload flow SHALL obtain bounded read-only native AX evidence for the exact requested regular-file path before dispatching its named initial confirmation. It SHALL bind the Safari CGWindowID, unique open-panel, explicit selected leaf and resolved file URL. It SHALL support the measured column, list and icon views, enforce time/node/depth/array limits, and reject missing, ambiguous, mismatched or unknown evidence without confirmation or HID fallback. Existing owner and clipboard checks SHALL surround evidence collection. Observed delivery SHALL enter a read-only completion phase without another confirmation.
+
+#### Scenario: Selected file in a supported view
+- **WHEN** a single explicitly selected leaf in ColumnView, ListView or IconView has a file-reference URL resolving to the requested hidden Unicode file
+- **THEN** the flow SHALL permit at most one named confirmation after rechecking owner, deadline and clipboard
+
+#### Scenario: Incomplete or conflicting selection evidence
+- **WHEN** the AX traversal exceeds a bound, observes an unsupported view, multiple selections, a different file, or changed window/clipboard
+- **THEN** the flow SHALL fail without dispatching confirmation
+
+#### Scenario: Paste already delivered the file
+- **WHEN** the trusted input/change snapshot records delivery before the named confirmation
+- **THEN** the flow SHALL perform only read-only completion checks and SHALL NOT confirm again
+
+### Requirement: Native upload worker accepts only a bound request
+
+The internal worker SHALL accept a versioned bounded structured upload request, verify its parent executable and loaded image identity before UI access, and build only the fixed native upload script on the main thread. It SHALL NOT accept arbitrary script source. The parent SHALL retain clipboard ownership and enforce the existing subprocess watchdog and MCP process-group cancellation. Diagnostics and timing SHALL preserve the bounded stderr contract and existing element-not-found and timeout errors.
+
+#### Scenario: Invalid internal request
+- **WHEN** direct invocation, image mismatch, expired deadline or invalid request bounds are detected
+- **THEN** the worker SHALL reject the request before clipboard mutation or Safari interaction
+
+#### Scenario: Worker completes or fails
+- **WHEN** the bounded worker finishes, fails or times out
+- **THEN** the parent SHALL restore its owned clipboard or preserve newer contents and SHALL report the original operation outcome without replay

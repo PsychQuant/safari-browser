@@ -14,6 +14,12 @@
 
 - [x] 2.4 補齊 Native upload records delivery before page handlers consume the input 的 input 事件順序與面板關閉等待：真實 WebKit 先重現 input handler 三種變動，實際 AppleScript adapter 先重現 sheet 尚在分支，再同時監聽 input／change，交付後只讀等待並禁止再次確認。
 
+## 2A. #169 原生選取與 worker
+
+- [x] [P] 2.5 實作有界原生選取讀取器，履行 Native upload proves the selected path before confirmation；以 provider 測試驗證三種模式、file-reference URL、隱藏 Unicode 路徑、歧義與節點／深度／時間拒絕，保證不送 UI 動作。
+- [x] [P] 2.6 實作固定請求的內部上傳 worker，履行 Native upload worker accepts only a bound request；以無 GUI 測試驗 schema／大小／父程序／image／deadline 拒絕及主執行緒橋接與明確診斷。
+- [ ] 2.7 完成原生證據與確認整合，履行 Native upload proves the selected path before confirmation 與 Native upload worker accepts only a bound request；以 interpreter／CLI 測試驗未知、變更及已交付不確認、錯誤 sentinel、逾時、MCP owned group 與 trace 相容，並以自有 GUI／相同 fixture 基準驗 IPC 與等待。
+
 ## 3. 實際驗證與交付
 
 - [ ] 3.1 執行完整 make test-all 及自有 GUI 特殊路徑、不同起始資料夾、大檔、焦點／錯誤／逾時案例；核對實際檔名／內容、自有面板清理及剪貼簿還原。

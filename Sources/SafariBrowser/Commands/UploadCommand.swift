@@ -69,7 +69,7 @@ struct UploadCommand: AsyncParsableCommand {
                                     windowID: Int? = nil, tabIndex: Int? = nil,
                                     prepareTarget: () async throws -> Void = {},
                                     warn: (String) -> Void,
-                                    runScript: (String) async throws -> Void) async throws {
+                                    runRequest: (NativeUploadRequest) async throws -> Void) async throws {
         guard fileURL.isFileURL else { throw ValidationError("Native upload requires a local file URL") }
         guard timeout.isFinite, timeout >= 0.001, timeout <= 86_400 else {
             throw ValidationError("Native upload timeout must be between 0.001 and 86400 seconds")
@@ -89,6 +89,9 @@ struct UploadCommand: AsyncParsableCommand {
             throw ValidationError("Native upload file metadata is outside the supported range")
         }
 
+        guard let windowID, windowID > 0 else {
+            throw ValidationError("Native upload requires a stable target window before opening its chooser")
+        }
         warn(nativeInterferenceWarning)
         let clipboard = try FileURLClipboard(fileURL: resolvedURL, pasteboard: pasteboard)
         var operationError: Error?
@@ -98,13 +101,13 @@ struct UploadCommand: AsyncParsableCommand {
             try await prepareTarget()
             let cleanupReserve = min(3.0, timeout / 4)
             let deadline = ProcessInfo.processInfo.systemUptime + timeout - cleanupReserve
-            let script = NativeUploadScript.make(
+            let request = NativeUploadRequest(
                 selector: selector, path: resolvedURL.path, fileSize: size.int64Value,
                 modificationTimeMilliseconds: milliseconds,
                 clipboardChangeCount: clipboard.ownedChangeCount, window: window,
                 timeout: timeout, nonce: UUID().uuidString,
                 windowID: windowID, tabIndex: tabIndex, deadlineUptime: deadline)
-            try await runScript(script)
+            try await runRequest(request)
         } catch { operationError = error }
 
         do {
@@ -262,7 +265,7 @@ struct UploadCommand: AsyncParsableCommand {
 
     // MARK: - Native file dialog
 
-    /// Click file input to open dialog, then navigate via a single combined osascript.
+    /// Click file input to open dialog, then navigate via a single bounded internal worker.
     /// Preparation is inside the same exclusion lease as the chooser itself.
     private func uploadViaNativeDialog(selector: String, path: String, timeout: Double,
                                        resolved: SafariBridge.ResolvedWindowTarget) async throws {
@@ -282,7 +285,7 @@ struct UploadCommand: AsyncParsableCommand {
                     windowID: windowID, tabIndex: resolved.anchorTabIndex))
             },
             warn: { FileHandle.standardError.write(Data($0.utf8)) },
-            runScript: { script in try await SafariBridge.runFileDialogScript(script, timeout: timeout) })
+            runRequest: { request in try await NativeUploadRunner.run(request) })
     }
 
     static func nativeTargetPreparationScript(windowID: Int, tabIndex: Int?) -> String {

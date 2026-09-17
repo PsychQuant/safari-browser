@@ -35,3 +35,7 @@ UploadCommand、上傳專用剪貼簿 helper、Swift 回歸與本機驗收腳本
 ## 審查補充
 
 R2 要求事件當下保存檔案交付證據、拒絕資料夾欄位，並補實際 WebKit 頁面事件順序與負時間邊界測試；仍屬同一原生單檔上傳範圍。
+
+## #169 補充
+
+共用 #101 單一流程，將確認前的選取證據改為直接 C AX 讀取；支援已實測的 ColumnView、ListView、IconView 並拒絕未知模式。新增 NativeUploadSelectionProbe.swift 與 NativeUploadWorker.swift，前者負責有界唯讀選取證明，後者以固定結構請求執行既有腳本，不接受任意程式碼。擴充 file-upload 規格、相關測試及效能證據；不改 PDF 或 JS 上傳。

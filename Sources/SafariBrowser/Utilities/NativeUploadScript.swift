@@ -139,6 +139,10 @@ enum NativeUploadScript {
             if ((current application's NSPasteboard's generalPasteboard()'s changeCount()) as integer) is not \(clipboardChangeCount) then error "Clipboard changed during native upload; no further file action was sent"
         end checkUploadClipboard
 
+        on readUploadSelection()
+            return (current application's SBNativeUploadBridge's selectionForWindow:uploadWindowID) as text
+        end readUploadSelection
+
         on verifyUploadNativeTarget()
             tell application "Safari"
                 if not (exists window id uploadWindowID) then error "Native upload target window disappeared"
@@ -365,6 +369,8 @@ enum NativeUploadScript {
             tell application "System Events" to tell process "Safari"
                 if (exists sheet 1 of front window) and selectionResult is not "OK" then
                     my verifyUploadPanel()
+                    if my readUploadSelection() is not "MATCH" then error "Native file selection is unavailable, ambiguous or does not match the requested file; no confirmation was sent"
+                    my verifyUploadPanel()
                     set fileButtons to buttons of uploadPanel
                     repeat with panelGroup in splitter groups of uploadPanel
                         set fileButtons to fileButtons & (buttons of panelGroup)
@@ -380,8 +386,11 @@ enum NativeUploadScript {
                     if not (enabled of confirmationButton) then error "The named upload confirmation button is disabled; no confirmation was sent"
                     set confirmationTitle to title of confirmationButton
                     my verifyUploadPanel()
-                    log "confirming file dialog: pressing named button \\"" & confirmationTitle & "\\""
+                    current application's SBNativeUploadBridge's logConfirmation:confirmationTitle
                     my verifyUploadPanel()
+                    if my readUploadSelection() is not "MATCH" then error "Native file selection changed before confirmation; no confirmation was sent"
+                    my checkUploadDeadline()
+                    my checkUploadClipboard()
                     perform action "AXPress" of confirmationButton
                 end if
             end tell

@@ -59,3 +59,19 @@ NativeUploadScript.make 接受 selector、absolute path、fileSize、modificatio
 ## R3 事件順序與關閉等待
 
 先監聽可信 input，再以 change 作為相同 listener 的第二個入口，兩者共用第一次交付快照。Paste 後先讀完成結果；若已交付，即使 sheet 尚在也不再按 Upload。確認後的等待只有視窗／分頁、前景、原面板單一／無巢狀檢查，不重新要求 input／URL 維持交付前狀態。普通面板的選取就緒證據仍需 GUI 實測，不能把固定延遲或事後檢查當成事前證明。
+
+## #169 確認前選取證據
+
+### 有界原生選取讀取器
+
+NativeUploadSelectionProbe.check(windowID: Int, expectedPath: String, deadlineUptime: Double) -> String 回傳 MATCH 或明確非成功狀態。C AX 僅執行讀取，不含 AXPress。透過 BoundedAXWorker 每次最多 0.8 秒、每次 IPC 不超過剩餘額度，最多 256 節點、18 層、32 視窗及每個結構陣列最多 64 個元素；AXCopyAttributeValues 的 count 查詢必須先限額，避免一次配置無界 children。明確驗 Safari 前景、CGWindowID、唯一 open-panel；搜尋只沿有限結構節點，不展開 AXWebArea、sidebar 或未選取 rows。ColumnView 經 columns／contents／selectedChildren；ListView 經 selectedRows；IconView 經 selectedChildren。葉節點必須帶 AXSelected=true 及 file-reference/path URL；file-reference 以 NSURL.filePathURL 解析。每個檢视群組先核對選取數量；祖先資料夾不是最終選取，多個選取或多個候選檔案一律拒絕。結果要與 canonical absolute regular-file path 完全一致；必要的檔案系統查詢留在唯讀 worker、受外部程序 watchdog 約束。測試使用 provider adapter 重現三種模式與大小／深度／時間／歧義邊界。
+
+### 固定請求的內部上傳 worker
+
+NativeUploadRequest 為 Codable/Sendable，欄位為 version=1、selector、path、fileSize、modificationTimeMilliseconds、clipboardChangeCount、window、timeout、nonce、windowID、tabIndex、deadlineUptime；含 parent image UUID 的隱藏 __native-upload 入口只接受一筆至多 128 KiB 的 base64 JSON。驗 schema、合理長度／範圍、穩定 windowID/tabIndex、剩餘 deadline、實際父程序 proc_pidpath 與自身 executable 相同、parent image UUID 等於目前載入 image，才接觸剪貼簿或 UI。固定 builder 於 child 主執行緒產生腳本；絕不接受任意 AppleScript source。橋接 class SBNativeUploadBridge 使用 TaskLocal request context；selectionForWindow: 只允許 request 綁定視窗和路徑。logger 明確寫 stderr 以保留既有確認公告。worker 不取得第二份 clipboard lease；parent 持有原 lease 至 child 結束。直接 shell 呼叫或不符身分的 child 在 UI 前失敗。版本 guard 不是 macOS 權限替代品，父程序路徑 guard 也不宣稱防禦惡意同使用者程序。
+
+### 原生證據與確認整合
+
+保留 performNativeUpload 的生命週期，以 NativeUploadRequest 傳遞固定參數。NativeUploadScript.make 的正式 builder 在具名確認前呼叫 SBNativeUploadBridge，非 MATCH 一律不確認；有限輪詢只重讀，不重送 Paste。每轮先讀交付狀態，已交付直接進唯讀完成階段。原有 verifyUploadPanel 在 probe 前後保留，最後 native MATCH 後立即作 clock／clipboard 檢查再 AXPress，盡量縮短非原子間隔。控制流程 adapter 測試明確證明未知／歧義／剪貼簿變更／已交付不送確認。父程序沿用 runShell 逾時與 MCP owned group，child trace 用 #167 schema 驗證後合併，診斷不包含重複 trace；元素不存在及 timeout 維持既有對外錯誤。
+
+實測證據：ColumnView 82 節點、ListView 35 節點、IconView 28 節點均讀出自有隱藏 Unicode／空白／單引號路徑。先切模式後 Paste 的列表／圖像探測 files count=0，偏好、剪貼簿及視窗清理完成。這只證明讀取拓樸，完整上傳與效能驗收仍是 3.1／3.2 的未完成工作。

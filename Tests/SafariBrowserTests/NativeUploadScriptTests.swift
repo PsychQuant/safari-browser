@@ -29,7 +29,7 @@ final class NativeUploadScriptTests: XCTestCase {
         XCTAssertTrue(source.contains("set uploadWindowID to id of window 2"))
         XCTAssertTrue(source.contains("Unexpected sheet before native upload"))
         XCTAssertTrue(source.contains("Nested sheet appeared"))
-        XCTAssertTrue(source.contains("confirming file dialog: pressing named button"))
+        XCTAssertTrue(source.contains("SBNativeUploadBridge's logConfirmation:confirmationTitle"))
         XCTAssertEqual(source.components(separatedBy: "perform action \"AXPress\" of confirmationButton").count - 1, 1)
         XCTAssertTrue(source.contains("my verifyUploadMenuState()\n        perform action \"AXPress\" of pasteItem"))
     }
@@ -407,6 +407,68 @@ final class NativeUploadScriptTests: XCTestCase {
         XCTAssertTrue(result.hasPrefix("Native upload deadline expired"), result)
         XCTAssertTrue(result.hasSuffix("|true|true"), result)
         XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - startTime, 3)
+    }
+
+    func testPreconfirmationExecutesNativeSelectionAndRejectsUncertainEvidence() async throws {
+        let source = script()
+        let begin = try XCTUnwrap(source.range(of: "-- Paste can accept directly"))
+        let terminal = "    repeat\n        my verifyUploadCompletionTarget()"
+        let end = try XCTUnwrap(source.range(of: terminal, range: begin.upperBound..<source.endIndex))
+        var fragment = String(source[begin.lowerBound..<end.lowerBound])
+        let selection = try XCTUnwrap(fragment.split(separator: "\n").first { $0.contains("to set selectionResult to do JavaScript") })
+        fragment = fragment.replacingOccurrences(of: String(selection), with: "set selectionResult to observedDelivery")
+        let buttons = try XCTUnwrap(fragment.range(of: "set fileButtons to buttons of uploadPanel"))
+        let title = try XCTUnwrap(fragment.range(of: "set confirmationTitle to title of confirmationButton", range: buttons.lowerBound..<fragment.endIndex))
+        fragment.replaceSubrange(buttons.lowerBound..<title.upperBound, with: "set confirmationTitle to \"Open\"")
+        fragment = fragment
+            .replacingOccurrences(of: "tell application \"System Events\" to tell process \"Safari\"", with: "tell me")
+            .replacingOccurrences(of: "(exists sheet 1 of front window)", with: "true")
+            .replacingOccurrences(of: "perform action \"AXPress\" of confirmationButton", with: "set dispatchCount to dispatchCount + 1")
+            .replacingOccurrences(of: "current application's SBNativeUploadBridge's logConfirmation:confirmationTitle", with: "my recordConfirmation(confirmationTitle)")
+        XCTAssertFalse(fragment.contains("tell application"))
+        for (delivery, evidence, clipboardChangesAtRead, expectedDispatch, minimumReads) in [
+            ("PENDING", "MATCH", 0, 1, 1),
+            ("PENDING", "UNKNOWN", 0, 0, 1),
+            ("PENDING", "MISMATCH", 0, 0, 1),
+            ("PENDING", "AMBIGUOUS", 0, 0, 1),
+            ("PENDING", "MATCH", 1, 0, 1),
+            ("PENDING", "MATCH", 2, 0, 2),
+            ("OK", "UNKNOWN", 0, 0, 0)
+        ] {
+            let isolated = """
+            property observedDelivery : "\(delivery)"
+            property dispatchCount : 0
+            property reads : 0
+            property staleClipboard : false
+            on checkUploadDeadline()
+            end checkUploadDeadline
+            on checkUploadClipboard()
+                if staleClipboard then error "clipboard changed"
+            end checkUploadClipboard
+            on verifyUploadCompletionTarget()
+                my checkUploadClipboard()
+            end verifyUploadCompletionTarget
+            on verifyUploadPanel()
+                my checkUploadClipboard()
+            end verifyUploadPanel
+            on readUploadSelection()
+                set reads to reads + 1
+                if reads is \(clipboardChangesAtRead) then set staleClipboard to true
+                return "\(evidence)"
+            end readUploadSelection
+            on recordConfirmation(t)
+            end recordConfirmation
+            try
+                \(fragment)
+            end try
+            return (dispatchCount as text) & ":" & reads
+            """
+            let outcome = try await SafariBridge.runShell("/usr/bin/osascript", ["-e", isolated], timeout: 3)
+            print("native evidence adapter: \(delivery)/\(evidence)/\(clipboardChangesAtRead) -> \(outcome)")
+            let fields = outcome.split(separator: ":")
+            XCTAssertEqual(fields.first, Substring(String(expectedDispatch)), "\(delivery)/\(evidence)/\(clipboardChangesAtRead): \(outcome)")
+            XCTAssertGreaterThanOrEqual(Int(fields.last ?? "") ?? -1, minimumReads)
+        }
     }
 
 }
