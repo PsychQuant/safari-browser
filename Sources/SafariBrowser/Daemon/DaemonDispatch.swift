@@ -142,81 +142,93 @@ enum DaemonDispatch {
             guard let envelope = try? JSONSerialization.jsonObject(with: paramsData, options: []) as? [String: Any] else {
                 throw ExecRunScriptError.malformedEnvelope("not a JSON object")
             }
-            guard let steps = envelope["steps"] as? [[String: Any]] else {
-                throw ExecRunScriptError.malformedEnvelope("missing or invalid 'steps' array")
-            }
-            let probeOptions = try envelope["dialogProbe"].map { try DialogProbeOptions(jsonValue: $0) }
-            let targetArgs = (envelope["targetArgs"] as? [String]) ?? []
-            let maxSteps = (envelope["maxSteps"] as? Int) ?? ScriptInterpreter.defaultMaxSteps
-            let markTabRaw = (envelope["markTab"] as? String) ?? "off"
-            guard let markTabMode = TargetOptions.MarkTabMode(rawValue: markTabRaw) else {
-                throw ExecRunScriptError.malformedEnvelope(
-                    "invalid markTab value '\(markTabRaw)' (expected 'off' / 'ephemeral' / 'persist')"
-                )
-            }
-
-            let target: TargetOptions
-            do {
-                target = try TargetOptions.parse(targetArgs)
-            } catch {
-                throw ExecRunScriptError.malformedEnvelope("could not parse targetArgs: \(error)")
-            }
-
-            // Re-encode steps to JSON string so we can re-parse through the
-            // strict decoder, then run via the in-process dispatcher.
-            let stepsData = try JSONSerialization.data(withJSONObject: steps, options: [])
-            guard let stepsJSON = String(data: stepsData, encoding: .utf8) else {
-                throw ExecRunScriptError.malformedEnvelope("steps could not be re-encoded as UTF-8")
-            }
-            let parsedSteps: [ScriptStep]
-            do {
-                parsedSteps = try ScriptInterpreter.parseScript(source: stepsJSON, maxSteps: maxSteps)
-            } catch let parse as ScriptParseError {
-                throw ExecRunScriptError.parseError(parse.code, parse.message)
-            } catch {
-                throw ExecRunScriptError.parseError("invalidScriptFormat", "\(error)")
-            }
-
-            let context = DaemonRequestContext.current ?? DaemonRequestContext()
-            try context.configureDialogProbe(probeOptions)
-
-            let interpreter = ScriptInterpreter(
-                maxSteps: maxSteps,
-                dispatcher: InProcessStepDispatcher()
-            )
-
-            // Section 7 of tab-ownership-marker v2: wrap the ENTIRE script
-            // execution in `SafariBridge.markTabIfRequested` when the
-            // request opts in. The wrapper takes care of wrap-before /
-            // unwrap-after / title-race-on-cleanup; it does NOT toggle per
-            // step (Requirement 7.3 — marker is owned by the request-actor
-            // wrapper, not by individual steps). For `.off` the closure
-            // body runs directly, so the daemon path stays zero-overhead
-            // when no marker is requested.
-            let resolved = target.resolve()
-            let results: [StepResult] = try await DaemonRequestContext.$current.withValue(context) {
-                try await SafariBridge.markTabIfRequested(
-                    target: resolved,
-                    mode: markTabMode,
-                    firstMatch: target.firstMatch
-                ) {
-                    try await interpreter.runSteps(parsedSteps, target: target)
+            return try await PerformanceTrace.withDaemonTiming(enabled: PerformanceTrace.literalTrue(envelope["timing"])) {
+                guard let steps = envelope["steps"] as? [[String: Any]] else {
+                    throw ExecRunScriptError.malformedEnvelope("missing or invalid 'steps' array")
                 }
-            }
+                let probeOptions = try envelope["dialogProbe"].map { try DialogProbeOptions(jsonValue: $0) }
+                let targetArgs = (envelope["targetArgs"] as? [String]) ?? []
+                let maxSteps = (envelope["maxSteps"] as? Int) ?? ScriptInterpreter.defaultMaxSteps
+                let markTabRaw = (envelope["markTab"] as? String) ?? "off"
+                guard let markTabMode = TargetOptions.MarkTabMode(rawValue: markTabRaw) else {
+                    throw ExecRunScriptError.malformedEnvelope(
+                        "invalid markTab value '\(markTabRaw)' (expected 'off' / 'ephemeral' / 'persist')"
+                    )
+                }
 
-            // Encode the results array back as JSON. `StepResult.encodeArray`
-            // produces the same format as the stateless command's stdout.
-            let jsonString = StepResult.encodeArray(results)
-            let payload: [String: Any] = ["results": jsonString]
-            return try JSONSerialization.data(withJSONObject: payload, options: [])
+                let target: TargetOptions
+                do {
+                    target = try TargetOptions.parse(targetArgs)
+                } catch {
+                    throw ExecRunScriptError.malformedEnvelope("could not parse targetArgs: \(error)")
+                }
+
+                // Re-encode steps to JSON string so we can re-parse through the
+                // strict decoder, then run via the in-process dispatcher.
+                let stepsData = try JSONSerialization.data(withJSONObject: steps, options: [])
+                guard let stepsJSON = String(data: stepsData, encoding: .utf8) else {
+                    throw ExecRunScriptError.malformedEnvelope("steps could not be re-encoded as UTF-8")
+                }
+                let parsedSteps: [ScriptStep]
+                do {
+                    parsedSteps = try ScriptInterpreter.parseScript(source: stepsJSON, maxSteps: maxSteps)
+                } catch let parse as ScriptParseError {
+                    throw ExecRunScriptError.parseError(parse.code, parse.message)
+                } catch {
+                    throw ExecRunScriptError.parseError("invalidScriptFormat", "\(error)")
+                }
+
+                let context = DaemonRequestContext.current ?? DaemonRequestContext()
+                try context.configureDialogProbe(probeOptions)
+
+                let interpreter = ScriptInterpreter(
+                    maxSteps: maxSteps,
+                    dispatcher: InProcessStepDispatcher()
+                )
+
+                // Section 7 of tab-ownership-marker v2: wrap the ENTIRE script
+                // execution in `SafariBridge.markTabIfRequested` when the
+                // request opts in. The wrapper takes care of wrap-before /
+                // unwrap-after / title-race-on-cleanup; it does NOT toggle per
+                // step (Requirement 7.3 — marker is owned by the request-actor
+                // wrapper, not by individual steps). For `.off` the closure
+                // body runs directly, so the daemon path stays zero-overhead
+                // when no marker is requested.
+                let resolved = target.resolve()
+                let results: [StepResult] = try await DaemonRequestContext.$current.withValue(context) {
+                    try await SafariBridge.markTabIfRequested(
+                        target: resolved,
+                        mode: markTabMode,
+                        firstMatch: target.firstMatch
+                    ) {
+                        try await interpreter.runSteps(parsedSteps, target: target)
+                    }
+                }
+
+                // Encode the results array back as JSON. `StepResult.encodeArray`
+                // produces the same format as the stateless command's stdout.
+                let jsonString = StepResult.encodeArray(results)
+                let payload: [String: Any] = ["results": jsonString]
+                return try JSONSerialization.data(withJSONObject: payload, options: [])
+            }
         }
 
         static func appleScriptExecute(
             paramsData: Data,
             cache: PreCompiledScripts.CompileCache
         ) async throws -> Data {
-            struct Params: Decodable { let source: String }
+            struct Params: Decodable {
+                let source: String
+                let timing: Bool
+                enum CodingKeys: String, CodingKey { case source, timing }
+                init(from decoder: Decoder) throws {
+                    let values = try decoder.container(keyedBy: CodingKeys.self)
+                    source = try values.decode(String.self, forKey: .source)
+                    timing = (try? values.decode(Bool.self, forKey: .timing)) ?? false
+                }
+            }
             let params = try JSONDecoder().decode(Params.self, from: paramsData)
+            return try await PerformanceTrace.withDaemonTiming(enabled: params.timing) {
             do {
                 let result = try await cache.execute(source: params.source)
                 let response: [String: Any] = [
@@ -238,6 +250,7 @@ enum DaemonDispatch {
                     "message": msg,
                 ]
                 return try JSONSerialization.data(withJSONObject: response, options: [])
+            }
             }
         }
     }

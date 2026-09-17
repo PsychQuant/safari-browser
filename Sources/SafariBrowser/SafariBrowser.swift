@@ -65,16 +65,33 @@ struct SafariBrowser: AsyncParsableCommand {
     /// bash, does not word-split an unquoted parameter) or a user-quoted
     /// `cmd "--url report"`. Everything else is byte-identical to the default.
     static func main() async {
+        let timing = PerformanceTrace.isEnabled(ProcessInfo.processInfo.environment)
+            ? PerformanceTrace.Collector() : nil
+        let commandSpan = timing?.begin(.command)
+        let context = timing.map { PerformanceTrace.Context(collector: $0, parentID: commandSpan) }
+        func finishTiming(_ status: PerformanceTrace.Outcome) {
+            if let commandSpan { timing?.end(commandSpan, outcome: status) }
+            if let summary = timing?.finish(status: status) { PerformanceTrace.emit(summary) }
+        }
         do {
-            try MCPWorkerContext.validate(environment: ProcessInfo.processInfo.environment,
-                                          currentImage: MCPWorkerContext.currentImageIdentifier)
-            var command = try parseAsRoot()
-            if var asyncCommand = command as? AsyncParsableCommand {
-                try await asyncCommand.run()
-            } else {
-                try command.run()
+            try await PerformanceTrace.$context.withValue(context) {
+                try MCPWorkerContext.validate(environment: ProcessInfo.processInfo.environment,
+                                              currentImage: MCPWorkerContext.currentImageIdentifier)
+                var command = try parseAsRoot()
+                // Finish and discard host timing: each worker/handler owns its
+                // own request, rather than inheriting a host-lifetime collector.
+                if command is DaemonServeCommand || command is MCPCommand {
+                    _ = timing?.finish(status: .ok)
+                }
+                if var asyncCommand = command as? AsyncParsableCommand {
+                    try await asyncCommand.run()
+                } else {
+                    try command.run()
+                }
             }
+            finishTiming(.ok)
         } catch {
+            finishTiming(exitCode(for: error).rawValue == 0 ? .ok : .error)
             if let hint = gluedFlagHint(forErrorMessage: message(for: error)) {
                 let out = fullMessage(for: error) + "\n" + hint + "\n"
                 FileHandle.standardError.write(Data(out.utf8))

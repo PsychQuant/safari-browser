@@ -1,0 +1,87 @@
+# Measuring command performance
+
+`SAFARI_BROWSER_TRACE_TIMING=1` enables timing for that CLI invocation. Other
+values leave it disabled. It does not select a different backend or relax any
+operation guard. Persistent daemon/MCP hosts do not emit a lifetime trace: each
+opted-in handler or CLI worker has its own request context.
+
+## Trace format
+
+A final stderr line begins with `[safari-browser timing] `, followed by JSON:
+
+- `schemaVersion`: `1`.
+- `requestID`: fresh UUID; `processID`: the producing process ID.
+- `status`: `ok` or `error`.
+- `totalNanoseconds`: monotonic time from main-entry collection to summary creation.
+- `spans`: at most 64 records with positive `id`, optional `parentID`, fixed `phase`,
+  `durationNanoseconds`, and `outcome` (`ok`, `error`, or `unfinished`).
+- `droppedSpans`: records omitted by the bound.
+
+The entire line is bounded to 64 KiB. Phases name command dispatch, target
+resolution, direct/daemon/in-process AppleScript, process launch/wait, file-dialog
+execution, AX wait/inspection, daemon request/compile/execute/cache-hit, and exec.
+There are no free-text labels, arguments, source text, URLs, selectors, clipboard
+values, file paths, file contents or error messages in the timing record. Ordinary
+command diagnostics retain their existing content; only the timing record has
+this restricted schema.
+
+Durations are inclusive. Do not sum parent and child spans, or overlapping
+client/server work, to obtain total time. `process.wait` means pipe draining and
+process completion; a completed wait can still yield a nonzero process status,
+reported by its enclosing operation. Main timing excludes pre-main loading,
+summary encoding/writing, and final rendering/exit after a caught error or help
+request. External wall time is the end-to-end measurement. A killed process can
+produce no summary; an unfinished read worker is marked rather than invented as
+completed, and late callbacks cannot modify an emitted trace.
+
+`exec` can forward several child summaries. Readers should select the unique
+record whose `processID` matches the actual root process, not guess by order or
+largest duration. A single older summary without `processID` remains readable.
+
+## Daemon metadata
+
+Opted-in `applescript.execute` and `exec.runScript` requests send an optional
+literal Boolean `timing: true`. Only that request collects service timing; its
+response can attach a `timing` object with the same bounded schema. Clients
+validate, bound and reparent imported spans under the RPC. Missing metadata from
+an older daemon, or invalid metadata, does not change the execution result and
+never causes replay. Compile/execute remain on their existing main actor; the
+cache still stores compiled scripts, not Safari state.
+
+## Benchmark
+
+Build the executable, then run:
+
+```sh
+swift build
+python3 scripts/benchmark-performance.py --binary .build/debug/safari-browser --samples 20 --warmups 3 --timing both > benchmark.json
+```
+
+Fixed scenarios cover help startup, zero-duration wait, exec wait batch, private
+daemon status, and MCP wait workers. Each service owns a short private temporary
+socket directory and namespace. It never stops an existing user daemon. The
+benchmark reserves its child leader identity with non-reaping observation until
+its process group is cleaned up; normal exit status is retained. Capture is
+bounded and raw stdout/stderr is not copied into the report.
+
+`--live` additionally creates one owned localhost static page per timing mode,
+then measures direct and warm-daemon `get title`/`get url`. It verifies the window
+ID, exact URL, one-tab identity and clear-dialog state. Changed or uncertain
+ownership prevents cleanup actions and marks the report; an uncertain close is
+not retried. No upload, PDF, Print or arbitrary repeated mutation is supported.
+Without explicit live mode, or without a clear GUI preflight, GUI rows are SKIP.
+
+The JSON report identifies executable digest, OS build and architecture, timing
+mode, warmups, measured samples, failures and skips. Fresh process means a new CLI
+process, not flushed OS caches. Cold host measurements include host setup; warm
+host measurements retain the service but still launch the documented CLI/worker.
+Daemon status rows measure transport/lifecycle, not compilation or Safari work.
+The exec wait batch is not supported by the in-process daemon dispatcher and is
+therefore labelled separately.
+
+p50/p95 use nearest rank over successful samples; failure and skip counts remain
+visible, and an empty success set has null quantiles. Small sample sets are
+observations, not stable population percentiles. Compare identical fixtures,
+versions, timing modes and warmup conditions, and retain timing-on/off results to
+expose instrumentation overhead. There is no fixed speed threshold in CI and no
+speedup is established merely by adding this measurement feature.
