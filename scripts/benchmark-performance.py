@@ -160,7 +160,7 @@ class ExitObservation:
 
 def signal_owned_group(process):
     # ECHILD is an ownership failure, not permission to signal a recycled PID.
-    exited = observe_exit(process)
+    observe_exit(process)
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -169,7 +169,9 @@ def signal_owned_group(process):
         # Darwin reports EPERM for a group containing only zombies. WNOWAIT
         # still pins the original leader identity; pgrep is used only to
         # confirm there are no live group members, never to infer ownership.
-        if sys.platform != 'darwin' or exited is None:
+        # The leader can exit between the ownership check and killpg. Refresh
+        # its still-unreaped state before classifying this particular EPERM.
+        if sys.platform != 'darwin' or observe_exit(process) is None:
             raise
         check = subprocess.run(['/usr/bin/pgrep', '-g', str(process.pid)],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1)

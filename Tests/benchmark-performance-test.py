@@ -98,6 +98,50 @@ class TraceTests(unittest.TestCase):
 
 
 class ProcessTests(unittest.TestCase):
+    def test_exit_between_observation_and_signal_uses_fresh_owned_state(self):
+        process = subprocess.Popen(['/bin/sh', '-c', 'read token'], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        actual_signal = os.killpg
+        calls, cleanup_error = [], None
+        def exit_then_signal(pid, signum):
+            calls.append((pid, signum))
+            process.stdin.write(b'done\n')
+            process.stdin.flush()
+            deadline = time.monotonic() + 5
+            while bench.observe_exit(process) is None:
+                self.assertLess(time.monotonic(), deadline, 'owned fixture did not exit')
+                time.sleep(.005)
+            self.assertEqual(bench.observe_exit(process), 0)
+            self.assertIsNone(process.returncode, 'leader identity must remain unreaped')
+            return actual_signal(pid, signum)
+        try:
+            self.assertIsNone(bench.observe_exit(process))
+            with mock.patch.object(bench.os, 'killpg', exit_then_signal):
+                try:
+                    bench.kill_group(process)
+                except OSError as error:
+                    cleanup_error = type(error).__name__
+        finally:
+            if process.returncode is None:
+                bench.kill_group(process)
+            process.stdin.close()
+        self.assertIsNone(cleanup_error, 'normal exit during signal delivery was misclassified')
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(calls, [(process.pid, signal.SIGKILL)])
+
+    def test_permission_error_with_live_leader_remains_failure(self):
+        process = subprocess.Popen(['/bin/sh', '-c', 'read token'], stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        try:
+            with mock.patch.object(bench.os, 'killpg', side_effect=PermissionError()), \
+                    mock.patch.object(bench.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1)):
+                with self.assertRaises(PermissionError):
+                    bench.signal_owned_group(process)
+            self.assertIsNone(bench.observe_exit(process))
+        finally:
+            bench.kill_group(process)
+            process.stdin.close()
+
     def test_daemon_fallback_diagnostic_is_only_a_boolean_in_report(self):
         source = "import sys; sys.stderr.write('[daemon fallback: private /Users/secret]\\n')"
         result = bench.run_process([sys.executable, '-c', source], dict(os.environ), 2)
@@ -374,15 +418,34 @@ class DaemonHandshakeTests(unittest.TestCase):
             with self.subTest(behavior=behavior), tempfile.TemporaryDirectory(prefix='sb-test-', dir='/tmp') as directory:
                 binary, env, accepted, _ = self.daemon_fixture(directory, behavior)
                 service, rejected = None, False
+                children = []
+                actual_popen = bench.subprocess.Popen
+                def retain_child(*args, **kwargs):
+                    child = actual_popen(*args, **kwargs)
+                    if args[0][0] == binary:
+                        children.append(child)
+                    return child
                 try:
                     try:
-                        service = bench.Service(binary, env, 'daemon', 2)
+                        with mock.patch.object(bench.subprocess, 'Popen', retain_child):
+                            service = bench.Service(binary, env, 'daemon', 2)
                     except (ValueError, TimeoutError):
+                        rejected = True
+                    except bench.ServiceCleanupError as error:
+                        # An abruptly exiting bad peer can make immediate
+                        # cleanup uncertain. That still rejects its handshake;
+                        # keep the actual child handle for final fixture cleanup.
+                        self.assertIsInstance(error.__cause__, (ValueError, TimeoutError))
                         rejected = True
                     self.assertTrue(rejected, 'incomplete handshake was accepted as readiness')
                     self.assertEqual(accepted.read_text().splitlines(), ['accepted'])
+                    self.assertEqual(len(children), 1)
                 finally:
                     if service: service.close()
+                    for child in children:
+                        if child.returncode is None:
+                            bench.kill_group(child)
+                        self.assertIsNotNone(child.returncode)
 
     def test_connection_permission_error_is_not_retried(self):
         with tempfile.TemporaryDirectory(prefix='sb-test-', dir='/tmp') as directory:
