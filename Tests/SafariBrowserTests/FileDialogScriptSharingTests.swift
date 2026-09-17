@@ -105,28 +105,6 @@ final class FileDialogScriptSharingTests: XCTestCase {
                       "the script actually executed must contain the shared fragment")
     }
 
-    /// Upload is reached through its effect plan, which #104's tests prove the
-    /// interpreter reads verbatim and runs one script per `.runCombinedScript`.
-    /// Asserting here that the plan carries exactly one script, and that the
-    /// script embeds the fragment, chains onto that: a private copy or a second
-    /// invocation would break one link or the other.
-    func testUploadPlanCarriesOneScriptContainingTheFragment() {
-        let plan = UploadCommand.nativeUploadEffects(
-            selector: "input[type=file]", path: path, window: nil)
-
-        let scripts: [String] = plan.compactMap {
-            if case .runCombinedScript(let s) = $0 { return s }
-            return nil
-        }
-        XCTAssertEqual(scripts.count, 1, "splitting the script reintroduces the #15 focus race")
-        XCTAssertTrue(scripts[0].contains(SafariBridge.fileDialogNavigationScript(path: path)),
-                      "upload must embed the shared fragment, not keep a private copy")
-        XCTAssertTrue(scripts[0].contains("tell application \"Safari\" to activate"),
-                      "the one script must do its own activate…")
-        XCTAssertTrue(scripts[0].contains("repeat until exists sheet 1 of front window"),
-                      "…and its own wait for the dialog, since it cannot rely on a second call")
-    }
-
     // MARK: - pdf, after #106
 
     /// #106. `pdf` used to run three osascript invocations — menu click, then
@@ -173,12 +151,4 @@ final class FileDialogScriptSharingTests: XCTestCase {
     // output-string test can prove text *came from* the generator rather than
     // being a verbatim copy of it; that needs a source or architecture check.
 
-    func testUploadRaisesTheTargetWindowWhenOneIsGiven() {
-        let none = UploadCommand.nativeDialogScript(path: path, window: nil)
-        XCTAssertFalse(none.contains("set index of window"),
-                       "no targeting flag → no window raise")
-        let some = UploadCommand.nativeDialogScript(path: path, window: 3)
-        XCTAssertTrue(some.contains("set index of window 3 to 1"),
-                      "keystrokes only reach the front window, so an explicit target must be raised first")
-    }
 }

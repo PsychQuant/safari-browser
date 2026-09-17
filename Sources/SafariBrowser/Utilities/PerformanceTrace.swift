@@ -152,6 +152,20 @@ enum PerformanceTrace {
         }.joined(separator: "\n")
     }
 
+    /// Internal worker output is separated only when it belongs to the actual
+    /// child PID and satisfies the same bounded schema as imported metadata.
+    static func consumingOwnSummaryLines(from text: String, processID: Int32) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false).filter { line in
+            let value = String(line)
+            guard value.hasPrefix(prefix), value.utf8.count + 1 <= 65536,
+                  removingOwnSummaryLines(from: value, processID: processID).isEmpty else { return true }
+            if let object = try? JSONSerialization.jsonObject(with: Data(value.dropFirst(prefix.count).utf8)) {
+                consumeRemote(object)
+            }
+            return false
+        }.joined(separator: "\n")
+    }
+
     static func literalTrue(_ value: Any?) -> Bool {
         guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return false }
         return number.boolValue

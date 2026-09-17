@@ -55,6 +55,7 @@ struct SafariBrowser: AsyncParsableCommand {
             DownloadsCommand.self,
             MCPCommand.self,
             MCPWorkerCommand.self,
+            NativeUploadWorkerCommand.self,
         ]
     )
 
