@@ -153,26 +153,31 @@ enum DaemonClient {
         socketDir: String? = nil,
         diagnosticsWriter: (@Sendable (String) -> Void)? = nil
     ) async throws -> Data {
-        guard timeout.isFinite, (0.001...86400).contains(timeout) else {
-            throw Error.invalidTimeout
-        }
-        let deadline = Deadline(timeout: timeout)
-        let path = socketDir.flatMap { $0.isEmpty ? nil : socketPath(dir: $0, name: name) }
-            ?? socketPath(name: name)
-        // poll/read/write must not occupy Swift's cooperative executor, which
-        // may also be running the in-process server awaited by this request.
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                do {
-                    continuation.resume(returning: try exchange(
-                        path: path, method: method, params: params,
-                        requestId: requestId, deadline: deadline,
-                        diagnosticsWriter: diagnosticsWriter
-                    ))
-                } catch {
-                    continuation.resume(throwing: error)
+        return try await PerformanceTrace.spanAsync(.daemonRequest) {
+            guard timeout.isFinite, (0.001...86400).contains(timeout) else {
+                throw Error.invalidTimeout
+            }
+            let deadline = Deadline(timeout: timeout)
+            let path = socketDir.flatMap { $0.isEmpty ? nil : socketPath(dir: $0, name: name) }
+                ?? socketPath(name: name)
+            // poll/read/write must not occupy Swift's cooperative executor, which
+            // may also be running the in-process server awaited by this request.
+            let timingContext = PerformanceTrace.context
+            let result: Data = try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        let reply = try PerformanceTrace.$context.withValue(timingContext) {
+                            try exchange(path: path, method: method, params: params,
+                                         requestId: requestId, deadline: deadline,
+                                         diagnosticsWriter: diagnosticsWriter)
+                        }
+                        continuation.resume(returning: reply)
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
+            return result
         }
     }
 
@@ -235,7 +240,11 @@ enum DaemonClient {
                     throw Error.protocolError("version mismatch after request transmission")
                 }
                 remoteError = .remoteError(code: code, message: message)
+                PerformanceTrace.consumeRemote(object["timing"])
             } else {
+                if PerformanceTrace.isActive, let payload = object["result"] as? [String: Any] {
+                    PerformanceTrace.consumeRemote(payload["timing"])
+                }
                 result = try JSONSerialization.data(withJSONObject: object["result"]!, options: [.fragmentsAllowed])
             }
             for diagnostic in diagnostics {
