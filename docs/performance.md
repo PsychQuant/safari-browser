@@ -41,6 +41,10 @@ completed, and late callbacks cannot modify an emitted trace.
 transport, and its imported child measures the handler. A returned application
 error can have an `ok` handler span (the handler returned normally) while its
 summary status is `error`; a thrown handler has an `error` span.
+An `ok` span means the wrapped operation returned normally, not that every
+application-level result succeeded. In particular, `ax.wait` may return its
+existing fallback, and an exec handler may return step errors in its result array.
+Interpret those results together with the spans.
 
 `exec` can forward several child summaries. Readers should select the unique
 record whose `processID` matches the actual root process, not guess by order or
@@ -92,6 +96,9 @@ ID, exact URL, one-tab identity and clear-dialog state. Changed or uncertain
 ownership prevents cleanup actions and marks the report; an uncertain close is
 not retried. No upload, PDF, Print or arbitrary repeated mutation is supported.
 Without explicit live mode, or without a clear GUI preflight, GUI rows are SKIP.
+Live ownership checks also require System Events access to Safari's UI. If that
+access fails after creation, or the user changes the foreground window before
+its ID is captured, the fixture can remain open with cleanup marked unknown.
 Warm-daemon samples force the daemon route and reject host exit, direct fallback,
 or truncated routing diagnostics, with timing both on and off. Rejected routes
 stop subsequent warm samples without restarting the service or retrying the read.

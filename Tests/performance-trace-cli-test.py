@@ -93,6 +93,8 @@ class TraceCLITests(unittest.TestCase):
         self.assertEqual(traced.stdout, plain.stdout)
         self.assertNotIn(PREFIX, traced.stdout)
         self.assertGreaterEqual(sum(line.startswith(PREFIX) for line in traced.stderr.splitlines()), 2)
+        filtered = ''.join(line for line in traced.stderr.splitlines(keepends=True) if not line.startswith(PREFIX))
+        self.assertEqual(filtered, plain.stderr)
 
 if __name__ == '__main__':
     unittest.main()

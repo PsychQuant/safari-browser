@@ -11,4 +11,4 @@
 ## 3. 驗證與交付
 
 - [x] 3.1 執行 Reproducible performance benchmark 的真實安全情境；記錄 baseline、on/off 開銷、cold／warm 條件及 GUI SKIP／驗收，撰寫使用說明與判讀，不宣稱未證實加速倍數。
-- [ ] 3.2 執行完整回歸、Spectra validate／analyze、六方審查；修正阻擋項，更新 #167 與 PR，通過後依既有授權合併並核對合併樹。
+- [x] 3.2 執行完整回歸、Spectra validate／analyze、六方審查；修正阻擋項，更新 #167 與 PR，通過後依既有授權合併並核對合併樹。
