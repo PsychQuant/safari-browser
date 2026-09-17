@@ -11,6 +11,11 @@ The CLI SHALL enable timing only when SAFARI_BROWSER_TRACE_TIMING equals 1. It S
 - **WHEN** exec forwards timing summaries from child processes
 - **THEN** the benchmark SHALL identify the unique root summary by its actual process ID and SHALL NOT guess by duration or order
 
+#### Scenario: Exec child fails with timing enabled
+- **WHEN** a subprocess step fails while timing is enabled
+- **THEN** its valid own-process timing summary SHALL remain on stderr and SHALL NOT change the step error in stdout
+- **AND** ordinary diagnostics and malformed timing-like lines SHALL be preserved
+
 #### Scenario: Nested operation fails
 - **WHEN** an instrumented operation throws
 - **THEN** the original error SHALL propagate exactly once and its span SHALL be marked error
@@ -57,3 +62,8 @@ The benchmark SHALL provide bounded, fixed safe scenarios for CLI, exec, daemon 
 - **WHEN** the owned warm service exits or a sample falls back to direct execution
 - **THEN** the benchmark SHALL reject the sample, even when the command returns the expected output
 - **AND** it SHALL NOT replace the service or retry uncertain samples
+
+#### Scenario: Daemon status exits successfully without proving service identity
+- **WHEN** daemon status returns exit zero but its output is missing, malformed, not-running, or names another PID
+- **THEN** the benchmark SHALL reject the sample rather than infer a successful service request
+- **AND** it SHALL check the owned host is still alive after the response

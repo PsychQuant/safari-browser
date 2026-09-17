@@ -102,17 +102,7 @@ enum PerformanceTrace {
             guard JSONSerialization.isValidJSONObject(object),
                   let data = try? JSONSerialization.data(withJSONObject: object), data.count <= 65536,
                   let summary = try? JSONDecoder().decode(Summary.self, from: data),
-                  summary.schemaVersion == 1, summary.requestID.utf8.count == 36,
-                  UUID(uuidString: summary.requestID) != nil, summary.status != .unfinished,
-                  summary.processID == nil || (summary.processID! > 0 && summary.processID! <= Int(Int32.max)),
-                  summary.spans.count <= 64 else { return false }
-            let ordered = summary.spans.sorted { $0.id < $1.id }
-            var ids = Set<Int>()
-            for span in ordered {
-                guard (1...64).contains(span.id), !ids.contains(span.id),
-                      span.parentID == nil || ids.contains(span.parentID!) else { return false }
-                ids.insert(span.id)
-            }
+                  let ordered = PerformanceTrace.validatedSpans(in: summary) else { return false }
             lock.lock(); defer { lock.unlock() }
             guard !closed, parentID == nil || (parentID! > 0 && parentID! <= entries.count) else { return false }
             var mapping: [Int: Int] = [:]
@@ -136,6 +126,32 @@ enum PerformanceTrace {
             end >= start ? end - start : 0
         }
     }
+    /// Share validation between imported metadata and separation of our own
+    /// child trace from the command's ordinary error text.
+    private static func validatedSpans(in summary: Summary) -> [Span]? {
+        guard summary.schemaVersion == 1, summary.requestID.utf8.count == 36,
+              UUID(uuidString: summary.requestID) != nil, summary.status != .unfinished,
+              summary.processID == nil || (summary.processID! > 0 && summary.processID! <= Int(Int32.max)),
+              summary.spans.count <= 64 else { return nil }
+        let ordered = summary.spans.sorted { $0.id < $1.id }
+        var ids = Set<Int>()
+        for span in ordered {
+            guard (1...64).contains(span.id), !ids.contains(span.id),
+                  span.parentID == nil || ids.contains(span.parentID!) else { return nil }
+            ids.insert(span.id)
+        }
+        return ordered
+    }
+
+    static func removingOwnSummaryLines(from text: String, processID: Int32) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false).filter { line in
+            guard line.hasPrefix(prefix), line.utf8.count + 1 <= 65536,
+                  let summary = try? JSONDecoder().decode(Summary.self, from: Data(line.dropFirst(prefix.count).utf8)),
+                  summary.processID == Int(processID), validatedSpans(in: summary) != nil else { return true }
+            return false
+        }.joined(separator: "\n")
+    }
+
     static func literalTrue(_ value: Any?) -> Bool {
         guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return false }
         return number.boolValue

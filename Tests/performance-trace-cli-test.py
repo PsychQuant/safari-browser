@@ -82,5 +82,17 @@ class TraceCLITests(unittest.TestCase):
         self.assertEqual((traced.returncode, traced.stdout), (plain.returncode, plain.stdout))
         self.assertEqual(self.summary(traced)['status'], 'ok')
 
+    def test_failed_exec_step_preserves_stdout_and_keeps_timing_on_stderr(self):
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json') as script:
+            json.dump([{'cmd': 'wait', 'args': ['--', '-1']}], script)
+            script.flush()
+            plain = self.invoke(['exec', '--script', script.name], None)
+            traced = self.invoke(['exec', '--script', script.name], '1')
+        self.assertTrue(any(step.get('error') for step in json.loads(plain.stdout)))
+        self.assertEqual(traced.returncode, plain.returncode)
+        self.assertEqual(traced.stdout, plain.stdout)
+        self.assertNotIn(PREFIX, traced.stdout)
+        self.assertGreaterEqual(sum(line.startswith(PREFIX) for line in traced.stderr.splitlines()), 2)
+
 if __name__ == '__main__':
     unittest.main()

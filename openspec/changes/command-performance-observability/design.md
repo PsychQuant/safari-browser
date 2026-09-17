@@ -28,3 +28,9 @@ Non-Goals：不在本張改快取策略、刪除 UI 檢查、建立 worker pool�
 ## Risks / Trade-offs
 
 計時與監測本身有成本，保留 on/off 對照。程序被強制終止時不保證 final summary，報告須保留 missing。服務端無新 metadata 時只呈現 transport wall time。GUI availability 及使用者搶焦點會影響成功率，不能刪掉失敗樣本。64-span 上限可能截斷大量 polling；droppedSpans 必須顯示。資料最小化採白名單而非事後刪字。
+
+## R3 回覆與探測驗證
+
+exec 失敗步驟仍完整轉送子程序 stderr；只有在建構 step error 時，才分離符合 schema／UUID／phase／parent／上限且 processID 為實際子程序的計時行，保持 stdout 錯誤與未啟用時一致。daemon status 樣本須驗證完整回覆、namespace 與自有未回收 PID，並重查 host 存活，exit 0 不足以判定成功。
+
+就緒探測連線後在原 startup deadline 內讀完最多 64 KiB 的 handshake line，檢查 protocol 名稱，不送 handler request；只有連線建立前 ENOENT／ECONNREFUSED 可重試，已建立連線的未知結果不重連。這避免本機實測的 early-close SIGPIPE；daemon 本身的問題另列 #175，不能宣稱已由 benchmark 修好。先前 R2 四筆 daemon 功能通過認定已撤回，修正後另有 14 筆真實非 GUI 功能驗證，不作效能比較。

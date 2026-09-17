@@ -4,6 +4,8 @@
 values leave it disabled. It does not select a different backend or relax any
 operation guard. Persistent daemon/MCP hosts do not emit a lifetime trace: each
 opted-in handler or CLI worker has its own request context.
+MCP transports worker summaries in the existing tool-result `stderr` field;
+the worker's `stdout` field keeps its normal command output.
 
 ## Trace format
 
@@ -43,6 +45,9 @@ summary status is `error`; a thrown handler has an `error` span.
 `exec` can forward several child summaries. Readers should select the unique
 record whose `processID` matches the actual root process, not guess by order or
 largest duration. A single older summary without `processID` remains readable.
+When an exec child fails, its valid own-process summary remains on stderr but
+is excluded from the step's error message in stdout. Ordinary diagnostics and
+malformed timing lookalikes are retained.
 
 ## Daemon metadata
 
@@ -72,8 +77,10 @@ benchmark reserves its child leader identity with non-reaping observation until
 its process group is cleaned up; normal exit status is retained. Capture is
 bounded and raw stdout/stderr is not copied into the report.
 
-Host readiness requires a private socket connection, not merely a socket path;
-the probe sends no handler request. Service stderr is discarded to avoid pipe
+Host readiness requires a private socket connection and a complete bounded
+handshake line, not merely a socket path. The probe reads at most 64 KiB within
+the startup deadline and sends no handler request. It never reconnects after an
+uncertain established connection. Service stderr is discarded to avoid pipe
 backpressure; MCP worker timing is read from its structured response. A cleanup
 failure is reported as `cleanupFailed` and its samples are excluded from success
 quantiles. The benchmark cannot force cleanup when the OS refuses a signal.
@@ -96,6 +103,8 @@ host measurements retain the service but still launch the documented CLI/worker.
 Host readiness is polled, so cold-host wall time also includes readiness-detection
 latency (up to one polling interval under normal scheduling), not only startup.
 Daemon status rows measure transport/lifecycle, not compilation or Safari work.
+An exit code of zero alone is insufficient: status output must match the owned
+service's namespace and PID, and that host must still be alive after the call.
 The exec wait batch is not supported by the in-process daemon dispatcher and is
 therefore labelled separately.
 

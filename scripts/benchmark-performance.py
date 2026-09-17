@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Fixed, bounded Safari Browser benchmarks; raw command output is never reported."""
 import argparse
+import errno
 import hashlib
 import http.server
 import json
@@ -336,19 +337,50 @@ class Service:
                         raise TimeoutError()
                     if observe_exit(self.process) is not None:
                         raise ValueError('host_exit')
-                    try:
-                        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-                            probe.settimeout(remaining)
-                            # Connect-only probe: never send a handler request.
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                        probe.settimeout(remaining)
+                        try:
                             probe.connect(str(path))
-                        break
-                    except OSError:
-                        self.drain(min(.01, max(0, deadline - time.monotonic())))
+                        except OSError as error:
+                            if error.errno not in (errno.ENOENT, errno.ECONNREFUSED):
+                                raise
+                            self.drain(min(.01, max(0, deadline - time.monotonic())))
+                            continue
+                        # The host writes first. Drain its bounded handshake
+                        # before closing to avoid interrupting its initial write.
+                        # Once connected, any unknown outcome fails without
+                        # reconnecting; never send a handler request.
+                        self.read_daemon_handshake(probe, deadline)
+                    break
         except BaseException as error:
             if not self.close() and isinstance(error, Exception):
                 raise ServiceCleanupError() from error
             raise
         self.setup_nanoseconds = time.monotonic_ns() - self.started
+
+    @staticmethod
+    def read_daemon_handshake(probe, deadline):
+        buffered = bytearray()
+        while len(buffered) < MAX_CAPTURE:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError()
+            probe.settimeout(remaining)
+            chunk = probe.recv(min(4096, MAX_CAPTURE - len(buffered)))
+            if not chunk:
+                raise ValueError('daemon_handshake_incomplete')
+            buffered.extend(chunk)
+            if b'\n' in buffered:
+                try:
+                    hello = json.loads(buffered.split(b'\n', 1)[0])
+                    if not isinstance(hello, dict) or not isinstance(hello.get('protocol'), dict):
+                        raise ValueError()
+                    if hello['protocol'].get('name') != 'persistent-daemon':
+                        raise ValueError()
+                except (ValueError, TypeError, RecursionError):
+                    raise ValueError('daemon_handshake_invalid') from None
+                return
+        raise ValueError('daemon_handshake_limit')
 
     def drain(self, wait):
         for key, _ in self.selector.select(wait):
@@ -456,6 +488,18 @@ def failure(reason, status='error'):
     return {'status': status, 'reason': reason, 'wallNanoseconds': None, 'trace': None}
 
 
+def valid_daemon_status(output, name, process_id):
+    """Validate the fixed CLI status shape and owned host PID without exporting it."""
+    pattern = (
+        rb'daemon ' + re.escape(name.encode()) + rb':\n'
+        rb'  pid: +' + str(process_id).encode() + rb'\n'
+        rb'  uptime: +[0-9]+s\n'
+        rb'  requests served: +[0-9]+\n'
+        rb'  pre-compiled scripts: +[0-9]+\n'
+    )
+    return re.fullmatch(pattern, output) is not None
+
+
 def service_scenario(binary, kind, cold, timing, samples, warmups, timeout):
     operation = 'status' if kind == 'daemon' else 'wait'
     name = f'{kind}.cold-host-{operation}-including-startup' if cold else f'{kind}.warm-host-fresh-worker'
@@ -483,9 +527,16 @@ def service_scenario(binary, kind, cold, timing, samples, warmups, timeout):
                 if kind == 'mcp':
                     result = service.call_wait(deadline)
                 else:
-                    result = run_process([binary, 'daemon', 'status', '--name', current_env['SAFARI_BROWSER_NAME'],
-                                          '--socket-dir', current_env['TMPDIR']], current_env,
-                                         max(.001, deadline - time.monotonic()))
+                    result, output = run_process([binary, 'daemon', 'status', '--name', current_env['SAFARI_BROWSER_NAME'],
+                                                 '--socket-dir', current_env['TMPDIR']], current_env,
+                                                max(.001, deadline - time.monotonic()), capture_stdout=True)
+                    if result['status'] == 'ok' and not valid_daemon_status(
+                            output, current_env['SAFARI_BROWSER_NAME'], service.process.pid):
+                        result['status'] = 'error'
+                        result['reason'] = 'daemon_status_invalid'
+                    if observe_exit(service.process) is not None:
+                        result['status'] = 'error'
+                        result['reason'] = 'service_exited'
                 if cold:
                     result['wallNanoseconds'] += before_request
                 # A failed call is never retried or sent to a replacement warm host.

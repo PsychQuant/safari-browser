@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Safari-free behavioral tests for the bounded performance benchmark."""
 import importlib.util
+import errno
 import json
 import os
 from pathlib import Path
@@ -216,6 +217,9 @@ class ProcessTests(unittest.TestCase):
         self.assertLess(result['wallNanoseconds'], 2_000_000_000)
 
 
+DAEMON_HANDSHAKE = b'{"protocol":{"name":"persistent-daemon","version":{"semver":"1.0.0","commit":"test","dirty":false,"vendor":"source"}}}\n'
+
+
 FAKE = r'''#!/usr/bin/env python3
 import json,os,pathlib,socket,sys,time
 args = sys.argv[1:]
@@ -229,10 +233,35 @@ err = '[safari-browser timing] ' + json.dumps(record) + '\n' if os.environ.get('
 if args[:2] == ['daemon','__serve']:
     name = args[args.index('--name')+1]
     directory = args[args.index('--socket-dir')+1]
+    pathlib.Path(directory, 'safari-browser-'+name+'.pid').write_text(str(os.getpid()))
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     listener.bind(str(pathlib.Path(directory, 'safari-browser-'+name+'.sock')))
     listener.listen(16)
+    connection, _ = listener.accept()
+    handshake = {'protocol': {'name': 'persistent-daemon', 'version': {'semver':'1.0.0','commit':'test','dirty':False,'vendor':'source'}}}
+    connection.sendall(json.dumps(handshake).encode() + b'\n')
+    assert connection.recv(1) == b''
+    connection.close()
     time.sleep(30)
+elif args[:2] == ['daemon','status']:
+    name = args[args.index('--name')+1]
+    directory = args[args.index('--socket-dir')+1]
+    pid_path = pathlib.Path(directory, 'safari-browser-'+name+'.pid')
+    pid = int(pid_path.read_text())
+    mode = os.environ.get('BENCH_STATUS_MODE', 'valid')
+    if mode == 'pidfile-missing': pid_path.unlink()
+    if mode in ('not-running', 'pidfile-missing'):
+        print('daemon '+name+': not running')
+    elif mode == 'invalid':
+        print('private malformed status /Users/secret')
+    elif mode != 'missing':
+        if mode == 'exit-during':
+            import signal
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(.03)
+        reported_pid = pid+1 if mode == 'mismatched-pid' else pid
+        print('daemon '+name+':\n  pid:                '+str(reported_pid)+'\n  uptime:             0s\n  requests served:    1\n  pre-compiled scripts: 0')
+    sys.stderr.write(err)
 elif args[:1] == ['mcp']:
     for line in sys.stdin:
         req = json.loads(line)
@@ -253,6 +282,127 @@ else:
         assert steps == [{'cmd':'wait','args':['0']}] * 3
     sys.stderr.write(err)
 '''
+
+
+class DaemonStatusAccuracyTests(unittest.TestCase):
+    def status_fixture(self, mode, cold, timing):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory, 'fake')
+            binary.write_text(FAKE)
+            binary.chmod(0o700)
+            events = Path(directory, 'events')
+            old = dict(os.environ)
+            os.environ.update(BENCH_TEST_LOG=str(events), BENCH_STATUS_MODE=mode)
+            try:
+                report = bench.service_scenario(str(binary), 'daemon', cold, timing, 2, 0, 5)
+            finally:
+                os.environ.clear()
+                os.environ.update(old)
+            commands = [json.loads(line) for line in events.read_text().splitlines()]
+            self.assertNotIn('private malformed', json.dumps(report))
+            self.assertNotIn('/Users/secret', json.dumps(report))
+            self.assertNotIn(directory, json.dumps(report))
+            self.assertNotIn('safari-browser-bench-', json.dumps(report))
+            hosts = [event for event in commands if event['args'][:2] == ['daemon', '__serve']]
+            calls = [event for event in commands if event['args'][:2] == ['daemon', 'status']]
+            for host in hosts:
+                with self.assertRaises(ProcessLookupError): os.kill(host['pid'], 0)
+            return report, hosts, calls
+
+    def test_daemon_status_requires_valid_owned_host_response_for_all_modes(self):
+        for cold in (False, True):
+            for timing in (False, True):
+                for mode in ('missing', 'invalid', 'not-running', 'mismatched-pid', 'pidfile-missing', 'exit-during'):
+                    with self.subTest(cold=cold, timing=timing, mode=mode):
+                        report, hosts, calls = self.status_fixture(mode, cold, timing)
+                        self.assertEqual(report['statistics']['successful'], 0)
+                        self.assertEqual(report['statistics']['failed'], 2)
+                        self.assertEqual(report['samples'][0]['exitCode'], 0)
+                        self.assertEqual(report['samples'][0]['reason'], 'service_exited' if mode == 'exit-during' else 'daemon_status_invalid')
+                        self.assertEqual(len(hosts), 2 if cold else 1)
+                        self.assertEqual(len(calls), 2 if cold else 1)
+                        if not cold:
+                            self.assertEqual(report['samples'][1]['reason'], 'service_unavailable')
+
+    def test_correct_status_succeeds_with_owned_pid_for_all_modes(self):
+        for cold in (False, True):
+            for timing in (False, True):
+                with self.subTest(cold=cold, timing=timing):
+                    report, hosts, calls = self.status_fixture('valid', cold, timing)
+                    self.assertEqual(report['statistics']['successful'], 2)
+                    self.assertEqual(report['statistics']['failed'], 0)
+                    self.assertEqual(len(hosts), 2 if cold else 1)
+                    self.assertEqual(len(calls), 2)
+
+
+class DaemonHandshakeTests(unittest.TestCase):
+    def daemon_fixture(self, directory, behavior):
+        env = bench.isolated_environment(directory, False)
+        binary = Path(directory, 'handshake-daemon')
+        accepted, received = Path(directory, 'accepted'), Path(directory, 'received')
+        source = '#!/usr/bin/env python3\nimport os,socket,time,pathlib,select,signal\nsignal.signal(signal.SIGPIPE,signal.SIG_DFL)\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(os.path.join(os.environ["TMPDIR"],"safari-browser-"+os.environ["SAFARI_BROWSER_NAME"]+".sock"))\ns.listen(8)\n'
+        source += 'while True:\n c,_=s.accept()\n with open(' + repr(str(accepted)) + ',"a") as f: f.write("accepted\\n")\n'
+        if behavior == 'early-close-fatal':
+            source += ' time.sleep(.05)\n if select.select([c],[],[],0)[0] and c.recv(1,socket.MSG_PEEK)==b"": os.kill(os.getpid(),signal.SIGPIPE)\n c.sendall(' + repr(DAEMON_HANDSHAKE[:-1]) + ')\n time.sleep(.02)\n c.sendall(b"\\n")\n pathlib.Path(' + repr(str(received)) + ').write_bytes(c.recv(1))\n c.close()\n'
+        elif behavior == 'partial-eof':
+            source += ' c.sendall(b"partial private handshake")\n c.close()\n'
+        elif behavior == 'oversize':
+            source += ' try: c.sendall(b"x"*65537)\n except OSError: pass\n c.close()\n'
+        elif behavior == 'timeout':
+            source += ' time.sleep(30)\n'
+        binary.write_text(source)
+        binary.chmod(0o700)
+        return str(binary), env, accepted, received
+
+    def test_readiness_drains_complete_handshake_and_sends_no_request_bytes(self):
+        with tempfile.TemporaryDirectory(prefix='sb-test-', dir='/tmp') as directory:
+            binary, env, accepted, received = self.daemon_fixture(directory, 'early-close-fatal')
+            service = bench.Service(binary, env, 'daemon', 5)
+            try:
+                deadline = time.monotonic() + 5
+                while not received.exists() and bench.observe_exit(service.process) is None and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertIsNone(bench.observe_exit(service.process), 'readiness closed before handshake and killed host')
+                self.assertTrue(received.exists())
+                self.assertEqual(received.read_bytes(), b'')
+                self.assertEqual(accepted.read_text().splitlines(), ['accepted'])
+            finally:
+                service.close()
+
+    def test_connected_handshake_failures_never_reconnect(self):
+        for behavior in ('partial-eof', 'oversize', 'timeout'):
+            with self.subTest(behavior=behavior), tempfile.TemporaryDirectory(prefix='sb-test-', dir='/tmp') as directory:
+                binary, env, accepted, _ = self.daemon_fixture(directory, behavior)
+                service, rejected = None, False
+                try:
+                    try:
+                        service = bench.Service(binary, env, 'daemon', 2)
+                    except (ValueError, TimeoutError):
+                        rejected = True
+                    self.assertTrue(rejected, 'incomplete handshake was accepted as readiness')
+                    self.assertEqual(accepted.read_text().splitlines(), ['accepted'])
+                finally:
+                    if service: service.close()
+
+    def test_connection_permission_error_is_not_retried(self):
+        with tempfile.TemporaryDirectory(prefix='sb-test-', dir='/tmp') as directory:
+            binary, env, _, _ = self.daemon_fixture(directory, 'early-close-fatal')
+            real_socket, attempts = bench.socket.socket, []
+            class DeniedSocket:
+                def __init__(self, *args): self.socket = real_socket(*args)
+                def __enter__(self): return self
+                def __exit__(self, *args): self.socket.close()
+                def settimeout(self, value): self.socket.settimeout(value)
+                def connect(self, path):
+                    attempts.append(1)
+                    raise PermissionError(errno.EACCES, 'private connect error')
+            with mock.patch.object(bench.socket, 'socket', DeniedSocket):
+                try:
+                    service = bench.Service(binary, env, 'daemon', .15)
+                except OSError:
+                    service = None
+                if service: service.close()
+            self.assertEqual(len(attempts), 1)
 
 
 class ServiceRobustnessTests(unittest.TestCase):
@@ -300,7 +450,7 @@ class ServiceRobustnessTests(unittest.TestCase):
             env = bench.isolated_environment(directory, False)
             binary = Path(directory, 'daemon')
             ready, received = Path(directory, 'listening'), Path(directory, 'received')
-            binary.write_text('#!/usr/bin/env python3\nimport os,socket,time,pathlib\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(os.path.join(os.environ["TMPDIR"],"safari-browser-"+os.environ["SAFARI_BROWSER_NAME"]+".sock"))\ntime.sleep(.15)\npathlib.Path(' + repr(str(ready)) + ').touch()\ns.listen(1)\nc,_=s.accept()\npathlib.Path(' + repr(str(received)) + ').write_bytes(c.recv(10))\nc.close()\ntime.sleep(30)\n')
+            binary.write_text('#!/usr/bin/env python3\nimport os,socket,time,pathlib\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(os.path.join(os.environ["TMPDIR"],"safari-browser-"+os.environ["SAFARI_BROWSER_NAME"]+".sock"))\ntime.sleep(.15)\npathlib.Path(' + repr(str(ready)) + ').touch()\ns.listen(1)\nc,_=s.accept()\nc.sendall(' + repr(DAEMON_HANDSHAKE) + ')\npathlib.Path(' + repr(str(received)) + ').write_bytes(c.recv(10))\nc.close()\ntime.sleep(30)\n')
             binary.chmod(0o700)
             service = bench.Service(str(binary), env, 'daemon', 2)
             try:
@@ -317,7 +467,7 @@ class ServiceRobustnessTests(unittest.TestCase):
             env = bench.isolated_environment(directory, False)
             trigger, finished = Path(directory, 'trigger'), Path(directory, 'finished')
             binary = Path(directory, 'daemon')
-            binary.write_text('#!/usr/bin/env python3\nimport os,socket,time,pathlib,sys\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(os.path.join(os.environ["TMPDIR"],"safari-browser-"+os.environ["SAFARI_BROWSER_NAME"]+".sock"))\ns.listen(1)\nwhile not pathlib.Path(' + repr(str(trigger)) + ').exists(): time.sleep(.01)\nsys.stderr.write("private"*100000)\nsys.stderr.flush()\npathlib.Path(' + repr(str(finished)) + ').touch()\ntime.sleep(30)\n')
+            binary.write_text('#!/usr/bin/env python3\nimport os,socket,time,pathlib,sys\ns=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\ns.bind(os.path.join(os.environ["TMPDIR"],"safari-browser-"+os.environ["SAFARI_BROWSER_NAME"]+".sock"))\ns.listen(1)\nc,_=s.accept()\nc.sendall(' + repr(DAEMON_HANDSHAKE) + ')\nassert c.recv(1) == b\"\"\nc.close()\nwhile not pathlib.Path(' + repr(str(trigger)) + ').exists(): time.sleep(.01)\nsys.stderr.write("private"*100000)\nsys.stderr.flush()\npathlib.Path(' + repr(str(finished)) + ').touch()\ntime.sleep(30)\n')
             binary.chmod(0o700)
             service = bench.Service(str(binary), env, 'daemon', 2)
             try:
