@@ -417,14 +417,15 @@ final class NativeUploadScriptTests: XCTestCase {
             .replacingOccurrences(of: "perform action \"AXPress\" of confirmationButton", with: "set dispatchCount to dispatchCount + 1")
             .replacingOccurrences(of: "current application's SBNativeUploadBridge's logConfirmation:confirmationTitle", with: "my recordConfirmation(confirmationTitle)")
         XCTAssertFalse(fragment.contains("tell application"))
-        for (delivery, evidence, clipboardChangesAtRead, expectedDispatch, minimumReads) in [
-            ("PENDING", "MATCH", 0, 1, 1),
-            ("PENDING", "UNKNOWN", 0, 0, 1),
-            ("PENDING", "MISMATCH", 0, 0, 1),
-            ("PENDING", "AMBIGUOUS", 0, 0, 1),
-            ("PENDING", "MATCH", 1, 0, 1),
-            ("PENDING", "MATCH", 2, 0, 2),
-            ("OK", "UNKNOWN", 0, 0, 0)
+        for (delivery, evidence, clipboardChangesAtRead, expectedDispatch, minimumReads, allowLog) in [
+            ("PENDING", "MATCH", 0, 1, 1, true),
+            ("PENDING", "UNKNOWN", 0, 0, 1, true),
+            ("PENDING", "MISMATCH", 0, 0, 1, true),
+            ("PENDING", "AMBIGUOUS", 0, 0, 1, true),
+            ("PENDING", "MATCH", 1, 0, 1, true),
+            ("PENDING", "MATCH", 2, 0, 2, true),
+            ("OK", "UNKNOWN", 0, 0, 0, true),
+            ("PENDING", "MATCH", 0, 0, 2, false)
         ] {
             let isolated = """
             property observedDelivery : "\(delivery)"
@@ -448,6 +449,7 @@ final class NativeUploadScriptTests: XCTestCase {
                 return "\(evidence)"
             end readUploadSelection
             on recordConfirmation(t)
+                return \(allowLog ? "true" : "false")
             end recordConfirmation
             try
                 \(fragment)

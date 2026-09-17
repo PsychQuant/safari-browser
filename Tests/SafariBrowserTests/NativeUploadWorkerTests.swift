@@ -121,6 +121,59 @@ extension NativeUploadWorkerTests {
         XCTAssertNil(NativeUploadWorkerContext.request)
     }
 
+    func testConfirmationAuthorizationRejectsBeforeWriting() {
+        var writes: [String] = []; var clipboardReads = 0
+        func attempt(_ value: NativeUploadRequest?, title: String = "Open", now: Double = 100, count: Int = 42) -> Bool {
+            NativeUploadWorkerContext.authorizeConfirmation(title: title, request: value, now: {now},
+                clipboardCount: { clipboardReads += 1; return count }, write: { writes.append($0) })
+        }
+        XCTAssertFalse(attempt(nil))
+        XCTAssertFalse(attempt(request(), title: "open"))
+        XCTAssertFalse(attempt(request(), title: "UPLOAD"))
+        XCTAssertFalse(attempt(request(), title: "Open\nforged"))
+        XCTAssertFalse(attempt(request(), now: 107))
+        XCTAssertEqual(clipboardReads, 0)
+        XCTAssertFalse(attempt(request(), count: 43))
+        XCTAssertTrue(writes.isEmpty)
+        XCTAssertTrue(attempt(request(), title: "上傳"))
+        XCTAssertEqual(writes, ["confirming file dialog: pressing named button \"上傳\"\n"])
+    }
+
+    func testConfirmationAuthorizationRejectsFailedOrDelayedWriter() {
+        enum WriteFailure: Error { case closed }
+        var writes = 0; var count = 42; var now = 100.0
+        func attempt(_ writer: () throws -> Void) -> Bool {
+            NativeUploadWorkerContext.authorizeConfirmation(title: "Open", request: request(), now: {now}, clipboardCount: {count}) { _ in
+                writes += 1; try writer()
+            }
+        }
+        XCTAssertFalse(attempt({ throw WriteFailure.closed }))
+        XCTAssertEqual(writes, 1)
+        XCTAssertFalse(attempt({ count = 43 }))
+        XCTAssertEqual(writes, 2)
+        count = 42
+        XCTAssertFalse(attempt({ now = 107 }))
+        XCTAssertEqual(writes, 3)
+    }
+
+    @MainActor
+    func testConfirmationBridgeReturnsFalseForAbsentOrExpiredContext() throws {
+        let script = try XCTUnwrap(NSAppleScript(source: """
+        use framework "Foundation"
+        return (current application's SBNativeUploadBridge's logConfirmation:"Open") as boolean
+        """))
+        var error: NSDictionary?
+        let absent = script.executeAndReturnError(&error)
+        XCTAssertNil(error, "A refused confirmation must return false, not a missing value")
+        XCTAssertFalse(absent.booleanValue)
+        var expired = request(); expired.deadlineUptime = 0
+        let result = NativeUploadWorkerContext.$request.withValue(expired) {
+            script.executeAndReturnError(&error)
+        }
+        XCTAssertNil(error)
+        XCTAssertFalse(result.booleanValue)
+    }
+
     func testActualWorkerEntryRejectsUnrelatedParentBeforeUI() async throws {
         var value = request()
         value.deadlineUptime = ProcessInfo.processInfo.systemUptime + 5

@@ -236,7 +236,7 @@ class Runner:
         self.local.stderr = b''
         record, stdout = self.bounded.run_process(argv, self.env, timeout, capture_stdout=True)
         stderr = self.local.stderr.decode('utf-8', errors='replace')
-        record['diagnosticsComplete'] = not record.get('stderrTruncated', True)
+        record['diagnosticsComplete'] = not record.get('stderrTruncated', True) and '…[truncated]' not in stderr
         record['confirmationCount'] = stderr.count('confirming file dialog: pressing named button')
         record['timeoutObserved'] = ('Native upload deadline expired;' in stderr
                                      or re.search(r'Process timed out after [0-9.]+ seconds: native file URL upload', stderr) is not None)

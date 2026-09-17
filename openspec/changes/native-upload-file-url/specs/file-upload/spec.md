@@ -107,7 +107,7 @@ The internal worker SHALL accept a versioned bounded structured upload request, 
 
 ### Requirement: Native upload completion rejects page state forgery
 
-After initialization with genuine browser intrinsics, direct changes to the page-visible transaction object, replacement of its global binding, or calls to exposed methods SHALL NOT produce an accepted completion receipt before a trusted matching delivery. The receipt SHALL be a fresh secret distinct from the discoverable state key, retained in a private closure and compared outside the page realm. A wrong trusted file SHALL NOT release it. Query scripts and exposed function source SHALL NOT disclose it. Cleanup SHALL remove temporary state and listeners. This requirement SHALL NOT be interpreted as isolated-world execution against a page that replaced browser intrinsics before initialization.
+After initialization with genuine browser intrinsics, direct changes to the page-visible transaction object, replacement of its global binding, or calls to exposed methods SHALL NOT produce an accepted completion receipt before a trusted matching delivery. The receipt SHALL be a fresh secret distinct from the discoverable state key, retained in a private closure and compared outside the page realm. Metadata observed through the captured native getters that differs from the expected metadata SHALL NOT release it. The receipt SHALL identify this observer's result, not an immutable event payload or byte identity. Earlier page capture listeners can replace the genuine FileList before observation; this case is outside the receipt's integrity guarantee. Query scripts and exposed function source SHALL NOT disclose it. Cleanup SHALL remove temporary state and listeners. This requirement SHALL NOT be interpreted as isolated-world execution against a page that replaced browser intrinsics before initialization.
 
 #### Scenario: Forged state followed by cancellation
 - **WHEN** page code changes or replaces the exposed state without a trusted matching delivery and the chooser is cancelled
@@ -118,5 +118,10 @@ After initialization with genuine browser intrinsics, direct changes to the page
 - **THEN** its read function SHALL return the private receipt and the native flow SHALL accept only its exact match
 
 #### Scenario: Wrong file or exposed method inspection
-- **WHEN** a wrong-file event occurs or page code inspects exposed function source
+- **WHEN** the observer reads mismatched file metadata or page code inspects exposed function source
 - **THEN** the private receipt SHALL remain unavailable
+
+#### Scenario: Earlier capture listener replaces the genuine FileList
+- **WHEN** a page capture listener registered earlier replaces the genuine FileList before the upload observer runs
+- **THEN** the completion receipt SHALL represent the metadata visible to that observer and SHALL NOT be described as proof of the file bytes originally supplied by the browser
+- **AND** native selected-path authorization SHALL remain independent of page receipt data

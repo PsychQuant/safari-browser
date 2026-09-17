@@ -1,3 +1,5 @@
+import AppKit
+import Darwin
 import Foundation
 import XCTest
 @testable import SafariBrowser
@@ -17,6 +19,7 @@ final class NativeUploadSelectionProbeTests: XCTestCase {
         var roots = [0]
         var reads: [(Int, String)] = []
         var canonical: [URL: String] = [:]
+        var useRealFilesystem = false
         func foreground() throws -> Bool { active }
         func windows() throws -> [Int] { roots }
         func windowID(_ node: Int) throws -> Int { nodes[node]!.id }
@@ -28,7 +31,10 @@ final class NativeUploadSelectionProbeTests: XCTestCase {
         func elements(_ node: Int, _ attribute: String, limit: Int) throws -> [Int] {
             reads.append((node, attribute)); return nodes[node]!.edges[attribute] ?? []
         }
-        func canonicalRegularFile(_ url: URL) throws -> String { canonical[url] ?? url.path }
+        func canonicalRegularFile(_ url: URL) throws -> String {
+            if useRealFilesystem { return try NativeUploadSelectionProbe.canonicalRegularFile(url) }
+            return canonical[url] ?? url.path
+        }
     }
     let path = "/tmp/.隱藏 空白's/檔案.txt"
     func fixture(_ mode: String) -> Provider {
@@ -132,7 +138,7 @@ final class NativeUploadSelectionProbeTests: XCTestCase {
         let reference = unsafeBitCast(referenceCF, to: NSURL.self)
         XCTAssertTrue(reference.isFileReferenceURL())
         let resolved = try NativeUploadSelectionProbe.canonicalRegularFile(reference)
-        XCTAssertEqual(resolved, file.resolvingSymlinksInPath().standardizedFileURL.path)
+        XCTAssertEqual(try filesystemRealPath(URL(fileURLWithPath: resolved)), try filesystemRealPath(file))
         XCTAssertThrowsError(try NativeUploadSelectionProbe.canonicalRegularFile(directory))
         XCTAssertThrowsError(try NativeUploadSelectionProbe.canonicalRegularFile(URL(string: "https://example.invalid/file")!))
         XCTAssertThrowsError(try NativeUploadSelectionProbe.canonicalRegularFile(directory.appendingPathComponent("missing")))
@@ -160,6 +166,94 @@ final class NativeUploadSelectionProbeTests: XCTestCase {
         p.nodes[5]!.url = selectedReference
         p.canonical[selectedReference] = path
         XCTAssertEqual(verdict(p), "MATCH")
+    }
+
+    private func filesystemRealPath(_ url: URL) throws -> String {
+        let pointer = try XCTUnwrap(url.path.withCString { Darwin.realpath($0, nil) })
+        defer { free(pointer) }
+        return String(cString: pointer)
+    }
+
+    @MainActor
+    func testRealTemporaryAliasesAgreeWithParentCaptureAndFilesystemOracle() async throws {
+        let roots = [URL(fileURLWithPath: "/tmp"), URL(fileURLWithPath: "/private/tmp"),
+                     URL(fileURLWithPath: "/var/tmp"), URL(fileURLWithPath: "/private/var/tmp"),
+                     FileManager.default.temporaryDirectory,
+                     URL(fileURLWithPath: try filesystemRealPath(FileManager.default.temporaryDirectory))]
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        for root in roots {
+            let name = "native-path-oracle-" + UUID().uuidString
+            let directory = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let file = directory.appendingPathComponent(".隱藏 空白'檔案.txt")
+            try Data("owned path oracle".utf8).write(to: file)
+            let oracle = try filesystemRealPath(file)
+            if root.path == "/tmp" || root.path == "/private/tmp" {
+                XCTAssertEqual(oracle, "/private/tmp/" + name + "/.隱藏 空白'檔案.txt")
+            } else if root.path == "/var/tmp" || root.path == "/private/var/tmp" {
+                XCTAssertEqual(oracle, "/private/var/tmp/" + name + "/.隱藏 空白'檔案.txt")
+            } else {
+                XCTAssertTrue(oracle.hasPrefix("/private/var/"), oracle)
+            }
+            var captured: String?
+            try await UploadCommand.performNativeUpload(fileURL: file, selector: "#owned", window: nil,
+                timeout: 10, pasteboard: board, windowID: 42, warn: { _ in }, runRequest: { request in
+                    captured = request.path
+                })
+            let parentPath = try XCTUnwrap(captured)
+            // Foundation intentionally presents the /tmp and /var aliases on
+            // this host. POSIX realpath is the independent identity oracle;
+            // requiring its spelling from Foundation would invent a failure.
+            XCTAssertEqual(try filesystemRealPath(URL(fileURLWithPath: parentPath)), oracle)
+            let selectedPath = try NativeUploadSelectionProbe.canonicalRegularFile(file)
+            XCTAssertEqual(selectedPath, parentPath, "actual parent/probe spelling for " + root.path)
+            XCTAssertEqual(try filesystemRealPath(URL(fileURLWithPath: selectedPath)), oracle)
+            let referenceCF = try XCTUnwrap(CFURLCreateFileReferenceURL(kCFAllocatorDefault, file as CFURL, nil))
+            let reference = unsafeBitCast(referenceCF, to: NSURL.self)
+            XCTAssertTrue(reference.isFileReferenceURL())
+            XCTAssertEqual(try NativeUploadSelectionProbe.canonicalRegularFile(reference), parentPath)
+            XCTAssertEqual(try NativeUploadSelectionProbe.canonicalRegularFile(URL(fileURLWithPath: parentPath)), parentPath,
+                           "captured path must remain stable when re-read")
+            let provider = fixture("ListView")
+            provider.useRealFilesystem = true
+            provider.nodes[5]!.url = file
+            XCTAssertEqual(NativeUploadSelectionProbe.inspect(provider: provider, windowID: 42,
+                expectedPath: parentPath, deadline: .now() + 1), "MATCH", root.path)
+        }
+    }
+
+    @MainActor
+    func testRealCapturedFileReplacedBySymlinkRemainsRefused() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("native-path-swap-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let original = directory.appendingPathComponent("captured.txt")
+        let other = directory.appendingPathComponent("different.txt")
+        try Data("original".utf8).write(to: original)
+        try Data("different".utf8).write(to: other)
+        let initialOracle = try filesystemRealPath(original)
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        var capturedPath: String?
+        try await UploadCommand.performNativeUpload(fileURL: original, selector: "#owned", window: nil,
+            timeout: 10, pasteboard: board, windowID: 42, warn: { _ in }, runRequest: { request in
+                capturedPath = request.path
+            })
+        let captured = try XCTUnwrap(capturedPath)
+        XCTAssertEqual(try filesystemRealPath(URL(fileURLWithPath: captured)), initialOracle)
+        let provider = fixture("ListView")
+        provider.useRealFilesystem = true
+        provider.nodes[5]!.url = original
+        XCTAssertEqual(NativeUploadSelectionProbe.inspect(provider: provider, windowID: 42,
+            expectedPath: captured, deadline: .now() + 1), "MATCH")
+        try FileManager.default.removeItem(at: original)
+        try FileManager.default.createSymbolicLink(at: original, withDestinationURL: other)
+        XCTAssertNotEqual(try filesystemRealPath(original), initialOracle)
+        provider.nodes[5]!.url = other
+        XCTAssertNotEqual(NativeUploadSelectionProbe.inspect(provider: provider, windowID: 42,
+            expectedPath: captured, deadline: .now() + 1), "MATCH")
     }
 
 }

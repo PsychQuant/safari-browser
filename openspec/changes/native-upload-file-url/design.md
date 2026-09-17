@@ -89,3 +89,11 @@ R1 review 的可重現缺陷：可探索的 window state 暴露 selection 與 li
 同一 localhost fixture 驗取消、截止、未知選取不送確認，並核對自有視窗清理／clipboard；比較受限 System Events 選取查詢與直接 AX 的完整路徑結果及耗時，不將 timeout 算成功或將無檢查舊流程當等效基準。完整上傳的四筆 R1 實測為 13.204–13.749 秒；每次兩筆 AX wait 合計約 75–103 ms，尚未宣稱整體加速。
 
 正常 dispose 會清除自己的計時器、移除 listener 並刪除 global；若 global 被頁面整個替換，原閉包另以初始化時捕捉的 setTimeout/clearTimeout 安排 timeout+3 秒的 dispose 後盾。瀏覽器背景節流或頁面自行取消計時器不在硬截止保證內；這項 best-effort cleanup 不派送任何原生 UI 動作。
+
+## R2 review 的觀察契約校正
+
+真實 WebKit 重現：delegate 交付 13-byte file，較早註冊的 window capture listener 使用真正 DataTransfer 將 input.files 改成 14-byte file，原生 getters 觀察到 14 bytes，receipt 回傳成功。原先新增的「wrong trusted file 一定不釋出 receipt」措辭過度承諾；這不是 getter 被覆寫，而是合法 DOM setter 改了真正 FileList。
+
+裁定：receipt 保證私有 observer 結果，拒絕無可信事件時直接修改 state/global/listener 製造的假成功；它不是瀏覽器不可變的交付紀錄或內容雜湊證明。原生 AX 的確認前路徑授權維持，不採 page receipt 授權新的確認。這次不引入瀏覽器 extension／isolated world。保留原始拒絕假設的 RED 紀錄，將 repository 測試命名為 testReceiptObservesFileListAfterEarlierCaptureListener，明確記錄已知限制；不得把該測試列為「敵意頁面錯檔攻擊已修復」。既有真正錯誤 metadata、property override 與無可信事件的 state 偽造拒絕測試均維持。
+
+R2 另項裁定：真實 /tmp、/private/tmp、/var/tmp、/private/var/tmp、系統暫存與 realpath 六種入口，parent request.path、probe canonical helper 與 CF file-reference 的 Foundation 字串全部一致，且獨立 Darwin realpath 指向正確檔案；實體檔改成 symlink 仍拒絕。所稱 /private 必然不一致被實測反駁，runtime 不為此變更。確認公告改回傳 Bool；deadline、clipboard、標題或寫入失敗一律 false，AppleScript 只有 true 才 AXPress，標題比對考慮 case/diacriticals。負向 harness 同時拒絕程序 capture 截斷及 TerminalText 的 …[truncated]，零公告才有可用的零確認證據；已有公告不代表一定派送，仍是保守失敗。

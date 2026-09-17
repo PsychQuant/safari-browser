@@ -37,6 +37,9 @@ enum NativeUploadScript {
                    el.webkitdirectory || el.hasAttribute('webkitdirectory') || el!==\(selector.resolveRefJS)) return 'OWNER_CHANGED';
                 return 'OK';
             }
+            // These are the native FileList values visible when this listener
+            // runs. Earlier page listeners can replace that list; a trusted DOM
+            // event does not carry an immutable file snapshot.
             function validate(){
                 var list=call(files,el);
                 if(!list || call(length,list)!==1) return 'MISMATCH_COUNT';
@@ -415,9 +418,11 @@ enum NativeUploadScript {
                     end repeat
                     set confirmationButtons to {}
                     repeat with candidateButton in fileButtons
-                        if (title of candidateButton) is in {"Open", "Upload", "打開", "開啟", "上傳"} then
-                            set end of confirmationButtons to contents of candidateButton
-                        end if
+                        considering case and diacriticals
+                            if (title of candidateButton) is in {"Open", "Upload", "打開", "開啟", "上傳"} then
+                                set end of confirmationButtons to contents of candidateButton
+                            end if
+                        end considering
                     end repeat
                     if (count confirmationButtons) is not 1 then error "A unique named Open/Upload button is unavailable; no file confirmation was sent"
                     set confirmationButton to item 1 of confirmationButtons
@@ -428,7 +433,7 @@ enum NativeUploadScript {
                     if my readUploadSelection() is not "MATCH" then error "Native file selection changed before confirmation; no confirmation was sent"
                     my checkUploadDeadline()
                     my checkUploadClipboard()
-                    current application's SBNativeUploadBridge's logConfirmation:confirmationTitle
+                    if not ((current application's SBNativeUploadBridge's logConfirmation:confirmationTitle) as boolean) then error "Native upload confirmation guard refused; no confirmation was sent"
                     perform action "AXPress" of confirmationButton
                 end if
             end tell

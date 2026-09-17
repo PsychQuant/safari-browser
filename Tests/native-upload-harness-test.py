@@ -2,6 +2,7 @@
 """Non-GUI tests for native-upload-live.py; no Safari or pasteboard access."""
 import importlib.util
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 import argparse
@@ -89,6 +90,17 @@ class OwnershipTests(unittest.TestCase):
             self.assertEqual(source.count('perform action "AXPress" of cancelButton'), 1)
             for forbidden in ('keystroke', 'key code', 'AXConfirm', 'AXPrint', 'default button'):
                 self.assertNotIn(forbidden, source)
+    def testRenderedTruncationCannotProveZeroConfirmations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = fixture.Runner(Path(directory))
+            def result(*args, **kwargs):
+                runner.local.stderr = 'file dialog trace: omitted…[truncated]\n'.encode()
+                return {'status': 'error', 'exitCode': 1, 'stderrTruncated': False}, b''
+            with patch.object(runner.bounded, 'run_process', side_effect=result):
+                record, _ = runner.run(['/not-executed'], 1)
+            self.assertFalse(record['diagnosticsComplete'])
+            self.assertEqual(record['confirmationCount'], 0)
+
     def testFingerprintReadsWithoutPasteboardWrites(self):
         self.assertIn('board.changeCount == generation', fixture.FINGERPRINT_SWIFT)
         self.assertIn('SHA256()', fixture.FINGERPRINT_SWIFT)

@@ -97,6 +97,18 @@ enum NativeUploadWorkerContext {
         return result
     }
 
+    /// Returning true authorizes the script to continue to its final guarded
+    /// AXPress. A diagnostic alone is not evidence that any press occurred.
+    static func authorizeConfirmation(title: String, request: NativeUploadRequest?, now: () -> Double,
+                                      clipboardCount: () -> Int, write: (String) throws -> Void) -> Bool {
+        guard let request, let line = confirmationLine(title),
+              now() < request.deadlineUptime,
+              clipboardCount() == request.clipboardChangeCount else { return false }
+        do { try write(line) } catch { return false }
+        // Writing stderr can block. Fail closed if ownership expired meanwhile.
+        return now() < request.deadlineUptime && clipboardCount() == request.clipboardChangeCount
+    }
+
     static func confirmationLine(_ title: String) -> String? {
         guard ["Open", "Upload", "打開", "開啟", "上傳"].contains(title) else { return nil }
         return "confirming file dialog: pressing named button \"\(title)\"\n"
@@ -115,13 +127,12 @@ final class SBNativeUploadBridge: NSObject {
     }
 
     @objc(logConfirmation:)
-    static func logConfirmation(_ title: String) {
+    static func logConfirmation(_ title: String) -> Bool {
         MainActor.preconditionIsolated()
-        guard let request = NativeUploadWorkerContext.request,
-              ProcessInfo.processInfo.systemUptime < request.deadlineUptime,
-              NSPasteboard.general.changeCount == request.clipboardChangeCount,
-              let line = NativeUploadWorkerContext.confirmationLine(title) else { return }
-        FileHandle.standardError.write(Data(line.utf8))
+        return NativeUploadWorkerContext.authorizeConfirmation(title: title, request: NativeUploadWorkerContext.request,
+            now: { ProcessInfo.processInfo.systemUptime },
+            clipboardCount: { NSPasteboard.general.changeCount },
+            write: { try FileHandle.standardError.write(contentsOf: Data($0.utf8)) })
     }
 }
 

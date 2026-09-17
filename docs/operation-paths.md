@@ -367,16 +367,29 @@ same input, and matching selected-file metadata. Cancelling a chooser with an
 already matching old File is not a new successful upload; reselecting the same
 file without a fresh change event is an explicit unverified outcome.
 
-**CLI acceptance remains in progress:** the integrated CLI delivered the
-correct owned filename/content, but its final metadata check returned a
-mismatch. A subsequent no-window WKWebView test reproduced MISMATCH_TIME using
-real File objects: millisecond timestamps are exposed as whole seconds,
-truncated toward zero on the measured installed WebKit. The validator now
-accepts that exact representation (or a matching millisecond value), not an
-arbitrary one-second range. Positive/negative times and second boundaries are
-covered by runtime and JavaScript tests. This isolates an actual validator
-compatibility defect, but does not replace the pending Safari CLI retest or
-its prepared size/mtime capture. This is not yet a verified production delivery.
+**CLI acceptance remains in progress:** commit `a3f0383` completed four owned
+CLI uploads: column view, an 11 MiB file with an input-clearing handler, list
+view with input replacement, and icon view with a same-document URL update.
+All four verified filename, size, SHA-256, trusted event, clipboard restoration
+and owned-window cleanup. Their child traces include two native selected-path
+checks followed by named confirmation. These results do not accept later
+completion-receipt changes or replace cancellation/deadline verification.
+
+The current completion observer holds a private one-time receipt and captured
+native getters. Its later query does not contain the receipt; native code
+accepts only an exact match. Direct page-state mutation or a fake `OK` cannot
+manufacture it without the observer recording matching metadata on a trusted
+event. This is not immutable browser-delivery evidence: an earlier capture
+listener can replace the genuine FileList before this observer runs. Native
+selected-path authorization remains independent. Prepatched page intrinsics
+are also outside isolated-world protection. Normal disposal removes the state
+and listeners; a captured timer provides best-effort cleanup if the page
+replaces the exposed state.
+
+Real WebKit tests confirm signed millisecond and exact whole-second timestamp
+representations, page consumption after delivery, captured getters, and the
+earlier-listener observation boundary. Current-receipt GUI acceptance and a
+comparable query benchmark remain pending. No overall speedup is claimed.
 
 Historical candidates remain useful negative evidence:
 

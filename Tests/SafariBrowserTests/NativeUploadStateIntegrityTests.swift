@@ -103,7 +103,7 @@ final class NativeUploadStateIntegrityTests: XCTestCase {
         XCTAssertEqual(context.evaluateScript("typeof window[stateKeys[0]].listener")?.toString(), "undefined")
     }
 
-    func testWrongTrustedFileNeverReleasesReceiptEvenAfterOverwrite() throws {
+    func testMismatchedObservedMetadataNeverReleasesReceiptEvenAfterOverwrite() throws {
         let context = try context()
         context.evaluateScript("input.files=[{name:'wrong.txt',size:17,lastModified:123456}];listener({target:input,isTrusted:true});")
         XCTAssertEqual(completion(context), "MISMATCH_NAME")

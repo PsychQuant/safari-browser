@@ -20,8 +20,13 @@
 - [x] [P] 2.6 實作固定請求的內部上傳 worker，履行 Native upload worker accepts only a bound request；以無 GUI 測試驗 schema／大小／父程序／image／deadline 拒絕及主執行緒橋接與明確診斷。
 - [ ] 2.7 完成原生證據與確認整合，履行 Native upload proves the selected path before confirmation 與 Native upload worker accepts only a bound request；以 interpreter／CLI 測試驗未知、變更及已交付不確認、錯誤 sentinel、逾時、MCP owned group 與 trace 相容，並以自有 GUI／相同 fixture 基準驗 IPC 與等待。
 
-- [x] [P] 2.8 私有完成憑證：履行 Native upload completion rejects page state forgery，以真實 RED 重現 selection 修改、global 替換與外露 listener 偽造；閉包私有 metadata 驗證及原生 receipt 完整比對後，測試錯檔不釋出 token、裸 OK 不接受、toString 不洩露 token、cleanup 仍可刪除狀態。
+- [x] [P] 2.8 私有完成憑證：履行 Native upload completion rejects page state forgery，以真實 RED 重現 selection 修改、global 替換與外露 listener 偽造；閉包私有 metadata 驗證及原生 receipt 完整比對後，測試 observer 所見 metadata 不符時不釋出 token、裸 OK 不接受、toString 不洩露 token、cleanup 仍可刪除狀態。
 - [x] [P] 2.9 自有負向與效能驗證：準備 Tests/native-upload-live.py 的 owned fixture runner（success/cancel/timeout 與分段 trace），以 11 項無 GUI harness 測試確認失敗／未知／未觀察面板不得計入成功，並檢查腳本與唯讀剪貼簿 helper 編譯；實際 GUI 與等效 System Events／AX 比較留在 3.1。
+
+- [x] 2.10 釐清 private receipt 的事件觀察範圍：以真實 WebKit 重現較早 capture listener 改寫 FileList；區分可防的完成 state 偽造與頁面在觀察前修改檔案資料，保留既有錯誤 metadata 拒絕測試，修正規格及文件過度承諾。
+
+- [x] [P] 2.11 以實際暫存路徑驗證 parent/probe 正規化契約，證實或反證 R2 的 /private 前綴拒絕疑慮，保留 symlink 置換拒絕測試。
+- [x] [P] 2.12 確認公告必須回傳成功才可 AXPress；以 AppleScript adapter 驗 logger 拒絕時零確認、Swift bridge 及純函式測試驗 deadline／clipboard／標題拒絕，統一大小寫語意。
 
 ## 3. 實際驗證與交付
 

@@ -69,6 +69,41 @@ final class NativeUploadWebKitTests: XCTestCase {
         XCTAssertNotEqual(result["verdict"] as? String, probe.receiptToken)
     }
 
+    /// Characterizes a measured boundary, not a fixed vulnerability: a trusted
+    /// DOM event has no immutable FileList payload. An earlier page listener can
+    /// replace the real list before our observer. Native AX path authorization is
+    /// independent; the receipt only binds metadata visible to this observer.
+    func testReceiptObservesFileListAfterEarlierCaptureListener() async throws {
+        NSApplication.shared.setActivationPolicy(.prohibited)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(".upload-prior-capture-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("owned.txt")
+        try Data("owned fixture".utf8).write(to: file) // Delegate really delivers 13 bytes.
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        let date = try XCTUnwrap(attributes[.modificationDate] as? Date)
+        let milliseconds = try UploadCommand.nativeModificationTimeMilliseconds(date)
+        let probe = UploadWebKitMetadataProbe(file: file, size: 14, milliseconds: milliseconds, beforeInitialization: """
+        window.addEventListener('input', function(event){
+          if(event.target.id!=='fixture' || !event.isTrusted) return;
+          const original=event.target.files[0];
+          const transfer=new DataTransfer();
+          transfer.items.add(new File([new Uint8Array(14)],'owned.txt',{lastModified:\(milliseconds)}));
+          event.target.files=transfer.files;
+          window.fixturePriorCapture={nativeSize:original.size,replacementSize:event.target.files[0].size};
+        }, true);
+        """)
+        let text = try await probe.run()
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        let prior = try XCTUnwrap(result["priorCapture"] as? [String: Any])
+        XCTAssertEqual((prior["nativeSize"] as? NSNumber)?.intValue, 13, text)
+        XCTAssertEqual((prior["replacementSize"] as? NSNumber)?.intValue, 14, text)
+        XCTAssertEqual(result["trusted"] as? Bool, true, text)
+        XCTAssertEqual(result["verdict"] as? String, probe.receiptToken, text)
+        // This must never be presented as proof of the delegate-delivered bytes.
+        XCTAssertNotEqual(prior["nativeSize"] as? Int, prior["replacementSize"] as? Int)
+    }
+
 }
 
 @MainActor
@@ -79,14 +114,16 @@ private final class UploadWebKitMetadataProbe: NSObject, WKUIDelegate, WKNavigat
     private let afterSelection: String
     private let pageEvent: String
     private let afterInitialization: String
+    private let beforeInitialization: String
     private let nonce = UUID().uuidString
     let receiptToken = "SB_UPLOAD_RECEIPT:" + UUID().uuidString
     private var webView: WKWebView?
     private var continuation: CheckedContinuation<String, Error>?
 
-    init(file: URL, size: Int64, milliseconds: Int64, afterSelection: String = "", pageEvent: String = "change", afterInitialization: String = "") {
+    init(file: URL, size: Int64, milliseconds: Int64, afterSelection: String = "", pageEvent: String = "change", afterInitialization: String = "", beforeInitialization: String = "") {
         self.file = file; self.size = size; self.milliseconds = milliseconds
         self.afterSelection = afterSelection; self.pageEvent = pageEvent; self.afterInitialization = afterInitialization
+        self.beforeInitialization = beforeInitialization
     }
 
     func run() async throws -> String {
@@ -109,13 +146,15 @@ private final class UploadWebKitMetadataProbe: NSObject, WKUIDelegate, WKNavigat
         let initialize = NativeUploadScript.initializeJS(selector: "#fixture", nonce: nonce, fileName: file.lastPathComponent, fileSize: size, modificationTimeMilliseconds: milliseconds, receiptToken: receiptToken)
         let validate = NativeUploadScript.completionJS(selector: "#fixture", nonce: nonce)
         let script = """
+        \(beforeInitialization)
         document.getElementById('fixture').addEventListener('\(pageEvent)', event => { \(afterSelection) });
         if (\(initialize) !== 'OK') throw new Error('initialization failed');
         \(afterInitialization)
         document.addEventListener('\(pageEvent)', event => {
           const f=event.target.files[0];
           setTimeout(() => window.webkit.messageHandlers.result.postMessage(JSON.stringify({
-            verdict:\(validate), trusted:event.isTrusted, name:f.name, size:f.size, lastModified:f.lastModified
+            verdict:\(validate), trusted:event.isTrusted, name:f.name, size:f.size, lastModified:f.lastModified,
+            priorCapture:window.fixturePriorCapture
           })), 0);
         }, true);
         \(NativeUploadScript.openJS(selector: "#fixture", nonce: nonce))

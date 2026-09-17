@@ -128,8 +128,8 @@ struct UploadCommand: AsyncParsableCommand {
                     where message.hasSuffix(": execution error: SB_UPLOAD_INPUT_NOT_FOUND (-2700)"):
                     throw SafariBrowserError.elementNotFound(selector)
                 case .processTimedOut(_, let seconds):
-                    // The runner carries the entire generated script in command;
-                    // it is diagnostic context, not an executed error marker.
+                    // The runner carries the encoded transaction in command;
+                    // report the operation name without exposing that payload.
                     throw SafariBrowserError.processTimedOut(command: "native file URL upload", seconds: seconds)
                 default: break
                 }
