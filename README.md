@@ -503,7 +503,7 @@ safari-browser upload --js <sel> <file>  # JS DataTransfer injection (no permiss
 
 `upload` uses native file dialog by default when Accessibility permission is granted (fast, any file size). Without permission, it falls back to JS DataTransfer automatically. Use `--js` to force JS mode. `pdf` always requires `--allow-hid` (no JS alternative).
 
-Native upload uses a file URL clipboard item and named AX Paste/Upload actions, without keyboard simulation or Go-to-Folder. It temporarily changes Safari focus and the clipboard; avoid interacting with that chooser or copying until it completes. Readable clipboard items/types are saved and restored on normal completion, failure or timeout while still owned; newer clipboard contents are preserved. Overlapping native uploads are refused. Forced termination and races with unrelated clipboard writers cannot guarantee restoration. Before a named upload confirmation, bounded native AX reads must identify exactly the requested file in the original window and chooser. Column, list and icon views are recognized; missing, changed or ambiguous selection evidence causes refusal. The command then verifies a fresh selection on the original input, not merely a button acknowledgement; cancelling or reselecting an unchanged file does not count as a new upload.
+Native upload uses a file URL clipboard item and named AX Paste/Upload actions, without keyboard simulation or Go-to-Folder. It temporarily changes Safari focus and the clipboard; avoid interacting with that chooser or copying until it completes. Readable clipboard items/types are saved and restored on normal completion, failure or timeout while still owned; newer clipboard contents are preserved. Overlapping native uploads are refused. Forced termination and races with unrelated clipboard writers cannot guarantee restoration. Before a named upload confirmation, bounded native AX reads must identify exactly the requested file in the original window and chooser. Column, list and icon views are recognized; missing, changed or ambiguous selection evidence causes refusal. The command then verifies a fresh selection on the original input using a private completion receipt that is compared outside the page, rather than accepting a page-provided `OK`; cancelling or reselecting an unchanged file does not count as a new upload. Browser methods captured at initialization protect subsequent state checks; JavaScript still executes in the page realm, so this is not isolated-world protection against browser methods replaced before initialization.
 
 Native upload verifies a snapshot captured when the original input receives its
 first trusted input or change event. A page can then clear or replace that input or
@@ -1233,3 +1233,11 @@ process is still waiting, checks the query latency and one handler execution,
 then performs guarded recovery and owned-window cleanup. Exit 77 means no GUI
 acceptance was performed. The query itself never activates or dismisses; fixture
 setup and cleanup perform those explicit actions.
+
+Native upload acceptance uses owned localhost fixtures and requires an explicit quiet Safari session:
+
+```bash
+python3 Tests/native-upload-live.py --live-gui --binary .build/debug/safari-browser
+```
+
+Without `--live-gui`, the harness exits 77 without opening Safari or reading the clipboard. It checks success, cancellation and a short deadline; a chooser that was never observed is a skipped acceptance case. Unknown cancellation or window cleanup is retained for inspection and is never retried automatically. Pure harness checks are part of `make test-all`.

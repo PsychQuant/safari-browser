@@ -6,88 +6,105 @@ import Foundation
 enum NativeUploadScript {
     private static func stateKey(_ nonce: String) -> String { "__sbNativeUpload_" + nonce }
 
-    static func initializeJS(selector: String, nonce: String) -> String {
+    /// The receipt literal occurs only in this initializer's private scope. No
+    /// later query embeds it and exposed function source cannot reveal it.
+    static func initializeJS(selector: String, nonce: String, fileName: String, fileSize: Int64,
+                             modificationTimeMilliseconds: Int64, receiptToken: String, lifetimeMilliseconds: Double = 30_000) -> String {
         """
         (function(){
             var key='\(stateKey(nonce).escapedForJS)';
-            if (Object.prototype.hasOwnProperty.call(window,key)) return 'STATE_COLLISION';
+            var call=Function.prototype.call.bind(Function.prototype.call);
+            var own=Object.prototype.hasOwnProperty, descriptor=Object.getOwnPropertyDescriptor;
+            var define=Object.defineProperty, freeze=Object.freeze;
+            if(call(own,window,key)) return 'STATE_COLLISION';
             var el=\(selector.resolveRefJS);
-            if (!el) return 'NOT_FOUND';
-            if (el.tagName!=='INPUT' || el.type!=='file' || el.webkitdirectory || el.hasAttribute('webkitdirectory') || el.disabled || !el.isConnected || el.ownerDocument!==document) return 'INVALID_INPUT';
-            var state={nonce:'\(nonce.escapedForJS)', doc:document, input:el, url:window.location.href, selection:null, rejected:false};
-            state.listener=function(event){
-                if(event.target!==el || event.isTrusted!==true || state.selection!==null || state.rejected) return;
-                var owner=(function(){\(ownerPrelude(selector: selector, nonce: nonce))return 'OK';})();
-                if(owner!=='OK'){state.rejected=true;return;}
-                state.selection=Array.from(el.files, function(f){return {name:f.name,size:f.size,lastModified:f.lastModified};});
-            };
-            Object.defineProperty(window,key,{value:state,configurable:true});
-            window.addEventListener('input',state.listener,true);
-            window.addEventListener('change',state.listener,true);
+            if(!el) return 'NOT_FOUND';
+            if(el.tagName!=='INPUT' || el.type!=='file' || el.webkitdirectory || el.hasAttribute('webkitdirectory') || el.disabled || !el.isConnected || el.ownerDocument!==document) return 'INVALID_INPUT';
+            var receipt='\(receiptToken.escapedForJS)', expectedName='\(fileName.escapedForJS)';
+            var expectedSize=\(fileSize), expectedModified=\(modificationTimeMilliseconds);
+            var doc=document, pageURL=window.location.href, status=null, disposed=false, timer=null, api;
+            var schedule=window.setTimeout, cancel=window.clearTimeout;
+            var add=EventTarget.prototype.addEventListener, remove=EventTarget.prototype.removeEventListener;
+            var target=descriptor(Event.prototype,'target').get;
+            var files=descriptor(HTMLInputElement.prototype,'files').get;
+            var length=descriptor(FileList.prototype,'length').get, item=FileList.prototype.item;
+            var name=descriptor(File.prototype,'name').get, modified=descriptor(File.prototype,'lastModified').get;
+            var size=descriptor(Blob.prototype,'size').get;
+            var normalize=String.prototype.normalize, finite=Number.isFinite, abs=Math.abs, trunc=Math.trunc;
+            function owner(){
+                if(disposed || doc!==document || pageURL!==window.location.href || !el ||
+                   !el.isConnected || el.disabled || el.ownerDocument!==document || el.type!=='file' ||
+                   el.webkitdirectory || el.hasAttribute('webkitdirectory') || el!==\(selector.resolveRefJS)) return 'OWNER_CHANGED';
+                return 'OK';
+            }
+            function validate(){
+                var list=call(files,el);
+                if(!list || call(length,list)!==1) return 'MISMATCH_COUNT';
+                var f=call(item,list,0), n=call(name,f), s=call(size,f), m=call(modified,f);
+                if(typeof n!=='string' || call(normalize,n,'NFC')!==call(normalize,expectedName,'NFC')) return 'MISMATCH_NAME';
+                if(s!==expectedSize) return 'MISMATCH_SIZE';
+                // WebKit can expose seconds truncated toward zero; accept only
+                // that representation or the original millisecond value.
+                if(!finite(m) || (abs(m-expectedModified)>1 && m!==trunc(expectedModified/1000)*1000)) return 'MISMATCH_TIME';
+                return 'MATCH';
+            }
+            function listener(event){
+                if(disposed || status!==null) return;
+                try {
+                    if(call(target,event)!==el || event.isTrusted!==true) return;
+                    if(owner()!=='OK'){status='OWNER_CHANGED';return;}
+                    status=validate();
+                } catch (_) {status='OWNER_CHANGED';}
+            }
+            function read(){
+                if(disposed) return 'OWNER_CHANGED';
+                if(status==='MATCH') return receipt;
+                if(status!==null) return status;
+                return owner()==='OK' ? 'PENDING' : 'OWNER_CHANGED';
+            }
+            function open(){
+                var result=owner();
+                if(result!=='OK') return result;
+                el.click();
+                return 'OK';
+            }
+            function dispose(){
+                if(disposed) return 'SKIPPED';
+                disposed=true;
+                if(timer!==null){call(cancel,window,timer);timer=null;}
+                call(remove,window,'input',listener,true);
+                call(remove,window,'change',listener,true);
+                el=null; doc=null; receipt=null; status=null; expectedName=null;
+                if(window[key]===api) delete window[key];
+                return 'OK';
+            }
+            api=freeze({read:read,owner:owner,open:open,dispose:dispose});
+            define(window,key,{value:api,configurable:true});
+            call(add,window,'input',listener,true);
+            call(add,window,'change',listener,true);
+            // Best effort only: background pages may throttle timers.
+            timer=call(schedule,window,dispose,\(lifetimeMilliseconds));
             return 'OK';
         })()
-        """
-    }
-
-    private static func ownerPrelude(selector: String, nonce: String) -> String {
-        """
-        var state=window['\(stateKey(nonce).escapedForJS)'];
-        if(!state || state.nonce!=='\(nonce.escapedForJS)' || state.doc!==document || state.url!==window.location.href ||
-           !state.input.isConnected || state.input.disabled || state.input.ownerDocument!==document || state.input.type!=='file' || state.input.webkitdirectory || state.input.hasAttribute('webkitdirectory') ||
-           state.input!==\(selector.resolveRefJS)) return 'OWNER_CHANGED';
         """
     }
 
     static func ownerJS(selector: String, nonce: String) -> String {
-        "(function(){\(ownerPrelude(selector: selector, nonce: nonce))return 'OK';})()"
+        "(function(){var state=window['\(stateKey(nonce).escapedForJS)'];return state && typeof state.owner==='function' ? state.owner() : 'OWNER_CHANGED';})()"
     }
 
     static func openJS(selector: String, nonce: String) -> String {
-        """
-        (function(){\(ownerPrelude(selector: selector, nonce: nonce))
-            if(state.input.disabled) return 'INVALID_INPUT';
-            state.input.click();
-            return 'OK';
-        })()
-        """
+        "(function(){var state=window['\(stateKey(nonce).escapedForJS)'];return state && typeof state.open==='function' ? state.open() : 'OWNER_CHANGED';})()"
     }
 
-    /// Metadata is a consistency check, not proof of byte-for-byte identity.
-    /// A trusted change on the original input additionally excludes unchanged
-    /// pre-existing selections when the user cancels the chooser.
-    static func completionJS(selector: String, nonce: String, fileName: String, fileSize: Int64, modificationTimeMilliseconds: Int64) -> String {
-        """
-        (function(){
-            var state=window['\(stateKey(nonce).escapedForJS)'];
-            if(!state || state.nonce!=='\(nonce.escapedForJS)' || state.doc!==document || state.rejected) return 'OWNER_CHANGED';
-            if(state.selection===null){\(ownerPrelude(selector: selector, nonce: nonce))return 'PENDING';}
-            var files=state.selection;
-            if(!files || files.length!==1) return 'MISMATCH_COUNT';
-            var f=files[0];
-            if(typeof f.name!=='string' || f.name.normalize('NFC')!=='\(fileName.escapedForJS)'.normalize('NFC')) return 'MISMATCH_NAME';
-            if(f.size!==\(fileSize)) return 'MISMATCH_SIZE';
-            var expectedModified=\(modificationTimeMilliseconds);
-            // Native WebKit File timestamps can be whole seconds, truncated
-            // toward zero. Accept that exact representation, not a 1s range.
-            if(!Number.isFinite(f.lastModified) ||
-               (Math.abs(f.lastModified-expectedModified)>1 &&
-                f.lastModified!==Math.trunc(expectedModified/1000)*1000)) return 'MISMATCH_TIME';
-            return 'OK';
-        })()
-        """
+    /// Raw receipt or diagnostic only. The native caller must compare the receipt
+    /// outside the page realm; an untrusted replacement returning OK is not proof.
+    static func completionJS(selector: String, nonce: String) -> String {
+        "(function(){var state=window['\(stateKey(nonce).escapedForJS)'];return state && typeof state.read==='function' ? state.read() : 'OWNER_CHANGED';})()"
     }
 
     static func cleanupJS(nonce: String) -> String {
-        """
-        (function(){
-            var key='\(stateKey(nonce).escapedForJS)', state=window[key];
-            if(!state || state.nonce!=='\(nonce.escapedForJS)' || state.doc!==document) return 'SKIPPED';
-            window.removeEventListener('input',state.listener,true);
-            window.removeEventListener('change',state.listener,true);
-            delete window[key];
-            return 'OK';
-        })()
-        """
+        "(function(){var state=window['\(stateKey(nonce).escapedForJS)'];return state && typeof state.dispose==='function' ? state.dispose() : 'SKIPPED';})()"
     }
 
     /// Kept as a fragment so tests can execute the actual guard with private,
@@ -102,11 +119,27 @@ enum NativeUploadScript {
         """
     }
 
+    /// The token never occurs in a subsequent page query. A replaced page
+    /// state can return status text, but only this exact private receipt succeeds.
+    static func receiptValidationScript(receiptToken: String) -> String {
+        """
+        considering case
+            if rawReceipt is "\(receiptToken.escapedForAppleScript)" then return "OK"
+            if rawReceipt is in {"PENDING", "OWNER_CHANGED", "MISMATCH_COUNT", "MISMATCH_NAME", "MISMATCH_SIZE", "MISMATCH_TIME"} then return rawReceipt
+        end considering
+        return "INVALID_RECEIPT"
+        """
+    }
+
     static func make(selector: String, path: String, fileSize: Int64, modificationTimeMilliseconds: Int64, clipboardChangeCount: Int, window: Int?, timeout: Double, nonce: String, windowID: Int? = nil, tabIndex: Int? = nil, deadlineUptime: Double? = nil) -> String {
-        let initial = initializeJS(selector: selector, nonce: nonce).escapedForAppleScript
+        let receiptToken = "SB_UPLOAD_RECEIPT:" + UUID().uuidString
+        let initial = initializeJS(selector: selector, nonce: nonce,
+            fileName: URL(fileURLWithPath: path).lastPathComponent, fileSize: fileSize,
+            modificationTimeMilliseconds: modificationTimeMilliseconds,
+            receiptToken: receiptToken, lifetimeMilliseconds: (timeout + 3) * 1000).escapedForAppleScript
         let owner = ownerJS(selector: selector, nonce: nonce).escapedForAppleScript
         let open = openJS(selector: selector, nonce: nonce).escapedForAppleScript
-        let completion = completionJS(selector: selector, nonce: nonce, fileName: URL(fileURLWithPath: path).lastPathComponent, fileSize: fileSize, modificationTimeMilliseconds: modificationTimeMilliseconds).escapedForAppleScript
+        let completion = completionJS(selector: selector, nonce: nonce).escapedForAppleScript
         let cleanup = cleanupJS(nonce: nonce).escapedForAppleScript
         let targetWindow = windowID.map { "window id \($0)" } ?? window.map { "window \($0)" } ?? "front window"
         let expectedTabGuard = tabIndex.map { "if uploadTabIndex is not \($0) then error \"Native upload target tab changed before capture\"" } ?? ""
@@ -138,6 +171,11 @@ enum NativeUploadScript {
         on checkUploadClipboard()
             if ((current application's NSPasteboard's generalPasteboard()'s changeCount()) as integer) is not \(clipboardChangeCount) then error "Clipboard changed during native upload; no further file action was sent"
         end checkUploadClipboard
+
+        on readUploadCompletion()
+            tell application "Safari" to set rawReceipt to do JavaScript "\(completion)" in current tab of window id uploadWindowID
+            \(receiptValidationScript(receiptToken: receiptToken))
+        end readUploadCompletion
 
         on readUploadSelection()
             return (current application's SBNativeUploadBridge's selectionForWindow:uploadWindowID) as text
@@ -364,7 +402,7 @@ enum NativeUploadScript {
             -- Paste can accept directly or leave an initial confirmation.
             delay 0.1
             my verifyUploadCompletionTarget()
-            tell application "Safari" to set selectionResult to do JavaScript "\(completion)" in current tab of window id uploadWindowID
+            set selectionResult to my readUploadCompletion()
             if selectionResult is not "OK" and selectionResult is not "PENDING" then error "Native upload selected file verification failed: " & selectionResult
             tell application "System Events" to tell process "Safari"
                 if (exists sheet 1 of front window) and selectionResult is not "OK" then
@@ -386,11 +424,11 @@ enum NativeUploadScript {
                     if not (enabled of confirmationButton) then error "The named upload confirmation button is disabled; no confirmation was sent"
                     set confirmationTitle to title of confirmationButton
                     my verifyUploadPanel()
-                    current application's SBNativeUploadBridge's logConfirmation:confirmationTitle
                     my verifyUploadPanel()
                     if my readUploadSelection() is not "MATCH" then error "Native file selection changed before confirmation; no confirmation was sent"
                     my checkUploadDeadline()
                     my checkUploadClipboard()
+                    current application's SBNativeUploadBridge's logConfirmation:confirmationTitle
                     perform action "AXPress" of confirmationButton
                 end if
             end tell
@@ -401,7 +439,7 @@ enum NativeUploadScript {
                 if panelStillOpen then
                     my verifyUploadCompletionPanel()
                 else
-                    tell application "Safari" to set selectionResult to do JavaScript "\(completion)" in current tab of window id uploadWindowID
+                    set selectionResult to my readUploadCompletion()
                     if selectionResult is "OK" then exit repeat
                     if selectionResult is not "PENDING" then error "Native upload selected file verification failed: " & selectionResult
                 end if

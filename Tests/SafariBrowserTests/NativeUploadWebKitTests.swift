@@ -23,7 +23,7 @@ final class NativeUploadWebKitTests: XCTestCase {
             let probe = UploadWebKitMetadataProbe(file: file, size: size, milliseconds: expected)
             let text = try await probe.run()
             let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
-            XCTAssertEqual(result["verdict"] as? String, "OK", "actual WebKit metadata: \(text), expected mtime=\(expected)")
+            XCTAssertEqual(result["verdict"] as? String, probe.receiptToken, "actual WebKit metadata: \(text), expected mtime=\(expected)")
             XCTAssertEqual(result["name"] as? String, file.lastPathComponent)
             XCTAssertEqual((result["size"] as? NSNumber)?.int64Value, size)
             XCTAssertEqual(result["trusted"] as? Bool, true)
@@ -43,10 +43,30 @@ final class NativeUploadWebKitTests: XCTestCase {
             let probe = UploadWebKitMetadataProbe(file: file, size: 13, milliseconds: expected, afterSelection: mutation, pageEvent: pageEvent)
             let text = try await probe.run()
             let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
-            XCTAssertEqual(result["verdict"] as? String, "OK", "page consumption must preserve delivery evidence: \(mutation) → \(text)")
+            XCTAssertEqual(result["verdict"] as? String, probe.receiptToken, "page consumption must preserve delivery evidence: \(mutation) → \(text)")
             XCTAssertEqual(result["trusted"] as? Bool, true)
         }
         }
+    }
+
+    func testRealNativeMetadataGettersIgnoreAfterInitializationOverrides() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(".upload-captured-getter-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("owned.txt")
+        try Data("owned fixture".utf8).write(to: file) // 13 bytes, not expected 14.
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        let date = try XCTUnwrap(attributes[.modificationDate] as? Date)
+        let milliseconds = try UploadCommand.nativeModificationTimeMilliseconds(date)
+        let probe = UploadWebKitMetadataProbe(file: file, size: 14, milliseconds: milliseconds, afterInitialization: """
+        Object.defineProperty(Blob.prototype,'size',{get:function(){return 14;},configurable:true});
+        Object.defineProperty(document.getElementById('fixture'),'files',{get:function(){return [{name:'owned.txt',size:14,lastModified:\(milliseconds)}];},configurable:true});
+        """)
+        let text = try await probe.run()
+        let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        XCTAssertEqual(result["verdict"] as? String, "MISMATCH_SIZE", text)
+        XCTAssertEqual(result["trusted"] as? Bool, true)
+        XCTAssertNotEqual(result["verdict"] as? String, probe.receiptToken)
     }
 
 }
@@ -58,13 +78,15 @@ private final class UploadWebKitMetadataProbe: NSObject, WKUIDelegate, WKNavigat
     private let milliseconds: Int64
     private let afterSelection: String
     private let pageEvent: String
+    private let afterInitialization: String
     private let nonce = UUID().uuidString
+    let receiptToken = "SB_UPLOAD_RECEIPT:" + UUID().uuidString
     private var webView: WKWebView?
     private var continuation: CheckedContinuation<String, Error>?
 
-    init(file: URL, size: Int64, milliseconds: Int64, afterSelection: String = "", pageEvent: String = "change") {
+    init(file: URL, size: Int64, milliseconds: Int64, afterSelection: String = "", pageEvent: String = "change", afterInitialization: String = "") {
         self.file = file; self.size = size; self.milliseconds = milliseconds
-        self.afterSelection = afterSelection; self.pageEvent = pageEvent
+        self.afterSelection = afterSelection; self.pageEvent = pageEvent; self.afterInitialization = afterInitialization
     }
 
     func run() async throws -> String {
@@ -84,12 +106,12 @@ private final class UploadWebKitMetadataProbe: NSObject, WKUIDelegate, WKNavigat
     }
 
     func webView(_ view: WKWebView, didFinish navigation: WKNavigation!) {
-        let initialize = NativeUploadScript.initializeJS(selector: "#fixture", nonce: nonce)
-        let validate = NativeUploadScript.completionJS(selector: "#fixture", nonce: nonce,
-            fileName: file.lastPathComponent, fileSize: size, modificationTimeMilliseconds: milliseconds)
+        let initialize = NativeUploadScript.initializeJS(selector: "#fixture", nonce: nonce, fileName: file.lastPathComponent, fileSize: size, modificationTimeMilliseconds: milliseconds, receiptToken: receiptToken)
+        let validate = NativeUploadScript.completionJS(selector: "#fixture", nonce: nonce)
         let script = """
         document.getElementById('fixture').addEventListener('\(pageEvent)', event => { \(afterSelection) });
         if (\(initialize) !== 'OK') throw new Error('initialization failed');
+        \(afterInitialization)
         document.addEventListener('\(pageEvent)', event => {
           const f=event.target.files[0];
           setTimeout(() => window.webkit.messageHandlers.result.postMessage(JSON.stringify({

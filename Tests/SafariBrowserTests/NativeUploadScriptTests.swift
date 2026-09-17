@@ -36,25 +36,18 @@ final class NativeUploadScriptTests: XCTestCase {
 
     private func context() throws -> JSContext {
         let context = try XCTUnwrap(JSContext())
-        context.evaluateScript("""
-        var listener;var registered={};
-        var document = {};
-        var input = {tagName:'INPUT', type:'file', isConnected:true, ownerDocument:document,
-          disabled:false, hasAttribute:function(){return false;}, files:[], addEventListener:function(_, f){listener=f;},
-          removeEventListener:function(){listener=null;}, click:function(){}};
-        document.querySelector = function(){return input;};
-        var window = {location:{href:'https://fixture.invalid/upload'},addEventListener:function(t,f){registered[t]=f;listener=f;},removeEventListener:function(t){delete registered[t];listener=null;}};
-        """)
+        context.evaluateScript(NativeUploadDOMFixture.source)
         return context
     }
 
-    private func initialize(_ context: JSContext) {
-        XCTAssertEqual(context.evaluateScript(NativeUploadScript.initializeJS(selector: "#upload", nonce: "fixture"))?.toString(), "OK")
+    private func initialize(_ context: JSContext, milliseconds: Int64 = 123456) {
+        XCTAssertEqual(context.evaluateScript(NativeUploadScript.initializeJS(selector: "#upload", nonce: "fixture", fileName: "café.txt", fileSize: 17, modificationTimeMilliseconds: milliseconds, receiptToken: NativeUploadDOMFixture.receipt))?.toString(), "OK")
         XCTAssertNil(context.exception)
     }
 
     private func result(_ context: JSContext) -> String? {
-        context.evaluateScript(NativeUploadScript.completionJS(selector: "#upload", nonce: "fixture", fileName: "café.txt", fileSize: 17, modificationTimeMilliseconds: 123456))?.toString()
+        let raw = context.evaluateScript(NativeUploadScript.completionJS(selector: "#upload", nonce: "fixture"))?.toString()
+        return raw == NativeUploadDOMFixture.receipt ? "OK" : raw
     }
 
     func testMetadataValidatorExecutesRealJavaScript() throws {
@@ -88,11 +81,9 @@ final class NativeUploadScriptTests: XCTestCase {
             (-1999, -3000, "MISMATCH_TIME")
         ] {
             let context = try context()
-            initialize(context)
+            initialize(context, milliseconds: Int64(expected))
             context.evaluateScript("input.files=[{name:'café.txt',size:17,lastModified:\(observed)}];listener({target:input,isTrusted:true});")
-            let script = NativeUploadScript.completionJS(selector: "#upload", nonce: "fixture",
-                fileName: "café.txt", fileSize: 17, modificationTimeMilliseconds: Int64(expected))
-            XCTAssertEqual(context.evaluateScript(script)?.toString(), verdict, "\(expected) → \(observed)")
+            XCTAssertEqual(result(context), verdict, "\(expected) → \(observed)")
             XCTAssertNil(context.exception, "negative timestamps must remain valid JavaScript")
         }
     }
@@ -101,7 +92,7 @@ final class NativeUploadScriptTests: XCTestCase {
         for property in ["input.webkitdirectory=true", "input.hasAttribute=function(name){return name==='webkitdirectory'}"] {
             let c = try context()
             c.evaluateScript(property)
-            XCTAssertEqual(c.evaluateScript(NativeUploadScript.initializeJS(selector: "#upload", nonce: "fixture"))?.toString(), "INVALID_INPUT")
+            XCTAssertEqual(c.evaluateScript(NativeUploadScript.initializeJS(selector: "#upload", nonce: "fixture", fileName: "café.txt", fileSize: 17, modificationTimeMilliseconds: 123456, receiptToken: NativeUploadDOMFixture.receipt))?.toString(), "INVALID_INPUT")
             let d = try context()
             initialize(d)
             d.evaluateScript("var clicked=false;input.click=function(){clicked=true};" + property)
@@ -128,7 +119,7 @@ final class NativeUploadScriptTests: XCTestCase {
         let loop = try XCTUnwrap(source.range(of: "repeat\n", options: .backwards, range: source.startIndex..<read.lowerBound))
         for panelInitiallyPresent in [false, true] {
         var terminal = String(source[loop.lowerBound...]).replacingOccurrences(of: uiRead, with: "set panelStillOpen to my nextPanelState()")
-        let selectionLine = try XCTUnwrap(terminal.split(separator: "\n").first { $0.contains("to set selectionResult to do JavaScript") })
+        let selectionLine = try XCTUnwrap(terminal.split(separator: "\n").first { $0.contains("set selectionResult to my readUploadCompletion()") })
         terminal = terminal.replacingOccurrences(of: String(selectionLine), with: "set selectionResult to \"OK\"")
         XCTAssertFalse(terminal.contains("tell application"))
         let isolated = """
@@ -201,7 +192,7 @@ final class NativeUploadScriptTests: XCTestCase {
         let context = try context()
         context.evaluateScript("window.__sbRefs=[input]")
         let nonce = "'\\\n\u{2028};throw Error('injected');"
-        XCTAssertEqual(context.evaluateScript(NativeUploadScript.initializeJS(selector: "@e1", nonce: nonce))?.toString(), "OK")
+        XCTAssertEqual(context.evaluateScript(NativeUploadScript.initializeJS(selector: "@e1", nonce: nonce, fileName: "café.txt", fileSize: 17, modificationTimeMilliseconds: 123456, receiptToken: NativeUploadDOMFixture.receipt))?.toString(), "OK")
         XCTAssertEqual(context.evaluateScript(NativeUploadScript.ownerJS(selector: "@e1", nonce: nonce))?.toString(), "OK")
         context.evaluateScript("window.__sbRefs=[{}]")
         XCTAssertEqual(context.evaluateScript(NativeUploadScript.ownerJS(selector: "@e1", nonce: nonce))?.toString(), "OWNER_CHANGED")
@@ -376,7 +367,7 @@ final class NativeUploadScriptTests: XCTestCase {
         let loop = try XCTUnwrap(source.range(of: "repeat\n", options: .backwards, range: source.startIndex..<readRange.lowerBound))
         var terminal = String(source[loop.lowerBound...])
             .replacingOccurrences(of: uiRead, with: "set panelStillOpen to false")
-        let selectionLine = try XCTUnwrap(terminal.split(separator: "\n").first { $0.contains("to set selectionResult to do JavaScript") })
+        let selectionLine = try XCTUnwrap(terminal.split(separator: "\n").first { $0.contains("set selectionResult to my readUploadCompletion()") })
         terminal = terminal.replacingOccurrences(of: String(selectionLine), with: "set selectionResult to \"PENDING\"")
         XCTAssertFalse(terminal.contains("tell application"))
         let isolated = """
@@ -415,7 +406,7 @@ final class NativeUploadScriptTests: XCTestCase {
         let terminal = "    repeat\n        my verifyUploadCompletionTarget()"
         let end = try XCTUnwrap(source.range(of: terminal, range: begin.upperBound..<source.endIndex))
         var fragment = String(source[begin.lowerBound..<end.lowerBound])
-        let selection = try XCTUnwrap(fragment.split(separator: "\n").first { $0.contains("to set selectionResult to do JavaScript") })
+        let selection = try XCTUnwrap(fragment.split(separator: "\n").first { $0.contains("set selectionResult to my readUploadCompletion()") })
         fragment = fragment.replacingOccurrences(of: String(selection), with: "set selectionResult to observedDelivery")
         let buttons = try XCTUnwrap(fragment.range(of: "set fileButtons to buttons of uploadPanel"))
         let title = try XCTUnwrap(fragment.range(of: "set confirmationTitle to title of confirmationButton", range: buttons.lowerBound..<fragment.endIndex))

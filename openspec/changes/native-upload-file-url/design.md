@@ -75,3 +75,17 @@ NativeUploadRequest 為 Codable/Sendable，欄位為 version=1、selector、path
 保留 performNativeUpload 的生命週期，以 NativeUploadRequest 傳遞固定參數。NativeUploadScript.make 的正式 builder 在具名確認前呼叫 SBNativeUploadBridge，非 MATCH 一律不確認；有限輪詢只重讀，不重送 Paste。每轮先讀交付狀態，已交付直接進唯讀完成階段。原有 verifyUploadPanel 在 probe 前後保留，最後 native MATCH 後立即作 clock／clipboard 檢查再 AXPress，盡量縮短非原子間隔。控制流程 adapter 測試明確證明未知／歧義／剪貼簿變更／已交付不送確認。父程序沿用 runShell 逾時與 MCP owned group，child trace 用 #167 schema 驗證後合併，診斷不包含重複 trace；元素不存在及 timeout 維持既有對外錯誤。
 
 實測證據：ColumnView 82 節點、ListView 35 節點、IconView 28 節點均讀出自有隱藏 Unicode／空白／單引號路徑。先切模式後 Paste 的列表／圖像探測 files count=0，偏好、剪貼簿及視窗清理完成。這只證明讀取拓樸，完整上傳與效能驗收仍是 3.1／3.2 的未完成工作。
+
+## R4 頁內完成狀態完整性
+
+### 私有完成憑證
+
+R1 review 的可重現缺陷：可探索的 window state 暴露 selection 與 listener，頁面可直接修改、整個替換或以偽造 isTrusted 物件呼叫 listener；若面板隨後取消，CLI 可誤判成功。使用另一個 UUID receiptToken（與可探索 key nonce 不同），僅在初始化 IIFE 的私有變數中保存；listener、snapshot、預期 metadata 及驗證全部放入閉包。外露的凍結 read() 只在可信 input/change 與預期 metadata 完全吻合後回傳 token，函式本體只引用私有變數，不能透過 toString 取得 token literal。完成查詢腳本只呼叫 read()，絕不再次把 token 傳入頁面；AppleScript 保留 token 並以完整相等轉為 OK，裸 OK 或假 receipt 拒絕。初始化捕捉事件方法、原生 input.files／File／Blob getters 與會用到的內建函式，防止初始化後改寫產生假資料。state global 仍可刪除，cleanup 透過閉包 dispose 移除 listener 並釋放本次狀態，不留下每次上傳的永久 property。
+
+此保證是初始化後的狀態完整性；Safari do JavaScript 在頁面 realm 執行，預先遭改寫的原生方法或 DOM 仍不是可信隔離環境。本設計不宣稱對任意敵意頁面提供 browser isolated-world 保證；原生 AX 仍獨立限制確認的檔案路徑。
+
+### 自有負向與效能驗證
+
+同一 localhost fixture 驗取消、截止、未知選取不送確認，並核對自有視窗清理／clipboard；比較受限 System Events 選取查詢與直接 AX 的完整路徑結果及耗時，不將 timeout 算成功或將無檢查舊流程當等效基準。完整上傳的四筆 R1 實測為 13.204–13.749 秒；每次兩筆 AX wait 合計約 75–103 ms，尚未宣稱整體加速。
+
+正常 dispose 會清除自己的計時器、移除 listener 並刪除 global；若 global 被頁面整個替換，原閉包另以初始化時捕捉的 setTimeout/clearTimeout 安排 timeout+3 秒的 dispose 後盾。瀏覽器背景節流或頁面自行取消計時器不在硬截止保證內；這項 best-effort cleanup 不派送任何原生 UI 動作。

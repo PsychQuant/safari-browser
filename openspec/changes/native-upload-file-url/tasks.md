@@ -20,7 +20,10 @@
 - [x] [P] 2.6 實作固定請求的內部上傳 worker，履行 Native upload worker accepts only a bound request；以無 GUI 測試驗 schema／大小／父程序／image／deadline 拒絕及主執行緒橋接與明確診斷。
 - [ ] 2.7 完成原生證據與確認整合，履行 Native upload proves the selected path before confirmation 與 Native upload worker accepts only a bound request；以 interpreter／CLI 測試驗未知、變更及已交付不確認、錯誤 sentinel、逾時、MCP owned group 與 trace 相容，並以自有 GUI／相同 fixture 基準驗 IPC 與等待。
 
+- [x] [P] 2.8 私有完成憑證：履行 Native upload completion rejects page state forgery，以真實 RED 重現 selection 修改、global 替換與外露 listener 偽造；閉包私有 metadata 驗證及原生 receipt 完整比對後，測試錯檔不釋出 token、裸 OK 不接受、toString 不洩露 token、cleanup 仍可刪除狀態。
+- [x] [P] 2.9 自有負向與效能驗證：準備 Tests/native-upload-live.py 的 owned fixture runner（success/cancel/timeout 與分段 trace），以 11 項無 GUI harness 測試確認失敗／未知／未觀察面板不得計入成功，並檢查腳本與唯讀剪貼簿 helper 編譯；實際 GUI 與等效 System Events／AX 比較留在 3.1。
+
 ## 3. 實際驗證與交付
 
-- [ ] 3.1 執行完整 make test-all 及自有 GUI 特殊路徑、不同起始資料夾、大檔、焦點／錯誤／逾時案例；核對實際檔名／內容、自有面板清理及剪貼簿還原。
+- [ ] 3.1 執行完整 make test-all 及自有 GUI 特殊路徑、不同起始資料夾、大檔、焦點／錯誤／逾時案例；核對實際檔名／內容、自有面板清理及剪貼簿還原，並記錄同 fixture System Events／直接 AX 查詢結果與等待差異。
 - [ ] 3.2 完成六方 review、修正所有阻擋項、更新 Implementation Complete 與 PR #163；通過後依既有授權合併並核對合併樹。

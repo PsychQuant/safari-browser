@@ -104,3 +104,19 @@ The internal worker SHALL accept a versioned bounded structured upload request, 
 #### Scenario: Worker completes or fails
 - **WHEN** the bounded worker finishes, fails or times out
 - **THEN** the parent SHALL restore its owned clipboard or preserve newer contents and SHALL report the original operation outcome without replay
+
+### Requirement: Native upload completion rejects page state forgery
+
+After initialization with genuine browser intrinsics, direct changes to the page-visible transaction object, replacement of its global binding, or calls to exposed methods SHALL NOT produce an accepted completion receipt before a trusted matching delivery. The receipt SHALL be a fresh secret distinct from the discoverable state key, retained in a private closure and compared outside the page realm. A wrong trusted file SHALL NOT release it. Query scripts and exposed function source SHALL NOT disclose it. Cleanup SHALL remove temporary state and listeners. This requirement SHALL NOT be interpreted as isolated-world execution against a page that replaced browser intrinsics before initialization.
+
+#### Scenario: Forged state followed by cancellation
+- **WHEN** page code changes or replaces the exposed state without a trusted matching delivery and the chooser is cancelled
+- **THEN** the native flow SHALL reject the forged completion, including a plain OK response
+
+#### Scenario: Correct delivery receipt
+- **WHEN** the private listener receives a trusted delivery with the exact expected file metadata
+- **THEN** its read function SHALL return the private receipt and the native flow SHALL accept only its exact match
+
+#### Scenario: Wrong file or exposed method inspection
+- **WHEN** a wrong-file event occurs or page code inspects exposed function source
+- **THEN** the private receipt SHALL remain unavailable
