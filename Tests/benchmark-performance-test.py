@@ -99,10 +99,12 @@ class TraceTests(unittest.TestCase):
 
 class ProcessTests(unittest.TestCase):
     def test_exit_between_observation_and_signal_uses_fresh_owned_state(self):
+        if sys.platform != 'darwin':
+            self.skipTest('This regression exercises Darwin EPERM behavior')
         process = subprocess.Popen(['/bin/sh', '-c', 'read token'], stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
         actual_signal = os.killpg
-        calls, cleanup_error = [], None
+        calls, permission_failures, cleanup_error = [], [], None
         def exit_then_signal(pid, signum):
             calls.append((pid, signum))
             process.stdin.write(b'done\n')
@@ -113,7 +115,11 @@ class ProcessTests(unittest.TestCase):
                 time.sleep(.005)
             self.assertEqual(bench.observe_exit(process), 0)
             self.assertIsNone(process.returncode, 'leader identity must remain unreaped')
-            return actual_signal(pid, signum)
+            try:
+                return actual_signal(pid, signum)
+            except PermissionError:
+                permission_failures.append(True)
+                raise
         try:
             self.assertIsNone(bench.observe_exit(process))
             with mock.patch.object(bench.os, 'killpg', exit_then_signal):
@@ -128,6 +134,9 @@ class ProcessTests(unittest.TestCase):
         self.assertIsNone(cleanup_error, 'normal exit during signal delivery was misclassified')
         self.assertEqual(process.returncode, 0)
         self.assertEqual(calls, [(process.pid, signal.SIGKILL)])
+        if not permission_failures:
+            self.skipTest('The kernel did not exercise the EPERM branch')
+        self.assertEqual(len(permission_failures), 1)
 
     def test_permission_error_with_live_leader_remains_failure(self):
         process = subprocess.Popen(['/bin/sh', '-c', 'read token'], stdin=subprocess.PIPE,

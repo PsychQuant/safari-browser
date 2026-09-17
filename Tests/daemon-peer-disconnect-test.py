@@ -119,6 +119,8 @@ class DaemonPeerDisconnectTests(unittest.TestCase):
                 self.assertTrue(service.close(), 'owned daemon cleanup failed')
             self.assertIsNotNone(process.returncode)
             self.assertFalse(Path(path).exists(), 'normal shutdown left its socket')
+            self.assertFalse(Path(directory, 'safari-browser-' + env['SAFARI_BROWSER_NAME'] + '.pid').exists(),
+                             'normal shutdown left its PID record')
 
 
 if __name__ == '__main__':
