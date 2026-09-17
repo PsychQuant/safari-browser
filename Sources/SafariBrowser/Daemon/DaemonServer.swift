@@ -356,10 +356,15 @@ enum DaemonServer {
                 // Disable SIGPIPE so a client that closed early doesn't take the
                 // whole daemon process down when we try to write the response.
                 var enable: Int32 = 1
-                _ = setsockopt(
+                guard setsockopt(
                     clientFd, SOL_SOCKET, SO_NOSIGPIPE,
                     &enable, socklen_t(MemoryLayout<Int32>.size)
-                )
+                ) == 0 else {
+                    // A peer that closed before accept can make this fail.
+                    // Never write a handshake on an unprotected socket.
+                    close(clientFd)
+                    continue
+                }
                 let handlerTask = Task.detached(priority: .userInitiated) {
                     await Self.serveConnection(clientFd: clientFd, instance: instance)
                 }
