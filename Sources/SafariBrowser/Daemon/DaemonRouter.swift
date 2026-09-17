@@ -37,9 +37,9 @@ extension SafariBridge {
         timeout: TimeInterval
     ) async throws -> String {
         let name = DaemonClient.resolveName(flag: nil)
-        let paramsData = try JSONSerialization.data(
-            withJSONObject: ["source": source], options: []
-        )
+        var parameters: [String: Any] = ["source": source]
+        if PerformanceTrace.isActive { parameters["timing"] = true }
+        let paramsData = try JSONSerialization.data(withJSONObject: parameters, options: [])
         // The caller's shorter budget applies; ordinary bridge requests never
         // wait beyond the 15-second daemon contract.
         let resultData = try await DaemonClient.sendRequest(
@@ -117,17 +117,17 @@ extension SafariBridge {
         warnWriter: ((String) -> Void)? = nil
     ) async throws -> String {
         guard daemonOptIn else {
-            return try await statelessFn(source)
+            return try await PerformanceTrace.spanAsync(.appleScriptDirect) { try await statelessFn(source) }
         }
         do {
-            return try await daemonFn(source)
+            return try await PerformanceTrace.spanAsync(.appleScriptDaemon) { try await daemonFn(source) }
         } catch let err as DaemonClient.Error {
             guard let reason = err.fallbackReason else {
                 // Domain error: propagate untouched.
                 throw err
             }
             warnWriter?("[daemon fallback: \(reason)]\n")
-            return try await statelessFn(source)
+            return try await PerformanceTrace.spanAsync(.appleScriptDirect) { try await statelessFn(source) }
         }
     }
 }

@@ -146,6 +146,7 @@ import Foundation
     run_bounded([
         "swiftc", "-swift-version", "6", "-parse-as-library",
         str(repo / "Sources/SafariBrowser/Daemon/PreCompiledScripts.swift"),
+        str(repo / "Sources/SafariBrowser/Utilities/PerformanceTrace.swift"),
         str(harness), "-o", executable,
     ], timeout=30, label="compile cache harness")
     print(run_bounded([executable], timeout=5, label="cached sequence").strip())

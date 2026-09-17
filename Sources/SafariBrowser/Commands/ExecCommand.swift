@@ -22,38 +22,40 @@ struct ExecCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        // #51: exec honors --profile transitively — encodeTargetArgs (#60)
-        // propagates the parent's --profile into every sub-step's
-        // sharedTargetArgs, so the filter reaches the dispatched commands.
-        let source: String
-        if let scriptPath = script {
-            let path = (scriptPath as NSString).expandingTildeInPath
-            guard FileManager.default.fileExists(atPath: path) else {
-                throw SafariBrowserError.fileNotFound(scriptPath)
+        try await PerformanceTrace.spanAsync(.execRun) {
+            // #51: exec honors --profile transitively — encodeTargetArgs (#60)
+            // propagates the parent's --profile into every sub-step's
+            // sharedTargetArgs, so the filter reaches the dispatched commands.
+            let source: String
+            if let scriptPath = script {
+                let path = (scriptPath as NSString).expandingTildeInPath
+                guard FileManager.default.fileExists(atPath: path) else {
+                    throw SafariBrowserError.fileNotFound(scriptPath)
+                }
+                source = try String(contentsOfFile: path, encoding: .utf8)
+            } else {
+                source = readStdinAsString()
             }
-            source = try String(contentsOfFile: path, encoding: .utf8)
-        } else {
-            source = readStdinAsString()
-        }
 
-        // Section 10 v2 of `script-exec-command`: when daemon is opt-in
-        // active AND every step in the script uses an in-process-supported
-        // command, send the entire script as a single `exec.runScript`
-        // request. This eliminates per-step subprocess + socket-handshake
-        // overhead from the client path. Otherwise (daemon off, or any
-        // step uses an unsupported command) fall through to the local
-        // interpreter which uses the SubprocessStepDispatcher.
-        if SafariBridge.shouldUseDaemonAuto(),
-           let parsed = try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps),
-           Self.allStepsSupported(parsed),
-           let results = try await runViaDaemon(steps: parsed) {
-            print(results)
-            return
-        }
+            // Section 10 v2 of `script-exec-command`: when daemon is opt-in
+            // active AND every step in the script uses an in-process-supported
+            // command, send the entire script as a single `exec.runScript`
+            // request. This eliminates per-step subprocess + socket-handshake
+            // overhead from the client path. Otherwise (daemon off, or any
+            // step uses an unsupported command) fall through to the local
+            // interpreter which uses the SubprocessStepDispatcher.
+            if SafariBridge.shouldUseDaemonAuto(),
+               let parsed = try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps),
+               Self.allStepsSupported(parsed),
+               let results = try await runViaDaemon(steps: parsed) {
+                print(results)
+                return
+            }
 
-        let interpreter = ScriptInterpreter(maxSteps: maxSteps)
-        let results = try await interpreter.run(source: source, target: target)
-        printResults(results)
+            let interpreter = ScriptInterpreter(maxSteps: maxSteps)
+            let results = try await interpreter.run(source: source, target: target)
+            printResults(results)
+        }
     }
 
     /// Returns true when every step's `cmd` is in
@@ -112,13 +114,15 @@ struct ExecCommand: AsyncParsableCommand {
         steps: [ScriptStep],
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: Any] {
-        [
+        var envelope: [String: Any] = [
             "steps": steps.map { $0.toDictionary() },
             "targetArgs": ScriptInterpreter.encodeTargetArgs(target),
             "maxSteps": maxSteps,
             "markTab": target.markTabResolved().rawValue,
             "dialogProbe": DialogProbeOptions(environment: environment).dictionary,
         ]
+        if PerformanceTrace.isActive { envelope["timing"] = true }
+        return envelope
     }
 
     static func daemonResults(from data: Data) throws -> String {

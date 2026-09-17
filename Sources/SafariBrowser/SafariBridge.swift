@@ -224,16 +224,18 @@ enum SafariBridge {
         _ target: TargetDocument, firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil, profile: String? = nil
     ) async throws -> ResolvedScriptTarget {
-        if case .resolvedTab(let id, let tab, let matcher, _) = target {
-            let key = BlockingDialogGate.WindowKey.id(id)
-            BlockingDialogGate.shared.check(key)
-            return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key,
-                diagnosticTarget: BackgroundTabDiagnosticTarget(windowID: id, tabIndex: tab, matcher: matcher))
+        return try await PerformanceTrace.spanAsync(.targetResolve) {
+            if case .resolvedTab(let id, let tab, let matcher, _) = target {
+                let key = BlockingDialogGate.WindowKey.id(id)
+                BlockingDialogGate.shared.check(key)
+                return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key,
+                    diagnosticTarget: BackgroundTabDiagnosticTarget(windowID: id, tabIndex: tab, matcher: matcher))
+            }
+            let resolved = try await resolveNativeTarget(from: target, firstMatch: firstMatch,
+                                                        warnWriter: warnWriter, profile: profile)
+            return ResolvedScriptTarget(reference: docRefFromResolved(resolved), key: windowKey(for: resolved),
+                diagnosticTarget: backgroundDiagnosticTarget(for: target, resolved: resolved))
         }
-        let resolved = try await resolveNativeTarget(from: target, firstMatch: firstMatch,
-                                                    warnWriter: warnWriter, profile: profile)
-        return ResolvedScriptTarget(reference: docRefFromResolved(resolved), key: windowKey(for: resolved),
-            diagnosticTarget: backgroundDiagnosticTarget(for: target, resolved: resolved))
     }
 
     static func backgroundDiagnosticTarget(
@@ -2334,25 +2336,27 @@ enum SafariBridge {
         profile: String? = nil,
         probeDialog: Bool = true
     ) async throws -> ResolvedWindowTarget {
-        let resolved: ResolvedWindowTarget
-        if profile != nil {
-            resolved = try resolveNativeTargetInWindows(target, windows: await listAllWindows(),
-                firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
-        } else {
-            switch target {
-            case .frontWindow:
-                resolved = ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil,
-                                                windowID: await readWindowID(index: 1))
-            case .windowIndex(let index):
-                resolved = ResolvedWindowTarget(windowIndex: index, tabIndexInWindow: nil,
-                                                windowID: await readWindowID(index: index))
-            case .urlMatch, .documentIndex, .windowTab, .resolvedTab:
+        return try await PerformanceTrace.spanAsync(.nativeTarget) {
+            let resolved: ResolvedWindowTarget
+            if profile != nil {
                 resolved = try resolveNativeTargetInWindows(target, windows: await listAllWindows(),
                     firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+            } else {
+                switch target {
+                case .frontWindow:
+                    resolved = ResolvedWindowTarget(windowIndex: 1, tabIndexInWindow: nil,
+                                                    windowID: await readWindowID(index: 1))
+                case .windowIndex(let index):
+                    resolved = ResolvedWindowTarget(windowIndex: index, tabIndexInWindow: nil,
+                                                    windowID: await readWindowID(index: index))
+                case .urlMatch, .documentIndex, .windowTab, .resolvedTab:
+                    resolved = try resolveNativeTargetInWindows(target, windows: await listAllWindows(),
+                        firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+                }
             }
+            if probeDialog { BlockingDialogGate.shared.check(windowKey(for: resolved)) }
+            return resolved
         }
-        if probeDialog { BlockingDialogGate.shared.check(windowKey(for: resolved)) }
-        return resolved
     }
 
     /// Pure extraction of the post-enumeration branch in
@@ -3460,11 +3464,13 @@ enum SafariBridge {
         timeout: TimeInterval = SafariBridge.defaultProcessTimeout,
         warnWriter: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
-        let writer = FileDialogDiagnostics.writer(warnWriter)
-        return try await runShell("/usr/bin/osascript", ["-e", script], timeout: timeout,
-                                  stderrWriter: { raw in
-            if let line = FileDialogDiagnostics.trace(raw) { writer(line) }
-        })
+        return try await PerformanceTrace.spanAsync(.fileDialog) {
+            let writer = FileDialogDiagnostics.writer(warnWriter)
+            return try await runShell("/usr/bin/osascript", ["-e", script], timeout: timeout,
+                                      stderrWriter: { raw in
+                if let line = FileDialogDiagnostics.trace(raw) { writer(line) }
+            })
+        }
     }
 
     /// One pipe drains on a dispatch worker while the caller drains the other.
@@ -3544,7 +3550,7 @@ enum SafariBridge {
         process.standardOutput = stdout
         process.standardError = stderr
 
-        try process.run()
+        try PerformanceTrace.span(.processSpawn) { try process.run() }
 
         // Watchdog: terminate subprocess if timeout expires.
         // Killing the process causes its stdout/stderr pipes to close, which unblocks
@@ -3566,10 +3572,13 @@ enum SafariBridge {
         }
 
         // Drain concurrently: stderr can fill while stdout remains open.
-        let errorRead = ProcessPipeRead(stderr.fileHandleForReading)
-        let outputData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errorData = errorRead.collect()
-        process.waitUntilExit()
+        let (outputData, errorData) = PerformanceTrace.span(.processWait) {
+            let errorRead = ProcessPipeRead(stderr.fileHandleForReading)
+            let output = stdout.fileHandleForReading.readDataToEndOfFile()
+            let errors = errorRead.collect()
+            process.waitUntilExit()
+            return (output, errors)
+        }
         watchdog.cancel()
 
         if !errorData.isEmpty {
@@ -3917,7 +3926,7 @@ enum SafariBridge {
         timeout: TimeInterval = SafariBridge.defaultProcessTimeout
     ) async throws -> String {
         if let runner = DaemonRequestContext.appleScriptRunner {
-            return try await runner(script)
+            return try await PerformanceTrace.spanAsync(.appleScriptInProcess) { try await runner(script) }
         }
         // Task 7.1 routing: if daemon mode is opted in AND the daemon is
         // reachable, send the AppleScript source through the

@@ -1056,7 +1056,7 @@ safari-browser mouse down / up / wheel <dy>
 
 ### Daemon (opt-in, Phase 1)
 
-Long-running daemon that keeps AppleScript handles pre-compiled in memory, shaving `osascript`'s ~3s spawn cost off each repeat invocation. **Opt-in** — default CLI stays stateless.
+Long-running daemon that reuses compiled AppleScript handles and can avoid repeated `osascript` launches. The benefit depends on the workload; use the performance benchmark below instead of assuming a fixed startup saving. Routing follows the existing flag, environment and live-socket detection rules.
 
 ```bash
 safari-browser daemon start            # fork detached, listen on Unix socket
@@ -1095,6 +1095,24 @@ host process. `make test` and `make test-unit` require a completed XCTest suite
 summary in addition to exit 0, so early process termination cannot report a pass.
 The compiled AppleScript cache runs on the main thread, including compilation and
 reuse, so repeated scripts that use `delay` complete normally (#130).
+
+### Performance timing and benchmarks
+
+Set `SAFARI_BROWSER_TRACE_TIMING=1` to append a bounded timing summary to stderr.
+Normal stdout and command behavior are unchanged; timing is off by default.
+
+```bash
+SAFARI_BROWSER_TRACE_TIMING=1 safari-browser wait 0
+python3 scripts/benchmark-performance.py --binary .build/debug/safari-browser --samples 20 --warmups 3 --timing both
+# Explicitly include an owned localhost Safari fixture for read-only queries:
+python3 scripts/benchmark-performance.py --binary .build/debug/safari-browser --samples 5 --warmups 2 --timing both --live
+```
+
+The report separates fresh CLI processes, cold/warm daemon or MCP hosts, failures
+and GUI skips. Daemon `status` measures transport/lifecycle, not AppleScript speed;
+`--live` compares direct and warm-daemon page reads. No upload, PDF or Print is
+benchmarked. See [the measurement contract](docs/performance.md) for the trace
+schema, limits, cleanup rules and interpretation.
 
 ### Exec scripts (multi-step automation)
 

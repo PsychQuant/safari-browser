@@ -92,7 +92,10 @@ enum CommandDispatch {
                     let stderrText = String(decoding: errors.value, as: UTF8.self)
                     if !stderrText.isEmpty { stderrWriter(stderrText) }
                     if process.terminationStatus != 0 {
-                        let combined = stderrText.isEmpty ? stdoutText : stderrText
+                        let errorText = PerformanceTrace.isEnabled(ProcessInfo.processInfo.environment)
+                            ? PerformanceTrace.removingOwnSummaryLines(from: stderrText, processID: process.processIdentifier)
+                            : stderrText
+                        let combined = errorText.isEmpty ? stdoutText : errorText
                         throw SafariBrowserError.appleScriptFailed(
                             combined.trimmingCharacters(in: .whitespacesAndNewlines))
                     }

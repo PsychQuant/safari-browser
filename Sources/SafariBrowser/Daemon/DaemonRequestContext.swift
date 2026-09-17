@@ -31,6 +31,17 @@ final class DaemonRequestContext: @unchecked Sendable {
     private let lock = NSLock()
     private var messages: [String] = []
     private var storedGate: BlockingDialogGate?
+    private var storedErrorTiming: PerformanceTrace.Summary?
+
+    /// One bounded, finalized trace owned by this request, including a thrown handler.
+    func recordErrorTiming(_ summary: PerformanceTrace.Summary?) {
+        lock.lock(); defer { lock.unlock() }
+        storedErrorTiming = summary
+    }
+    var errorTiming: PerformanceTrace.Summary? {
+        lock.lock(); defer { lock.unlock() }
+        return storedErrorTiming
+    }
 
     func emit(_ message: String) {
         lock.lock(); defer { lock.unlock() }

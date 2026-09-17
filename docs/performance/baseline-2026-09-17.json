@@ -1,0 +1,2302 @@
+{
+  "schemaVersion": 1,
+  "environment": {
+    "binarySHA256": "9ac551d8f7979daf0bd732512c3a839deb28fdebd199511c1b3bc606592833f7",
+    "os": "Darwin",
+    "osBuild": "26A428",
+    "architecture": "arm64"
+  },
+  "measurement": {
+    "clock": "monotonic",
+    "wallIncludesLoader": true,
+    "osCachesCleared": false,
+    "quantiles": "nearest-rank-successful-samples",
+    "spanDurations": "inclusive-do-not-sum",
+    "coldHostWall": "startup-readiness-and-one-request-excludes-cleanup",
+    "warmHostWall": "one-request-excludes-host-startup"
+  },
+  "scenarios": [
+    {
+      "name": "startup.fresh-process-help",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 314245291,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 10622750,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 10539167,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 10399667,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 10571375,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 10189709,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 11262666,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 10539167,
+        "p95Nanoseconds": 11262666
+      }
+    },
+    {
+      "name": "wait.fresh-process",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 20140583,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 22083917,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 21633459,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 20305250,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 20712000,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 20184500,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 19858667,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 20305250,
+        "p95Nanoseconds": 21633459
+      }
+    },
+    {
+      "name": "exec.fresh-process-wait-batch",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 79569917,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 83409166,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 81967541,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 84082750,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 89613000,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 83145959,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 81164959,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 83145959,
+        "p95Nanoseconds": 89613000
+      }
+    },
+    {
+      "name": "daemon.cold-host-status-including-startup",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 42159376,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 41237958,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 43930167,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 43067167,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 39903999,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 42832708,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 44250501,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 43067167,
+        "p95Nanoseconds": 44250501
+      }
+    },
+    {
+      "name": "daemon.warm-host-fresh-cli-status",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 17252083,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 16915417,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 17115875,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 16518042,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 16270375,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 16168167,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 16561042,
+          "exitCode": 0,
+          "trace": null,
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 16518042,
+        "p95Nanoseconds": 17115875
+      },
+      "serviceSetupNanoseconds": 23314750
+    },
+    {
+      "name": "mcp.cold-host-wait-including-startup",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 206541207
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 205603500
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 202907541
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 207707000
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 191935000
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 197890292
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 202965917
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 202907541,
+        "p95Nanoseconds": 207707000
+      }
+    },
+    {
+      "name": "mcp.warm-host-fresh-worker",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 34657917
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 31970750
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 23106042
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 34261958
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 23030250
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 32781542
+        },
+        {
+          "status": "ok",
+          "trace": null,
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 23540584
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 23540584,
+        "p95Nanoseconds": 34261958
+      },
+      "serviceSetupNanoseconds": 177686459
+    },
+    {
+      "name": "live.direct-fresh-process.get-title",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "samples": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "statistics": {
+        "successful": 0,
+        "failed": 0,
+        "skipped": 5,
+        "p50Nanoseconds": null,
+        "p95Nanoseconds": null
+      }
+    },
+    {
+      "name": "live.direct-fresh-process.get-url",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "samples": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "statistics": {
+        "successful": 0,
+        "failed": 0,
+        "skipped": 5,
+        "p50Nanoseconds": null,
+        "p95Nanoseconds": null
+      }
+    },
+    {
+      "name": "live.warm-daemon-fresh-process.get-title",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "samples": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "statistics": {
+        "successful": 0,
+        "failed": 0,
+        "skipped": 5,
+        "p50Nanoseconds": null,
+        "p95Nanoseconds": null
+      }
+    },
+    {
+      "name": "live.warm-daemon-fresh-process.get-url",
+      "timing": "off",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "samples": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "statistics": {
+        "successful": 0,
+        "failed": 0,
+        "skipped": 5,
+        "p50Nanoseconds": null,
+        "p95Nanoseconds": null
+      }
+    },
+    {
+      "name": "startup.fresh-process-help",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 11551292,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "114cf2f7-5bbe-4093-b6a5-0bc2664b2523",
+            "status": "ok",
+            "totalNanoseconds": 2532625,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 2526375,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11437
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 11662125,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "db0597f2-eb03-4ce3-ac32-ca64fddbe162",
+            "status": "ok",
+            "totalNanoseconds": 1929917,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 1923292,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11451
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 10878500,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "037aa49b-fd2d-440a-bbd7-2bf2d874ac22",
+            "status": "ok",
+            "totalNanoseconds": 1758875,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 1752500,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11462
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 11158833,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "771314d9-5fa5-473a-992f-795c80168e95",
+            "status": "ok",
+            "totalNanoseconds": 2121375,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 2111459,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11471
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 11148375,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "8eb93259-2021-4e2a-ae29-202e4f64dfec",
+            "status": "ok",
+            "totalNanoseconds": 2233833,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 2224667,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11511
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 11275500,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "a0c1af06-2973-43ec-830d-1036c46a7d60",
+            "status": "ok",
+            "totalNanoseconds": 2287000,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 2279834,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11535
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 10625750,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "d3c5940b-bf52-4bd8-b23b-029379414e0b",
+            "status": "ok",
+            "totalNanoseconds": 1836083,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 1828792,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11543
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 11148375,
+        "p95Nanoseconds": 11275500
+      }
+    },
+    {
+      "name": "wait.fresh-process",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 20274125,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "8a8d193e-6ac8-4b28-b983-ba7f2aedbe72",
+            "status": "ok",
+            "totalNanoseconds": 12397750,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 12389500,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11575
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 22411875,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "4fa53387-7238-415a-8247-c8bf9f267d21",
+            "status": "ok",
+            "totalNanoseconds": 13830750,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 13824791,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11584
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 20620916,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "ffdc75c9-5655-41aa-ab4a-418e9aaa2eff",
+            "status": "ok",
+            "totalNanoseconds": 12176750,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 12169750,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11594
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 25478459,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "d9c364a9-203f-4936-a048-e2e5e65ef993",
+            "status": "ok",
+            "totalNanoseconds": 14698500,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 14688958,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11619
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 21481333,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "473db1d4-7681-4fcb-b6ba-d971005025ca",
+            "status": "ok",
+            "totalNanoseconds": 13279083,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 13272791,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11636
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 20399125,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "324e6fbf-c338-48e8-82fa-795753a10718",
+            "status": "ok",
+            "totalNanoseconds": 12457416,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 12450459,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11653
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 20161208,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "1c6d90d5-b779-4a77-92d1-cacccccf30d8",
+            "status": "ok",
+            "totalNanoseconds": 12342208,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 12332250,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 11670
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 20620916,
+        "p95Nanoseconds": 25478459
+      }
+    },
+    {
+      "name": "exec.fresh-process-wait-batch",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 81474625,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "12c6e818-24d8-458f-bdf5-27a4cd664fa2",
+            "status": "ok",
+            "totalNanoseconds": 73404125,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 73398209,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "exec.run",
+                "durationNanoseconds": 61319667,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11695
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 83287291,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "315f0fb2-15fd-4642-98c1-7e0ff3009d00",
+            "status": "ok",
+            "totalNanoseconds": 74875792,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 74869667,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "exec.run",
+                "durationNanoseconds": 61520625,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11735
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 80388792,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "710a87c3-57a7-4e31-8774-f27c5d18d0ad",
+            "status": "ok",
+            "totalNanoseconds": 71523083,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 71516625,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "exec.run",
+                "durationNanoseconds": 59722417,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11756
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 78655167,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "663f62b4-aa72-4d1b-94b5-95cd9c6da5f4",
+            "status": "ok",
+            "totalNanoseconds": 70721625,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 70715209,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "exec.run",
+                "durationNanoseconds": 58135417,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11784
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 78103458,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "424e760b-4dff-4749-bea4-369e49604ece",
+            "status": "ok",
+            "totalNanoseconds": 69891417,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 69884459,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "exec.run",
+                "durationNanoseconds": 58150166,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11805
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 78965875,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "5703d265-eb17-40ee-8400-d27aeb484776",
+            "status": "ok",
+            "totalNanoseconds": 71194500,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 71188541,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "exec.run",
+                "durationNanoseconds": 59336583,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11829
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 85318416,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "27a4c5b0-eaf3-40c1-9dab-22060dd50192",
+            "status": "ok",
+            "totalNanoseconds": 76560958,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 76554833,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "exec.run",
+                "durationNanoseconds": 62798125,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11849
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 78965875,
+        "p95Nanoseconds": 85318416
+      }
+    },
+    {
+      "name": "daemon.cold-host-status-including-startup",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 42834168,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "e0500135-3ca6-4cb8-b9ed-eb62f1ced357",
+            "status": "ok",
+            "totalNanoseconds": 9428250,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 9421542,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 2672083,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11916
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 40373167,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "7180526d-0789-4f54-a2bd-27cd9f3ca90e",
+            "status": "ok",
+            "totalNanoseconds": 8952542,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 8946125,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 1879875,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11945
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 43266834,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "d8aa98f9-743f-4bb0-ab89-fe8a2201b678",
+            "status": "ok",
+            "totalNanoseconds": 9841292,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 9832625,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 2006625,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11961
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 42836292,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "505b01de-4f63-4c72-9372-5879994c2676",
+            "status": "ok",
+            "totalNanoseconds": 9521541,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 9514375,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 1922167,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11974
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 44865833,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "5ac023dc-e96c-4fc8-a465-8758b025bc62",
+            "status": "ok",
+            "totalNanoseconds": 9403292,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 9397375,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 2789667,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 11987
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 42762916,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "8d952e03-ca3d-4a86-98f9-a9d2faee154c",
+            "status": "ok",
+            "totalNanoseconds": 9040500,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 9034833,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 2030750,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 12001
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 44219124,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "9342e382-8f2c-4ceb-98ee-6cef4d29717b",
+            "status": "ok",
+            "totalNanoseconds": 9350291,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 9344625,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 2222083,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 12054
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 43266834,
+        "p95Nanoseconds": 44865833
+      }
+    },
+    {
+      "name": "daemon.warm-host-fresh-cli-status",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 18429459,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "b7f562ba-e421-45c6-8a81-aa46196a728c",
+            "status": "ok",
+            "totalNanoseconds": 9849416,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 9844208,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 2203125,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 12103
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 16140875,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "051240b4-5f7a-4c5b-9524-c27f1a90e086",
+            "status": "ok",
+            "totalNanoseconds": 8544625,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 8538958,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 1024541,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 12112
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "wallNanoseconds": 16151041,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "8383f27a-4cae-402a-8a2a-eeff2fabb6eb",
+            "status": "ok",
+            "totalNanoseconds": 8017667,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 8008916,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 892958,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 12120
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 17542458,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "eeec07ea-22b4-4131-9b93-8d7e8aabf3f5",
+            "status": "ok",
+            "totalNanoseconds": 8607083,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 8599583,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 1075834,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 12129
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 17007458,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "922e0949-bf2f-416e-8397-0e60ddc1c257",
+            "status": "ok",
+            "totalNanoseconds": 8349250,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 8343042,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 1207458,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 12162
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 16480000,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "c9ea635c-fefc-413d-9f9d-f81535575fa2",
+            "status": "ok",
+            "totalNanoseconds": 8712375,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 8705375,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 1118875,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 12170
+          },
+          "stderrTruncated": false
+        },
+        {
+          "status": "ok",
+          "wallNanoseconds": 17658750,
+          "exitCode": 0,
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "202cdf56-a70e-4cb5-ae99-abcb6898320b",
+            "status": "ok",
+            "totalNanoseconds": 8763000,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 8744500,
+                "outcome": "ok"
+              },
+              {
+                "id": 2,
+                "phase": "daemon.request",
+                "durationNanoseconds": 1380250,
+                "outcome": "ok",
+                "parentID": 1
+              }
+            ],
+            "processID": 12187
+          },
+          "stderrTruncated": false
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 17007458,
+        "p95Nanoseconds": 17658750
+      },
+      "serviceSetupNanoseconds": 25488000
+    },
+    {
+      "name": "mcp.cold-host-wait-including-startup",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "680e9355-a2e2-429b-a110-7811ea650215",
+            "status": "ok",
+            "totalNanoseconds": 16302917,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 16293583,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12259
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 206012749
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "bf585a44-dd41-413a-9986-ffb972fd68c6",
+            "status": "ok",
+            "totalNanoseconds": 15680375,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15674292,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12300
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 207351709
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "598c30dc-370d-4f30-97d6-33e0b12ecc05",
+            "status": "ok",
+            "totalNanoseconds": 16024583,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 16018166,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12334
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 205174417
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "952b7040-b90e-4c8d-ab88-e6dff152228e",
+            "status": "ok",
+            "totalNanoseconds": 15272166,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15265583,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12402
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 210014666
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "5d5dcb92-ac11-4a51-9edd-645502536b87",
+            "status": "ok",
+            "totalNanoseconds": 15431875,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15425375,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12465
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 209371458
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "a1d4c4c1-e545-4388-914c-cf2d25006741",
+            "status": "ok",
+            "totalNanoseconds": 16712708,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 16706042,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12529
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 195573708
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "38afb501-4a4f-4d37-b1f0-acd89c606209",
+            "status": "ok",
+            "totalNanoseconds": 14971042,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 14963708,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12604
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 201664667
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 205174417,
+        "p95Nanoseconds": 210014666
+      }
+    },
+    {
+      "name": "mcp.warm-host-fresh-worker",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "f59ba84e-0153-4a96-b53a-50e93470a2f8",
+            "status": "ok",
+            "totalNanoseconds": 15825792,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15820125,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12679
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 34154292
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "29b97046-07dc-41ae-8d13-b21d2632a6b5",
+            "status": "ok",
+            "totalNanoseconds": 15761333,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15755167,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12700
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 35480625
+        }
+      ],
+      "samples": [
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "a0b1dcbc-bef8-4a41-b269-828d4e10f27b",
+            "status": "ok",
+            "totalNanoseconds": 15942375,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15935125,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12713
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 35048042
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "637e1bfa-82d9-4c23-ba6a-f08b360627f3",
+            "status": "ok",
+            "totalNanoseconds": 15263042,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15256833,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12718
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 34405625
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "10963001-ea69-4ede-aa9c-9a03082d963a",
+            "status": "ok",
+            "totalNanoseconds": 15609709,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15602292,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12723
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 34562875
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "652a100d-4b4b-489f-8f02-d6b69d8d321e",
+            "status": "ok",
+            "totalNanoseconds": 15506500,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15498584,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12736
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 35556375
+        },
+        {
+          "status": "ok",
+          "trace": {
+            "schemaVersion": 1,
+            "requestID": "0c232ed7-0372-4e94-9fe5-85d507679e75",
+            "status": "ok",
+            "totalNanoseconds": 15233125,
+            "droppedSpans": 0,
+            "spans": [
+              {
+                "id": 1,
+                "phase": "command",
+                "durationNanoseconds": 15226833,
+                "outcome": "ok"
+              }
+            ],
+            "processID": 12742
+          },
+          "stderrTruncated": false,
+          "exitCode": 0,
+          "wallNanoseconds": 32687833
+        }
+      ],
+      "statistics": {
+        "successful": 5,
+        "failed": 0,
+        "skipped": 0,
+        "p50Nanoseconds": 34562875,
+        "p95Nanoseconds": 35556375
+      },
+      "serviceSetupNanoseconds": 170781666
+    },
+    {
+      "name": "live.direct-fresh-process.get-title",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "samples": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "statistics": {
+        "successful": 0,
+        "failed": 0,
+        "skipped": 5,
+        "p50Nanoseconds": null,
+        "p95Nanoseconds": null
+      }
+    },
+    {
+      "name": "live.direct-fresh-process.get-url",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "samples": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "statistics": {
+        "successful": 0,
+        "failed": 0,
+        "skipped": 5,
+        "p50Nanoseconds": null,
+        "p95Nanoseconds": null
+      }
+    },
+    {
+      "name": "live.warm-daemon-fresh-process.get-title",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "samples": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "statistics": {
+        "successful": 0,
+        "failed": 0,
+        "skipped": 5,
+        "p50Nanoseconds": null,
+        "p95Nanoseconds": null
+      }
+    },
+    {
+      "name": "live.warm-daemon-fresh-process.get-url",
+      "timing": "on",
+      "sampleCount": 5,
+      "warmupCount": 2,
+      "warmups": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "samples": [
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        },
+        {
+          "status": "skip",
+          "reason": "gui_preflight_not_clear",
+          "wallNanoseconds": null,
+          "trace": null
+        }
+      ],
+      "statistics": {
+        "successful": 0,
+        "failed": 0,
+        "skipped": 5,
+        "p50Nanoseconds": null,
+        "p95Nanoseconds": null
+      }
+    }
+  ]
+}

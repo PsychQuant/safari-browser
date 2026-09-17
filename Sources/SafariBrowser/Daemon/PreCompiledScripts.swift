@@ -221,14 +221,16 @@ enum PreCompiledScripts {
         /// snapshot of the result descriptor.
         func execute(source: String) throws -> ExecutionResult {
             let script = try compiledLocked(for: source)
-            var errorInfo: NSDictionary?
-            let descriptor = script.executeAndReturnError(&errorInfo)
-            if let info = errorInfo {
-                let message = (info["NSAppleScriptErrorMessage"] as? String)
-                    ?? String(describing: info)
-                throw Error.executionFailed(message)
+            return try PerformanceTrace.span(.daemonExecute) {
+                var errorInfo: NSDictionary?
+                let descriptor = script.executeAndReturnError(&errorInfo)
+                if let info = errorInfo {
+                    let message = (info["NSAppleScriptErrorMessage"] as? String)
+                        ?? String(describing: info)
+                    throw Error.executionFailed(message)
+                }
+                return ExecutionResult(descriptor: descriptor)
             }
-            return ExecutionResult(descriptor: descriptor)
         }
 
         /// Number of compiled handles currently cached.
@@ -242,18 +244,20 @@ enum PreCompiledScripts {
         // MARK: - Actor-isolated helpers
 
         private func compiledLocked(for source: String) throws -> NSAppleScript {
-            if let existing = cache[source] { return existing }
-            guard let script = NSAppleScript(source: source) else {
-                throw Error.compilationFailed("NSAppleScript init returned nil")
+            if let existing = cache[source] { return PerformanceTrace.span(.daemonCacheHit) { existing } }
+            return try PerformanceTrace.span(.daemonCompile) {
+                guard let script = NSAppleScript(source: source) else {
+                    throw Error.compilationFailed("NSAppleScript init returned nil")
+                }
+                var errorInfo: NSDictionary?
+                if !script.compileAndReturnError(&errorInfo) {
+                    let message = (errorInfo?["NSAppleScriptErrorMessage"] as? String)
+                        ?? String(describing: errorInfo)
+                    throw Error.compilationFailed(message)
+                }
+                cache[source] = script
+                return script
             }
-            var errorInfo: NSDictionary?
-            if !script.compileAndReturnError(&errorInfo) {
-                let message = (errorInfo?["NSAppleScriptErrorMessage"] as? String)
-                    ?? String(describing: errorInfo)
-                throw Error.compilationFailed(message)
-            }
-            cache[source] = script
-            return script
         }
     }
 }

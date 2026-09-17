@@ -3,6 +3,13 @@
 ## Unreleased
 
 - **Native file URL upload** (#101, acceptance in progress): replaces upload keyboard navigation with a file URL clipboard lease, named AX Paste/Upload, bounded target checks and selected-file validation. Preserves newer clipboard contents and refuses overlapping native uploads. Mechanism fixtures cover hidden and special paths; real WebKit timestamps and delivery before page input handlers are regression-tested; directory inputs are rejected; final Safari CLI acceptance remains pending.
+
+- **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
+
+- **Daemon early disconnects** (#175): close an accepted connection when its per-socket SIGPIPE protection cannot be installed, instead of writing an unprotected handshake that could terminate the service. Other clients, error replies and shutdown retain their existing behavior.
+
+- **Opt-in performance evidence** (#167): adds bounded request-local timing for CLI, bridge, daemon and AX stages, plus fixed safe benchmark scenarios for fresh/warm execution. Default stdout and command semantics remain unchanged; GUI cases require explicit opt-in and unavailable evidence stays marked as skipped.
+
 - **Repository checkout metadata** (#165): stop tracking generated SafariVision Xcode build data, including undeclared dependency gitlinks that broke standard GitHub checkout. The cache directory is ignored, and Git tracking/submodule regression checks protect the checkout path.
 
 - **Verified PDF publication** (#160): exports use a private staging `.pdf`, a shared native deadline and original-window/page checks. Success requires save-panel closure and a coherent, readable independent PDF snapshot, published atomically. Extensionless paths receive `.pdf`; explicit extensions are preserved and stdout names the actual output. `--overwrite` authorizes final entry replacement without following a leaf symlink; no native Replace action is sent. This supersedes the #106 completion-timing limitation below.

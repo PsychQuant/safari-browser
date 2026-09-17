@@ -40,21 +40,26 @@ final class BoundedAXWorker: @unchecked Sendable {
         budget: TimeInterval, fallback: Value,
         operation: @escaping @Sendable (DispatchTime) -> Value
     ) -> Value {
-        guard budget.isFinite, budget > 0 else { return fallback }
-        let deadline = DispatchTime.now() + min(budget, 0.8)
-        guard acquire() else { return fallback }
-        let box = ResultBox(fallback: fallback)
-        queue.async { [self] in
-            // Scheduling itself consumes the same budget. Do not start a new
-            // AX operation if this request expired before its worker started.
-            let value = DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds
-                ? operation(deadline) : fallback
-            release()
-            box.complete(value)
+        return PerformanceTrace.span(.axWait) {
+            guard budget.isFinite, budget > 0 else { return fallback }
+            let deadline = DispatchTime.now() + min(budget, 0.8)
+            guard acquire() else { return fallback }
+            let box = ResultBox(fallback: fallback)
+            let timingContext = PerformanceTrace.context
+            queue.async { [self] in
+                // Scheduling itself consumes the same budget. Do not start a new
+                // AX operation if this request expired before its worker started.
+                let value = PerformanceTrace.$context.withValue(timingContext) {
+                    DispatchTime.now().uptimeNanoseconds < deadline.uptimeNanoseconds
+                        ? PerformanceTrace.span(.axInspect) { operation(deadline) } : fallback
+                }
+                release()
+                box.complete(value)
+            }
+            let completed = box.ready.wait(timeout: deadline) == .success
+                && DispatchTime.now().uptimeNanoseconds <= deadline.uptimeNanoseconds
+            return box.take(completed: completed)
         }
-        let completed = box.ready.wait(timeout: deadline) == .success
-            && DispatchTime.now().uptimeNanoseconds <= deadline.uptimeNanoseconds
-        return box.take(completed: completed)
     }
 
     /// Keeps node references and side effects on the caller's thread. There is
