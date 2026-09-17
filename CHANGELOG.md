@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Daemon early disconnects** (#175): close an accepted connection when its per-socket SIGPIPE protection cannot be installed, instead of writing an unprotected handshake that could terminate the service. Other clients, error replies and shutdown retain their existing behavior.
+
 - **Opt-in performance evidence** (#167): adds bounded request-local timing for CLI, bridge, daemon and AX stages, plus fixed safe benchmark scenarios for fresh/warm execution. Default stdout and command semantics remain unchanged; GUI cases require explicit opt-in and unavailable evidence stays marked as skipped.
 
 - **Repository checkout metadata** (#165): stop tracking generated SafariVision Xcode build data, including undeclared dependency gitlinks that broke standard GitHub checkout. The cache directory is ignored, and Git tracking/submodule regression checks protect the checkout path.
