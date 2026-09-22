@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Anchored `js` targets and batched tab enumeration** (#180): `js` resolves `--window N --tab-in-window M`, `--window N` and the default target once at the command boundary into an identity-anchored tab (stable window id + tab index), so its up-to-six AppleScript round-trips no longer re-run the resolver — previously one full window/tab enumeration per step, six per command (20–26 s with 109 tabs open). The enumeration itself reads a window's tab URLs and names with two Apple events per window instead of two per tab (byte-identical output; 0.4 s vs 2.3 s at 109 tabs), which also speeds up `documents`, `--url` resolution and every native-path command; the per-tab loop survives only as the error fallback. Behaviour note: the default target is pinned to the front window's current tab when the command starts instead of being re-read before every step. `resolveToConcreteTarget` (used by `tab` / `open` on the `--profile` path) and the daemon's own enumeration are unchanged. The benchmark gains a `live.*.js-title` scenario. Same-time measurement at 109 tabs: `js --window 1 --tab-in-window 2` 11.6 s → 1.4 s; the remaining floor is six osascript launches.
+
 - **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
 
 - **Daemon early disconnects** (#175): close an accepted connection when its per-socket SIGPIPE protection cannot be installed, instead of writing an unprotected handshake that could terminate the service. Other clients, error replies and shutdown retain their existing behavior.

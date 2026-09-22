@@ -146,6 +146,7 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
   - 無 flag 時：AX 可用 → native + resolver；AX 不可用 → JS fallback + 10 MB 上限檢查
   - `--url plaud` 搭配 11 MB 檔案不再像 #24 那樣無解 — AX 可用就走 native，**不**觸發 10 MB 上限
 - **Wait breaking change**（#23）：原本的 `wait --url <pattern>` 改為 `wait --for-url <pattern>`，因為 `--url` 現在是 targeting flag
+- **`js` 的位置式目標在命令邊界 anchor**（#180）：`resolveToConcreteTarget` 只把 `.urlMatch` / `.documentIndex` 收斂成 `.resolvedTab`，而 `resolveScriptTarget` 只對 `.resolvedTab` 走捷徑——所以 `--window N --tab-in-window M` / `--window N` / 無 flag 的 `js` 過去**每一步**都重跑 resolver（`.windowTab` 每步一次完整列舉，六步六次，109 個分頁要 20 秒）。`JSCommand` 現在改走 `resolveToAnchoredTarget`：`.windowTab` 一次列舉、`.frontWindow` / `.windowIndex` 一個 `readWindowAnchor` round-trip（window id + current tab index），拿不到 anchor（0-tab window）就原樣退回位置式目標，#87 / #97 的錯誤路徑逐字不變。**`resolveToConcreteTarget` 的契約刻意不動**——`TabCommand` / `OpenCommand` / `resolveProfileScoped` 在 `--profile` 路徑 pattern-match 它回的 `.windowIndex` / `.windowTab`，改了會靜默丟 window。同一 issue 把 `listAllWindowsScript` 改成每視窗兩個 Apple event（`URL of every tab` / `name of every tab`），per-tab 讀只留在 `on error` fallback；結構由 `WindowEnumerationBatchingTests` 與 `ZeroTabWindowGuardTests` 一起 pin。語意微調：無 flag 的 `js` 在命令開始時就釘住 front window 當下的 current tab，不再每步重讀。
 
 **注意**：`documents` subcommand 列出 Safari `document` collection 的 MRU 順序，但 `--document N` 在 native path（#26）被解讀成「spatial window-major 第 N 個 tab」— 兩者在單視窗單 tab 等價，多 tab 情境下略有差異。JS path 保留 Safari 的 document-index semantics。
 

@@ -91,7 +91,9 @@ quantiles. The benchmark cannot force cleanup when the OS refuses a signal.
 
 `--live` additionally creates one owned localhost static page per timing mode,
 and may launch Safari if it is not running (including Safari's normal session
-restoration). It then measures direct and warm-daemon `get title`/`get url`. It verifies the window
+restoration). It then measures direct and warm-daemon `get title`/`get url`/`js document.title`
+(`live.<mode>.get-title`, `.get-url`, `.js-title`; the `js` row is the multi-round-trip
+protocol whose per-step target re-resolution #180 bounded). It verifies the window
 ID, exact URL, one-tab identity and clear-dialog state. Changed or uncertain
 ownership prevents cleanup actions and marks the report; an uncertain close is
 not retried. No upload, PDF, Print or arbitrary repeated mutation is supported.
@@ -121,3 +123,22 @@ observations, not stable population percentiles. Compare identical fixtures,
 versions, timing modes and warmup conditions, and retain timing-on/off results to
 expose instrumentation overhead. There is no fixed speed threshold in CI and no
 speedup is established merely by adding this measurement feature.
+
+## Reference: `js` with 109 tabs open (#180)
+
+Same machine, same minute, Safari with 5 windows / 109 tabs, `SAFARI_BROWSER_TRACE_TIMING=1`;
+a direct `osascript … do JavaScript` on the same tab took 0.19 s at the time.
+
+| form | before (09-11 build) | after | `target.native` spans (full enumerations) after |
+|---|---|---|---|
+| `js --window 1 --tab-in-window 2 'location.host'` | 11.6 s | 1.4 s | 1 (was 6) |
+| `js 'location.host'` (default target) | — | 1.4 s | 0 |
+| `js --url … --first-match 'location.host'` | — | 1.5 s | 1 |
+
+What changed: `js` anchors positional targets once at the command boundary
+(`resolveToAnchoredTarget`), so each of its six AppleScript steps takes the
+`.resolvedTab` shortcut instead of re-running the resolver; and the enumeration
+reads a window's tab URLs/names in two Apple events per window instead of two per
+tab (standalone 2.3 s → 0.43 s at 109 tabs, byte-identical output). The remaining
+~1.4 s is six `osascript` launches at ~0.2 s each — the same floor a direct
+`osascript` call pays per round-trip — and no longer grows with the total tab count.
