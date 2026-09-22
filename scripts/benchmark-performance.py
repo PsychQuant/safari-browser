@@ -23,6 +23,26 @@ import uuid
 PREFIX = b'[safari-browser timing] '
 MAX_CAPTURE = 65536
 FIXTURE_TITLE = 'Benchmark fixture'
+# Live operations measured against the owned fixture, in report order.
+# `js-title` (#180) is the multi-round-trip command: it store/read/cleans
+# protocol globals through up to six AppleScript steps, so it is where a
+# per-step target re-resolution (one full window enumeration per step
+# before #180) shows up as O(tabs) latency that `get` never exhibits.
+LIVE_OPERATIONS = ('get-title', 'get-url', 'js-title')
+
+
+def live_command(binary, operation, url):
+    if operation == 'get-title':
+        return [binary, 'get', 'title', '--url-exact', url]
+    if operation == 'get-url':
+        return [binary, 'get', 'url', '--url-exact', url]
+    if operation == 'js-title':
+        return [binary, 'js', '--url-exact', url, 'document.title']
+    raise ValueError(operation)
+
+
+def live_expected(operation, url):
+    return url if operation == 'get-url' else FIXTURE_TITLE
 PHASES = frozenset(('command target.resolve target.native applescript.direct applescript.daemon '
     'applescript.inprocess process.spawn process.wait file-dialog.run ax.wait ax.inspect '
     'daemon.request daemon.compile daemon.execute daemon.cache_hit exec.run').split())
@@ -657,9 +677,9 @@ def window_script(window_id, url, close=False, read_title=False):
 
 
 def live_skip_reports(timing, samples, warmups, reason, status='skip'):
-    return [scenario_report('live.' + mode + '.get-' + operation, timing, samples, warmups,
+    return [scenario_report('live.' + mode + '.' + operation, timing, samples, warmups,
                             lambda: failure(reason, status))
-            for mode in ('direct-fresh-process', 'warm-daemon-fresh-process') for operation in ('title', 'url')]
+            for mode in ('direct-fresh-process', 'warm-daemon-fresh-process') for operation in LIVE_OPERATIONS]
 
 
 def live_scenarios(binary, timing, samples, warmups, timeout):
@@ -746,7 +766,7 @@ def live_scenarios(binary, timing, samples, warmups, timeout):
                                 service = Service(binary, env, 'daemon', timeout)
                             except (OSError, ValueError, TimeoutError) as error:
                                 service_error = error
-                        for operation in ('title', 'url'):
+                        for operation in LIVE_OPERATIONS:
                             def measure(operation=operation):
                                 nonlocal service_failure
                                 if service_failure is not None:
@@ -766,9 +786,9 @@ def live_scenarios(binary, timing, samples, warmups, timeout):
                                 if service is not None and observe_exit(service.process) is not None:
                                     service_failure = 'service_exited'
                                     return failure(service_failure)
-                                result, output = run_process([binary, 'get', operation, '--url-exact', url],
+                                result, output = run_process(live_command(binary, operation, url),
                                     sample_env, timeout, capture_stdout=True)
-                                expected = FIXTURE_TITLE if operation == 'title' else url
+                                expected = live_expected(operation, url)
                                 if result['status'] == 'ok' and output != (expected + '\n').encode():
                                     result['status'] = 'error'
                                     result['reason'] = 'fixture_output_mismatch'
@@ -788,7 +808,7 @@ def live_scenarios(binary, timing, samples, warmups, timeout):
                                         result['status'] = 'error'
                                         result['reason'] = service_failure
                                 return result
-                            reports.append(scenario_report('live.' + mode + '.get-' + operation,
+                            reports.append(scenario_report('live.' + mode + '.' + operation,
                                 timing, samples, warmups, measure,
                                 setup=service.setup_nanoseconds if service else None))
                     finally:
