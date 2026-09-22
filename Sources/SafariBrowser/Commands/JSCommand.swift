@@ -48,9 +48,15 @@ struct JSCommand: AsyncParsableCommand {
         // in-script URL guard + bounded retry on every round-trip);
         // legacy enumeration without window ids degrades to positional
         // `.windowTab` / `.windowIndex`.
+        //
+        // #180: positional targets (`--window N --tab-in-window M`,
+        // `--window N`, no flag) are anchored here too — `.resolvedTab` is
+        // the only case `resolveScriptTarget` accepts without re-running
+        // the resolver, and this command issues up to six round-trips.
+        // Before this, `.windowTab` cost one full enumeration per step.
         let (initialTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let profile = target.resolveProfile()
-        let documentTarget = try await SafariBridge.resolveToConcreteTarget(
+        let documentTarget = try await SafariBridge.resolveToAnchoredTarget(
             initialTarget,
             firstMatch: firstMatch,
             warnWriter: warnWriter,
