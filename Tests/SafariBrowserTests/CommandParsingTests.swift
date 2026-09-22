@@ -812,6 +812,9 @@ extension SafariBridge.TargetDocument: Equatable {
             return lw == rw && lt == rt
         case (.documentIndex(let l), .documentIndex(let r)):
             return l == r
+        case (.resolvedTab(let lw, let lt, let lm, let lp), .resolvedTab(let rw, let rt, let rm, let rp)):
+            // #180: positional-anchoring tests assert on `.resolvedTab`.
+            return lw == rw && lt == rt && lm == rm && lp == rp
         default:
             return false
         }

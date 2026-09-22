@@ -367,6 +367,117 @@ enum SafariBridge {
         return .windowIndex(resolved.windowIndex)
     }
 
+    // MARK: - Positional target anchoring (#180)
+
+    /// The two facts a positional target needs to become identity-anchored:
+    /// the window's stable AppleScript id and the index of its current tab.
+    /// Read in ONE round-trip by `readWindowAnchor` (`windowAnchorScript`).
+    struct WindowAnchor: Sendable, Equatable {
+        let windowID: Int
+        let currentTabIndex: Int
+    }
+
+    /// AppleScript returning `id GS current-tab-index` for window `index`.
+    /// Deliberately not an enumeration — no tab URLs, no names, no repeat.
+    /// A 0-tab window raises on `current tab` (-1728); that error is the
+    /// "no anchor" signal and the caller keeps the positional target so the
+    /// #87 / #97 error paths stay byte-identical (see `anchoredTarget`).
+    static func windowAnchorScript(index: Int) -> String {
+        """
+        tell application "Safari"
+            set GS to (character id 29)
+            return ((id of window \(index)) as text) & GS & ((index of current tab of window \(index)) as text)
+        end tell
+        """
+    }
+
+    /// Parse `windowAnchorScript` output. Exactly two positive integers
+    /// separated by GS; anything else (empty, one field, zero / negative,
+    /// extra fields) is `nil` — a malformed anchor must degrade to the
+    /// positional target, never anchor to window id 0 / tab 0.
+    static func parseWindowAnchor(_ raw: String) -> WindowAnchor? {
+        let parts = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "\u{1D}")
+        guard parts.count == 2,
+              let id = Int(parts[0]), let tab = Int(parts[1]),
+              id > 0, tab > 0 else { return nil }
+        return WindowAnchor(windowID: id, currentTabIndex: tab)
+    }
+
+    /// One AppleScript round-trip; `nil` on any failure (no such window,
+    /// 0-tab window, timeout). Same budget shape as `readWindowID`.
+    static func readWindowAnchor(index: Int) async -> WindowAnchor? {
+        guard index > 0,
+              let raw = try? await runAppleScript(windowAnchorScript(index: index), timeout: 2)
+        else { return nil }
+        return parseWindowAnchor(raw)
+    }
+
+    /// Pure: map a positional window-level target onto the identity-anchored
+    /// `.resolvedTab` given its anchor. `nil` anchor → target unchanged.
+    /// `.windowTab` is NOT anchored here — the anchor only knows the window's
+    /// *current* tab, not tab M; that case collapses through the enumeration
+    /// path in `resolveToAnchoredTarget`. Already-concrete / matcher targets
+    /// pass through untouched.
+    static func anchoredTarget(
+        _ target: TargetDocument,
+        anchor: WindowAnchor?,
+        profile: String?
+    ) -> TargetDocument {
+        switch target {
+        case .frontWindow, .windowIndex:
+            guard let anchor else { return target }
+            return .resolvedTab(windowID: anchor.windowID, tabInWindow: anchor.currentTabIndex,
+                                rematch: nil, profile: profile)
+        case .windowTab, .urlMatch, .documentIndex, .resolvedTab:
+            return target
+        }
+    }
+
+    /// `resolveToConcreteTarget` for commands that issue MANY bridge calls
+    /// per invocation (#180: `js` runs up to six `doJavaScript` round-trips).
+    ///
+    /// `resolveToConcreteTarget` only collapses `.urlMatch` / `.documentIndex`
+    /// into `.resolvedTab`; it returns `.frontWindow` / `.windowIndex` /
+    /// `.windowTab` unchanged ("already concrete"). But only `.resolvedTab`
+    /// takes the no-resolve shortcut in `resolveScriptTarget` — every other
+    /// case re-runs `resolveNativeTarget` per call, which for `.windowTab` is
+    /// a full window/tab enumeration (six per `js` command with ~100 tabs
+    /// ≈ 20 s, #180). This wrapper spends at most ONE extra round-trip at the
+    /// command boundary so every later call is identity-anchored:
+    ///
+    /// - `.windowTab` → one enumeration, collapsed by `concreteTarget`
+    ///   (stays positional only for legacy records without a window id);
+    /// - `.frontWindow` / `.windowIndex` → `readWindowAnchor` (id + current
+    ///   tab in one script); no anchor (0-tab window, no window, timeout)
+    ///   → unchanged, so the existing error paths are byte-identical.
+    ///
+    /// Kept separate from `resolveToConcreteTarget` on purpose: `TabCommand`
+    /// / `OpenCommand` / `TargetOptions.resolveProfileScoped` pattern-match
+    /// its `.windowIndex` / `.windowTab` results on the `--profile` path and
+    /// would silently drop a `.resolvedTab`.
+    static func resolveToAnchoredTarget(
+        _ target: TargetDocument,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
+    ) async throws -> TargetDocument {
+        let concrete = try await resolveToConcreteTarget(
+            target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+        switch concrete {
+        case .resolvedTab, .urlMatch, .documentIndex:
+            return concrete
+        case .windowTab:
+            let resolved = try await resolveNativeTarget(
+                from: concrete, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+            return concreteTarget(from: resolved, original: concrete, profile: profile)
+        case .frontWindow:
+            return anchoredTarget(concrete, anchor: await readWindowAnchor(index: 1), profile: profile)
+        case .windowIndex(let n):
+            return anchoredTarget(concrete, anchor: await readWindowAnchor(index: n), profile: profile)
+        }
+    }
+
     // MARK: - Focus-existing (Group 8: open default)
 
     /// Pure helper: given an enumeration of windows, find the first tab
