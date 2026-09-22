@@ -2607,10 +2607,33 @@ enum SafariBridge {
                     -- #79: stable window id — unlike the z-order index w,
                     -- it doesn't dangle when the user raises another window.
                     set winID to id of window w
+                    -- #180: read every tab's URL / name in TWO Apple events
+                    -- per window instead of two per tab (109 tabs: ~218 → 10
+                    -- events; 2.6–4.9 s → 0.5–1.0 s standalone, identical
+                    -- output). The per-tab loop survives only as the
+                    -- fallback: a whole-window read that raises (a tab
+                    -- mid-load / ghost tab) or comes back a different length
+                    -- than tabCount (a tab closed between the two reads)
+                    -- refills per tab — and then fails on the exact tab, as
+                    -- the enumeration did before #180.
+                    set urls to {}
+                    set names to {}
+                    try
+                        set urls to URL of every tab of window w
+                        set names to name of every tab of window w
+                        if (count of urls) is not tabCount or (count of names) is not tabCount then error "tab list changed under enumeration"
+                    on error
+                        set urls to {}
+                        set names to {}
+                        repeat with t from 1 to tabCount
+                            set end of urls to (URL of tab t of window w)
+                            set end of names to (name of tab t of window w)
+                        end repeat
+                    end try
                     repeat with t from 1 to tabCount
-                        set tabUrl to URL of tab t of window w
+                        set tabUrl to item t of urls
                         if tabUrl is missing value then set tabUrl to ""
-                        set tabName to name of tab t of window w
+                        set tabName to item t of names
                         if tabName is missing value then set tabName to ""
                         if t = currentIdx then
                             set isCur to "1"
