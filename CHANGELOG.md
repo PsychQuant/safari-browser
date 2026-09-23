@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Dialog probe reaches a verdict on ordinary windows** (#187): the per-command blocking-dialog probe returned `unprobed` for every window on macOS 27.2 Safari, so each `js` (and every resolver-routed command) printed "could not inspect … completely". Safari's page scroll area sits exactly at the probe's depth limit and still has children, which counted as a truncated walk. A scroll area that hosts the page's `AXWebArea` is now treated like the WebArea itself: page content, a leaf, not a truncation. Any other node at the limit with children still yields `unprobed`, and a failed read of the viewport's children does too. The walk also reads each node's role, subrole and children in one Accessibility round trip instead of three, so the first probe of a process has more room inside its 95 ms budget. Measured on the reporting machine: 12/12 `unprobed` before, 11/12 `clear` after under heavy background load; a probe that still runs out of budget reports `unprobed` as before.
+
 - **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
 
 - **Daemon early disconnects** (#175): close an accepted connection when its per-socket SIGPIPE protection cannot be installed, instead of writing an unprotected handshake that could terminate the service. Other clients, error replies and shutdown retain their existing behavior.
