@@ -22,10 +22,75 @@ struct WaitCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Timeout in milliseconds (default: 30000)")
     var timeout: Int = 30000
 
+    // #182: randomized wait. One duration is drawn from a Cauchy distribution
+    // doubly truncated to [--min, --max]; --median is the median of the
+    // truncated distribution. See TruncatedCauchy for why this truncates
+    // instead of clamping.
+    @Option(name: .long, help: "Wait for a randomized duration drawn from this distribution (supported: cauchy). --max is the only cap; --timeout does not apply")
+    var jitter: JitterDistribution?
+
+    @Option(name: .customLong("min"), help: "Jitter lower bound in milliseconds (default: 2000)")
+    var jitterMin: Double?
+
+    @Option(name: .customLong("max"), help: "Jitter upper bound in milliseconds (default: 60000)")
+    var jitterMax: Double?
+
+    @Option(name: .customLong("median"), help: "Median of the truncated jitter distribution in milliseconds (default: 3000)")
+    var jitterMedian: Double?
+
+    @Option(name: .customLong("scale"), help: "Cauchy scale in milliseconds (default: 800)")
+    var jitterScale: Double?
+
+    // #182 verify R1: every `wait` is its own process, so a seed cannot carry a
+    // sequence across calls — the same seed always yields the same single draw.
+    // Using it between steps of a script reinstates a fixed interval, which is
+    // exactly what --jitter exists to remove. Testing and debugging only.
+    @Option(name: .long, help: "Testing only: fixes this call's draw. The same seed always gives the same delay, so do not use it to pace a script")
+    var seed: UInt64?
+
     @OptionGroup var target: TargetOptions
 
+    enum JitterDistribution: String, ExpressibleByArgument, CaseIterable {
+        case cauchy
+    }
+
+    /// The truncated distribution described by the jitter options, with defaults filled in.
+    func jitterDistribution() throws -> TruncatedCauchy {
+        try TruncatedCauchy(
+            min: jitterMin ?? TruncatedCauchy.defaultMin,
+            max: jitterMax ?? TruncatedCauchy.defaultMax,
+            median: jitterMedian ?? TruncatedCauchy.defaultMedian,
+            scale: jitterScale ?? TruncatedCauchy.defaultScale
+        )
+    }
+
+    private var hasJitterParameter: Bool {
+        jitterMin != nil || jitterMax != nil || jitterMedian != nil || jitterScale != nil || seed != nil
+    }
+
+    private func validateJitter() throws {
+        guard jitter != nil else {
+            if hasJitterParameter {
+                throw ValidationError("--min, --max, --median, --scale and --seed require --jitter cauchy")
+            }
+            return
+        }
+        if milliseconds != nil || forUrl != nil || js != nil {
+            throw ValidationError("--jitter cannot be combined with positional milliseconds, --for-url, or --js")
+        }
+        let distribution = try jitterDistribution()
+        // Double → Int traps on out-of-range values, so bound-check before
+        // handing the upper bound to the #153 overflow check.
+        let upper = distribution.max.rounded(.up)
+        guard upper < Double(Int.max), let upperMilliseconds = Int(exactly: upper) else {
+            throw ValidationError("--max \(distribution.max) exceeds the maximum representable wait")
+        }
+        _ = try Self.nanoseconds(forMilliseconds: upperMilliseconds)
+    }
+
     func validate() throws {
-        if milliseconds == nil && forUrl == nil && js == nil {
+        try validateJitter()
+        if milliseconds == nil && forUrl == nil && js == nil && jitter == nil {
             // #23 verify R1 finding: detect the rename trap. Users running
             // old `wait --url <pattern>` syntax parse --url as a targeting
             // flag (not a wait predicate) and hit this validate() with a
@@ -37,7 +102,7 @@ struct WaitCommand: AsyncParsableCommand {
                     "`wait --url <pattern>` was renamed to `wait --for-url <pattern>` in #23 — `--url` is now a global targeting flag. Retry as `safari-browser wait --for-url \"\(target.url!)\"` (see CHANGELOG)."
                 )
             }
-            throw ValidationError("Provide milliseconds, --for-url, or --js")
+            throw ValidationError("Provide milliseconds, --for-url, --js, or --jitter cauchy")
         }
     }
 
@@ -52,8 +117,23 @@ struct WaitCommand: AsyncParsableCommand {
         return converted.partialValue
     }
 
+    /// The single jitter duration this invocation sleeps for, in milliseconds.
+    func drawJitterMilliseconds() throws -> Double {
+        let distribution = try jitterDistribution()
+        if let seed {
+            var generator = SplitMix64(seed: seed)
+            return distribution.sample(using: &generator)
+        }
+        var generator = SystemRandomNumberGenerator()
+        return distribution.sample(using: &generator)
+    }
+
     func run() async throws {
-        if let forUrl {
+        if jitter != nil {
+            let drawn = try drawJitterMilliseconds()
+            // drawn < --max, which validate() proved representable in nanoseconds.
+            try await Task.sleep(nanoseconds: UInt64(drawn * 1_000_000))
+        } else if let forUrl {
             try await waitForURL(pattern: forUrl)
         } else if let js {
             try await waitForJS(expression: js)
