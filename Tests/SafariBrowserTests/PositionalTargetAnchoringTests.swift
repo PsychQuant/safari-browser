@@ -7,8 +7,9 @@ import XCTest
 /// the no-enumeration shortcut in `resolveScriptTarget`. The pure layer of
 /// the fix — mapping a positional target plus a one-round-trip window anchor
 /// (stable window id + current tab index) onto `.resolvedTab` — is pinned
-/// here. The live orchestration (`resolveToAnchoredTarget`) is covered by
-/// `make test-target-identity`.
+/// here. The orchestration (`resolveToAnchoredTarget` wired into `JSCommand`)
+/// is covered against a fake Safari in `JSCommandRoundTripTests`; the live
+/// `make test-target-identity` suite only drives `--url` targets.
 final class PositionalTargetAnchoringTests: XCTestCase {
 
     private let gs = "\u{1D}"
@@ -75,6 +76,15 @@ final class PositionalTargetAnchoringTests: XCTestCase {
         XCTAssertFalse(script.contains("URL of"), script)
         XCTAssertFalse(script.contains("name of"), script)
         XCTAssertFalse(script.contains("repeat"), script)
+    }
+
+    func testWindowAnchorScriptByIDAddressesTheStableID() {
+        // #180 verify R1: after a --profile enumeration the anchor must be read
+        // by window id — a z-order index can name another window by then.
+        let script = SafariBridge.windowAnchorScript(windowID: 102)
+        XCTAssertTrue(script.contains("id of window id 102"), script)
+        XCTAssertTrue(script.contains("index of current tab of window id 102"), script)
+        XCTAssertFalse(script.contains("of window 102)"), "must not fall back to a z-order index: \(script)")
     }
 
     // MARK: - .windowTab collapses through the enumeration path (pin)

@@ -63,14 +63,18 @@ struct JSCommand: AsyncParsableCommand {
             profile: profile
         )
         let result: String
-        if large || output != nil {
-            result = try await runLargePath(jsCode, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
-        } else {
-            guard let nonLarge = try await runNonLargePath(
-                jsCode, target: documentTarget, firstMatch: firstMatch,
-                warnWriter: warnWriter, profile: profile
-            ) else { return }   // #82: the code navigated — reported, nothing to print
-            result = nonLarge
+        do {
+            if large || output != nil {
+                result = try await runLargePath(jsCode, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+            } else {
+                guard let nonLarge = try await runNonLargePath(
+                    jsCode, target: documentTarget, firstMatch: firstMatch,
+                    warnWriter: warnWriter, profile: profile
+                ) else { return }   // #82: the code navigated — reported, nothing to print
+                result = nonLarge
+            }
+        } catch let error as SafariBrowserError {
+            throw Self.anchoredFailure(error, original: initialTarget, anchored: documentTarget)
         }
 
         if let output {
@@ -79,6 +83,35 @@ struct JSCommand: AsyncParsableCommand {
             FileHandle.standardError.write(Data("Written \(result.count) bytes to \(output)\n".utf8))
         } else if !result.isEmpty {
             print(result)
+        }
+    }
+
+    /// #180 verify R1: once a positional target is anchored to
+    /// `tab T of window id W`, a mid-command -1719 / -1728 is translated by the
+    /// bridge into `documentNotFound`, whose message lists every open tab of
+    /// every window and profile. The default target never produced that
+    /// listing before it was anchored (the bridge passes `.frontWindow`
+    /// failures through untouched), so anchoring would have widened what a
+    /// failed `js` prints. Report the vanished tab by the target the user
+    /// actually gave instead. Targets that were not positional, or failures
+    /// before anchoring, pass through unchanged.
+    static func anchoredFailure(
+        _ error: SafariBrowserError,
+        original: SafariBridge.TargetDocument,
+        anchored: SafariBridge.TargetDocument
+    ) -> SafariBrowserError {
+        guard case .documentNotFound = error,
+              case .resolvedTab(let windowID, let tab, .none, _) = anchored else { return error }
+        let anchor = "window id \(windowID) tab \(tab)"
+        switch original {
+        case .frontWindow:
+            return .anchoredTabGone(target: "the front window's current tab (\(anchor))")
+        case .windowIndex(let n):
+            return .anchoredTabGone(target: "the current tab of window \(n) (\(anchor))")
+        case .windowTab(let w, let t):
+            return .anchoredTabGone(target: "window \(w) tab \(t) (\(anchor))")
+        case .urlMatch, .documentIndex, .resolvedTab:
+            return error
         }
     }
 

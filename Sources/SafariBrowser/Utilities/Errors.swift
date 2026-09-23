@@ -103,6 +103,12 @@ enum SafariBrowserError: LocalizedError {
     case axOperationFailed(String)
     case windowIdentityAmbiguous(reason: String)
     case targetTabChanged(expected: String, actualURL: String?)
+    /// #180: a positional target (`--window N --tab-in-window M`, `--window N`
+    /// or the default) was anchored to a stable window id + tab at command
+    /// start and that tab stopped existing mid-command. Deliberately not
+    /// `documentNotFound`: that error lists every open tab of every profile,
+    /// which the default target never did before it was anchored.
+    case anchoredTabGone(target: String)
 
     var errorDescription: String? {
         switch self {
@@ -122,6 +128,14 @@ enum SafariBrowserError: LocalizedError {
                 Target tab changed mid-command: expected \(expected), but the tab no longer matches after one automatic re-resolve.
                 \(actualLine)The window may have closed, or the tab moved/navigated during execution.
                 Run `safari-browser documents` to re-discover targets, then retry.
+                """
+        case .anchoredTabGone(let target):
+            // #180: no re-resolve is attempted — a positional target carries
+            // no URL to find the tab again by, and following the position
+            // would run the rest of the protocol in whatever tab slid into it.
+            return """
+                The target tab went away mid-command: \(target) was fixed when the command started and no longer exists (the tab or its window closed).
+                Nothing was retried. Run `safari-browser documents` to re-discover targets, then retry.
                 """
         case .fileNotFound(let path):
             return "File not found: \(path)"

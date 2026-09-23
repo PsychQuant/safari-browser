@@ -383,10 +383,22 @@ enum SafariBridge {
     /// "no anchor" signal and the caller keeps the positional target so the
     /// #87 / #97 error paths stay byte-identical (see `anchoredTarget`).
     static func windowAnchorScript(index: Int) -> String {
+        windowAnchorScript(windowRef: "window \(index)")
+    }
+
+    /// Same round-trip addressed by the stable window id (#180 verify R1):
+    /// used after a `--profile` enumeration, where re-reading by z-order
+    /// index could land on a window that moved in between — possibly another
+    /// profile's.
+    static func windowAnchorScript(windowID: Int) -> String {
+        windowAnchorScript(windowRef: "window id \(windowID)")
+    }
+
+    private static func windowAnchorScript(windowRef: String) -> String {
         """
         tell application "Safari"
             set GS to (character id 29)
-            return ((id of window \(index)) as text) & GS & ((index of current tab of window \(index)) as text)
+            return ((id of \(windowRef)) as text) & GS & ((index of current tab of \(windowRef)) as text)
         end tell
         """
     }
@@ -411,6 +423,14 @@ enum SafariBridge {
               let raw = try? await runAppleScript(windowAnchorScript(index: index), timeout: 2)
         else { return nil }
         return parseWindowAnchor(raw)
+    }
+
+    static func readWindowAnchor(windowID: Int) async -> WindowAnchor? {
+        guard windowID > 0,
+              let raw = try? await runAppleScript(windowAnchorScript(windowID: windowID), timeout: 2),
+              let anchor = parseWindowAnchor(raw), anchor.windowID == windowID
+        else { return nil }
+        return anchor
     }
 
     /// Pure: map a positional window-level target onto the identity-anchored
@@ -462,6 +482,26 @@ enum SafariBridge {
         warnWriter: ((String) -> Void)? = nil,
         profile: String? = nil
     ) async throws -> TargetDocument {
+        // `--profile` + window-level target: resolve once through the profile
+        // filter, then anchor by the resolved window's stable id. Going through
+        // `resolveToConcreteTarget` would collapse to `.windowIndex(i)` and the
+        // anchor would re-read by z-order index — a second round-trip in which
+        // the index can come to name a different window, possibly another
+        // profile's (#180 verify R1).
+        if let profile, !profile.isEmpty {
+            switch target {
+            case .frontWindow, .windowIndex:
+                let resolved = try await resolveNativeTarget(
+                    from: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+                if let id = resolved.windowID, let anchor = await readWindowAnchor(windowID: id) {
+                    return .resolvedTab(windowID: id, tabInWindow: anchor.currentTabIndex,
+                                        rematch: nil, profile: profile)
+                }
+                return concreteTarget(from: resolved, original: target, profile: profile)
+            default:
+                break
+            }
+        }
         let concrete = try await resolveToConcreteTarget(
             target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
         switch concrete {
