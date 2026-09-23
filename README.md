@@ -1007,6 +1007,14 @@ safari-browser wait --for-url <pattern>  # wait for URL match
 safari-browser wait --js <expr>          # wait for JS truthy
 safari-browser wait --timeout <ms>       # custom timeout (default 30s)
 
+# Randomized pacing between steps (#182): one duration drawn from a Cauchy
+# distribution doubly truncated to [--min, --max] ms. --median is the median
+# of the truncated distribution. Defaults: 2000..60000 ms, median 3000, scale 800.
+# Out-of-range draws are discarded, never clamped, so no delay piles up on a bound.
+safari-browser wait --jitter cauchy
+safari-browser wait --jitter cauchy --min 1500 --max 20000 --median 4000
+safari-browser wait --jitter cauchy --seed 42   # reproducible sequence
+
 # Multi-window targeting (#23): wait polls the targeted document, not
 # the front window, so you can wait for a Plaud redirect while some
 # other window has focus.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Randomized wait** (#182): `wait --jitter cauchy` draws one duration from a Cauchy distribution doubly truncated to `--min`/`--max` milliseconds (defaults 2000/60000) and sleeps for it. `--median` is the median of the truncated distribution (default 3000); the location parameter is solved by bisection restricted to the bounds, where the truncated median is monotone, and an unreachable median is a validation error naming the achievable range. Sampling uses the inverse CDF, so draws never land on a bound. `--seed` makes the sequence reproducible. This replaces the SKILL.md formula, whose `max(2, …)` clamp put 22.3% of delays at exactly 2.0 s and had no upper bound. `--jitter` cannot be combined with positional milliseconds, `--for-url` or `--js`; existing wait modes are unchanged.
+
 - **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
 
 - **Daemon early disconnects** (#175): close an accepted connection when its per-socket SIGPIPE protection cannot be installed, instead of writing an unprotected handshake that could terminate the service. Other clients, error replies and shutdown retain their existing behavior.
