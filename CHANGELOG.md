@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`wait` resolves its target once** (#168): `wait --js` and `wait --for-url` re-resolved the target on every 500 ms poll — one full window/tab enumeration per poll for a `--url` target — and a `--for-url` wait on a target named by its old URL failed on the poll after the very navigation it was waiting for. The target is now resolved once, before the first poll and inside the caller's timeout, with the same anchoring `js` uses (#180): a `--url` / `--document` target stays on its tab, the default target and `--window N` stay on the window's current tab, and a poll fails with the "target tab changed mid-command" error if another tab has become current since the target was resolved. The multi-match warning still fires once. Live check at 100+ tabs: three polls, one enumeration (previously one per poll). Unchanged: a single slow poll can still overrun the timeout, since each poll has no deadline of its own.
+
 - **One dialog probe per `js` invocation** (#181): enforce a task-local allowance across target resolution and all JavaScript protocol steps, including timeout diagnosis. Slow calls no longer re-probe after the two-second cache expires. Expired or different-window evidence remains unprobed; no stale verdict is extended, timeout errors remain failures, and other commands retain their existing refresh policy.
 
 - **Daemon socket directory validation** (#214): reject non-directory `--socket-dir` and `TMPDIR` values before service launch or dispatch, with a distinct diagnostic. `--allow-unsafe-socket-dir` only bypasses the existing permission check. Symlink lookup continues to follow the target; directory links retain target-permission checks and dangling links remain missing/not statable.
