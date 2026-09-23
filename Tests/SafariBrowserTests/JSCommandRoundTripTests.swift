@@ -39,6 +39,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         }
 
         var scripts: [String] { lock.lock(); defer { lock.unlock() }; return sent }
+        private var tab53HasNavigated: Bool { lock.lock(); defer { lock.unlock() }; return tab53Navigated }
         var enumerations: Int { scripts.filter { $0.contains("set windowCount to count of windows") }.count }
         /// `windowAnchorScript` only — the enumeration also reads
         /// `index of current tab of window w`, so match the anchor's own shape.
@@ -46,6 +47,11 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         /// When set, JavaScript steps carrying the current-tab guard fail the
         /// guard (the anchored tab is no longer the window's current tab).
         var tripGuard = false
+        /// #168: after the first URL read of tab 53 of window 1, that tab has
+        /// navigated to `https://w1.example/done` — in URL reads and in the
+        /// enumeration alike.
+        var navigateTab53AfterFirstURLRead = false
+        private var tab53Navigated = false
         var javaScripts: [String] { scripts.filter { $0.contains("do JavaScript") } }
         /// One line per script sent, for assertion messages.
         var transcript: String {
@@ -61,7 +67,8 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             for (offset, count) in tabCounts.enumerated() {
                 let w = offset + 1
                 for t in 1...count {
-                    out += ["\(w)", "\(t)", t == 1 ? "1" : "0", "https://w\(w).example/\(t)",
+                    let url = (w == 1 && t == 53 && tab53HasNavigated) ? "https://w1.example/done" : "https://w\(w).example/\(t)"
+                    out += ["\(w)", "\(t)", t == 1 ? "1" : "0", url,
                             "Tab \(t)", "個人 — Tab 1", "\(idBase + w)"].joined(separator: gs) + rs
                 }
             }
@@ -96,6 +103,12 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                 if script.contains("'' + window.__sbLen") { return "5.0" }
                 if script.contains("do JavaScript \"window.__sbResult\"") { return "hello" }
                 return ""
+            }
+            if script.contains("URL of tab 53 of window id 101") {
+                lock.lock(); defer { lock.unlock() }
+                let answer = tab53Navigated ? "https://w1.example/done" : "https://w1.example/53"
+                if navigateTab53AfterFirstURLRead { tab53Navigated = true }
+                return answer
             }
             if script.contains("URL of") { return "https://w1.example/1" }
             return ""

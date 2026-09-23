@@ -63,23 +63,37 @@ struct WaitCommand: AsyncParsableCommand {
         }
     }
 
+    /// #168: resolve the target once, before the first poll. Re-resolving on
+    /// every 500 ms poll cost one full window/tab enumeration per poll for a
+    /// `--url` target, and it defeated the command's purpose: waiting for a
+    /// navigation away from the URL the target was named by failed on the next
+    /// poll, because the old URL no longer matched anything. Anchored the same
+    /// way `js` is (#180): a `--url` / `--document` target is pinned to its tab
+    /// by window id, and the default target / `--window N` to the window's
+    /// current tab. The deadline starts before resolution, so resolution stays
+    /// inside the caller's timeout. The multi-match warning (#59) fires once,
+    /// at this single resolution.
+    private func resolveOnce() async throws -> (
+        original: SafariBridge.TargetDocument, anchored: SafariBridge.TargetDocument, firstMatch: Bool
+    ) {
+        let (initial, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let anchored = try await SafariBridge.resolveToAnchoredTarget(
+            initial, firstMatch: firstMatch, warnWriter: warnWriter, profile: target.resolveProfile())
+        return (initial, anchored, firstMatch)
+    }
+
     private func waitForURL(pattern: String) async throws {
-        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
-        // #59: thread firstMatch/warnWriter through so the multi-match URL
-        // fallback warning is emitted (it was silently dropped before). The
-        // warning fires only on the first poll — the target is re-resolved
-        // each 500ms iteration, and re-emitting the same ambiguity warning
-        // on every poll would spam stderr.
-        var firstPoll = true
+        let (original, anchored, firstMatch) = try await resolveOnce()
         while Date() < deadline {
-            let currentURL = try await SafariBridge.getCurrentURL(
-                target: resolvedTarget,
-                firstMatch: firstMatch,
-                warnWriter: firstPoll ? warnWriter : nil,
-                profile: target.resolveProfile()
-            )
-            firstPoll = false
+            let currentURL: String
+            do {
+                currentURL = try await SafariBridge.getCurrentURL(
+                    target: anchored, firstMatch: firstMatch, warnWriter: nil,
+                    profile: target.resolveProfile())
+            } catch let error as SafariBrowserError {
+                throw JSCommand.anchoredFailure(error, original: original, anchored: anchored)
+            }
             if currentURL.contains(pattern) {
                 return
             }
@@ -89,19 +103,18 @@ struct WaitCommand: AsyncParsableCommand {
     }
 
     private func waitForJS(expression: String) async throws {
-        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
-        // #59: see waitForURL — warn once on the first poll only.
-        var firstPoll = true
+        let (original, anchored, firstMatch) = try await resolveOnce()
         while Date() < deadline {
-            let result = try await SafariBridge.doJavaScript(
-                "!!(\(expression)) ? 'true' : ''",
-                target: resolvedTarget,
-                firstMatch: firstMatch,
-                warnWriter: firstPoll ? warnWriter : nil,
-                profile: target.resolveProfile()
-            )
-            firstPoll = false
+            let result: String
+            do {
+                result = try await SafariBridge.doJavaScript(
+                    "!!(\(expression)) ? 'true' : ''",
+                    target: anchored, firstMatch: firstMatch, warnWriter: nil,
+                    profile: target.resolveProfile())
+            } catch let error as SafariBrowserError {
+                throw JSCommand.anchoredFailure(error, original: original, anchored: anchored)
+            }
             if result.trimmingCharacters(in: .whitespacesAndNewlines) == "true" {
                 return
             }
