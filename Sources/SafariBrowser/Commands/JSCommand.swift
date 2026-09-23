@@ -48,23 +48,33 @@ struct JSCommand: AsyncParsableCommand {
         // in-script URL guard + bounded retry on every round-trip);
         // legacy enumeration without window ids degrades to positional
         // `.windowTab` / `.windowIndex`.
+        //
+        // #180: positional targets (`--window N --tab-in-window M`,
+        // `--window N`, no flag) are anchored here too — `.resolvedTab` is
+        // the only case `resolveScriptTarget` accepts without re-running
+        // the resolver, and this command issues up to six round-trips.
+        // Before this, `.windowTab` cost one full enumeration per step.
         let (initialTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let profile = target.resolveProfile()
-        let documentTarget = try await SafariBridge.resolveToConcreteTarget(
+        let documentTarget = try await SafariBridge.resolveToAnchoredTarget(
             initialTarget,
             firstMatch: firstMatch,
             warnWriter: warnWriter,
             profile: profile
         )
         let result: String
-        if large || output != nil {
-            result = try await runLargePath(jsCode, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
-        } else {
-            guard let nonLarge = try await runNonLargePath(
-                jsCode, target: documentTarget, firstMatch: firstMatch,
-                warnWriter: warnWriter, profile: profile
-            ) else { return }   // #82: the code navigated — reported, nothing to print
-            result = nonLarge
+        do {
+            if large || output != nil {
+                result = try await runLargePath(jsCode, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+            } else {
+                guard let nonLarge = try await runNonLargePath(
+                    jsCode, target: documentTarget, firstMatch: firstMatch,
+                    warnWriter: warnWriter, profile: profile
+                ) else { return }   // #82: the code navigated — reported, nothing to print
+                result = nonLarge
+            }
+        } catch let error as SafariBrowserError {
+            throw Self.anchoredFailure(error, original: initialTarget, anchored: documentTarget)
         }
 
         if let output {
@@ -73,6 +83,42 @@ struct JSCommand: AsyncParsableCommand {
             FileHandle.standardError.write(Data("Written \(result.count) bytes to \(output)\n".utf8))
         } else if !result.isEmpty {
             print(result)
+        }
+    }
+
+    /// #180 verify R1: once a positional target is anchored to
+    /// `tab T of window id W`, a mid-command -1719 / -1728 is translated by the
+    /// bridge into `documentNotFound`, whose message lists every open tab of
+    /// every window and profile. The default target never produced that
+    /// listing before it was anchored (the bridge passes `.frontWindow`
+    /// failures through untouched), so anchoring would have widened what a
+    /// failed `js` prints. Report the vanished tab by the target the user
+    /// actually gave instead. Targets that were not positional, or failures
+    /// before anchoring, pass through unchanged.
+    static func anchoredFailure(
+        _ error: SafariBrowserError,
+        original: SafariBridge.TargetDocument,
+        anchored: SafariBridge.TargetDocument
+    ) -> SafariBrowserError {
+        switch anchored {
+        case .anchoredCurrentTab(let windowID, let tab, _):
+            // The current-tab guard trips as SB_TARGET_CHANGED; a closed tab or
+            // window surfaces as -1719 / -1728. Both mean the anchored tab is
+            // no longer where the command started.
+            guard SafariBridge.isTargetDangleError(error) else { return error }
+            let anchor = "window id \(windowID) tab \(tab) at command start"
+            switch original {
+            case .windowIndex(let n):
+                return .anchoredTargetChanged(target: "the current tab of window \(n) (\(anchor))")
+            default:
+                return .anchoredTargetChanged(target: "the front window's current tab (\(anchor))")
+            }
+        case .resolvedTab(let windowID, _, .none, _):
+            guard case .documentNotFound = error,
+                  case .windowTab(let w, let t) = original else { return error }
+            return .anchoredTargetChanged(target: "window \(w) tab \(t) (window id \(windowID))")
+        default:
+            return error
         }
     }
 

@@ -701,9 +701,13 @@ class LifecycleTests(unittest.TestCase):
             finally:
                 os.environ.clear()
                 os.environ.update(old)
-            self.assertEqual(len(report['scenarios']), 11)
+            # 7 fixed + 2 modes × 3 live operations (get-title, get-url, js-title — #180)
+            self.assertEqual(len(report['scenarios']), 13)
             regular = [r for r in report['scenarios'] if not r['name'].startswith('live.')]
             self.assertEqual(len(regular), 7)
+            self.assertEqual([r['name'] for r in report['scenarios'] if r['name'].startswith('live.')],
+                             ['live.' + mode + '.' + op for mode in ('direct-fresh-process', 'warm-daemon-fresh-process')
+                              for op in ('get-title', 'get-url', 'js-title')])
             self.assertTrue(all(r['statistics']['successful'] == 2 for r in regular), report)
             self.assertTrue(all(r['statistics']['skipped'] == 2 for r in report['scenarios'] if r['name'].startswith('live.')))
             events = [json.loads(line) for line in log.read_text().splitlines()]
@@ -805,7 +809,7 @@ class LiveTests(unittest.TestCase):
                 reports = bench.live_scenarios(str(binary), False, 2, 0, 1)
             finally:
                 del os.environ['BENCH_TEST_LOG']
-            self.assertEqual([r['statistics']['skipped'] for r in reports], [2, 2, 2, 2])
+            self.assertEqual([r['statistics']['skipped'] for r in reports], [2] * 6)
             self.assertEqual(len(log.read_text().splitlines()), 1)
             self.assertNotIn(directory, json.dumps(reports))
 
@@ -813,7 +817,8 @@ class LiveTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory, 'fake')
             source = FAKE.replace("else:\n    if args[0]", "elif args == ['dialog', 'list']:\n    print('no blocking dialog found')\nelse:\n    if args[0]")
-            source = source.replace("    sys.stderr.write(err)", "    if args[0] == 'get':\n        value = 'Benchmark fixture' if args[1] == 'title' else args[-1]\n        mode = os.environ.get('BENCH_GET_OUTPUT', 'correct')\n        print(value if mode == 'correct' else 'private-wrong-output' if mode == 'wrong' else '')\n    sys.stderr.write(err)")
+            # `js --url-exact <url> document.title` (#180) answers like `get title`.
+            source = source.replace("    sys.stderr.write(err)", "    if args[0] in ('get', 'js'):\n        value = 'Benchmark fixture' if args[0] == 'js' or args[1] == 'title' else args[-1]\n        mode = os.environ.get('BENCH_GET_OUTPUT', 'correct')\n        print(value if mode == 'correct' else 'private-wrong-output' if mode == 'wrong' else '')\n    sys.stderr.write(err)")
             source = source.replace("    time.sleep(30)", "    pathlib.Path(directory, 'owned-daemon.pid').write_text(str(os.getpid()))\n    time.sleep(.02 if os.environ.get('BENCH_DAEMON_MODE') == 'exit-before' else 30)")
             source = source.replace("        value = 'Benchmark fixture'", "        if pathlib.Path(os.environ['TMPDIR'], 'owned-daemon.pid').exists():\n            mode = os.environ.get('BENCH_DAEMON_MODE')\n            if mode == 'fallback': sys.stderr.write('[daemon fallback: private /Users/secret]\\n')\n            if mode == 'truncated': sys.stderr.write('x' * 65536 + '[daemon fallback: private /Users/secret]\\n')\n            if mode == 'exit-during':\n                import signal\n                os.kill(int(pathlib.Path(os.environ['TMPDIR'], 'owned-daemon.pid').read_text()), signal.SIGTERM)\n                time.sleep(.03)\n        value = 'Benchmark fixture'")
             binary.write_text(source)
@@ -872,18 +877,25 @@ class LiveTests(unittest.TestCase):
         with mock.patch.object(bench, 'run_process', side_effect=answers) as execute:
             reports = bench.live_scenarios('/unused', False, 1, 0, 1)
         self.assertEqual(execute.call_count, 2)
-        self.assertEqual([r['statistics']['skipped'] for r in reports], [1, 1, 1, 1])
+        self.assertEqual([r['statistics']['skipped'] for r in reports], [1] * 6)
         self.assertTrue(all(r.get('fixtureCleanup') == 'not-created' for r in reports))
 
     def test_live_fixture_measures_only_exact_target_and_closes_once(self):
         for retained in (False, True):
             with self.subTest(retained=retained):
                 reports, commands, native_calls, _ = self.live_fixture(retained=retained, samples=2)
-                self.assertEqual([r['statistics']['successful'] for r in reports], [0, 0, 0, 0] if retained else [2, 2, 2, 2])
+                self.assertEqual([r['statistics']['successful'] for r in reports], [0] * 6 if retained else [2] * 6)
                 self.assertTrue(all(r.get('cleanupFailed', False) == retained for r in reports))
                 gets = [cmd for cmd in commands if cmd[0] == 'get']
                 self.assertEqual(len(gets), 8)
                 self.assertTrue(all(cmd[2] == '--url-exact' and cmd[3].startswith('http://127.0.0.1:') for cmd in gets))
+                # #180: the js scenario targets the same owned fixture by exact URL
+                # and reads document.title — the multi-round-trip command whose
+                # per-step re-resolution the benchmark now keeps bounded.
+                jss = [cmd for cmd in commands if cmd[0] == 'js']
+                self.assertEqual(len(jss), 4)
+                self.assertTrue(all(cmd[1] == '--url-exact' and cmd[2].startswith('http://127.0.0.1:')
+                                    and cmd[3] == 'document.title' for cmd in jss))
                 self.assertEqual(sum('make new document' in script for script in native_calls), 1)
                 self.assertEqual(sum('close w' in script for script in native_calls), 1)
 
@@ -892,10 +904,10 @@ class LiveTests(unittest.TestCase):
             for mode in ('exit-before', 'exit-during', 'fallback', 'truncated'):
                 with self.subTest(timing=timing, mode=mode):
                     reports, commands, _, _ = self.live_fixture(daemon_mode=mode, timing=timing, samples=2)
-                    direct, warm = reports[:2], reports[2:]
-                    self.assertEqual([r['statistics']['successful'] for r in direct], [2, 2])
-                    self.assertEqual([r['statistics']['successful'] for r in warm], [0, 0])
-                    self.assertEqual([r['statistics']['failed'] for r in warm], [2, 2])
+                    direct, warm = reports[:3], reports[3:]
+                    self.assertEqual([r['statistics']['successful'] for r in direct], [2, 2, 2])
+                    self.assertEqual([r['statistics']['successful'] for r in warm], [0, 0, 0])
+                    self.assertEqual([r['statistics']['failed'] for r in warm], [2, 2, 2])
                     expected = {'exit-before':'service_exited', 'exit-during':'service_exited',
                                 'fallback':'daemon_fallback', 'truncated':'daemon_route_unconfirmed'}[mode]
                     self.assertTrue(all(s['reason'] == expected for r in warm for s in r['samples']))
@@ -903,29 +915,36 @@ class LiveTests(unittest.TestCase):
                     gets = [event for event in self.live_events if event['args'][0] == 'get']
                     self.assertEqual(len(gets), 4 + (0 if mode == 'exit-before' else 1))
                     self.assertTrue(all(event['daemon'] == '1' for event in gets[4:]))
+                    # js runs only in the direct mode here: the warm mode's first
+                    # failure sticks, so no js sample is ever launched (#180).
+                    jss = [event for event in self.live_events if event['args'][0] == 'js']
+                    self.assertEqual(len(jss), 2)
+                    self.assertTrue(all(event['daemon'] != '1' for event in jss))
 
     def test_warm_daemon_normal_samples_force_route_with_timing_on_and_off(self):
         for timing in (False, True):
             with self.subTest(timing=timing):
                 reports, _, _, _ = self.live_fixture(timing=timing)
-                self.assertEqual([r['statistics']['successful'] for r in reports], [1, 1, 1, 1])
+                self.assertEqual([r['statistics']['successful'] for r in reports], [1] * 6)
                 gets = [event for event in self.live_events if event['args'][0] == 'get']
                 self.assertEqual([event['daemon'] for event in gets], [None, None, '1', '1'])
+                jss = [event for event in self.live_events if event['args'][0] == 'js']
+                self.assertEqual([event['daemon'] for event in jss], [None, '1'])
                 self.assertTrue(all(s.get('daemonFallback') is False for r in reports for s in r['samples']))
 
     def test_live_rejects_wrong_or_empty_output_without_disclosing_it(self):
         for output in ('wrong', 'empty'):
             with self.subTest(output=output):
                 reports, _, _, _ = self.live_fixture(output=output)
-                self.assertEqual([r['statistics']['successful'] for r in reports], [0, 0, 0, 0])
-                self.assertEqual([r['statistics']['failed'] for r in reports], [1, 1, 1, 1])
+                self.assertEqual([r['statistics']['successful'] for r in reports], [0] * 6)
+                self.assertEqual([r['statistics']['failed'] for r in reports], [1] * 6)
                 self.assertTrue(all(r['samples'][0].get('reason') == 'fixture_output_mismatch' for r in reports))
 
     def test_live_readiness_times_out_without_recreating_window_or_measuring(self):
         reports, commands, native_calls, _ = self.live_fixture(ready=False, timeout=.35, readiness_budget=.35)
-        self.assertEqual([r['statistics']['failed'] for r in reports], [1, 1, 1, 1])
+        self.assertEqual([r['statistics']['failed'] for r in reports], [1] * 6)
         self.assertTrue(all(r['samples'][0].get('reason') == 'fixture_readiness_timeout' for r in reports))
-        self.assertFalse(any(cmd[0] == 'get' for cmd in commands))
+        self.assertFalse(any(cmd[0] in ('get', 'js') for cmd in commands))
         self.assertEqual(sum('make new document' in script for script in native_calls), 1)
         readiness = [script for script in native_calls if 'return name of tab 1 of w' in script]
         self.assertEqual(len(readiness), 1)
@@ -964,7 +983,7 @@ class CommandLineTests(unittest.TestCase):
                 capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
-            self.assertEqual(len(report['scenarios']), 22)
+            self.assertEqual(len(report['scenarios']), 26)  # 13 scenarios × timing on/off (#180 adds js-title)
             self.assertEqual({r['timing'] for r in report['scenarios']}, {'on', 'off'})
             self.assertTrue(all(s['trace'] is None for r in report['scenarios'] if r['timing'] == 'off' for s in r['samples']))
             self.assertNotIn(directory, result.stdout.decode())

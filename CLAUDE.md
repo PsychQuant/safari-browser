@@ -146,6 +146,15 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
   - 無 flag 時：AX 可用 → native + resolver；AX 不可用 → JS fallback + 10 MB 上限檢查
   - `--url plaud` 搭配 11 MB 檔案不再像 #24 那樣無解 — AX 可用就走 native，**不**觸發 10 MB 上限
 - **Wait breaking change**（#23）：原本的 `wait --url <pattern>` 改為 `wait --for-url <pattern>`，因為 `--url` 現在是 targeting flag
+- **`js` 的位置式目標在命令邊界 anchor**（#180）：`resolveToConcreteTarget` 只把 `.urlMatch` / `.documentIndex` 收斂成 `.resolvedTab`，而 `resolveScriptTarget` 只對已收斂的目標走捷徑——所以 `--window N --tab-in-window M` / `--window N` / 無 flag 的 `js` 過去**每一步**都重跑 resolver（`.windowTab` 每步一次完整列舉，六步六次，109 個分頁要 20 秒）。`JSCommand` 現在改走 `resolveToAnchoredTarget`，兩種收斂結果語意不同：
+  - `--window N --tab-in-window M` → 一次列舉後收斂成 `.resolvedTab(rematch: nil)`：視窗以穩定 id 固定、分頁維持**位置語意**（與 #79 寫明的「顯式 `--window` / `--tab-in-window` 維持 positional」一致）。**沒有**每步的身分檢查：指令中途左邊分頁被關掉，序號 M 會指向下一個分頁——這與 #180 之前每步依位置重新解析的結果相同，不是退化，但也沒有被修到（verify R3）。失敗路徑仍會先付一次全列舉再由 `anchoredFailure` 改寫錯誤。
+  - 無 flag / `--window N` → 一個 `readWindowAnchor` round-trip 收斂成 `.anchoredCurrentTab(windowID:tabInWindow:profile:)`，**每一步在同一段 AppleScript 內檢查該序號仍是那個視窗的 current tab**（`dispatchJS`），否則以 `SB_TARGET_CHANGED` 失敗。檢查與 `do JavaScript` 仍是兩個 Apple event、不是原子操作：變化剛好落在同一步的檢查與派送之間時偵測不到（verify R3）。verify R2（Codex HIGH）證實只固定「視窗 id + 序號」時，左邊分頁被關掉會讓序號安靜地指向下一個分頁；發生在兩步之間的左邊關分頁、拖曳重排、使用者切分頁都 fail-closed。已知仍擋不住的一種：錨定的分頁本身被關、右邊分頁補上同一序號並成為 current——這在 #180 之前同樣會安靜地跑在那個分頁上，沒有退化。
+  - anchor 腳本先讀出 `_id` 再以 `window id _id` 讀 current tab（兩次 z-order 查詢可能讀到不同視窗，R2）；`--profile` + 視窗層級目標直接以 resolved window id 讀 anchor。
+  - 拿不到 anchor（0-tab window、無視窗）就原樣退回位置式目標，#87 / #97 的錯誤路徑逐字不變。anchor 後分頁中途改變，一律改報 `anchoredTargetChanged`（`JSCommand.anchoredFailure`），**不**走 `documentNotFound`——後者列出所有 profile 的全部分頁；`.anchoredCurrentTab` 在 `runTargetedAppleScript` 直接略過該翻譯，失敗路徑不付那次全列舉。
+  - **`resolveToConcreteTarget` 的契約刻意不動**——`TabCommand` / `OpenCommand` / `resolveProfileScoped` 在 `--profile` 路徑 pattern-match 它回的 `.windowIndex` / `.windowTab`，改了會靜默丟 window。
+  - `listAllWindowsScript` 每視窗讀 `URL of every tab` / `name of every tab`，再讀一次 URL 比對（`considering case`；常見 3 個、最壞 6 個 Apple event 才退回逐分頁；A→B→A 在兩次讀之間來回的變化偵測不到），同數量的關開分頁或拖曳才不會把 URL 配到別的分頁標題；兩次都不穩才退回逐分頁讀。結構由 `WindowEnumerationBatchingTests` 與 `ZeroTabWindowGuardTests` 一起 pin。
+  - Safari 的 AppleScript 沒有穩定的分頁 id；上述檢查都是以位置與 current 狀態近似身分。以頁面 JS 環境內的 token 做真正的身分檢查另案追蹤（見 #180 verify R3 開出的 follow-up）。
+  - 迴歸測試 `JSCommandRoundTripTests` 用假 Safari（`DaemonRequestContext.appleScriptRunner`）模擬 5 視窗 109 分頁，數列舉次數與整條指令的 AppleScript 次數（≤ 7）。
 
 **注意**：`documents` subcommand 列出 Safari `document` collection 的 MRU 順序，但 `--document N` 在 native path（#26）被解讀成「spatial window-major 第 N 個 tab」— 兩者在單視窗單 tab 等價，多 tab 情境下略有差異。JS path 保留 Safari 的 document-index semantics。
 
