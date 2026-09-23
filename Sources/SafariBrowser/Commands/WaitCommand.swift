@@ -26,7 +26,7 @@ struct WaitCommand: AsyncParsableCommand {
     // doubly truncated to [--min, --max]; --median is the median of the
     // truncated distribution. See TruncatedCauchy for why this truncates
     // instead of clamping.
-    @Option(name: .long, help: "Wait for a randomized duration drawn from this distribution (supported: cauchy)")
+    @Option(name: .long, help: "Wait for a randomized duration drawn from this distribution (supported: cauchy). --max is the only cap; --timeout does not apply")
     var jitter: JitterDistribution?
 
     @Option(name: .customLong("min"), help: "Jitter lower bound in milliseconds (default: 2000)")
@@ -41,7 +41,11 @@ struct WaitCommand: AsyncParsableCommand {
     @Option(name: .customLong("scale"), help: "Cauchy scale in milliseconds (default: 800)")
     var jitterScale: Double?
 
-    @Option(name: .long, help: "Seed for a reproducible jitter sequence")
+    // #182 verify R1: every `wait` is its own process, so a seed cannot carry a
+    // sequence across calls — the same seed always yields the same single draw.
+    // Using it between steps of a script reinstates a fixed interval, which is
+    // exactly what --jitter exists to remove. Testing and debugging only.
+    @Option(name: .long, help: "Testing only: fixes this call's draw. The same seed always gives the same delay, so do not use it to pace a script")
     var seed: UInt64?
 
     @OptionGroup var target: TargetOptions
@@ -113,17 +117,20 @@ struct WaitCommand: AsyncParsableCommand {
         return converted.partialValue
     }
 
+    /// The single jitter duration this invocation sleeps for, in milliseconds.
+    func drawJitterMilliseconds() throws -> Double {
+        let distribution = try jitterDistribution()
+        if let seed {
+            var generator = SplitMix64(seed: seed)
+            return distribution.sample(using: &generator)
+        }
+        var generator = SystemRandomNumberGenerator()
+        return distribution.sample(using: &generator)
+    }
+
     func run() async throws {
         if jitter != nil {
-            let distribution = try jitterDistribution()
-            let drawn: Double
-            if let seed {
-                var generator = SplitMix64(seed: seed)
-                drawn = distribution.sample(using: &generator)
-            } else {
-                var generator = SystemRandomNumberGenerator()
-                drawn = distribution.sample(using: &generator)
-            }
+            let drawn = try drawJitterMilliseconds()
             // drawn < --max, which validate() proved representable in nanoseconds.
             try await Task.sleep(nanoseconds: UInt64(drawn * 1_000_000))
         } else if let forUrl {

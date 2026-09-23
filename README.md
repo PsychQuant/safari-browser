@@ -1013,7 +1013,9 @@ safari-browser wait --timeout <ms>       # custom timeout (default 30s)
 # Out-of-range draws are discarded, never clamped, so no delay piles up on a bound.
 safari-browser wait --jitter cauchy
 safari-browser wait --jitter cauchy --min 1500 --max 20000 --median 4000
-safari-browser wait --jitter cauchy --seed 42   # reproducible sequence
+# --max is the only cap (--timeout does not apply). --scale may be at most
+# 100 × (--max − --min). --seed is for tests only: each wait is its own process,
+# so the same seed gives the same delay every call — never use it to pace a script.
 
 # Multi-window targeting (#23): wait polls the targeted document, not
 # the front window, so you can wait for a Plaud redirect while some

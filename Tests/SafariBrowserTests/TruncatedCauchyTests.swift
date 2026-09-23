@@ -60,6 +60,39 @@ struct TruncatedCauchyTests {
         #expect(message.contains("achievable"), "\(message)")
     }
 
+    /// #182 verify R1: these scales used to trap the process (inverted
+    /// ClosedRange, or an empty `Double.random` range after validation passed).
+    @Test(arguments: [
+        (2000.0, 60000.0, 3000.0, 1e10),
+        (2000.0, 60000.0, 31000.0, 1e15),
+        (2000.0, 60000.0, 3000.0, 1e300),
+        (0.0, 10.0, 5.0, 1e13),
+        (0.0, 10.0, 5.0, 1e17),
+        (2000.0, 2010.0, 2005.0, 1e12),
+    ])
+    func `Numerically degenerate scales are validation errors, not traps`(parameters: (Double, Double, Double, Double)) {
+        #expect(throws: ValidationError.self) {
+            _ = try TruncatedCauchy(min: parameters.0, max: parameters.1, median: parameters.2, scale: parameters.3)
+        }
+    }
+
+    @Test func `Scale is accepted up to the cap and rejected above it`() throws {
+        let atCap = try TruncatedCauchy(min: 0, max: 10, median: 5, scale: 1000)
+        var generator = SplitMix64(seed: 9)
+        let draws = (0..<10_000).map { _ in atCap.sample(using: &generator) }
+        #expect(draws.allSatisfy { $0 > 0 && $0 < 10 })
+        #expect(throws: ValidationError.self) {
+            _ = try TruncatedCauchy(min: 0, max: 10, median: 5, scale: 1000.001)
+        }
+    }
+
+    @Test func `SplitMix64 matches the reference stream`() {
+        var generator = SplitMix64(seed: 0)
+        #expect(generator.next() == 0xE220_A839_7B1D_CDAF)
+        #expect(generator.next() == 0x6E78_9E6A_A1B9_65F4)
+        #expect(generator.next() == 0x06C4_5D18_8009_454F)
+    }
+
     @Test(arguments: [
         (-1.0, 60000.0, 3000.0, 800.0),   // negative minimum
         (3000.0, 60000.0, 3000.0, 800.0), // minimum not below median
@@ -92,18 +125,43 @@ struct WaitJitterCommandTests {
         #expect(command.seed == 7)
     }
 
+    /// `parse` wraps a `ValidationError` in a `CommandError`, so each case is
+    /// pinned by the user-facing message it must produce — a stricter check than
+    /// accepting any error, which would pass even if the wrong guard fired.
     @Test(arguments: [
-        ["2000", "--jitter", "cauchy"],
-        ["--jitter", "cauchy", "--for-url", "example"],
-        ["--jitter", "cauchy", "--js", "true"],
-        ["--min", "10"],
-        ["--seed", "1", "500"],
-        ["--jitter", "cauchy", "--max", "18446744073710"],
+        (["2000", "--jitter", "cauchy"], "cannot be combined"),
+        (["--jitter", "cauchy", "--for-url", "example"], "cannot be combined"),
+        (["--jitter", "cauchy", "--js", "true"], "cannot be combined"),
+        (["--min", "10"], "require --jitter cauchy"),
+        (["--seed", "1", "500"], "require --jitter cauchy"),
+        (["--jitter", "cauchy", "--scale", "1e13"], "is too large"),
+        (["--jitter", "cauchy", "--max", "18446744073710"], "maximum representable"),
     ])
-    func `Conflicting or orphaned jitter options are rejected`(arguments: [String]) {
-        #expect(throws: (any Error).self) {
-            _ = try WaitCommand.parseAsRoot(arguments)
+    func `Conflicting, orphaned, degenerate or unrepresentable jitter options are rejected with the right message`(
+        case: ([String], String)
+    ) {
+        let error = #expect(throws: (any Error).self) {
+            _ = try WaitCommand.parse(`case`.0)
         }
+        let message = error.map { WaitCommand.message(for: $0) } ?? ""
+        #expect(message.contains(`case`.1), "\(message)")
+    }
+
+    /// #182 verify R1: each `wait` is its own process, so a seed fixes the single
+    /// draw of that call — the CLI has no sequence to reproduce. This pins the
+    /// behavior the help text now describes.
+    @Test func `The same seed gives the same delay on every call`() throws {
+        let first = try WaitCommand.parse(["--jitter", "cauchy", "--seed", "42"]).drawJitterMilliseconds()
+        let second = try WaitCommand.parse(["--jitter", "cauchy", "--seed", "42"]).drawJitterMilliseconds()
+        let other = try WaitCommand.parse(["--jitter", "cauchy", "--seed", "43"]).drawJitterMilliseconds()
+        #expect(first == second)
+        #expect(first != other)
+    }
+
+    @Test func `Unseeded calls draw different delays`() throws {
+        let command = try WaitCommand.parse(["--jitter", "cauchy"])
+        let draws = Set(try (0..<20).map { _ in try command.drawJitterMilliseconds() })
+        #expect(draws.count > 1)
     }
 
     @Test func `Unsupported distribution name is rejected`() {

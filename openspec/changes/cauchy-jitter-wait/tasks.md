@@ -8,4 +8,4 @@
 
 ## 3. 文件與收尾
 - [x] 3.1 README、CHANGELOG
-- [ ] 3.2 `make test` 全綠、spectra validate、issue 狀態同步
+- [x] 3.2 `make test` 全綠、spectra validate、issue 狀態同步
