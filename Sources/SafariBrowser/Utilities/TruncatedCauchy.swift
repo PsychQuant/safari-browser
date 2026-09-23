@@ -64,15 +64,20 @@ struct TruncatedCauchy {
         guard (lowMedian...highMedian).contains(median) else {
             throw ValidationError(
                 "--median \(median) is not achievable with --scale \(scale) on [\(min), \(max)]; "
-                    + "achievable medians are \(Self.format(lowMedian))...\(Self.format(highMedian)). "
+                    + "achievable medians are \(Self.inwardRange(lowMedian, highMedian, width: max - min)). "
                     + "Lower --scale or move --median into that range."
             )
         }
         let location = Self.solveLocation(median: median, scale: scale, min: min, max: max)
         // Verify the solve instead of trusting it: bisection converges on
         // whatever the arithmetic says, and the arithmetic is what failed in R1.
+        // The tolerance is relative to the interval width, not to the median:
+        // at a large offset a median-relative tolerance can exceed the whole
+        // interval and accept anything (#182 verify R2). The ulp floor keeps a
+        // width near the Double resolution from demanding the impossible.
         let solved = Self.truncatedMedian(location: location, scale: scale, min: min, max: max)
-        guard abs(solved - median) <= Swift.max(1e-6 * median, 1e-9) else {
+        let tolerance = Swift.max(1e-6 * (max - min), 4 * median.ulp)
+        guard solved > min, solved < max, abs(solved - median) <= tolerance else {
             throw ValidationError("Could not solve the jitter location precisely for --median \(median) with --scale \(scale)")
         }
         let cdfLower = Self.cdf(min, location: location, scale: scale)
@@ -87,6 +92,7 @@ struct TruncatedCauchy {
         self.location = location
         self.cdfLower = cdfLower
         self.cdfUpper = cdfUpper
+        self.solvedMedian = solved
     }
 
     /// `--scale` may be at most this multiple of `max − min`; see `init`.
@@ -94,6 +100,8 @@ struct TruncatedCauchy {
 
     private let cdfLower: Double
     private let cdfUpper: Double
+    /// The truncated median at `location`, verified in `init` to lie strictly inside the bounds.
+    private let solvedMedian: Double
 
     /// Draws one duration in milliseconds, strictly inside `(min, max)`.
     ///
@@ -114,9 +122,10 @@ struct TruncatedCauchy {
             let x = Self.quantile(cdfLower + width * unit, location: location, scale: scale)
             if x > min && x < max { return x }
         }
-        // Unreachable in practice. The midpoint of the CDF interval maps to the
-        // truncated median, which init() verified lies strictly inside the bounds.
-        return Self.quantile(cdfLower + width / 2, location: location, scale: scale)
+        // Unreachable in practice. Return the truncated median computed in init(),
+        // which init() verified lies strictly inside the bounds — the very value,
+        // not a recomputation that could round differently.
+        return solvedMedian
     }
 
     // MARK: - Distribution functions
@@ -174,10 +183,30 @@ struct TruncatedCauchy {
     private static func format(_ value: Double) -> String {
         String(format: "%.1f", value)
     }
+
+    /// Formats an achievable range rounded INWARD — the lower bound up, the upper
+    /// bound down — so a user who copies either printed endpoint gets a median
+    /// that is actually accepted. Plain rounding printed 55412.5 for a true bound
+    /// of 55412.4898, which is then rejected (#182 verify R2). Narrow intervals
+    /// get more decimals until the rounded range is still non-empty.
+    static func inwardRange(_ low: Double, _ high: Double, width: Double) -> String {
+        var decimals = width < 10 ? 4 : 1
+        while decimals <= 9 {
+            let factor = pow(10.0, Double(decimals))
+            let roundedLow = (low * factor).rounded(.up) / factor
+            let roundedHigh = (high * factor).rounded(.down) / factor
+            if roundedLow <= roundedHigh {
+                return String(format: "%.\(decimals)f...%.\(decimals)f", roundedLow, roundedHigh)
+            }
+            decimals += 1
+        }
+        return "\(low)...\(high)"
+    }
 }
 
-/// Deterministic generator for `wait --seed` (SplitMix64). Not cryptographic;
-/// it only makes a jittered sequence reproducible.
+/// Deterministic generator for `wait --seed` (SplitMix64). Not cryptographic.
+/// It makes draws reproducible in tests; at the CLI each `wait` seeds a fresh
+/// generator, so a seed fixes that call's single draw.
 struct SplitMix64: RandomNumberGenerator {
     private var state: UInt64
 

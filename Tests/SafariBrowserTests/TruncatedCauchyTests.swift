@@ -86,6 +86,30 @@ struct TruncatedCauchyTests {
         }
     }
 
+    /// #182 verify R2: the printed range used plain rounding, so copying the
+    /// printed upper endpoint (55412.5 for a true 55412.4898) was rejected again.
+    @Test(arguments: [
+        (2000.0, 60000.0, 5000.0),
+        (0.0, 1.0, 0.05),
+    ])
+    func `Both printed achievable endpoints are accepted`(parameters: (Double, Double, Double)) throws {
+        let (low, high, scale) = parameters
+        let error = #expect(throws: ValidationError.self) {
+            _ = try TruncatedCauchy(min: low, max: high, median: low + (high - low) * 1e-9, scale: scale)
+        }
+        let message = error.map { String(describing: $0) } ?? ""
+        let range = try #require(message.range(of: #"achievable medians are ([0-9.]+)\.\.\.([0-9.]+)\."#, options: .regularExpression))
+        let printed = message[range]
+            .replacingOccurrences(of: "achievable medians are ", with: "")
+            .dropLast()
+            .components(separatedBy: "...")
+            .compactMap(Double.init)
+        try #require(printed.count == 2, "\(message)")
+        for endpoint in printed {
+            _ = try TruncatedCauchy(min: low, max: high, median: endpoint, scale: scale)
+        }
+    }
+
     @Test func `SplitMix64 matches the reference stream`() {
         var generator = SplitMix64(seed: 0)
         #expect(generator.next() == 0xE220_A839_7B1D_CDAF)

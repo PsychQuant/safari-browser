@@ -1016,6 +1016,10 @@ safari-browser wait --jitter cauchy --min 1500 --max 20000 --median 4000
 # --max is the only cap (--timeout does not apply). --scale may be at most
 # 100 × (--max − --min). --seed is for tests only: each wait is its own process,
 # so the same seed gives the same delay every call — never use it to pace a script.
+# --scale defaults to 800 regardless of the bounds, so a short interval can make
+# the median unreachable (e.g. --min 1000 --max 3000 --median 1500); the error
+# prints the achievable range — lower --scale or move --median into it.
+# Target flags (--url, --window, ...) are accepted but ignored in this mode.
 
 # Multi-window targeting (#23): wait polls the targeted document, not
 # the front window, so you can wait for a Plaud redirect while some
