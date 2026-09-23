@@ -29,6 +29,10 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         private let lock = NSLock()
         private var sent: [String] = []
 
+        /// Seconds each enumeration takes — the issue's machine took 3–4 s,
+        /// which is what let the dialog gate's 2 s cache expire mid-command.
+        var enumerationDelay: TimeInterval = 0
+
         init(tabCounts: [Int] = [96, 2, 6, 1, 4], failJSContaining: String? = nil) {
             self.tabCounts = tabCounts
             self.failJSContaining = failJSContaining
@@ -66,7 +70,10 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
 
         func respond(_ script: String) throws -> String {
             lock.lock(); sent.append(script); lock.unlock()
-            if script.contains("set windowCount to count of windows") { return enumeration }
+            if script.contains("set windowCount to count of windows") {
+                if enumerationDelay > 0 { Thread.sleep(forTimeInterval: enumerationDelay) }
+                return enumeration
+            }
             if script.contains("index of current tab of window id _id") {
                 if let n = Self.firstInt(after: "set _id to id of window ", in: script) { return "\(idBase + n)\u{1D}1" }
                 if let id = Self.firstInt(after: "set _id to ", in: script) { return "\(id)\u{1D}1" }
@@ -233,5 +240,54 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         } catch {
             XCTFail("unexpected error \(error)")
         }
+    }
+
+    // MARK: - #181: one real dialog probe per js command
+
+    /// #181: the blocking-dialog probe ran three times in one `js` command
+    /// (442 + 38 + 431 ms), because it is invoked from target resolution and
+    /// `js` resolved before every step, outliving the gate's 2 s cache. With
+    /// the target resolved once (#180) every later step hits the cache: the
+    /// probe provider must be called exactly once per command.
+    func testDialogProbeRunsOncePerCommand() async throws {
+        for args in [["location.host"],
+                     ["--window", "3", "location.host"],
+                     ["--window", "1", "--tab-in-window", "53", "location.host"],
+                     ["--large", "--window", "1", "--tab-in-window", "53", "location.host"]] {
+            let fake = FakeSafari()
+            let probes = ProbeCounter()
+            let context = DaemonRequestContext(probe: { _ in probes.hit(); return .clear }, environment: [:])
+            let command = try JSCommand.parse(args)
+            try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                    try await command.run()
+                }
+            }
+            XCTAssertEqual(probes.count, 1, "\(args): \(probes.count) real probes in one command")
+        }
+    }
+
+    /// The discriminating case: with a slow enumeration (0.8 s, the issue's
+    /// machine took 3–4 s) resolving before every step outlives the gate's
+    /// 2 s cache and probes again; resolving once does not.
+    func testDialogProbeRunsOnceEvenWhenEnumerationIsSlow() async throws {
+        let fake = FakeSafari()
+        fake.enumerationDelay = 0.8
+        let probes = ProbeCounter()
+        let context = DaemonRequestContext(probe: { _ in probes.hit(); return .clear }, environment: [:])
+        let command = try JSCommand.parse(["--window", "1", "--tab-in-window", "53", "location.host"])
+        try await DaemonRequestContext.$current.withValue(context) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                try await command.run()
+            }
+        }
+        XCTAssertEqual(probes.count, 1, "\(probes.count) real probes — the probe cache expired between per-step resolutions")
+    }
+
+    final class ProbeCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls = 0
+        func hit() { lock.lock(); calls += 1; lock.unlock() }
+        var count: Int { lock.lock(); defer { lock.unlock() }; return calls }
     }
 }
