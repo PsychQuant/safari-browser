@@ -19,13 +19,13 @@ final class PositionalTargetAnchoringTests: XCTestCase {
     func testFrontWindowAnchorsToResolvedTab() {
         let anchor = SafariBridge.WindowAnchor(windowID: 42, currentTabIndex: 3)
         let out = SafariBridge.anchoredTarget(.frontWindow, anchor: anchor, profile: nil)
-        XCTAssertEqual(out, .resolvedTab(windowID: 42, tabInWindow: 3, rematch: nil, profile: nil))
+        XCTAssertEqual(out, .anchoredCurrentTab(windowID: 42, tabInWindow: 3, profile: nil))
     }
 
     func testWindowIndexAnchorsToResolvedTabCarryingProfile() {
         let anchor = SafariBridge.WindowAnchor(windowID: 7, currentTabIndex: 1)
         let out = SafariBridge.anchoredTarget(.windowIndex(2), anchor: anchor, profile: "個人")
-        XCTAssertEqual(out, .resolvedTab(windowID: 7, tabInWindow: 1, rematch: nil, profile: "個人"))
+        XCTAssertEqual(out, .anchoredCurrentTab(windowID: 7, tabInWindow: 1, profile: "個人"))
     }
 
     func testNilAnchorLeavesPositionalTargetUnchanged() {
@@ -68,8 +68,11 @@ final class PositionalTargetAnchoringTests: XCTestCase {
 
     func testWindowAnchorScriptReadsOnlyIdAndCurrentTabIndex() {
         let script = SafariBridge.windowAnchorScript(index: 3)
-        XCTAssertTrue(script.contains("id of window 3"), script)
-        XCTAssertTrue(script.contains("index of current tab of window 3"), script)
+        XCTAssertTrue(script.contains("set _id to id of window 3"), script)
+        // Verify R2: the second read goes through the id just read — a second
+        // z-order lookup could land on a different window (TOCTOU).
+        XCTAssertTrue(script.contains("index of current tab of window id _id"), script)
+        XCTAssertFalse(script.contains("current tab of window 3"), script)
         // It must never grow into an enumeration — that is exactly the cost
         // this anchor exists to avoid.
         XCTAssertFalse(script.contains("every tab"), script)
@@ -82,8 +85,8 @@ final class PositionalTargetAnchoringTests: XCTestCase {
         // #180 verify R1: after a --profile enumeration the anchor must be read
         // by window id — a z-order index can name another window by then.
         let script = SafariBridge.windowAnchorScript(windowID: 102)
-        XCTAssertTrue(script.contains("id of window id 102"), script)
-        XCTAssertTrue(script.contains("index of current tab of window id 102"), script)
+        XCTAssertTrue(script.contains("set _id to 102"), script)
+        XCTAssertTrue(script.contains("index of current tab of window id _id"), script)
         XCTAssertFalse(script.contains("of window 102)"), "must not fall back to a z-order index: \(script)")
     }
 
@@ -107,5 +110,11 @@ final class PositionalTargetAnchoringTests: XCTestCase {
         let resolved = try SafariBridge.resolveNativeTargetInWindows(.windowTab(window: 1, tabInWindow: 2), windows: windows)
         let concrete = SafariBridge.concreteTarget(from: resolved, original: .windowTab(window: 1, tabInWindow: 2), profile: nil)
         XCTAssertEqual(concrete, .resolvedTab(windowID: 77, tabInWindow: 2, rematch: nil, profile: nil))
+    }
+
+    func testAnchoredCurrentTabRendersAnIDAnchoredReference() {
+        let target = SafariBridge.TargetDocument.anchoredCurrentTab(windowID: 42, tabInWindow: 3, profile: nil)
+        XCTAssertEqual(SafariBridge.resolveDocumentReference(target), "tab 3 of window id 42")
+        XCTAssertEqual(SafariBridge.windowKey(for: target), .id(42))
     }
 }

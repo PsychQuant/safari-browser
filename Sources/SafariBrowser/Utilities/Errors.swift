@@ -105,10 +105,11 @@ enum SafariBrowserError: LocalizedError {
     case targetTabChanged(expected: String, actualURL: String?)
     /// #180: a positional target (`--window N --tab-in-window M`, `--window N`
     /// or the default) was anchored to a stable window id + tab at command
-    /// start and that tab stopped existing mid-command. Deliberately not
+    /// start, and mid-command that tab closed, moved, or (for the default and
+    /// `--window N`) stopped being its window's current tab. Deliberately not
     /// `documentNotFound`: that error lists every open tab of every profile,
     /// which the default target never did before it was anchored.
-    case anchoredTabGone(target: String)
+    case anchoredTargetChanged(target: String)
 
     var errorDescription: String? {
         switch self {
@@ -129,13 +130,14 @@ enum SafariBrowserError: LocalizedError {
                 \(actualLine)The window may have closed, or the tab moved/navigated during execution.
                 Run `safari-browser documents` to re-discover targets, then retry.
                 """
-        case .anchoredTabGone(let target):
-            // #180: no re-resolve is attempted — a positional target carries
-            // no URL to find the tab again by, and following the position
-            // would run the rest of the protocol in whatever tab slid into it.
+        case .anchoredTargetChanged(let target):
+            // #180: the command's JavaScript is not re-dispatched elsewhere — a
+            // positional target carries no URL to find the tab again by, and
+            // following the position would run the rest of the protocol in
+            // whatever tab slid into it. Steps already sent may have run.
             return """
-                The target tab went away mid-command: \(target) was fixed when the command started and no longer exists (the tab or its window closed).
-                Nothing was retried. Run `safari-browser documents` to re-discover targets, then retry.
+                The target tab changed mid-command: \(target). It closed, moved, or stopped being its window's current tab while the command ran.
+                The command was not re-run in another tab; steps sent before the change may already have run in the original tab. Run `safari-browser documents` to re-discover targets, then retry.
                 """
         case .fileNotFound(let path):
             return "File not found: \(path)"

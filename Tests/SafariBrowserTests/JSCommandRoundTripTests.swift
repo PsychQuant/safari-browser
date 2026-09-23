@@ -38,7 +38,10 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         var enumerations: Int { scripts.filter { $0.contains("set windowCount to count of windows") }.count }
         /// `windowAnchorScript` only — the enumeration also reads
         /// `index of current tab of window w`, so match the anchor's own shape.
-        var anchors: [String] { scripts.filter { $0.contains("return ((id of window") } }
+        var anchors: [String] { scripts.filter { $0.contains("index of current tab of window id _id") } }
+        /// When set, JavaScript steps carrying the current-tab guard fail the
+        /// guard (the anchored tab is no longer the window's current tab).
+        var tripGuard = false
         var javaScripts: [String] { scripts.filter { $0.contains("do JavaScript") } }
         /// One line per script sent, for assertion messages.
         var transcript: String {
@@ -64,15 +67,19 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         func respond(_ script: String) throws -> String {
             lock.lock(); sent.append(script); lock.unlock()
             if script.contains("set windowCount to count of windows") { return enumeration }
-            if script.contains("return ((id of window") {
-                if let id = Self.firstInt(after: "window id ", in: script) { return "\(id)\u{1D}1" }
-                if let n = Self.firstInt(after: "of window ", in: script) { return "\(idBase + n)\u{1D}1" }
+            if script.contains("index of current tab of window id _id") {
+                if let n = Self.firstInt(after: "set _id to id of window ", in: script) { return "\(idBase + n)\u{1D}1" }
+                if let id = Self.firstInt(after: "set _id to ", in: script) { return "\(id)\u{1D}1" }
                 return ""
             }
             if script.contains("get id of window"), let n = Self.firstInt(after: "get id of window ", in: script) {
                 return "\(idBase + n)"
             }
             if script.contains("do JavaScript") {
+                if tripGuard, script.contains("index of current tab of _w") {
+                    throw SafariBrowserError.appleScriptFailed(
+                        "execution error: SB_TARGET_CHANGED: the anchored tab is no longer current (9001)")
+                }
                 if let marker = failJSContaining, script.contains(marker) {
                     throw SafariBrowserError.appleScriptFailed(
                         "execution error: Safari got an error: Can’t get tab. Invalid index. (-1719)")
@@ -111,10 +118,14 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
         XCTAssertEqual(fake.enumerations, 1,
                        "--window N --tab-in-window M must enumerate once, not once per protocol step")
+        XCTAssertLessThanOrEqual(fake.scripts.count, 7, fake.transcript)
         XCTAssertFalse(fake.javaScripts.isEmpty)
         for script in fake.javaScripts {
             XCTAssertTrue(script.contains("tab 53 of window id 101"),
                           "every step must address the anchored tab: \(script)")
+            // An explicit tab position is positional by design (#79): tab 53
+            // need not be the current tab, so no current-tab guard.
+            XCTAssertFalse(script.contains("index of current tab"), script)
         }
     }
 
@@ -123,8 +134,12 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         try await runJS(["location.host"], on: fake)
         XCTAssertEqual(fake.enumerations, 0, "the default target needs no enumeration at all")
         XCTAssertEqual(fake.anchors.count, 1, "one anchor round-trip at the command boundary")
+        XCTAssertLessThanOrEqual(fake.scripts.count, 7,
+            "anchor + URL + five protocol steps; anything more is a per-step round-trip coming back:\n\(fake.transcript)")
         for script in fake.javaScripts {
-            XCTAssertTrue(script.contains("tab 1 of window id 101"), script)
+            XCTAssertTrue(script.contains("window id 101"), script)
+            XCTAssertTrue(script.contains("index of current tab of _w) is not 1"),
+                          "every step must check the anchored tab is still the window's current tab: \(script)")
         }
     }
 
@@ -133,7 +148,8 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         try await runJS(["--window", "3", "location.host"], on: fake)
         XCTAssertEqual(fake.enumerations, 0)
         for script in fake.javaScripts {
-            XCTAssertTrue(script.contains("tab 1 of window id 103"), script)
+            XCTAssertTrue(script.contains("window id 103"), script)
+            XCTAssertTrue(script.contains("index of current tab of _w) is not 1"), script)
         }
     }
 
@@ -153,10 +169,10 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         try await runJS(["--profile", "個人", "--window", "2", "location.host"], on: fake)
         XCTAssertEqual(fake.enumerations, 1, "the profile filter needs exactly one enumeration:\n\(fake.transcript)")
         XCTAssertEqual(fake.anchors.count, 1, fake.transcript)
-        XCTAssertTrue(fake.anchors[0].contains("window id 102"),
+        XCTAssertTrue(fake.anchors[0].contains("set _id to 102"),
                       "a z-order index read after the enumeration can point at another profile's window: \(fake.anchors[0])")
         for script in fake.javaScripts {
-            XCTAssertTrue(script.contains("tab 1 of window id 102"), script)
+            XCTAssertTrue(script.contains("window id 102"), script)
         }
     }
 
@@ -168,9 +184,11 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             try await runJS(["location.host"], on: fake)
             XCTFail("expected the vanished tab to fail the command")
         } catch let error as SafariBrowserError {
-            guard case .anchoredTabGone = error else {
-                return XCTFail("expected anchoredTabGone, got \(error)")
+            guard case .anchoredTargetChanged = error else {
+                return XCTFail("expected anchoredTargetChanged, got \(error)")
             }
+            XCTAssertEqual(fake.enumerations, 0,
+                           "the failure path must not pay the enumeration #180 removed, only to discard it")
             let text = error.localizedDescription
             XCTAssertFalse(text.contains("w2.example"), "must not list other windows' tabs:\n\(text)")
             XCTAssertFalse(text.contains("w1.example/2"), "must not list other tabs:\n\(text)")
@@ -185,10 +203,33 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
             XCTFail("expected the vanished tab to fail the command")
         } catch let error as SafariBrowserError {
-            guard case .anchoredTabGone(let target) = error else {
-                return XCTFail("expected anchoredTabGone, got \(error)")
+            guard case .anchoredTargetChanged(let target) = error else {
+                return XCTFail("expected anchoredTargetChanged, got \(error)")
             }
             XCTAssertTrue(target.contains("window 1 tab 53"), target)
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+    }
+
+    // MARK: - The anchored current tab is re-checked on every step (verify R2)
+
+    /// Verify R2 (Codex HIGH): anchoring by (window id, tab index) alone let a
+    /// different tab take the anchored position silently — close a tab to the
+    /// left and index T names the next tab. Every step now checks, in the same
+    /// AppleScript, that tab T is still the window's current tab.
+    func testDefaultTargetFailsClosedWhenTheAnchoredTabStopsBeingCurrent() async {
+        let fake = FakeSafari()
+        fake.tripGuard = true
+        do {
+            try await runJS(["location.host"], on: fake)
+            XCTFail("a step that finds another tab at the anchored position must not proceed")
+        } catch let error as SafariBrowserError {
+            guard case .anchoredTargetChanged(let target) = error else {
+                return XCTFail("expected anchoredTargetChanged, got \(error)")
+            }
+            XCTAssertTrue(target.contains("front window"), target)
+            XCTAssertEqual(fake.enumerations, 0)
         } catch {
             XCTFail("unexpected error \(error)")
         }

@@ -100,17 +100,24 @@ struct JSCommand: AsyncParsableCommand {
         original: SafariBridge.TargetDocument,
         anchored: SafariBridge.TargetDocument
     ) -> SafariBrowserError {
-        guard case .documentNotFound = error,
-              case .resolvedTab(let windowID, let tab, .none, _) = anchored else { return error }
-        let anchor = "window id \(windowID) tab \(tab)"
-        switch original {
-        case .frontWindow:
-            return .anchoredTabGone(target: "the front window's current tab (\(anchor))")
-        case .windowIndex(let n):
-            return .anchoredTabGone(target: "the current tab of window \(n) (\(anchor))")
-        case .windowTab(let w, let t):
-            return .anchoredTabGone(target: "window \(w) tab \(t) (\(anchor))")
-        case .urlMatch, .documentIndex, .resolvedTab:
+        switch anchored {
+        case .anchoredCurrentTab(let windowID, let tab, _):
+            // The current-tab guard trips as SB_TARGET_CHANGED; a closed tab or
+            // window surfaces as -1719 / -1728. Both mean the anchored tab is
+            // no longer where the command started.
+            guard SafariBridge.isTargetDangleError(error) else { return error }
+            let anchor = "window id \(windowID) tab \(tab) at command start"
+            switch original {
+            case .windowIndex(let n):
+                return .anchoredTargetChanged(target: "the current tab of window \(n) (\(anchor))")
+            default:
+                return .anchoredTargetChanged(target: "the front window's current tab (\(anchor))")
+            }
+        case .resolvedTab(let windowID, _, .none, _):
+            guard case .documentNotFound = error,
+                  case .windowTab(let w, let t) = original else { return error }
+            return .anchoredTargetChanged(target: "window \(w) tab \(t) (window id \(windowID))")
+        default:
             return error
         }
     }

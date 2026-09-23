@@ -24,8 +24,8 @@ final class WindowEnumerationBatchingTests: XCTestCase {
         // must be the ONLY place per-tab reads remain: any occurrence before
         // the `on error` would mean the hot path is still O(tabs).
         let s = SafariBridge.listAllWindowsScript
-        guard let onError = s.range(of: "on error") else {
-            return XCTFail("batched reads need an `on error` fallback to the per-tab loop")
+        guard let onError = s.range(of: "if not stable then") else {
+            return XCTFail("batched reads need a fallback to the per-tab loop when no stable batch was read")
         }
         for needle in ["URL of tab t of window w", "name of tab t of window w"] {
             var occurrences = 0
@@ -33,7 +33,7 @@ final class WindowEnumerationBatchingTests: XCTestCase {
             while let found = s.range(of: needle, range: cursor..<s.endIndex) {
                 occurrences += 1
                 XCTAssertTrue(found.lowerBound > onError.lowerBound,
-                              "`\(needle)` appears before the `on error` fallback — hot path is still per-tab")
+                              "`\(needle)` appears before the fallback — hot path is still per-tab")
                 cursor = found.upperBound
             }
             XCTAssertEqual(occurrences, 1, "expected exactly one fallback read of `\(needle)`, got \(occurrences)")
@@ -62,5 +62,16 @@ final class WindowEnumerationBatchingTests: XCTestCase {
         XCTAssertEqual(emissions.count, 2)
         XCTAssertTrue(s.contains("item t of urls"), "tab record must read its URL from the batched list")
         XCTAssertTrue(s.contains("item t of names"), "tab record must read its name from the batched list")
+    }
+
+    func testBatchedURLsAreReReadSoAReorderCannotPairAURLWithAnotherTabsTitle() {
+        // Verify R2: URLs and names come from two Apple events. A same-count
+        // change between them (close one tab, open another; drag a tab) passes
+        // a length check but pairs a URL with a different tab's title. The URL
+        // list is read again after the names and must match the first read.
+        let s = SafariBridge.listAllWindowsScript
+        XCTAssertTrue(s.contains("set urls2 to URL of every tab of window w"), s)
+        XCTAssertTrue(s.contains("urls = urls2"), "the re-read must be compared with the first read")
+        XCTAssertTrue(s.contains("considering case"), "URL comparison must be case-sensitive")
     }
 }
