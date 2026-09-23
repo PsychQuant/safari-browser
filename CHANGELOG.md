@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Daemon exec resolves the shared target once** (#170): the in-process exec dispatcher rebuilt and re-resolved the script's shared target for every step — one full window/tab enumeration per step for a `--url` target. One exec run now resolves the shared target once (a `--url` / `--document` target keeps its #79 URL guard and bounded retry on every step); a step with its own target flags resolves its own, and nothing is carried across exec requests. The resolution now also honours `--profile`, which this path parsed but never passed to the bridge. Measured and left alone: daemon compile caching — repeated `js` commands already hit the cache on every script, and a miss costs about 9 ms per script, roughly 6% of a daemon-mode `js` (61 ms of ~1.1 s), so parameterising scripts for more hits is not worth a new script contract.
+
 - **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
 
 - **Daemon early disconnects** (#175): close an accepted connection when its per-socket SIGPIPE protection cannot be installed, instead of writing an unprotected handshake that could terminate the service. Other clients, error replies and shutdown retain their existing behavior.
