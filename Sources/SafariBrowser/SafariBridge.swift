@@ -1717,8 +1717,12 @@ enum SafariBridge {
         diagnosticTarget: BackgroundTabDiagnosticTarget?, warnWriter: ((String) -> Void)?
     ) async throws -> String {
         if case .anchoredCurrentTab(let windowID, let tab, _) = target {
-            // #180 verify R2: same AppleScript, so no Apple event can slip
-            // between the identity check and the dispatch.
+            // #180 verify R2/R3: the check and the dispatch share one
+            // osascript run, so a tab change between two steps is caught. They
+            // are still two Apple events, not an atomic operation: a change
+            // landing in the gap between this check and `do JavaScript` inside
+            // one step is not detected. Safari exposes no stable tab identity
+            // to close that gap.
             return try await runTargetedAppleScript("""
                 tell application "Safari"
                     set _w to window id \(windowID)
@@ -2693,10 +2697,11 @@ enum SafariBridge {
                     -- #79: stable window id — unlike the z-order index w,
                     -- it doesn't dangle when the user raises another window.
                     set winID to id of window w
-                    -- #180: read every tab's URL / name in TWO Apple events
-                    -- per window instead of two per tab (109 tabs: ~218 → 10
-                    -- events; 2.6–4.9 s → 0.5–1.0 s standalone, identical
-                    -- output). The per-tab loop survives only as the
+                    -- #180: read every tab's URL / name with batched Apple
+                    -- events per window instead of two per tab (109 tabs:
+                    -- ~218 events → 3 per window in the common case, at most
+                    -- 6 before the per-tab fallback; 2.6–4.9 s → 0.4–1.0 s
+                    -- standalone, identical output). The per-tab loop survives only as the
                     -- fallback: a whole-window read that raises (a tab
                     -- mid-load / ghost tab) or comes back a different length
                     -- than tabCount (a tab closed between the two reads)
