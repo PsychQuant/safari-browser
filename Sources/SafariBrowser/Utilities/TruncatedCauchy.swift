@@ -14,7 +14,22 @@ struct TruncatedCauchy {
     static let defaultMin = 2000.0
     static let defaultMax = 60000.0
     static let defaultMedian = 3000.0
-    static let defaultScale = 800.0
+    /// Without `--scale`, the scale is this fraction of the distance from the
+    /// median to the nearer bound (#186) — 800 for the default bounds. A scale
+    /// no larger than that distance always leaves the median reachable: the
+    /// lowest reachable median is below `min + scale`, the highest above
+    /// `max − scale`. A fixed 800 made short intervals unreachable.
+    static let defaultScaleFraction = 0.8
+
+    static func defaultScale(min: Double, max: Double, median: Double) -> Double {
+        defaultScaleFraction * Swift.min(median - min, max - median)
+    }
+
+    /// Draws count as nearly fixed when their interquartile range is below
+    /// this fraction of the median (#186): `--scale 1` on [1000, 3000] puts
+    /// half of all delays within 2 ms of each other — the fixed interval the
+    /// jitter exists to remove. The defaults sit at 0.45.
+    static let nearlyFixedIQRFraction = 0.05
 
     let min: Double
     let max: Double
@@ -27,9 +42,13 @@ struct TruncatedCauchy {
         min: Double = defaultMin,
         max: Double = defaultMax,
         median: Double = defaultMedian,
-        scale: Double = defaultScale
+        scale: Double? = nil
     ) throws {
-        guard min.isFinite, max.isFinite, median.isFinite, scale.isFinite else {
+        guard min.isFinite, max.isFinite, median.isFinite else {
+            throw ValidationError("Jitter parameters must be finite numbers")
+        }
+        let scale = scale ?? Self.defaultScale(min: min, max: max, median: median)
+        guard scale.isFinite else {
             throw ValidationError("Jitter parameters must be finite numbers")
         }
         guard min >= 0 else {
@@ -102,6 +121,23 @@ struct TruncatedCauchy {
     private let cdfUpper: Double
     /// The truncated median at `location`, verified in `init` to lie strictly inside the bounds.
     private let solvedMedian: Double
+
+    /// The `p`-quantile of the truncated distribution.
+    func truncatedQuantile(_ p: Double) -> Double {
+        Self.quantile(cdfLower + (cdfUpper - cdfLower) * p, location: location, scale: scale)
+    }
+
+    /// Spread of the middle half of all draws, in milliseconds.
+    var interquartileRange: Double { truncatedQuantile(0.75) - truncatedQuantile(0.25) }
+
+    /// A one-line warning when the draws are nearly fixed (#186), else nil.
+    var nearlyFixedWarning: String? {
+        let iqr = interquartileRange
+        guard iqr < Self.nearlyFixedIQRFraction * median else { return nil }
+        return "⚠ jitter is nearly fixed: half of all delays fall within \(Self.format(iqr)) ms of each other "
+            + "around \(Self.format(median)) ms. Raise --scale (the default for these bounds is "
+            + "\(Self.format(Self.defaultScale(min: min, max: max, median: median)))) or widen --min/--max."
+    }
 
     /// Draws one duration in milliseconds, strictly inside `(min, max)`.
     ///

@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Wait for a randomized duration
-The system SHALL support `safari-browser wait --jitter cauchy`, which draws one duration from a Cauchy distribution doubly truncated to [`--min`, `--max`] milliseconds and then pauses for that duration. Truncation SHALL discard mass outside the interval and renormalize; the system SHALL NOT clamp out-of-range draws to a bound. `--median` SHALL specify the median of the truncated distribution. Defaults SHALL be `--min 2000`, `--max 60000`, `--median 3000`, `--scale 800`. `--scale` SHALL NOT exceed 100 × (`--max` − `--min`). `--seed <n>` SHALL fix the single duration drawn by that invocation, so that tests are reproducible; because each invocation is a separate process, repeating the same seed SHALL yield the same duration. `--max` SHALL be the only cap on a jittered wait; `--timeout` SHALL NOT apply. `--jitter` SHALL NOT be combined with positional milliseconds, `--for-url`, or `--js`.
+The system SHALL support `safari-browser wait --jitter cauchy`, which draws one duration from a Cauchy distribution doubly truncated to [`--min`, `--max`] milliseconds and then pauses for that duration. Truncation SHALL discard mass outside the interval and renormalize; the system SHALL NOT clamp out-of-range draws to a bound. `--median` SHALL specify the median of the truncated distribution. Defaults SHALL be `--min 2000`, `--max 60000`, `--median 3000`; without `--scale`, the scale SHALL be 0.8 × min(`--median` − `--min`, `--max` − `--median`), which is 800 for the default bounds. `--max` above 3600000 ms SHALL be rejected unless `--allow-long-wait` is given. When the interquartile range of the truncated distribution is below 5% of `--median`, the system SHALL print a warning to stderr before waiting and SHALL still wait. `--scale` SHALL NOT exceed 100 × (`--max` − `--min`). `--seed <n>` SHALL fix the single duration drawn by that invocation, so that tests are reproducible; because each invocation is a separate process, repeating the same seed SHALL yield the same duration. `--max` SHALL be the only cap on a jittered wait; `--timeout` SHALL NOT apply. `--jitter` SHALL NOT be combined with positional milliseconds, `--for-url`, or `--js`.
 
 #### Scenario: Default randomized wait stays within bounds
 - **WHEN** user runs `safari-browser wait --jitter cauchy`
@@ -30,3 +30,17 @@ The system SHALL support `safari-browser wait --jitter cauchy`, which draws one 
 #### Scenario: Invalid parameters are rejected
 - **WHEN** `--min` is negative, `--min` is not less than `--median`, `--median` is not less than `--max`, `--scale` is not positive, or `--max` exceeds the representable nanosecond range
 - **THEN** the CLI returns a validation error before starting a wait
+
+#### Scenario: Default scale follows the bounds
+- **WHEN** user runs `safari-browser wait --jitter cauchy --min 1000 --max 3000 --median 1500` without `--scale`
+- **THEN** the scale is 400 and the median is reachable, so the CLI waits instead of reporting an unreachable median
+
+#### Scenario: Nearly fixed draws are reported
+- **WHEN** user runs `safari-browser wait --jitter cauchy --min 1000 --max 3000 --median 1500 --scale 1`
+- **THEN** the CLI prints a warning to stderr that the delays are nearly fixed, then waits
+
+#### Scenario: A long upper bound needs an explicit opt-in
+- **WHEN** user runs `safari-browser wait --jitter cauchy --max 600000000`
+- **THEN** the CLI returns a validation error naming `--allow-long-wait`, before starting a wait
+- **AND WHEN** the same command adds `--allow-long-wait`
+- **THEN** the parameters are accepted
