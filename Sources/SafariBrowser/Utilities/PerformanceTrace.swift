@@ -99,7 +99,11 @@ enum PerformanceTrace {
         /// Optional peer metadata never changes execution success/failure.
         /// Decode into closed enums before retaining anything from the peer.
         func importRemote(_ object: Any, parentID: Int?) -> Bool {
-            guard JSONSerialization.isValidJSONObject(object),
+            // #174: bound the size BEFORE re-encoding. The encoding is only
+            // attempted when a lower bound of its length fits the limit, so an
+            // oversized object is rejected without being serialized.
+            guard PerformanceTrace.jsonSizeLowerBound(object, budget: 65536) != nil,
+                  JSONSerialization.isValidJSONObject(object),
                   let data = try? JSONSerialization.data(withJSONObject: object), data.count <= 65536,
                   let summary = try? JSONDecoder().decode(Summary.self, from: data),
                   let ordered = PerformanceTrace.validatedSpans(in: summary) else { return false }
@@ -126,6 +130,39 @@ enum PerformanceTrace {
             end >= start ? end - start : 0
         }
     }
+    /// #174: a lower bound on the byte length of `object`'s JSON encoding,
+    /// or nil as soon as the bound passes `budget`. Strings count their UTF-8
+    /// bytes plus quotes (escaping only adds), containers their brackets and
+    /// separators, scalars one byte — so a nil answer proves the real
+    /// encoding is over budget, and a non-nil answer never rejects legal input.
+    static func jsonSizeLowerBound(_ object: Any, budget: Int) -> Int? {
+        var total = 0
+        var stack: [Any] = [object]
+        while let next = stack.popLast() {
+            switch next {
+            case let string as String:
+                total += string.utf8.count + 2
+            case let dictionary as [String: Any]:
+                total += 2 + max(dictionary.count - 1, 0)
+                for (key, value) in dictionary {
+                    total += key.utf8.count + 3
+                    stack.append(value)
+                    if total > budget { return nil }
+                }
+            case let array as [Any]:
+                total += 2 + max(array.count - 1, 0)
+                if total > budget { return nil }
+                stack.append(contentsOf: array)
+            case is NSNull:
+                total += 4
+            default:
+                total += 1
+            }
+            if total > budget { return nil }
+        }
+        return total
+    }
+
     /// Share validation between imported metadata and separation of our own
     /// child trace from the command's ordinary error text.
     private static func validatedSpans(in summary: Summary) -> [Span]? {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Bounded daemon replies** (#174): the daemon client now limits each line it reads — 64 KiB for the handshake, 128 MiB for a reply — and rejects an over-long line while reading instead of buffering until the deadline. The limit is deliberately far above real outputs, since the stateless `osascript` path has none; a reply over it fails as outcome-unknown and is never replayed, and an oversized handshake fails before the request is written, so the stateless path stays available. The newline search no longer rescans the whole buffer after every read (it was quadratic in the reply size). Remote timing metadata is sized from below before it is re-encoded, so an oversized object is rejected without being serialized.
+
 - **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
 
 - **Daemon early disconnects** (#175): close an accepted connection when its per-socket SIGPIPE protection cannot be installed, instead of writing an unprotected handshake that could terminate the service. Other clients, error replies and shutdown retain their existing behavior.

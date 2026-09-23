@@ -206,6 +206,10 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 
 這五種會 fallback 到 stateless 並在 stderr 印一行 `[daemon fallback: <reason>]`。**Domain errors**（例如 `ambiguousWindowMatch`）**不 fallback** — 因為 stateless path 會產生一樣的 ambiguity，fallback 沒意義。
 
+### Reply size limits（#174）
+
+Client 每讀一行都有上限：握手 64 KiB、回覆 128 MiB（`DaemonClient.maxHandshakeLineBytes` / `maxResponseLineBytes`）。超過時在讀取當下丟錯，不等換行或 deadline。stateless `osascript` 路徑沒有輸出上限，所以 128 MiB 刻意遠高於實際輸出；回覆超量時請求已送出，歸類為 outcome-unknown、**不重播**；握手超量發生在送出請求之前，照 pre-send 規則可回退 stateless。遠端 timing metadata 先以 `PerformanceTrace.jsonSizeLowerBound` 估下界，超過 64 KiB 就不重新編碼。
+
 ### Idle timeout
 
 預設 600 秒（10 分鐘）沒收到 request 就 clean-exit（移除 socket + pid）。可用 `SAFARI_BROWSER_DAEMON_IDLE_TIMEOUT` env 調整，clamped 到 `[60, 3600]`。
