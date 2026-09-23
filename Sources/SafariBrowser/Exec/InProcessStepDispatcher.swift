@@ -11,6 +11,28 @@ import Foundation
 /// get text/source) throw `unsupportedInExec` so the client falls
 /// back to the subprocess path. Future iterations expand coverage.
 struct InProcessStepDispatcher: StepDispatcher {
+    /// #170: the shared exec target, resolved once per exec run. A new
+    /// dispatcher is created for every `exec.runScript` request, so this never
+    /// carries Safari state across requests. Before, every step rebuilt and
+    /// re-resolved the shared target — one full window/tab enumeration per step
+    /// for a `--url` target.
+    private let sharedResolution = SharedTargetResolution()
+
+    final class SharedTargetResolution: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cached: (args: [String], target: SafariBridge.TargetDocument)?
+
+        func resolve(
+            args: [String],
+            _ resolver: () async throws -> SafariBridge.TargetDocument
+        ) async throws -> SafariBridge.TargetDocument {
+            if let hit = lock.withLock({ cached }), hit.args == args { return hit.target }
+            let target = try await resolver()
+            lock.withLock { cached = (args, target) }
+            return target
+        }
+    }
+
 
     /// Phase 1 commands this dispatcher handles directly. v2.0 ships the
     /// most-common read commands; v2.1 adds `get text` and `get source`
@@ -48,7 +70,19 @@ struct InProcessStepDispatcher: StepDispatcher {
         let cmdArgs = Self.stripTargetFlags(args)
 
         let target = try Self.parseTargetOptions(from: effectiveTargetArgs)
-        let resolved = target.resolve()
+        // #170: resolve to a concrete target (a `--url` / `--document` target
+        // becomes an identity-anchored `.resolvedTab` with its URL guard and
+        // bounded retry, #79). Steps without their own target flags share one
+        // resolution per exec run. The resolution now also honours `--profile`,
+        // which this path parsed but never handed to the bridge (#60 intent).
+        let resolveConcrete = {
+            try await SafariBridge.resolveToConcreteTarget(
+                target.resolve(), firstMatch: target.firstMatch,
+                warnWriter: nil, profile: target.resolveProfile())
+        }
+        let resolved = cmd == "documents" ? target.resolve()
+            : stepHasTargetFlag ? try await resolveConcrete()
+            : try await sharedResolution.resolve(args: effectiveTargetArgs, resolveConcrete)
 
         switch cmd {
         case "js":
