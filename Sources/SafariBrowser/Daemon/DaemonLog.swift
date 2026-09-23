@@ -210,16 +210,6 @@ enum DaemonLog {
 
     // MARK: - Format
 
-    /// Compose a single log entry as a stable JSON-line. Every field
-    /// goes in the same shape so `jq`-driven grep over the daemon log
-    /// stays straightforward.
-    ///
-    /// Schema:
-    /// ```
-    /// {"ts":"<ISO8601>","method":"...","requestId":<any>,"durationMs":<int>,
-    ///  "params":<redacted JSON or null>,"result":<truncated JSON or null>,
-    ///  "error":"<message or null>"}
-    /// ```
     /// #178: one JSON line for a server-side event that is not a request
     /// (accept failures, connection setup failures). Carries only the event
     /// name, errno, disposition and a streak count — nothing a client sent.
@@ -235,11 +225,22 @@ enum DaemonLog {
             "disposition": disposition,
             "count": count,
         ]
+        // Terminated like `formatEntry`: the writer appends lines verbatim.
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
-              let line = String(data: data, encoding: .utf8) else { return "{}" }
-        return line
+              let line = String(data: data, encoding: .utf8) else { return "{}\n" }
+        return line + "\n"
     }
 
+    /// Compose a single log entry as a stable JSON-line. Every field
+    /// goes in the same shape so `jq`-driven grep over the daemon log
+    /// stays straightforward.
+    ///
+    /// Schema:
+    /// ```
+    /// {"ts":"<ISO8601>","method":"...","requestId":<any>,"durationMs":<int>,
+    ///  "params":<redacted JSON or null>,"result":<truncated JSON or null>,
+    ///  "error":"<message or null>"}
+    /// ```
     static func formatEntry(
         timestamp: Date,
         method: String,
