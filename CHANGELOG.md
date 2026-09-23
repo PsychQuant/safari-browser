@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Daemon accept recovery** (#178): a failed `accept()` no longer ends the daemon's accept loop regardless of cause. Interrupted or aborted accepts retry at once, descriptor or kernel-resource exhaustion backs off (10 ms doubling to a 1 s cap, cancellable), and only a closed or invalid listener ends the loop; a storm of immediate retries falls back to the backoff instead of spinning. Accept failures and SO_NOSIGPIPE setup failures now write rate-limited event lines to the daemon log (event name, errno, disposition, count — no client data): the first occurrence, every 64th, and a recovery line. `stop()` cancels the loop before closing the listener, so a retry can never touch a closed or reused descriptor. Verified with a scripted accept function; not reproduced against real descriptor exhaustion.
+
 - **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
 
 - **Daemon early disconnects** (#175): close an accepted connection when its per-socket SIGPIPE protection cannot be installed, instead of writing an unprotected handshake that could terminate the service. Other clients, error replies and shutdown retain their existing behavior.

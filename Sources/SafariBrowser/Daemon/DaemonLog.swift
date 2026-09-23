@@ -220,6 +220,26 @@ enum DaemonLog {
     ///  "params":<redacted JSON or null>,"result":<truncated JSON or null>,
     ///  "error":"<message or null>"}
     /// ```
+    /// #178: one JSON line for a server-side event that is not a request
+    /// (accept failures, connection setup failures). Carries only the event
+    /// name, errno, disposition and a streak count — nothing a client sent.
+    static func formatEvent(
+        timestamp: Date, event: String, errno code: Int32, disposition: String, count: Int
+    ) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let object: [String: Any] = [
+            "timestamp": formatter.string(from: timestamp),
+            "event": event,
+            "errno": Int(code),
+            "disposition": disposition,
+            "count": count,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else { return "{}" }
+        return line
+    }
+
     static func formatEntry(
         timestamp: Date,
         method: String,

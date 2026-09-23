@@ -49,6 +49,63 @@ enum DaemonServer {
     /// Running daemon instance. Construct with `init()`, register handlers
     /// with `register(_:handler:)`, start with `start(socketPath:)`, and
     /// stop with `stop()`.
+    // MARK: - Accept-loop recovery (#178)
+
+    /// `accept(2)` as a value, so the loop can be driven by a scripted errno
+    /// sequence in tests. Returns the client fd, or -1 with the errno.
+    typealias AcceptFunction = @Sendable (Int32) -> (fd: Int32, errno: Int32)
+
+    static let systemAccept: AcceptFunction = { listenerFd in
+        var clientAddr = sockaddr_un()
+        var clientLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let fd = withUnsafeMutablePointer(to: &clientAddr) { p -> Int32 in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.accept(listenerFd, sa, &clientLen)
+            }
+        }
+        return (fd, fd < 0 ? errno : 0)
+    }
+
+    /// What the accept loop does after `accept()` fails.
+    enum AcceptDisposition: String, Equatable, Sendable {
+        /// The call was interrupted or one pending connection aborted; the
+        /// listener itself is fine.
+        case retry
+        /// A process or kernel resource is exhausted for now; wait, then retry.
+        case backoff
+        /// The listener is gone or invalid. Never retried: after `stop()` the
+        /// descriptor number may already belong to something else.
+        case stop
+    }
+
+    static func acceptDisposition(errno code: Int32) -> AcceptDisposition {
+        switch code {
+        case EINTR, ECONNABORTED, EAGAIN, EPROTO:
+            return .retry
+        case EMFILE, ENFILE, ENOBUFS, ENOMEM:
+            return .backoff
+        default:
+            return .stop
+        }
+    }
+
+    /// 10 ms doubling to a 1 s cap. Clamped before shifting, so any attempt
+    /// count is safe.
+    static func acceptBackoff(attempt: Int) -> Duration {
+        let exponent = min(max(attempt, 0), 7)
+        return min(.milliseconds(10 * (1 << exponent)), .seconds(1))
+    }
+
+    /// Consecutive immediate retries before the loop starts backing off, so a
+    /// storm of retry-class errors cannot spin a core.
+    static let maxImmediateAcceptRetries = 16
+
+    /// First occurrence of a streak, then every 64th — a persistent error is
+    /// visible without flooding the log.
+    static func shouldLogAcceptEvent(occurrence: Int) -> Bool {
+        occurrence == 1 || (occurrence > 0 && occurrence % 64 == 0)
+    }
+
     actor Instance {
         typealias MethodHandler = @Sendable (Data) async throws -> Data
 
@@ -305,19 +362,22 @@ enum DaemonServer {
             // fetched at dispatch time.
             let instance = self
             self.acceptTask = Task.detached(priority: .userInitiated) {
-                await Self.acceptLoop(listenerFd: fd, instance: instance)
+                await Self.acceptLoop(listenerFd: fd, instance: instance, accept: DaemonServer.systemAccept)
             }
         }
 
         /// Stop accepting new connections, close existing connections,
         /// and remove the socket file.
         func stop() async {
+            // Cancel before closing (#178): an accept() that returns a
+            // retry-class errno between the two would otherwise retry on a
+            // closed — possibly reused — descriptor.
+            acceptTask?.cancel()
+            acceptTask = nil
             if listenerFd >= 0 {
                 close(listenerFd)
                 listenerFd = -1
             }
-            acceptTask?.cancel()
-            acceptTask = nil
             for task in connectionTasks {
                 task.cancel()
             }
@@ -340,19 +400,68 @@ enum DaemonServer {
 
         // MARK: - Accept loop
 
-        private static func acceptLoop(listenerFd: Int32, instance: Instance) async {
+        /// Accepts clients until the listener is closed or the task is
+        /// cancelled. #178: a failed `accept()` used to end the loop whatever
+        /// the errno, leaving a daemon that was alive, owned its socket file,
+        /// and never accepted again. Failures are now classified
+        /// (`acceptDisposition`): transient ones retry, resource exhaustion
+        /// backs off (cancellable, capped at 1 s), and only a closed or
+        /// invalid listener ends the loop.
+        static func acceptLoop(
+            listenerFd: Int32, instance: Instance,
+            accept: DaemonServer.AcceptFunction = DaemonServer.systemAccept
+        ) async {
+            var streakErrno: Int32 = 0
+            var streakCount = 0
+            var immediateRetries = 0
+            var backoffAttempt = 0
+            var setupFailures = 0
             while !Task.isCancelled {
-                var clientAddr = sockaddr_un()
-                var clientLen = socklen_t(MemoryLayout<sockaddr_un>.size)
-                let clientFd = withUnsafeMutablePointer(to: &clientAddr) { p -> Int32 in
-                    p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                        accept(listenerFd, sa, &clientLen)
+                let (clientFd, code) = accept(listenerFd)
+                if clientFd < 0 {
+                    var disposition = DaemonServer.acceptDisposition(errno: code)
+                    if disposition == .retry {
+                        immediateRetries += 1
+                        if immediateRetries > DaemonServer.maxImmediateAcceptRetries {
+                            disposition = .backoff
+                        }
+                    }
+                    if code == streakErrno {
+                        streakCount += 1
+                    } else {
+                        streakErrno = code
+                        streakCount = 1
+                    }
+                    // EBADF is how stop() ends the loop — not worth a line.
+                    let normalStop = disposition == .stop && code == EBADF
+                    if !normalStop,
+                       disposition == .stop || DaemonServer.shouldLogAcceptEvent(occurrence: streakCount) {
+                        await logEvent(instance, "accept_error", errno: code,
+                                       disposition: disposition.rawValue, count: streakCount)
+                    }
+                    switch disposition {
+                    case .stop:
+                        return
+                    case .retry:
+                        continue
+                    case .backoff:
+                        do {
+                            try await Task.sleep(for: DaemonServer.acceptBackoff(attempt: backoffAttempt))
+                        } catch {
+                            return   // cancelled while waiting: stop() must not wait out a backoff
+                        }
+                        backoffAttempt += 1
+                        continue
                     }
                 }
-                if clientFd < 0 {
-                    // EBADF on stop(), EINTR transient — just exit loop; stop() will have unlinked.
-                    return
+                if streakCount > 0 {
+                    await logEvent(instance, "accept_recovered", errno: streakErrno,
+                                   disposition: "recovered", count: streakCount)
+                    streakErrno = 0
+                    streakCount = 0
                 }
+                immediateRetries = 0
+                backoffAttempt = 0
                 // Disable SIGPIPE so a client that closed early doesn't take the
                 // whole daemon process down when we try to write the response.
                 var enable: Int32 = 1
@@ -361,8 +470,15 @@ enum DaemonServer {
                     &enable, socklen_t(MemoryLayout<Int32>.size)
                 ) == 0 else {
                     // A peer that closed before accept can make this fail.
-                    // Never write a handshake on an unprotected socket.
+                    // Never write a handshake on an unprotected socket (#175);
+                    // record it (#178) so a persistent failure is diagnosable.
+                    let setupErrno = errno
                     close(clientFd)
+                    setupFailures += 1
+                    if DaemonServer.shouldLogAcceptEvent(occurrence: setupFailures) {
+                        await logEvent(instance, "connection_setup_failed", errno: setupErrno,
+                                       disposition: "closed", count: setupFailures)
+                    }
                     continue
                 }
                 let handlerTask = Task.detached(priority: .userInitiated) {
@@ -370,6 +486,17 @@ enum DaemonServer {
                 }
                 await instance.trackConnection(handlerTask)
             }
+        }
+
+        /// One redacted-by-construction event line: event name, errno,
+        /// disposition and count only — no paths, no client data.
+        private static func logEvent(
+            _ instance: Instance, _ event: String, errno code: Int32,
+            disposition: String, count: Int
+        ) async {
+            guard let writer = await instance.currentLogWriter() else { return }
+            writer(DaemonLog.formatEvent(timestamp: Date(), event: event, errno: code,
+                                         disposition: disposition, count: count))
         }
 
         private static func serveConnection(clientFd: Int32, instance: Instance) async {
