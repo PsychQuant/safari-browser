@@ -52,6 +52,12 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         /// enumeration alike.
         var navigateTab53AfterFirstURLRead = false
         private var tab53Navigated = false
+        /// #168 verify R1: after the first whole-window URL read, tab 1 of
+        /// window 1 closes, so every later tab of that window moves left.
+        var closeWindow1Tab1AfterFirstWindowRead = false
+        private var window1Tab1Closed = false
+        private var windowReads = 0
+        var windowURLReads: [String] { scripts.filter { $0.contains("URL of every tab of window id ") } }
         var javaScripts: [String] { scripts.filter { $0.contains("do JavaScript") } }
         /// One line per script sent, for assertion messages.
         var transcript: String {
@@ -75,8 +81,43 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             return out
         }
 
+        /// Current URLs of AppleScript window `w`, after any simulated change.
+        private func urls(ofWindow w: Int) -> [String] {
+            guard w >= 1, w <= tabCounts.count else { return [] }
+            var list = (1...tabCounts[w - 1]).map { t in
+                (w == 1 && t == 53 && tab53Navigated) ? "https://w1.example/done" : "https://w\(w).example/\(t)"
+            }
+            if w == 1 && window1Tab1Closed { list.removeFirst() }
+            return list
+        }
+
         func respond(_ script: String) throws -> String {
             lock.lock(); sent.append(script); lock.unlock()
+            if tripGuard, script.contains("index of current tab of _w") {
+                throw SafariBrowserError.appleScriptFailed(
+                    "execution error: SB_TARGET_CHANGED: the anchored tab is no longer current (9001)")
+            }
+            if script.contains("URL of every tab of window id "),
+               let id = Self.firstInt(after: "URL of every tab of window id ", in: script) {
+                lock.lock(); defer { lock.unlock() }
+                windowReads += 1
+                let answer = urls(ofWindow: id - idBase).map { $0 + "\u{1D}" }.joined()
+                if windowReads == 1 {
+                    if navigateTab53AfterFirstURLRead { tab53Navigated = true }
+                    if closeWindow1Tab1AfterFirstWindowRead { window1Tab1Closed = true }
+                }
+                return answer
+            }
+            if script.contains("get URL of tab "), script.contains("set _w to window id "),
+               let id = Self.firstInt(after: "set _w to window id ", in: script),
+               let t = Self.firstInt(after: "get URL of tab ", in: script) {
+                lock.lock(); defer { lock.unlock() }
+                let list = urls(ofWindow: id - idBase)
+                guard t >= 1, t <= list.count else {
+                    throw SafariBrowserError.appleScriptFailed("execution error: Invalid index. (-1719)")
+                }
+                return list[t - 1]
+            }
             if script.contains("set windowCount to count of windows") {
                 if enumerationDelay > 0 { Thread.sleep(forTimeInterval: enumerationDelay) }
                 return enumeration

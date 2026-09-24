@@ -85,27 +85,69 @@ struct WaitCommand: AsyncParsableCommand {
     private func waitForURL(pattern: String) async throws {
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
         let (original, anchored, firstMatch) = try await resolveOnce()
-        while Date() < deadline {
-            let currentURL: String
+        // #168 verify R1: `getCurrentURL` on a bare `tab T of window id W` had
+        // no identity check. A `--url` / `--document` target is now followed
+        // through its whole window's URL list (one Apple event per poll); the
+        // anchored current tab is read with the current-tab check.
+        var windowAnchor: (windowID: Int, anchor: WaitURLAnchor)?
+        if case .resolvedTab(let windowID, let tab, let matcher, _) = anchored {
+            windowAnchor = (windowID, WaitURLAnchor(tab: tab, matcher: matcher))
+        }
+        try await pollUntilDeadline(deadline) {
             do {
-                currentURL = try await SafariBridge.getCurrentURL(
+                if var tracked = windowAnchor {
+                    let urls = try await SafariBridge.tabURLs(windowID: tracked.windowID)
+                    defer { windowAnchor = tracked }
+                    return try tracked.anchor.url(in: urls).contains(pattern)
+                }
+                return try await SafariBridge.getCurrentURL(
                     target: anchored, firstMatch: firstMatch, warnWriter: nil,
-                    profile: target.resolveProfile())
+                    profile: target.resolveProfile()).contains(pattern)
+            } catch is WaitURLAnchor.Changed {
+                throw SafariBrowserError.anchoredTargetChanged(target: Self.describe(original, anchored))
             } catch let error as SafariBrowserError {
+                if windowAnchor != nil, SafariBridge.isTargetDangleError(error) {
+                    throw SafariBrowserError.anchoredTargetChanged(target: Self.describe(original, anchored))
+                }
                 throw JSCommand.anchoredFailure(error, original: original, anchored: anchored)
             }
-            if currentURL.contains(pattern) {
-                return
-            }
+        }
+    }
+
+    /// Polls every 500 ms until `satisfied` returns true or the deadline
+    /// passes. The first poll always runs: the deadline starts before target
+    /// resolution, and a resolution that used up the timeout must not turn a
+    /// condition that already holds into a timeout (#168 verify R1).
+    private func pollUntilDeadline(_ deadline: Date, _ satisfied: () async throws -> Bool) async throws {
+        var first = true
+        while first || Date() < deadline {
+            first = false
+            if try await satisfied() { return }
             try await Task.sleep(nanoseconds: 500_000_000) // 500ms polling
         }
         throw SafariBrowserError.timeout(seconds: timeout / 1000)
     }
 
+    /// The target as the user named it, for a target-changed error.
+    private static func describe(_ original: SafariBridge.TargetDocument, _ anchored: SafariBridge.TargetDocument) -> String {
+        let position: String
+        if case .resolvedTab(let windowID, let tab, _, _) = anchored {
+            position = "window id \(windowID) tab \(tab) at command start"
+        } else {
+            position = "its position at command start"
+        }
+        switch original {
+        case .urlMatch(let matcher): return "the tab matching \(matcher.description) (\(position))"
+        case .documentIndex(let n): return "document \(n) (\(position))"
+        case .windowTab(let w, let t): return "window \(w) tab \(t) (\(position))"
+        default: return "the target tab (\(position))"
+        }
+    }
+
     private func waitForJS(expression: String) async throws {
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
         let (original, anchored, firstMatch) = try await resolveOnce()
-        while Date() < deadline {
+        try await pollUntilDeadline(deadline) {
             let result: String
             do {
                 result = try await SafariBridge.doJavaScript(
@@ -115,11 +157,48 @@ struct WaitCommand: AsyncParsableCommand {
             } catch let error as SafariBrowserError {
                 throw JSCommand.anchoredFailure(error, original: original, anchored: anchored)
             }
-            if result.trimmingCharacters(in: .whitespacesAndNewlines) == "true" {
-                return
-            }
-            try await Task.sleep(nanoseconds: 500_000_000) // 500ms polling
+            return result.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
         }
-        throw SafariBrowserError.timeout(seconds: timeout / 1000)
+    }
+}
+
+/// #168 verify R1: which tab a `wait --for-url` on a `--url`, `--document` or
+/// `--window N --tab-in-window M` target reads, poll after poll. Safari has no
+/// tab id, so identity is inferred from what one whole-window URL read shows:
+///
+/// - While the tab still shows a URL its original matcher accepts, it is the
+///   target, wherever other tabs open.
+/// - When it stops matching and the window's tab count is unchanged since the
+///   last poll, the tab navigated — the event being waited for — and it is
+///   followed by position from then on.
+/// - When it stops matching while the tab count changed, or once followed by
+///   position the count shrinks, or the position runs past the end, the tab
+///   may have moved or closed: the wait fails closed.
+///
+/// A tab opened to the left after the navigation is not detected (#188).
+struct WaitURLAnchor {
+    struct Changed: Error {}
+
+    private let tab: Int
+    private var matcher: SafariBridge.UrlMatcher?
+    private var tabCount: Int?
+
+    init(tab: Int, matcher: SafariBridge.UrlMatcher?) {
+        self.tab = tab
+        self.matcher = matcher
+    }
+
+    mutating func url(in urls: [String]) throws -> String {
+        defer { tabCount = urls.count }
+        guard tab >= 1, tab <= urls.count else { throw Changed() }
+        let current = urls[tab - 1]
+        if let matcher {
+            if matcher.matches(current) { return current }
+            if let tabCount, tabCount != urls.count { throw Changed() }
+            self.matcher = nil
+            return current
+        }
+        if let tabCount, urls.count < tabCount { throw Changed() }
+        return current
     }
 }

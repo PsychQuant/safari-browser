@@ -1838,6 +1838,18 @@ enum SafariBridge {
         warnWriter: ((String) -> Void)? = nil,
         profile: String? = nil
     ) async throws -> String {
+        // #168: an anchored current tab is read with the same current-tab
+        // check `dispatchJS` gives `js` (#180), in the same AppleScript. A bare
+        // `tab T of window id W` would read whatever tab slid into position T.
+        if case .anchoredCurrentTab(let windowID, let tab, _) = target {
+            return try await runTargetedAppleScript("""
+                tell application "Safari"
+                    set _w to window id \(windowID)
+                    if (index of current tab of _w) is not \(tab) then error "SB_TARGET_CHANGED: tab \(tab) is no longer the current tab of window id \(windowID)" number 9001
+                    get URL of tab \(tab) of _w
+                end tell
+                """, target: target)
+        }
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
@@ -1849,6 +1861,32 @@ enum SafariBridge {
                 get URL of \(docRef)
             end tell
             """, target: target)
+    }
+
+    /// #168: the URLs of every tab of one window, in tab order, in one Apple
+    /// event. A tab without a URL reads as "".
+    static func tabURLs(windowID: Int) async throws -> [String] {
+        let raw = try await runAppleScript("""
+            tell application "Safari"
+                set GS to (character id 29)
+                set out to ""
+                -- Evaluate the list first: iterating the element reference
+                -- directly fails with -1700 on Safari (live check, #168).
+                set urls to URL of every tab of window id \(windowID)
+                repeat with i from 1 to count of urls
+                    set u to item i of urls
+                    if u is missing value then
+                        set out to out & GS
+                    else
+                        set out to out & u & GS
+                    end if
+                end repeat
+                return out
+            end tell
+            """)
+        var parts = raw.components(separatedBy: "\u{1D}")
+        if parts.last == "" { parts.removeLast() }
+        return parts
     }
 
     /// Read the title of the target document. Document-scoped for modal bypass (#21).
