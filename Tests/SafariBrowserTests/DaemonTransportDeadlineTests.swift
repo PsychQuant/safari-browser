@@ -443,4 +443,54 @@ extension DaemonTransportDeadlineTests {
         XCTAssertEqual(DaemonClient.maxHandshakeLineBytes, 64 * 1024)
         XCTAssertEqual(DaemonClient.maxResponseLineBytes, 128 * 1024 * 1024)
     }
+
+    func testLegitimateMultiMegabyteLineAcrossManyReadsIsAcceptedInLinearTime() throws {
+        // Verify R1: every accepted line above was one read() long. A real
+        // `get source` / `snapshot` reply is one multi-megabyte JSON line
+        // assembled from thousands of reads — the path the incremental newline
+        // scan exists for. Rescanning from the start after each 8 KiB read
+        // would touch ~150 GB for this line; a linear scan touches 48 MiB.
+        let size = 48 * 1024 * 1024
+        let (r, w) = pair()
+        let writerDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            var body = Data(repeating: 66, count: size)
+            body[0] = 65
+            body[size - 1] = 67
+            _ = DeadlinePeer.write(w, body + Data([10]))
+            writerDone.signal()
+        }
+        defer {
+            close(r)
+            _ = writerDone.wait(timeout: .now() + 5)
+            close(w)
+        }
+        var reader = DaemonClient.LineReader()
+        let start = Date()
+        let line = try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 30), maxBytes: 64 * 1024 * 1024)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5, "the newline scan must stay linear in the line length")
+        XCTAssertEqual(line.count, size)
+        XCTAssertEqual(line.first, 65)
+        XCTAssertEqual(line.last, 67)
+    }
+
+    func testRejectionBuffersAtMostOneByteBeyondTheLimit() {
+        // Verify R1: reads were a fixed 8 KiB, so a line without a newline was
+        // rejected only after up to 8 KiB past the limit had been buffered.
+        let (r, w) = pair()
+        // 20 KB exceeds the 8 KiB socket buffer: write from another thread.
+        let writerDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = DeadlinePeer.write(w, Data(repeating: 65, count: 20_000))
+            writerDone.signal()
+        }
+        defer {
+            close(r)
+            _ = writerDone.wait(timeout: .now() + 2)
+            close(w)
+        }
+        var reader = DaemonClient.LineReader()
+        XCTAssertThrowsError(try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 2), maxBytes: 1000))
+        XCTAssertLessThanOrEqual(reader.pending.count, 1001)
+    }
 }

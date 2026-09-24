@@ -3,8 +3,8 @@ import XCTest
 
 /// #174: `importRemote` re-encoded whatever timing object a daemon sent and
 /// only then compared the encoding with its 64 KiB limit. The size is now
-/// bounded from below by walking the object first, so an oversized object is
-/// rejected without being encoded.
+/// bounded from below by walking the object first: an object whose bound is
+/// already over the limit is rejected without being encoded.
 final class PerformanceTraceImportBoundTests: XCTestCase {
     private func summary(spans: Int, phase: String = "command") -> [String: Any] {
         [
@@ -32,6 +32,33 @@ final class PerformanceTraceImportBoundTests: XCTestCase {
         XCTAssertNil(PerformanceTrace.jsonSizeLowerBound(huge, budget: 65_536))
         let many: [String: Any] = ["spans": Array(repeating: ["id": 1], count: 100_000)]
         XCTAssertNil(PerformanceTrace.jsonSizeLowerBound(many, budget: 65_536))
+    }
+
+    func testNumbersBooleansAndEscapesCountTowardTheBound() {
+        // Verify R1: every non-string scalar counted as one byte, so an object
+        // made of large numbers passed the pre-check at a fraction of its
+        // encoded size and was re-encoded anyway.
+        let numbers: [String: Any] = ["n": Array(repeating: 99_999_999_999_999, count: 10_000)]
+        XCTAssertNil(PerformanceTrace.jsonSizeLowerBound(numbers, budget: 65_536))
+        let flags: [String: Any] = ["b": Array(repeating: false, count: 20_000)]
+        XCTAssertNil(PerformanceTrace.jsonSizeLowerBound(flags, budget: 65_536))
+        let controls: [String: Any] = ["s": String(repeating: "\u{0}", count: 40_000)]
+        XCTAssertNil(PerformanceTrace.jsonSizeLowerBound(controls, budget: 65_536))
+    }
+
+    func testTightenedBoundStillNeverExceedsTheEncoding() throws {
+        let object: [String: Any] = [
+            "ints": [0, -1, 7, 42, -99_999, Int64.max, Int64.min] as [Any],
+            "doubles": [0.1, 1e300, -2.5e-8, 3.0] as [Any],
+            "flags": [true, false],
+            "text": "a/b \"quoted\" back\\slash\n\t\u{0}\u{1f} ünïcödé 漢字 🙂",
+            "null": NSNull(),
+            "nested": [["k/": ["v": [1, 2, [3]]]]] as [Any],
+        ]
+        let encoded = try JSONSerialization.data(withJSONObject: object).count
+        let bound = try XCTUnwrap(PerformanceTrace.jsonSizeLowerBound(object, budget: 1 << 20))
+        XCTAssertLessThanOrEqual(bound, encoded, "bound \(bound) > encoding \(encoded) would reject legal input")
+        XCTAssertGreaterThan(Double(bound), 0.6 * Double(encoded), "the bound should be close to the encoding for these values")
     }
 
     func testImportRejectsOversizedAndAcceptsLegitimateMetadata() {

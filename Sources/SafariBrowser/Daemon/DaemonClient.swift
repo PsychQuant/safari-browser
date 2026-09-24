@@ -412,7 +412,9 @@ enum DaemonClient {
                 guard pending.count <= maxBytes else {
                     throw Error.ioError("no newline within the \(maxBytes)-byte line limit")
                 }
-                let count = Darwin.read(fd, &buffer, buffer.count)
+                // Never read past the first byte beyond the limit, so a line
+                // without a newline is rejected holding at most maxBytes + 1.
+                let count = Darwin.read(fd, &buffer, Swift.min(buffer.count, maxBytes + 1 - pending.count))
                 if count > 0 { pending.append(contentsOf: buffer.prefix(count)); continue }
                 if count == 0 { throw Error.ioError("EOF before complete response frame") }
                 if errno == EINTR { continue }

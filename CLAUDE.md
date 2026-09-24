@@ -208,7 +208,7 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 
 ### Reply size limits（#174）
 
-Client 每讀一行都有上限：握手 64 KiB、回覆 128 MiB（`DaemonClient.maxHandshakeLineBytes` / `maxResponseLineBytes`）。超過時在讀取當下丟錯，不等換行或 deadline。stateless `osascript` 路徑沒有輸出上限，所以 128 MiB 刻意遠高於實際輸出；回覆超量時請求已送出，歸類為 outcome-unknown、**不重播**；握手超量發生在送出請求之前，照 pre-send 規則可回退 stateless。遠端 timing metadata 先以 `PerformanceTrace.jsonSizeLowerBound` 估下界，超過 64 KiB 就不重新編碼。
+Client 每讀一行都有上限：握手 64 KiB、回覆 128 MiB（`DaemonClient.maxHandshakeLineBytes` / `maxResponseLineBytes`）。超過時在讀取當下丟錯，不等換行或 deadline。stateless `osascript` 路徑沒有輸出上限，所以 128 MiB 刻意遠高於實際輸出；回覆超量時請求已送出，歸類為 outcome-unknown、**不重播**；握手超量發生在送出請求之前，照 pre-send 規則可回退 stateless。沒有換行的行在拒絕時最多只多緩衝 1 byte（每次 read 以剩餘額度為上限）。遠端 timing metadata 先以 `PerformanceTrace.jsonSizeLowerBound` 估下界（字串位元組與跳脫、整數與布林的文字長度；浮點數只算 1 byte），下界超過 64 KiB 就不重新編碼；否則照舊編碼後以實際長度檢查。下界只證明「一定超標」，不證明「一定沒超標」。
 
 ### Idle timeout
 
