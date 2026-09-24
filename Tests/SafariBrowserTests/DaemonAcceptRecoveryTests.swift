@@ -87,6 +87,15 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
 
     private func error(_ code: Int32) -> (fd: Int32, errno: Int32) { (-1, code) }
 
+    private func waitUntil(_ timeout: TimeInterval = 2, _ condition: () -> Bool) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end {
+            if condition() { return true }
+            usleep(10_000)
+        }
+        return condition()
+    }
+
     private func runLoop(_ env: DaemonServer.AcceptEnvironment, instance: DaemonServer.Instance = .init()) async throws -> LoopFds {
         let fds = try makeLoopFds()
         await DaemonServer.Instance.acceptLoop(listenerFd: fds.listener, wakeFd: fds.wakeRead,
@@ -105,8 +114,13 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
             XCTAssertEqual(DaemonServer.acceptDisposition(errno: code), .backoff, "errno \(code)")
         }
         // A closed or invalid listener must never be retried.
-        for code in [EBADF, ENOTSOCK, EINVAL, EOPNOTSUPP, EFAULT, 0, 9999] {
+        for code in [EBADF, ENOTSOCK, EINVAL, EOPNOTSUPP, EFAULT] {
             XCTAssertEqual(DaemonServer.acceptDisposition(errno: code), .stop, "errno \(code)")
+        }
+        // Verify R2: an errno outside both lists does not prove the listener
+        // is gone. Stopping on it recreated #178's alive-but-deaf daemon.
+        for code in [ECONNRESET, ETIMEDOUT, 0, 9999] {
+            XCTAssertEqual(DaemonServer.acceptDisposition(errno: code), .backoff, "errno \(code)")
         }
     }
 
@@ -202,6 +216,20 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         XCTAssertEqual(sink.events("accept_recovered").first?["count"] as? Int, 3, sink.file)
         XCTAssertFalse(isOpen(fds.listener), "the loop owns the listener and closes it on the way out")
         XCTAssertFalse(isOpen(fds.wakeRead))
+        // The served descriptor belongs to a detached handler: end it and wait
+        // for the handler to close it, so nothing outlives the test.
+        shutdown(pair[1], SHUT_RDWR)
+        XCTAssertTrue(waitUntil { !self.isOpen(pair[0]) }, "the handler must close the served descriptor")
+    }
+
+    func testUnknownErrnoBacksOffAndServesTheNextClient() async throws {
+        var pair: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        defer { close(pair[1]) }
+        let script = ScriptedListener([error(ECONNRESET), (pair[0], 0)])
+        _ = try await runLoop(script.environment(realSleep: false))
+        XCTAssertEqual(script.acceptCount, 2, "an unlisted errno must not end the loop")
+        XCTAssertEqual(script.recordedSleeps, [.milliseconds(10)])
     }
 
     func testClosedListenerStopsWithoutRetryingAndSaysSo() async throws {
@@ -331,6 +359,75 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         XCTAssertFalse(isOpen(fds.wakeRead))
     }
 
+    func testStopDuringABackoffStormReturnsAtOnceAndTheLoopEnds() async throws {
+        // Verify R2: drive the real Instance.stop() while its loop is backing
+        // off. stop() must not wait on the loop, and the loop must neither keep
+        // retrying nor keep the listener.
+        final class Probe: @unchecked Sendable {
+            let lock = NSLock()
+            var calls = 0
+            var listener: Int32 = -1
+        }
+        let probe = Probe()
+        let env = DaemonServer.AcceptEnvironment(
+            accept: { fd in probe.lock.withLock { probe.calls += 1; probe.listener = fd }; return (-1, ENFILE) },
+            wait: { _, _ in .ready })
+        let path = "\(NSTemporaryDirectory())acc-\(UUID().uuidString.prefix(8)).sock"
+        let server = DaemonServer.Instance()
+        try await server.start(socketPath: path, environment: env)
+        XCTAssertTrue(waitUntil { probe.lock.withLock { probe.calls } >= 3 }, "the storm must reach backoff")
+        let stopping = Date()
+        await server.stop()
+        XCTAssertLessThan(Date().timeIntervalSince(stopping), 0.2, "stop() must not wait out a backoff or the loop")
+        let listener = probe.lock.withLock { probe.listener }
+        XCTAssertTrue(waitUntil { !self.isOpen(listener) }, "the loop must close its listener after stop()")
+        let settled = probe.lock.withLock { probe.calls }
+        usleep(300_000)
+        XCTAssertEqual(probe.lock.withLock { probe.calls }, settled, "no accept() after the loop ended")
+    }
+
+    func testAWaitThatNeverWakesStillEndsOnceCancelled() async throws {
+        // Belt and braces for the wake pipe: if its write end ever leaked to a
+        // child, closing ours would not wake poll(). The real wait times out
+        // periodically, so a cancelled loop still notices.
+        let fds = try makeLoopFds()
+        let path = "\(NSTemporaryDirectory())acc-\(UUID().uuidString.prefix(8)).sock"
+        defer { unlink(path); close(fds.wakeWrite) }
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &addr.sun_path) { buf in
+            for (i, b) in path.utf8.enumerated() { buf[i] = b }
+        }
+        _ = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fds.listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(Darwin.listen(fds.listener, 4), 0)
+        let task = Task.detached {
+            await DaemonServer.Instance.acceptLoop(listenerFd: fds.listener, wakeFd: fds.wakeRead,
+                                                   instance: DaemonServer.Instance())
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let cancelled = Date()
+        task.cancel()                                   // the wake write end stays open
+        await task.value
+        XCTAssertLessThan(Date().timeIntervalSince(cancelled), Double(DaemonServer.acceptWaitSliceMilliseconds) / 1000 + 0.5)
+        XCTAssertFalse(isOpen(fds.listener))
+    }
+
+    func testSetupFailuresAfterAQuietGapStartANewStreak() {
+        var streak = DaemonServer.SetupFailureStreak()
+        let t = ContinuousClock.now
+        XCTAssertEqual(streak.recordFailure(at: t).count, 1)
+        XCTAssertEqual(streak.recordFailure(at: t).count, 2)
+        let later = streak.recordFailure(at: t.advanced(by: DaemonServer.AcceptIncident.quietGap + .seconds(1)))
+        XCTAssertEqual(later.count, 1)
+        XCTAssertTrue(later.log)
+        XCTAssertEqual(streak.recordSuccess(), 1)
+        XCTAssertNil(streak.recordSuccess())
+    }
+
     func testStopReturnsPromptlyAndTheSocketCanBeServedAgain() async throws {
         let name = "acc-\(UUID().uuidString.prefix(8))"
         let path = DaemonClient.socketPath(name: name)
@@ -344,7 +441,7 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
                            "an accepted client must be served with blocking I/O (round \(round))")
             let stopping = Date()
             await server.stop()
-            XCTAssertLessThan(Date().timeIntervalSince(stopping), 1.0, "stop() must not wait on the accept loop")
+            XCTAssertLessThan(Date().timeIntervalSince(stopping), 1.0, "stop() returns without waiting for the accept loop")
             XCTAssertFalse(FileManager.default.fileExists(atPath: path))
         }
     }

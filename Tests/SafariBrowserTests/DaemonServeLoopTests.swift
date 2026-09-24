@@ -102,9 +102,14 @@ final class DaemonServeLoopTests: XCTestCase {
         _ = try TestUnixSocket.readLine(fd: fd)
         close(fd)
 
-        // Give the daemon a beat to process shutdown and clean up.
+        // Give the daemon a beat to process shutdown and clean up. Wait for
+        // both files: Server.stop() removes the socket inside the underlying
+        // server and the pid file only after hopping back to its own actor,
+        // so "socket gone" does not imply "pid gone" yet (#178: this assertion
+        // failed about 1 run in 10 on main under heavy load).
         for _ in 0..<50 {
-            if !FileManager.default.fileExists(atPath: socketPath) { break }
+            if !FileManager.default.fileExists(atPath: socketPath)
+                && !FileManager.default.fileExists(atPath: pidPath) { break }
             try await Task.sleep(for: .milliseconds(20))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: socketPath))

@@ -72,7 +72,15 @@ enum DaemonServer {
         case wake
         /// `poll()` itself failed with this errno.
         case failed(Int32)
+        /// Nothing happened within one wait slice.
+        case idle
     }
+
+    /// The longest single `poll()`. The wake pipe normally ends a wait at
+    /// once; the slice is the fallback that lets a cancelled loop notice even
+    /// if the pipe never wakes it (a write end inherited by a child keeps it
+    /// open after `stop()` closes ours).
+    static let acceptWaitSliceMilliseconds: Int32 = 1000
 
     /// Blocks until the listener or the wake pipe is readable.
     typealias WaitFunction = @Sendable (_ listenerFd: Int32, _ wakeFd: Int32) -> AcceptWait
@@ -80,7 +88,9 @@ enum DaemonServer {
     static let systemWait: WaitFunction = { listenerFd, wakeFd in
         var fds = [pollfd(fd: listenerFd, events: Int16(POLLIN), revents: 0),
                    pollfd(fd: wakeFd, events: Int16(POLLIN), revents: 0)]
-        guard poll(&fds, 2, -1) >= 0 else { return .failed(errno) }
+        let ready = poll(&fds, 2, DaemonServer.acceptWaitSliceMilliseconds)
+        guard ready >= 0 else { return .failed(errno) }
+        if ready == 0 { return .idle }
         // A stop request wins over queued connections.
         return fds[1].revents != 0 ? .wake : .ready
     }
@@ -114,19 +124,21 @@ enum DaemonServer {
         case retry
         /// A process or kernel resource is exhausted for now; wait, then retry.
         case backoff
-        /// The listener is gone or invalid. Never retried: after `stop()` the
-        /// descriptor number may already belong to something else.
+        /// The listener is gone or invalid, so retrying can never succeed.
         case stop
     }
 
+    /// Only an errno that proves the listener unusable ends the loop. Anything
+    /// unlisted backs off (bounded, cancellable): stopping on an errno that
+    /// does not prove it recreated #178's alive-but-deaf daemon (verify R2).
     static func acceptDisposition(errno code: Int32) -> AcceptDisposition {
         switch code {
         case EINTR, ECONNABORTED, EAGAIN, EPROTO:
             return .retry
-        case EMFILE, ENFILE, ENOBUFS, ENOMEM:
-            return .backoff
-        default:
+        case EBADF, ENOTSOCK, EINVAL, EOPNOTSUPP, EFAULT:
             return .stop
+        default:
+            return .backoff
         }
     }
 
@@ -194,6 +206,26 @@ enum DaemonServer {
         mutating func recordSuccess() -> (streak: Int, errno: Int32)? {
             defer { self = AcceptIncident() }
             return streak > 0 ? (streak, lastErrno) : nil
+        }
+    }
+
+    /// Connection-setup failures (#175's SO_NOSIGPIPE branch), counted like
+    /// accept failures: consecutive, and a quiet gap starts a new streak.
+    struct SetupFailureStreak {
+        private(set) var count = 0
+        private var lastFailure: ContinuousClock.Instant?
+
+        mutating func recordFailure(at now: ContinuousClock.Instant) -> (count: Int, log: Bool) {
+            if let last = lastFailure, last.duration(to: now) >= AcceptIncident.quietGap { count = 0 }
+            lastFailure = now
+            count += 1
+            return (count, DaemonServer.shouldLogAcceptEvent(occurrence: count))
+        }
+
+        /// Ends the streak; returns its length if there was one.
+        mutating func recordSuccess() -> Int? {
+            defer { self = SetupFailureStreak() }
+            return count > 0 ? count : nil
         }
     }
 
@@ -392,6 +424,12 @@ enum DaemonServer {
         /// Bind the Unix socket, start listening, and kick off the accept loop.
         /// Throws `DaemonError` on bind/listen failure.
         func start(socketPath: String) async throws {
+            try await start(socketPath: socketPath, environment: DaemonServer.AcceptEnvironment())
+        }
+
+        /// `environment` is a test seam: it drives the real loop behind a real
+        /// listener with scripted accept results.
+        func start(socketPath: String, environment: DaemonServer.AcceptEnvironment) async throws {
             guard acceptTask == nil else { return } // idempotent — already started
 
             // Remove any stale socket left from a crashed prior run.
@@ -463,7 +501,13 @@ enum DaemonServer {
                 unlink(socketPath)
                 throw DaemonError.bindFailed("listener setup failed: errno=\(code)")
             }
-            for end in wake { _ = fcntl(end, F_SETFD, FD_CLOEXEC) }
+            guard wake.allSatisfy({ fcntl($0, F_SETFD, FD_CLOEXEC) == 0 }) else {
+                let code = errno
+                wake.forEach { close($0) }
+                close(fd)
+                unlink(socketPath)
+                throw DaemonError.bindFailed("wake pipe setup failed: errno=\(code)")
+            }
 
             self.wakeWriteFd = wake[1]
             self.socketPath = socketPath
@@ -474,22 +518,23 @@ enum DaemonServer {
             let instance = self
             let wakeRead = wake[0]
             self.acceptTask = Task.detached(priority: .userInitiated) {
-                await Self.acceptLoop(listenerFd: fd, wakeFd: wakeRead, instance: instance)
+                await Self.acceptLoop(listenerFd: fd, wakeFd: wakeRead, instance: instance, environment: environment)
             }
         }
 
         /// Stop accepting new connections, close existing connections,
-        /// and remove the socket file. Returns once the accept loop has
-        /// closed the listener.
+        /// and remove the socket file. Returns without waiting for the accept
+        /// loop, which closes the listener itself once it observes the wake.
         func stop() async {
-            let loop = acceptTask
+            acceptTask?.cancel()
             acceptTask = nil
-            loop?.cancel()
             // #178: wake the loop rather than close its listener. The loop is
             // the only caller of accept() and closes the listener after its
             // last call, so no retry can reach a closed or reused descriptor.
             // Closing — not writing to — the write end stays safe if the loop
-            // has already exited and closed the read end.
+            // has already exited and closed the read end. Not awaiting the loop
+            // keeps stop() independent of cooperative-pool scheduling (verify
+            // R2 measured shutdown stalls when it waited).
             if wakeWriteFd >= 0 {
                 close(wakeWriteFd)
                 wakeWriteFd = -1
@@ -502,8 +547,6 @@ enum DaemonServer {
                 unlink(path)
                 socketPath = nil
             }
-            // Last, after every state change: the actor is reentrant here.
-            await loop?.value
         }
 
         // MARK: - Internal dispatch (actor-isolated)
@@ -527,10 +570,10 @@ enum DaemonServer {
         /// only a closed or invalid listener ends the loop.
         ///
         /// The loop owns `listenerFd` and `wakeFd` and closes both on exit;
-        /// `stop()` only closes the wake pipe's write end. Cancelling first and
-        /// then closing the listener from `stop()` narrowed, but did not close,
-        /// the window in which a retry could reach a closed or reused
-        /// descriptor (verify R1).
+        /// `stop()` only cancels the task and closes the wake pipe's write end.
+        /// Cancelling first and then closing the listener from `stop()`
+        /// narrowed, but did not close, the window in which a retry could reach
+        /// a closed or reused descriptor (verify R1).
         static func acceptLoop(
             listenerFd: Int32, wakeFd: Int32, instance: Instance,
             environment env: DaemonServer.AcceptEnvironment = .init()
@@ -540,12 +583,13 @@ enum DaemonServer {
                 close(wakeFd)
             }
             var incident = DaemonServer.AcceptIncident()
-            var setupFailures = 0
+            var setupFailures = DaemonServer.SetupFailureStreak()
             while !Task.isCancelled {
                 let waited = env.wait(listenerFd, wakeFd)
                 let (clientFd, code): (Int32, Int32)
                 switch waited {
                 case .wake: return
+                case .idle: continue   // re-checks cancellation
                 case .failed(let e): (clientFd, code) = (-1, e)
                 case .ready: (clientFd, code) = env.accept(listenerFd)
                 }
@@ -567,7 +611,7 @@ enum DaemonServer {
                     await logEvent(instance, "accept_recovered", errno: ended.errno,
                                    disposition: "recovered", count: ended.streak)
                 }
-                await admit(clientFd, instance: instance, setupFailures: &setupFailures)
+                await admit(clientFd, instance: instance, at: env.now(), setupFailures: &setupFailures)
             }
         }
 
@@ -576,21 +620,23 @@ enum DaemonServer {
         /// handshake on an unprotected socket (#175), and record it (#178) so a
         /// persistent failure is diagnosable. The next good connection ends
         /// the setup-failure streak.
-        private static func admit(_ clientFd: Int32, instance: Instance, setupFailures: inout Int) async {
+        private static func admit(
+            _ clientFd: Int32, instance: Instance, at now: ContinuousClock.Instant,
+            setupFailures: inout DaemonServer.SetupFailureStreak
+        ) async {
             let setupErrno = DaemonServer.prepareAcceptedClient(clientFd)
             guard setupErrno == 0 else {
                 close(clientFd)
-                setupFailures += 1
-                if DaemonServer.shouldLogAcceptEvent(occurrence: setupFailures) {
+                let step = setupFailures.recordFailure(at: now)
+                if step.log {
                     await logEvent(instance, "connection_setup_failed", errno: setupErrno,
-                                   disposition: "closed", count: setupFailures)
+                                   disposition: "closed", count: step.count)
                 }
                 return
             }
-            if setupFailures > 0 {
+            if let ended = setupFailures.recordSuccess() {
                 await logEvent(instance, "connection_setup_recovered", errno: 0,
-                               disposition: "recovered", count: setupFailures)
-                setupFailures = 0
+                               disposition: "recovered", count: ended)
             }
             let handlerTask = Task.detached(priority: .userInitiated) {
                 await Self.serveConnection(clientFd: clientFd, instance: instance)
