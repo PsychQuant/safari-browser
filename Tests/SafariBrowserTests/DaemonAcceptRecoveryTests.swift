@@ -104,6 +104,37 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         return fds
     }
 
+    /// Exercise a real request after recovery, then half-close the peer and
+    /// wait for EOF from the handler. This observes connection completion
+    /// without polling a descriptor number that another test could reuse.
+    private func assertEchoAndCompletion(_ peer: Int32) throws {
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(peer, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var enabled: Int32 = 1
+        setsockopt(peer, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
+        defer { shutdown(peer, SHUT_WR) }
+        func line() throws -> [String: Any] {
+            var data = Data()
+            while data.count < 4096 {
+                var byte: UInt8 = 0
+                let count = read(peer, &byte, 1)
+                guard count == 1 else { throw NSError(domain: "OwnedFixtureRead", code: Int(count)) }
+                if byte == 10 { return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any]) }
+                data.append(byte)
+            }
+            throw NSError(domain: "OwnedFixtureLineTooLong", code: 1)
+        }
+        XCTAssertNotNil(try line()["protocol"])
+        let request = Data((#"{"method":"echo","params":{"owned":42},"requestId":7}"# + "\n").utf8)
+        XCTAssertEqual(request.withUnsafeBytes { write(peer, $0.baseAddress!, $0.count) }, request.count)
+        shutdown(peer, SHUT_WR)
+        let response = try line()
+        XCTAssertEqual(response["requestId"] as? Int, 7)
+        XCTAssertEqual((response["result"] as? [String: Any])?["owned"] as? Int, 42)
+        var byte: UInt8 = 0
+        XCTAssertEqual(read(peer, &byte, 1), 0, "handler must close after the peer ends its request stream")
+    }
+
     // MARK: - Classification
 
     func testTransientErrorsRetryResourceErrorsBackOffAndDescriptorErrorsStop() {
@@ -199,27 +230,19 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         defer { close(pair[1]) }
         let script = ScriptedListener([error(EINTR), error(EMFILE), error(ECONNABORTED), (pair[0], 0)])
         let instance = DaemonServer.Instance()
+        await instance.register("echo") { $0 }
         let sink = LogSink()
         await instance.setLogWriter({ sink.append($0) })
 
         let fds = try await runLoop(script.environment(), instance: instance)
 
-        var buffer = [UInt8](repeating: 0, count: 4096)
-        var timeout = timeval(tv_sec: 2, tv_usec: 0)
-        setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        let n = read(pair[1], &buffer, buffer.count)
-        XCTAssertGreaterThan(n, 0, "the client accepted after transient errors must receive the handshake")
-        XCTAssertTrue(String(decoding: buffer.prefix(max(n, 0)), as: UTF8.self).contains("protocol"))
+        try assertEchoAndCompletion(pair[1])
         XCTAssertEqual(script.acceptCount, 4, "three failures, one client — the wake ends the loop, not an accept")
 
         XCTAssertEqual(sink.events("accept_error").first?["errno"] as? Int, Int(EINTR), sink.file)
         XCTAssertEqual(sink.events("accept_recovered").first?["count"] as? Int, 3, sink.file)
         XCTAssertFalse(isOpen(fds.listener), "the loop owns the listener and closes it on the way out")
         XCTAssertFalse(isOpen(fds.wakeRead))
-        // The served descriptor belongs to a detached handler: end it and wait
-        // for the handler to close it, so nothing outlives the test.
-        shutdown(pair[1], SHUT_RDWR)
-        XCTAssertTrue(waitUntil { !self.isOpen(pair[0]) }, "the handler must close the served descriptor")
     }
 
     func testUnknownErrnoBacksOffAndServesTheNextClient() async throws {
@@ -227,7 +250,10 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
         defer { close(pair[1]) }
         let script = ScriptedListener([error(ECONNRESET), (pair[0], 0)])
-        _ = try await runLoop(script.environment(realSleep: false))
+        let instance = DaemonServer.Instance()
+        await instance.register("echo") { $0 }
+        _ = try await runLoop(script.environment(realSleep: false), instance: instance)
+        try assertEchoAndCompletion(pair[1])
         XCTAssertEqual(script.acceptCount, 2, "an unlisted errno must not end the loop")
         XCTAssertEqual(script.recordedSleeps, [.milliseconds(10)])
     }
@@ -302,6 +328,28 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
                        "only the storm's overflow backs off; the error after the gap retries immediately")
     }
 
+    func testPollFailuresRetryBackOffThenStopWithoutAccepting() async throws {
+        final class WaitScript: @unchecked Sendable {
+            let lock = NSLock()
+            var codes: [Int32] = [EINTR, ENOMEM, EINVAL]
+            var accepts = 0
+            var delays: [Duration] = []
+        }
+        let script = WaitScript()
+        let instance = DaemonServer.Instance()
+        let sink = LogSink()
+        await instance.setLogWriter { sink.append($0) }
+        let environment = DaemonServer.AcceptEnvironment(
+            accept: { _ in script.lock.withLock { script.accepts += 1 }; return (-1, EBADF) },
+            wait: { _, _ in script.lock.withLock { script.codes.isEmpty ? .wake : .failed(script.codes.removeFirst()) } },
+            sleep: { delay in script.lock.withLock { script.delays.append(delay) } })
+        _ = try await runLoop(environment, instance: instance)
+        XCTAssertEqual(script.lock.withLock { script.accepts }, 0)
+        XCTAssertEqual(script.lock.withLock { script.delays }, [.milliseconds(10)])
+        XCTAssertEqual(sink.events("accept_wait_error").compactMap { $0["errno"] as? Int }, [Int(EINTR), Int(EINVAL)])
+        XCTAssertTrue(sink.events("accept_error").isEmpty)
+    }
+
     // MARK: - Connection setup failure is diagnosed (the #175 branch)
 
     func testConnectionSetupFailureIsClosedLoggedAndRecoveryReported() async throws {
@@ -316,9 +364,11 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         defer { close(pair[1]) }
         let script = ScriptedListener([(fds[0], 0), (pair[0], 0)])
         let instance = DaemonServer.Instance()
+        await instance.register("echo") { $0 }
         let sink = LogSink()
         await instance.setLogWriter({ sink.append($0) })
         _ = try await runLoop(script.environment(), instance: instance)
+        try assertEchoAndCompletion(pair[1])
         XCTAssertFalse(isOpen(fds[0]), "the unprotected descriptor must be closed")
         XCTAssertEqual(sink.events("connection_setup_failed").first?["errno"] as? Int, Int(ENOTSOCK), sink.file)
         XCTAssertEqual(sink.events("connection_setup_recovered").first?["count"] as? Int, 1, sink.file)
@@ -336,6 +386,10 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         let fds = try makeLoopFds()
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
+        guard path.utf8.count < MemoryLayout.size(ofValue: addr.sun_path) else {
+            close(fds.listener); close(fds.wakeRead); close(fds.wakeWrite)
+            throw NSError(domain: "OwnedFixturePathTooLong", code: 1)
+        }
         withUnsafeMutableBytes(of: &addr.sun_path) { buf in
             for (i, b) in path.utf8.enumerated() { buf[i] = b }
         }
@@ -395,6 +449,10 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         defer { unlink(path); close(fds.wakeWrite) }
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
+        guard path.utf8.count < MemoryLayout.size(ofValue: addr.sun_path) else {
+            close(fds.listener); close(fds.wakeRead)
+            throw NSError(domain: "OwnedFixturePathTooLong", code: 1)
+        }
         withUnsafeMutableBytes(of: &addr.sun_path) { buf in
             for (i, b) in path.utf8.enumerated() { buf[i] = b }
         }
@@ -431,6 +489,7 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
     func testStopReturnsPromptlyAndTheSocketCanBeServedAgain() async throws {
         let name = "acc-\(UUID().uuidString.prefix(8))"
         let path = DaemonClient.socketPath(name: name)
+        defer { unlink(path) }
         let server = DaemonServer.Instance()
         await server.register("echo") { $0 }
         for round in 1...2 {
@@ -444,6 +503,51 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
             XCTAssertLessThan(Date().timeIntervalSince(stopping), 1.0, "stop() returns without waiting for the accept loop")
             XCTAssertFalse(FileManager.default.fileExists(atPath: path))
         }
+    }
+
+    func testRecoveredClientCannotBeAdmittedAfterStop() async throws {
+        try await assertRecoveredClientRejected(restart: false)
+    }
+
+    func testRecoveredClientCannotJoinRestartedInstance() async throws {
+        try await assertRecoveredClientRejected(restart: true)
+    }
+
+    private func assertRecoveredClientRejected(restart: Bool) async throws {
+        // Pause the old loop after successful accept, inside recovery logging.
+        // stop must revoke this admission even if a new start follows it.
+        var pair: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair), 0)
+        defer { shutdown(pair[1], SHUT_RDWR); close(pair[1]) }
+        let script = ScriptedListener([error(EINTR), (pair[0], 0)])
+        let entered = expectation(description: "recovered client awaits admission")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let server = DaemonServer.Instance()
+        await server.setLogWriter { line in
+            if line.contains("accept_recovered") {
+                entered.fulfill()
+                _ = release.wait(timeout: .now() + 5)
+            }
+        }
+        let path = "\(NSTemporaryDirectory())acc-\(UUID().uuidString.prefix(8)).sock"
+        try await server.start(socketPath: path, environment: script.environment())
+        await fulfillment(of: [entered], timeout: 3)
+        await server.stop()
+        if restart {
+            try await server.start(socketPath: path)
+        }
+        release.signal()
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(pair[1], SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        let n = read(pair[1], &buffer, buffer.count)
+        XCTAssertEqual(n, 0, "A revoked client must close without sending a handshake, including after restart")
+        shutdown(pair[1], SHUT_WR)
+        // Drain any handshake from the defective implementation and observe
+        // peer EOF so even the RED run does not leave a handler behind.
+        if n > 0 { XCTAssertEqual(read(pair[1], &buffer, buffer.count), 0) }
+        await server.stop()
     }
 
     // MARK: - Log format carries no private data

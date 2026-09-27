@@ -555,7 +555,19 @@ enum DaemonServer {
             handlers[method]
         }
 
-        fileprivate func trackConnection(_ task: Task<Void, Never>) {
+        /// The caller is the accept task owned by this instance. stop()
+        /// cancels that task before clearing tracked connections. Checking
+        /// cancellation, creating the handler and tracking it in one actor
+        /// turn makes admission atomic with stop(), including stop/start:
+        /// the old accept task stays cancelled across a new start.
+        fileprivate func admitConnection(_ clientFd: Int32) {
+            guard !Task.isCancelled else {
+                close(clientFd)
+                return
+            }
+            let task = Task.detached(priority: .userInitiated) {
+                await Self.serveConnection(clientFd: clientFd, instance: self)
+            }
             connectionTasks.append(task)
         }
 
@@ -638,10 +650,9 @@ enum DaemonServer {
                 await logEvent(instance, "connection_setup_recovered", errno: 0,
                                disposition: "recovered", count: ended)
             }
-            let handlerTask = Task.detached(priority: .userInitiated) {
-                await Self.serveConnection(clientFd: clientFd, instance: instance)
-            }
-            await instance.trackConnection(handlerTask)
+            // Ownership transfers to the actor, which either closes a revoked
+            // client or creates and tracks its handler without an await gap.
+            await instance.admitConnection(clientFd)
         }
 
         /// One redacted-by-construction event line: event name, errno,
@@ -657,6 +668,7 @@ enum DaemonServer {
 
         private static func serveConnection(clientFd: Int32, instance: Instance) async {
             defer { close(clientFd) }
+            guard !Task.isCancelled else { return }
             // Send the handshake first line per the `Version handshake refuses
             // mismatched client` spec. The client reads one line before
             // sending any request and aborts if the version does not match.
