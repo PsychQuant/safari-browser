@@ -100,6 +100,14 @@ enum DaemonServer {
         }
     }
 
+    /// A permanent listener failure contains no request or filesystem data.
+    struct ListenerFailure: Error, Sendable, Equatable, CustomStringConvertible {
+        enum Operation: String, Sendable { case accept, poll }
+        let operation: Operation
+        let errno: Int32
+        var description: String { "listener \(operation.rawValue) failed: errno=\(errno)" }
+    }
+
     // MARK: - Accept-loop recovery (#178)
 
     /// `accept(2)` as a value, so the loop can be driven by a scripted errno
@@ -156,6 +164,8 @@ enum DaemonServer {
         var wait: WaitFunction = DaemonServer.systemWait
         var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
         var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
+        /// Runs after this generation has released all listener resources.
+        var beforeFailureNotification: @Sendable () async -> Void = {}
     }
 
     /// Makes an accepted descriptor safe to serve: no SIGPIPE (#175), and
@@ -301,6 +311,7 @@ enum DaemonServer {
         /// listener and the read end (#178).
         private var wakeWriteFd: Int32 = -1
         private var acceptTask: Task<Void, Never>?
+        private var listenerGeneration: UUID?
         private var socketPath: String?
         private var connectionTasks: [Task<Void, Never>] = []
 
@@ -567,13 +578,16 @@ enum DaemonServer {
 
         /// Bind the Unix socket, start listening, and kick off the accept loop.
         /// Throws `DaemonError` on bind/listen failure.
-        func start(socketPath: String) async throws {
-            try await start(socketPath: socketPath, environment: DaemonServer.AcceptEnvironment())
+        func start(socketPath: String,
+                   onListenerFailure: (@Sendable (ListenerFailure) async -> Void)? = nil) async throws {
+            try await start(socketPath: socketPath, environment: DaemonServer.AcceptEnvironment(),
+                            onListenerFailure: onListenerFailure)
         }
 
         /// `environment` is a test seam: it drives the real loop behind a real
         /// listener with scripted accept results.
-        func start(socketPath: String, environment: DaemonServer.AcceptEnvironment) async throws {
+        func start(socketPath: String, environment: DaemonServer.AcceptEnvironment,
+                   onListenerFailure: (@Sendable (ListenerFailure) async -> Void)? = nil) async throws {
             guard acceptTask == nil else { return } // idempotent — already started
 
             // Remove any stale socket left from a crashed prior run.
@@ -662,8 +676,19 @@ enum DaemonServer {
             // fetched at dispatch time.
             let instance = self
             let wakeRead = wake[0]
+            let generation = UUID()
+            listenerGeneration = generation
             self.acceptTask = Task.detached(priority: .userInitiated) {
-                await Self.acceptLoop(listenerFd: fd, wakeFd: wakeRead, instance: instance, environment: environment)
+                guard let termination = await Self.acceptLoopResult(
+                    listenerFd: fd, wakeFd: wakeRead, instance: instance, environment: environment
+                ), let completion = await instance.finishListenerFailure(termination, generation: generation) else { return }
+                // A synchronous writer can block indefinitely. Its captured,
+                // budgeted emission must not hold up cleanup or notification.
+                if let emission = completion.emission {
+                    Task.detached { emission.write() }
+                }
+                await environment.beforeFailureNotification()
+                await onListenerFailure?(termination.failure)
             }
         }
 
@@ -671,11 +696,29 @@ enum DaemonServer {
         /// and remove the socket file. Returns without waiting for the accept
         /// loop, which closes the listener itself once it observes the wake.
         func stop() async {
+            cleanListener(cancelAcceptTask: true)
+        }
+
+        private struct ListenerCompletion: Sendable {
+            let emission: DiagnosticEmission?
+        }
+
+        /// This actor turn owns cleanup; no suspension can let a later start
+        /// replace resources between the generation check and their release.
+        private func finishListenerFailure(_ termination: ListenerTermination, generation: UUID) -> ListenerCompletion? {
+            guard listenerGeneration == generation else { return nil }
+            let emission = prepareDiagnostic(termination.event)
+            cleanListener(cancelAcceptTask: false)
+            return ListenerCompletion(emission: emission)
+        }
+
+        private func cleanListener(cancelAcceptTask: Bool) {
+            listenerGeneration = nil
             diagnosticEnabled = false
             diagnosticGeneration = UUID()
             diagnosticBudget.discardPending()
             diagnosticFlushTask?.cancel()
-            acceptTask?.cancel()
+            if cancelAcceptTask { acceptTask?.cancel() }
             acceptTask = nil
             // #178: wake the loop rather than close its listener. The loop is
             // the only caller of accept() and closes the listener after its
@@ -739,6 +782,22 @@ enum DaemonServer {
             listenerFd: Int32, wakeFd: Int32, instance: Instance,
             environment env: DaemonServer.AcceptEnvironment = .init()
         ) async {
+            if let termination = await acceptLoopResult(listenerFd: listenerFd, wakeFd: wakeFd,
+                                                        instance: instance, environment: env) {
+                // Direct loop callers retain synchronous diagnostic observation.
+                await instance.recordDiagnostic(termination.event)
+            }
+        }
+
+        private struct ListenerTermination: Sendable {
+            let failure: ListenerFailure
+            let event: DaemonDiagnosticBudget.Event
+        }
+
+        private static func acceptLoopResult(
+            listenerFd: Int32, wakeFd: Int32, instance: Instance,
+            environment env: DaemonServer.AcceptEnvironment
+        ) async -> ListenerTermination? {
             defer {
                 close(listenerFd)
                 close(wakeFd)
@@ -747,24 +806,31 @@ enum DaemonServer {
             var setupFailures = DaemonServer.SetupFailureStreak()
             while !Task.isCancelled {
                 let waited = env.wait(listenerFd, wakeFd)
+                guard !Task.isCancelled else { return nil }
                 let (clientFd, code): (Int32, Int32)
                 switch waited {
-                case .wake: return
+                case .wake: return nil
                 case .idle: continue   // re-checks cancellation
                 case .failed(let e): (clientFd, code) = (-1, e)
                 case .ready: (clientFd, code) = env.accept(listenerFd)
                 }
                 guard clientFd >= 0 else {
                     let step = incident.recordFailure(errno: code, at: env.now())
+                    if step.disposition == .stop {
+                        return ListenerTermination(
+                            failure: ListenerFailure(operation: waited == .ready ? .accept : .poll, errno: code),
+                            event: .init(kind: waited == .ready ? .acceptError : .acceptWaitError,
+                                         errno: code, disposition: .stop, count: incident.streak))
+                    }
                     if step.log {
                         await logEvent(instance, waited == .ready ? .acceptError : .acceptWaitError,
                                        errno: code, disposition: step.disposition.diagnosticDisposition, count: incident.streak)
                     }
                     switch step.disposition {
-                    case .stop: return
+                    case .stop: return nil // handled above before diagnostic writing
                     case .retry: continue
                     case .backoff:
-                        do { try await env.sleep(step.delay ?? .zero) } catch { return }   // stop() must not wait it out
+                        do { try await env.sleep(step.delay ?? .zero) } catch { return nil }   // stop() must not wait it out
                         continue
                     }
                 }
@@ -774,6 +840,7 @@ enum DaemonServer {
                 }
                 await admit(clientFd, instance: instance, at: env.now(), setupFailures: &setupFailures)
             }
+            return nil
         }
 
         /// Serves an accepted client, or closes it if it cannot be made safe.
