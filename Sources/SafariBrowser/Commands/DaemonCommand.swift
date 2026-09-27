@@ -305,16 +305,36 @@ struct DaemonServeCommand: AsyncParsableCommand {
         )
 
         let loop = DaemonServeLoop.Server(shutdownWatchdog: DaemonServer.scheduleProcessExit)
-        try await loop.start(
-            socketPath: socketPath,
-            pidPath: pidPath,
-            idleTimeout: idleTimeout,
-            logPath: logPath
-        )
+        try await Self.runUntilStopped(server: loop) {
+            try await loop.start(
+                socketPath: socketPath,
+                pidPath: pidPath,
+                idleTimeout: idleTimeout,
+                logPath: logPath
+            )
+        }
+    }
 
-        // Block until either the idle watchdog or an explicit
-        // `daemon.shutdown` method triggers `stop()`. Both paths resume
-        // the continuation in `waitUntilStopped`.
-        await loop.waitUntilStopped()
+    /// Host lifecycle kept separate from process detachment/path resolution so
+    /// startup/stop races exercise the same control flow without a second daemon.
+    static func runUntilStopped(
+        server: DaemonServeLoop.Server,
+        start: @Sendable () async throws -> Void
+    ) async throws {
+        do {
+            try await start()
+        } catch is CancellationError {
+            // A normal shutdown can win after bind but before startup returns.
+            // The host owns this server's single run; preserve its successful
+            // requested/idle exit instead of exposing startup cancellation.
+            let reason = await server.waitUntilStopped()
+            switch reason {
+            case .requested, .idleTimeout: return
+            case .listenerFailed(let failure): throw failure
+            case .startupFailed: throw CancellationError()
+            }
+        }
+        let reason = await server.waitUntilStopped()
+        try reason.throwIfListenerFailed()
     }
 }

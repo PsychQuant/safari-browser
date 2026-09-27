@@ -206,6 +206,14 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 
 這五種會 fallback 到 stateless 並在 stderr 印一行 `[daemon fallback: <reason>]`。**Domain errors**（例如 `ambiguousWindowMatch`）**不 fallback** — 因為 stateless path 會產生一樣的 ambiguity，fallback 沒意義。
 
+### Listener termination（#198）
+
+永久 accept／poll 錯誤會結束所屬 daemon Run，清理自有 PID 與 socket，完成停止等待者；不再只結束 listener 而等 idle timeout。原因只含固定 operation 與 errno，`daemon __serve` 對永久 listener 失效回傳非零退出碼；一般 shutdown 與 idle timeout 仍正常退出。listener／wake-read 由迴圈先關閉，terminal 診斷寫入不阻擋通知，且維持 #197 的 best-effort 額度。terminal 診斷也可能因 log handle 已關閉而遺失；typed StopReason／CLI 錯誤仍傳達原因，不承諾落盤。
+
+每次啟動各有 Run ID；並行 start 共用啟動工作，並行 stop 共用清理，新 start 等舊清理完成。啟動取消／失敗同樣走清理；舊 listener callback、shutdown hook 與 watchdog 不能停止新 Run。連線接納時即捕捉 shutdown 世代／hook，請求即使卡在日誌後才恢復，也必須重驗權限，不得取得新 Run 的 hook；新 Run 重新計算 idle 起點。多個 waiter 各自取得註冊 Run 的第一個停止原因，清理完成後才恢復。stop 不等待 accept loop 或診斷 writer；啟動中的 stop 會等本次啟動工作離開，避免晚到 bind，沒有任意系統負載下的硬牆鐘保證。
+
+PID 身分以 close-on-exec 描述元保留原 inode，清理比對建立時的 device/inode，保留已替換或無法確認的 entry；寫入／dup 失敗時，仍能確認身分的自有 entry 會清理。外層不重複 unlink 內層已清理的 socket。身分檢查與 unlink 不是原子交易，不宣稱能防止任意同 UID 惡意檔案競態。沒有自動重建 listener 或重播 RPC；停止前已建立連線的讀取取消與回收仍由 #199 處理。
+
 ### Diagnostic event budget（#197）
 
 accept、連線初始化與 request 拒絕的診斷事件共用 logging-session 額度：最多 8 筆突發、每秒補 2 筆；一般事件保留最後 1 筆給終止原因，所以初始一般事件最多連續 7 筆。成功、incident 重設、安靜間隔或同 writer 的 stop/start 不會額外重設額度；明確更換 writer 才開始新 logging session。此額度限制紀錄放行時間，不是底層 writer／檔案 flush 的物理速率。既有每請求日誌不受此額度控制。
