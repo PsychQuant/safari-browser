@@ -21,19 +21,16 @@ enum DaemonServer {
         }
     }
 
-    /// Sendable carrier for the in-flight pair so the actor's
-    /// `snapshotInFlight()` method can return cleanly across the actor
-    /// boundary. `requestIdJSON` is the already-encoded JSON snippet
-    /// for the requestId field (e.g. `42` or `"abc"`); writing it
-    /// verbatim into the cancelled envelope avoids re-serialization
-    /// and dodges the non-Sendable `Any` problem.
+    /// Stable identities for a cancellation candidate. No descriptor survives
+    /// here across suspension; the owning connection is resolved again later.
     struct InFlightSlot: Sendable {
-        let fd: Int32
+        let connectionID: UUID
+        let requestID: UUID
         let requestIdJSON: Data
     }
 
     /// Error codes surfaced in JSON-lines responses.
-    enum ErrorCode: String {
+    enum ErrorCode: String, Sendable {
         case parseError
         case methodNotFound
         case handlerError
@@ -49,7 +46,7 @@ enum DaemonServer {
     /// Complete request JSON line, excluding LF. Applies to every method.
     static let maxRequestLineBytes = 128 * 1024 * 1024
 
-    struct RequestLineReader {
+    struct RequestLineReader: Sendable {
         enum ReadError: Error, Equatable { case lineTooLong, readFailed(Int32) }
         let maxBytes: Int
         private(set) var pending = Data()
@@ -60,40 +57,73 @@ enum DaemonServer {
             self.maxBytes = maxBytes
         }
 
+        /// Both adapters use this framing core; only their I/O scheduling differs.
+        private mutating func bufferedLine() throws -> Data? {
+            let unscanned = pending.index(pending.startIndex, offsetBy: scanned)
+            if let newline = pending[unscanned...].firstIndex(of: 10) {
+                let length = pending.distance(from: pending.startIndex, to: newline)
+                guard length <= maxBytes else { throw ReadError.lineTooLong }
+                let line = Data(pending[..<newline])
+                pending.removeSubrange(...newline)
+                scanned = 0
+                return line
+            }
+            scanned = pending.count
+            guard pending.count <= maxBytes else { throw ReadError.lineTooLong }
+            return nil
+        }
+
+        private var readAllowance: Int { min(8192, maxBytes + 1 - pending.count) }
+
+        private mutating func finishEOF() -> Data? {
+            guard !pending.isEmpty else { return nil }
+            let line = pending
+            pending = Data()
+            scanned = 0
+            return line
+        }
+
+        mutating func readLine(
+            connection: DaemonConnection,
+            yieldAfterProgress: @Sendable () async -> Void = { await Task.yield() }
+        ) async throws -> Data? {
+            var chunks = 0
+            while true {
+                try Task.checkCancellation()
+                guard !connection.isRevoked else { throw DaemonConnection.Failure.revoked }
+                if let line = try bufferedLine() { return line }
+                let next = try await connection.readChunk(maxBytes: readAllowance)
+                try Task.checkCancellation()
+                guard !connection.isRevoked else { throw DaemonConnection.Failure.revoked }
+                guard let next else { return finishEOF() }
+                pending.append(next)
+                chunks += 1
+                if chunks == 16 {
+                    chunks = 0
+                    await yieldAfterProgress()
+                }
+            }
+        }
+
+        /// Synchronous adapter retained for the existing framing/syscall tests.
         mutating func readLine(
             fd: Int32,
             readOperation: (Int32, UnsafeMutableRawPointer, Int) -> Int = { Darwin.read($0, $1, $2) }
         ) throws -> Data? {
             var buffer = [UInt8](repeating: 0, count: 8192)
             while true {
-                let unscanned = pending.index(pending.startIndex, offsetBy: scanned)
-                if let newline = pending[unscanned...].firstIndex(of: 10) {
-                    let length = pending.distance(from: pending.startIndex, to: newline)
-                    guard length <= maxBytes else { throw ReadError.lineTooLong }
-                    let line = Data(pending[..<newline])
-                    pending.removeSubrange(...newline)
-                    scanned = 0
-                    return line
-                }
-                scanned = pending.count
-                guard pending.count <= maxBytes else { throw ReadError.lineTooLong }
+                if let line = try bufferedLine() { return line }
                 // Exactly maxBytes may still be followed by LF. Read at most
                 // that one excess byte, never an unbounded unfinished frame.
-                let allowance = min(buffer.count, maxBytes + 1 - pending.count)
+                let allowance = readAllowance
                 let count = buffer.withUnsafeMutableBytes { readOperation(fd, $0.baseAddress!, allowance) }
                 if count > 0 {
                     pending.append(contentsOf: buffer.prefix(count))
                 } else if count == 0 {
-                    // Preserve the existing EOF-terminated final-line behavior.
-                    guard !pending.isEmpty else { return nil }
-                    let line = pending
-                    pending = Data()
-                    scanned = 0
-                    return line
+                    return finishEOF()
                 } else {
                     let code = errno
                     if code == EINTR { continue }
-                    // A failed read is not EOF and must not dispatch a prefix.
                     throw ReadError.readFailed(code)
                 }
             }
@@ -300,6 +330,13 @@ enum DaemonServer {
         }
     }
 
+    /// Internal observations for deterministic connection lifecycle fixtures.
+    struct ConnectionObservation: Sendable {
+        var beforeRead: @Sendable () -> Void = {}
+        var beforeDispatch: @Sendable () async -> Void = {}
+        var didFinish: @Sendable () -> Void = {}
+    }
+
     /// Running daemon instance. Construct with `init()`, register handlers
     /// with `register(_:handler:)`, start with `start(socketPath:)`, and
     /// stop with `stop()`.
@@ -314,7 +351,20 @@ enum DaemonServer {
         private var listenerGeneration: UUID?
         private var shutdownGeneration = UUID()
         private var socketPath: String?
-        private var connectionTasks: [Task<Void, Never>] = []
+        private final class ConnectionRecord {
+            let connection: DaemonConnection
+            let shutdown: ShutdownContext
+            var task: Task<Void, Never>?
+            var request: RequestWork?
+            init(connection: DaemonConnection, shutdown: ShutdownContext) {
+                self.connection = connection
+                self.shutdown = shutdown
+            }
+        }
+        private var connections: [UUID: ConnectionRecord] = [:]
+        // These tasks can outlive a revoked transport only while the admitted
+        // handler or logger is genuinely unfinished. Completion removes them.
+        private var operations: [UUID: Task<Void, Never>] = [:]
 
         /// Section 3 of `daemon-security-hardening` — optional log writer
         /// fed one redacted/truncated JSON-line per request. When `nil`
@@ -338,16 +388,6 @@ enum DaemonServer {
         /// the activity signal that matters for the idle watchdog.
         private var requestCount: Int = 0
 
-        /// Section 6 of `daemon-security-hardening`. In-flight request
-        /// tracking lets `daemon.shutdown` send a `cancelled` error to
-        /// every active client connection before the daemon dies, so
-        /// callers don't sit blocked on a forever-pending response.
-        /// Map: client fd → JSON-encoded requestId snippet so the
-        /// cancelled envelope correlates with the request the client
-        /// is awaiting. Storing the requestId as `Data` keeps the
-        /// actor fully Sendable (raw `Any?` would not be).
-        private var inFlightRequestIds: [Int32: Data] = [:]
-
         /// Section 6 of `daemon-security-hardening`. When the lifecycle
         /// snapshot fields below are read by the bypass path, they must
         /// not require the cache actor — otherwise `daemon.status`
@@ -364,12 +404,16 @@ enum DaemonServer {
         /// Wraps `Server.stop()` (or equivalent teardown) so the
         /// outer wrapper actor — which owns the pid file path and the
         /// idle-watchdog task — can clean up properly. The bypass path
-        /// invokes this from a detached Task so the response to the
-        /// shutdown caller lands first.
+        /// invokes this after attempting the shutdown caller's acknowledgement;
+        /// local write completion is not a peer-delivery guarantee.
         private var shutdownHook: (@Sendable () async -> Void)?
 
         private let shutdownWatchdog: (@Sendable () -> Void)?
         private nonisolated let requestLineLimit: Int
+        private nonisolated let connectionObservation: ConnectionObservation
+        private let connectionEnvironment: DaemonConnection.Environment
+        var trackedConnectionCount: Int { connections.count }
+        var activeOperationCount: Int { operations.count }
         private let diagnosticClock: @Sendable () -> ContinuousClock.Instant
         private let diagnosticSleep: @Sendable () async throws -> Void
         private var diagnosticBudget: DaemonDiagnosticBudget
@@ -381,10 +425,14 @@ enum DaemonServer {
         init(shutdownWatchdog: (@Sendable () -> Void)? = nil,
              requestLineLimit: Int = DaemonServer.maxRequestLineBytes,
              diagnosticClock: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
-             diagnosticSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(500)) }) {
+             diagnosticSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(500)) },
+             connectionObservation: ConnectionObservation = .init(),
+             connectionEnvironment: DaemonConnection.Environment = .init()) {
             precondition(requestLineLimit > 0 && requestLineLimit < Int.max)
             self.shutdownWatchdog = shutdownWatchdog
             self.requestLineLimit = requestLineLimit
+            self.connectionObservation = connectionObservation
+            self.connectionEnvironment = connectionEnvironment
             self.diagnosticClock = diagnosticClock
             self.diagnosticSleep = diagnosticSleep
             self.diagnosticBudget = DaemonDiagnosticBudget(now: diagnosticClock())
@@ -586,24 +634,14 @@ enum DaemonServer {
             }
         }
 
-        /// Mark a client connection as having an in-flight request whose
-        /// requestId is `requestIdJSON` (already JSON-encoded). Called
-        /// from the dispatch path before invoking the handler.
-        func markInFlight(fd: Int32, requestIdJSON: Data) {
-            inFlightRequestIds[fd] = requestIdJSON
-        }
-
-        /// Clear the in-flight slot for `fd`. Called from the dispatch
-        /// path after handler completes (success or error).
-        func clearInFlight(fd: Int32) {
-            inFlightRequestIds.removeValue(forKey: fd)
-        }
-
-        /// Snapshot of in-flight (fd, requestIdJSON) pairs. Consumed by
-        /// `daemon.shutdown` to send a `cancelled` envelope to every
-        /// active client before tearing down the socket.
+        /// A snapshot carries identities, never a raw fd for a delayed write.
         func snapshotInFlight() -> [InFlightSlot] {
-            inFlightRequestIds.map { InFlightSlot(fd: $0.key, requestIdJSON: $0.value) }
+            connections.values.compactMap { record in
+                guard record.shutdown.generation == shutdownGeneration,
+                      !record.connection.isRevoked, let work = record.request else { return nil }
+                return InFlightSlot(connectionID: record.connection.id, requestID: work.id,
+                                    requestIdJSON: work.request.requestIdJSON)
+            }
         }
 
         /// Snapshot of the last-activity timestamp as seconds since epoch,
@@ -767,37 +805,124 @@ enum DaemonServer {
                 close(wakeWriteFd)
                 wakeWriteFd = -1
             }
-            for task in connectionTasks {
-                task.cancel()
+            for record in connections.values {
+                record.connection.revoke()
+                record.request?.result.cancel()
+                record.request?.replyFinished.cancel()
+                record.task?.cancel()
             }
-            connectionTasks.removeAll()
+            connections.removeAll()
+            // Do not discard genuinely unfinished operation tracking or await
+            // a handler that cannot cooperate with cancellation.
+            for task in operations.values { task.cancel() }
             if let path = socketPath {
                 unlink(path)
                 socketPath = nil
             }
         }
 
-        // MARK: - Internal dispatch (actor-isolated)
+        // MARK: - Connection and request ownership (actor-isolated)
 
-        fileprivate func lookupHandler(_ method: String) -> MethodHandler? {
-            handlers[method]
-        }
-
-        /// In production the caller is the accept task owned by this instance. stop()
-        /// cancels that task before clearing tracked connections. Checking
-        /// cancellation, creating the handler and tracking it in one actor
-        /// turn makes admission atomic with stop(), including stop/start:
-        /// the old accept task stays cancelled across a new start.
         fileprivate func admitConnection(_ clientFd: Int32) {
-            guard !Task.isCancelled else {
-                close(clientFd)
+            guard !Task.isCancelled else { close(clientFd); return }
+            let connection: DaemonConnection
+            do { connection = try DaemonConnection(adopting: clientFd, environment: connectionEnvironment) }
+            catch {
+                // The adopter owns and closes even its failed setup descriptor.
+                let code: Int32
+                if case DaemonConnection.Failure.system(_, let value) = error { code = value }
+                else { code = EIO }
+                Task.detached { await self.recordDiagnostic(.init(kind: .setupFailed, errno: code,
+                                                                  disposition: .closed, count: 1)) }
                 return
             }
             let shutdown = ShutdownContext(generation: shutdownGeneration, hook: shutdownHook)
-            let task = Task.detached(priority: .userInitiated) {
-                await Self.serveConnection(clientFd: clientFd, instance: self, shutdown: shutdown)
+            let record = ConnectionRecord(connection: connection, shutdown: shutdown)
+            connections[connection.id] = record
+            let observation = connectionObservation
+            record.task = Task.detached(priority: .userInitiated) {
+                let diagnostic = await Self.serveConnection(connection: connection, instance: self)
+                await self.finishConnection(connection.id)
+                observation.didFinish()
+                // Logging is a separate best-effort activity after transport
+                // ownership and its registry entry have ended.
+                if let diagnostic {
+                    Task.detached { await self.recordDiagnostic(diagnostic) }
+                }
             }
-            connectionTasks.append(task)
+        }
+
+        private func finishConnection(_ id: UUID) {
+            guard let record = connections.removeValue(forKey: id) else { return }
+            record.connection.revoke()
+            if let work = record.request {
+                work.result.cancel()
+                work.replyFinished.cancel()
+                operations[work.id]?.cancel()
+            }
+        }
+
+        private func beginRequest(_ request: ParsedRequest, connectionID: UUID) -> RequestWork? {
+            guard !Task.isCancelled, let record = connections[connectionID],
+                  record.shutdown.generation == shutdownGeneration,
+                  !record.connection.isRevoked, record.request == nil else { return nil }
+            // The authority check, activity change, handler selection and work
+            // admission are one actor turn. Stop cannot interleave between them.
+            recordActivity()
+            let work = RequestWork(connectionID: connectionID, request: request,
+                                   log: LogSnapshot(writer: logWriter, full: logFull))
+            record.request = work
+            let handler = handlers[request.method]
+            let shutdown = record.shutdown
+            operations[work.id] = Task.detached(priority: .userInitiated) {
+                if Task.isCancelled {
+                    work.result.cancel()
+                } else {
+                    let reply = await Self.executeRequest(work, handler: handler,
+                                                          instance: self, shutdown: shutdown)
+                    work.result.complete(reply)
+                }
+                await self.finishOperation(work.id)
+            }
+            return work
+        }
+
+        private func finishOperation(_ id: UUID) { operations.removeValue(forKey: id) }
+
+        private func finishReply(_ work: RequestWork) {
+            guard let record = connections[work.connectionID], record.request === work else { return }
+            record.request = nil
+        }
+
+        private func isCurrent(_ work: RequestWork) -> Bool {
+            guard let record = connections[work.connectionID] else { return false }
+            return record.shutdown.generation == shutdownGeneration
+                && record.request === work && !record.connection.isRevoked
+        }
+
+        private func cancellationTarget(_ slot: InFlightSlot, context: ShutdownContext) -> RequestWork? {
+            guard context.generation == shutdownGeneration,
+                  let record = connections[slot.connectionID],
+                  let work = record.request, work.id == slot.requestID,
+                  isCurrent(work) else { return nil }
+            return work
+        }
+
+        private func offerCancellation(_ reply: Reply, to work: RequestWork, context: ShutdownContext) -> Bool {
+            guard context.generation == shutdownGeneration, isCurrent(work),
+                  work.result.complete(reply) else { return false }
+            operations[work.id]?.cancel()
+            return true
+        }
+
+        private func statusResponse(for work: RequestWork) -> Data? {
+            guard !Task.isCancelled, isCurrent(work) else { return nil }
+            let payload: [String: Any] = [
+                "pid": Int(getpid()), "uptimeSeconds": currentUptimeSeconds,
+                "requestCount": currentRequestCount, "preCompiledCount": currentPreCompiledCountSnapshot,
+                "lastActivityEpoch": currentLastActivityEpoch,
+            ]
+            return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
         }
 
         // MARK: - Accept loop
@@ -917,245 +1042,242 @@ enum DaemonServer {
             await instance.recordDiagnostic(.init(kind: event, errno: code, disposition: disposition, count: count))
         }
 
-        private static func serveConnection(clientFd: Int32, instance: Instance, shutdown: ShutdownContext) async {
-            var ownsClient = true
-            defer { if ownsClient { close(clientFd) } }
-            guard !Task.isCancelled else { return }
-            // Send the handshake first line per the `Version handshake refuses
-            // mismatched client` spec. The client reads one line before
-            // sending any request and aborts if the version does not match.
-            if !writeLine(fd: clientFd, line: DaemonProtocol.encodeHandshake()) { return }
+        // MARK: - Transport / operation separation
+
+        private struct ParsedRequest: Sendable {
+            let method: String
+            let params: Data
+            let requestIdJSON: Data
+            let started: Date
+            let rejection: Rejection?
+            struct Rejection: Sendable { let code: ErrorCode; let message: String }
+
+            static func decode(_ line: Data) -> Self {
+                let started = Date()
+                let parsed: Any
+                do { parsed = try JSONSerialization.jsonObject(with: line) }
+                catch {
+                    return Self(method: "<parse-error>", params: Data("{}".utf8),
+                                requestIdJSON: Data("null".utf8), started: started,
+                                rejection: .init(code: .parseError, message: "invalid JSON: \(error)"))
+                }
+                guard let object = parsed as? [String: Any] else {
+                    return Self(method: "<parse-error>", params: Data("{}".utf8),
+                                requestIdJSON: Data("null".utf8), started: started,
+                                rejection: .init(code: .parseError, message: "request must be JSON object"))
+                }
+                let id = encodeRequestId(object["requestId"])
+                guard let method = object["method"] as? String else {
+                    return Self(method: "<missing>", params: Data("{}".utf8), requestIdJSON: id,
+                                started: started, rejection: .init(code: .parseError, message: "missing 'method'"))
+                }
+                if LifecycleMethod(rawValue: method) != nil {
+                    // Lifecycle parameters have always been ignored, including
+                    // logging. Preserve that shape and privacy boundary.
+                    return Self(method: method, params: Data("{}".utf8), requestIdJSON: id,
+                                started: started, rejection: nil)
+                }
+                let paramsValue = object["params"] ?? [:]
+                guard JSONSerialization.isValidJSONObject(paramsValue) else {
+                    return Self(method: method, params: Data("{}".utf8), requestIdJSON: id,
+                                started: started, rejection: .init(code: .parseError, message: "unserialisable params"))
+                }
+                do {
+                    let params = try JSONSerialization.data(withJSONObject: paramsValue)
+                    return Self(method: method, params: params, requestIdJSON: id, started: started, rejection: nil)
+                } catch {
+                    return Self(method: method, params: Data("{}".utf8), requestIdJSON: id,
+                                started: started, rejection: .init(code: .parseError, message: "unserialisable params"))
+                }
+            }
+        }
+
+        private struct LogSnapshot: Sendable {
+            let writer: (@Sendable (String) -> Void)?
+            let full: Bool
+        }
+
+        private struct ShutdownPlan: Sendable {
+            let context: ShutdownContext
+            let candidates: [InFlightSlot]
+            let caller: UUID
+        }
+
+        private struct Reply: Sendable {
+            let bytes: Data
+            var deadline: ContinuousClock.Instant? = nil
+            var shutdown: ShutdownPlan? = nil
+            var closesConnection = false
+        }
+
+        private final class RequestWork: Sendable {
+            let id = UUID()
+            let connectionID: UUID
+            let request: ParsedRequest
+            let log: LogSnapshot
+            let result = DaemonRequestCompletion<Reply>()
+            let replyFinished = DaemonRequestCompletion<Bool>()
+            init(connectionID: UUID, request: ParsedRequest, log: LogSnapshot) {
+                self.connectionID = connectionID
+                self.request = request
+                self.log = log
+            }
+        }
+
+        private static func serveConnection(
+            connection: DaemonConnection, instance: Instance
+        ) async -> DaemonDiagnosticBudget.Event? {
+            defer { connection.revoke() }
+            guard await writeLine(connection: connection, line: DaemonProtocol.encodeHandshake()) else { return nil }
             var reader = RequestLineReader(maxBytes: instance.requestLineLimit)
-            while !Task.isCancelled {
+            while !Task.isCancelled && !connection.isRevoked {
                 let line: Data
                 do {
-                    guard let next = try reader.readLine(fd: clientFd) else { return }
+                    instance.connectionObservation.beforeRead()
+                    guard let next = try await reader.readLine(connection: connection) else { return nil }
                     line = next
                 } catch let failure as RequestLineReader.ReadError {
-                    // Reject before any logging wait. A blocked writer cannot
-                    // keep this fd open or retain the rejected frame's buffer.
-                    close(clientFd)
-                    ownsClient = false
+                    let cancelled = connection.isRevoked || Task.isCancelled
+                    connection.revoke()
                     reader = RequestLineReader(maxBytes: instance.requestLineLimit)
-                    let event: DaemonDiagnosticBudget.Event
+                    guard !cancelled else { return nil }
                     switch failure {
                     case .lineTooLong:
-                        event = .init(kind: .requestTooLong, errno: EMSGSIZE, disposition: .closed)
+                        return .init(kind: .requestTooLong, errno: EMSGSIZE, disposition: .closed)
                     case .readFailed(let code):
-                        event = .init(kind: .requestReadFailed, errno: code, disposition: .closed)
+                        return .init(kind: .requestReadFailed, errno: code, disposition: .closed)
                     }
-                    await instance.recordDiagnostic(event)
-                    return
-                } catch { return }
-                // Section 6 — lifecycle bypass. Peek at the method
-                // before entering the regular dispatch path. Lifecycle
-                // commands (`daemon.status`, `daemon.shutdown`) take a
-                // separate fast path that does NOT touch the cache
-                // actor, so a long-running AppleScript request cannot
-                // block them.
-                let response: Data
-                if let lifecycle = peekLifecycleMethod(line: line) {
-                    response = await dispatchLifecycle(lifecycle: lifecycle, line: line, instance: instance, fd: clientFd, shutdown: shutdown)
-                } else {
-                    response = await dispatchLine(line: line, fd: clientFd, instance: instance)
+                } catch let failure as DaemonConnection.Failure {
+                    let cancelled = connection.isRevoked || Task.isCancelled
+                    connection.revoke()
+                    reader = RequestLineReader(maxBytes: instance.requestLineLimit)
+                    guard !cancelled else { return nil }
+                    if case .system(_, let code) = failure {
+                        return .init(kind: .requestReadFailed, errno: code, disposition: .closed)
+                    }
+                    return nil
+                } catch { return nil }
+
+                let parsed = ParsedRequest.decode(line)
+                await instance.connectionObservation.beforeDispatch()
+                guard let work = await instance.beginRequest(parsed, connectionID: connection.id) else { return nil }
+                // Always consume this single-consumer gate, even if cancellation
+                // arrived while beginRequest returned, to release a winning value.
+                guard let reply = await work.result.wait() else {
+                    work.replyFinished.cancel()
+                    return nil
                 }
-                if !writeLine(fd: clientFd, line: response) { return }
+                let sent = await writeLine(connection: connection, line: reply.bytes, deadline: reply.deadline)
+                work.replyFinished.complete(sent)
+                await instance.finishReply(work)
+                if let plan = reply.shutdown {
+                    // An authorized shutdown continues even if its ACK could not
+                    // be delivered. The plan has independent generation checks.
+                    await performShutdown(plan, instance: instance)
+                    return nil
+                }
+                if !sent || reply.closesConnection { return nil }
             }
+            return nil
         }
 
-        // MARK: - Section 6: lifecycle bypass
+        // MARK: - Lifecycle bypass and response selection
 
-        /// Lifecycle method routing. Recognized values bypass the regular
-        /// handler dispatch and read directly from `Instance`'s snapshot
-        /// fields, never the cache actor.
-        enum LifecycleMethod: String {
-            case status = "daemon.status"
-            case shutdown = "daemon.shutdown"
-        }
+        enum LifecycleMethod: String, Sendable { case status = "daemon.status", shutdown = "daemon.shutdown" }
 
-        /// Cheap pre-dispatch parse: extract just the `method` field from
-        /// a JSON-line if it matches a `LifecycleMethod` case. Returns nil
-        /// for non-lifecycle requests so the caller routes through the
-        /// regular dispatch path.
         static func peekLifecycleMethod(line: Data) -> LifecycleMethod? {
-            guard let obj = try? JSONSerialization.jsonObject(with: line, options: []) as? [String: Any],
-                  let method = obj["method"] as? String,
-                  let lifecycle = LifecycleMethod(rawValue: method) else {
-                return nil
-            }
-            return lifecycle
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let method = object["method"] as? String else { return nil }
+            return LifecycleMethod(rawValue: method)
         }
 
-        /// Dispatch a lifecycle command without touching the cache actor.
-        /// `daemon.status` reads from Instance's snapshot fields and
-        /// returns immediately. `daemon.shutdown` sends a `cancelled`
-        /// envelope to every in-flight client, replies `{}` to its own
-        /// caller, and schedules an asynchronous teardown + 5s
-        /// watchdog so the process exits within the spec deadline even
-        /// if `Server.stop()` stalls.
-        private static func dispatchLifecycle(
-            lifecycle: LifecycleMethod,
-            line: Data,
-            instance: Instance,
-            fd: Int32,
-            shutdown: ShutdownContext
-        ) async -> Data {
-            await instance.recordActivity()
-            let started = Date()
-            let obj = (try? JSONSerialization.jsonObject(with: line, options: []) as? [String: Any]) ?? [:]
-            let requestId = obj["requestId"]
-
-            let response: Data
-            switch lifecycle {
-            case .status:
-                let pid = Int(getpid())
-                let uptime = await instance.currentUptimeSeconds
-                let requestCount = await instance.currentRequestCount
-                let preCount = await instance.currentPreCompiledCountSnapshot
-                let lastActivity = await instance.currentLastActivityEpoch
-                let payload: [String: Any] = [
-                    "pid": pid,
-                    "uptimeSeconds": uptime,
-                    "requestCount": requestCount,
-                    "preCompiledCount": preCount,
-                    "lastActivityEpoch": lastActivity,
-                ]
-                let resultData = (try? JSONSerialization.data(withJSONObject: payload, options: []))
-                    ?? Data("{}".utf8)
-                response = encodeResult(requestId: requestId, resultData: resultData)
-                await emitLog(instance: instance, started: started, method: lifecycle.rawValue, requestId: requestId, paramsData: Data("{}".utf8), resultData: resultData, errorMessage: nil)
-            case .shutdown:
-                response = encodeResult(requestId: requestId, resultData: Data("{}".utf8))
-                await emitLog(instance: instance, started: started, method: lifecycle.rawValue, requestId: requestId, paramsData: Data("{}".utf8), resultData: Data("{}".utf8), errorMessage: nil)
-
-                // Teardown and the caller's response write can interleave.
-                // Cancellation envelopes are best-effort; established-client
-                // read cancellation/descriptor retirement remains #199.
-                // The process host retains its five-second exit watchdog
-                // after a still-authorized shutdown request is accepted.
-                // Logging may suspend across a full stop/start. Do not obtain
-                // the replacement run's hook, in-flight clients or watchdog.
-                guard let inFlight = await instance.prepareShutdown(shutdown) else {
-                    return encodeError(requestId: requestId, code: .cancelled,
-                                       message: "daemon run stopped before shutdown")
-                }
-                Task.detached {
-                    guard await instance.ownsShutdown(shutdown) else { return }
-                    for slot in inFlight where slot.fd != fd {
-                        let envelope = encodeErrorRaw(
-                            requestIdJSON: slot.requestIdJSON,
-                            code: .cancelled,
-                            message: "cancelled by daemon shutdown"
-                        )
-                        _ = writeLine(fd: slot.fd, line: envelope)
-                    }
-                    await instance.completeShutdown(shutdown)
-                }
-            }
-            return response
+        private static func cancelledReply(_ work: RequestWork) -> Reply {
+            Reply(bytes: encodeErrorRaw(requestIdJSON: work.request.requestIdJSON, code: .cancelled,
+                                        message: "daemon run stopped before request completion"), closesConnection: true)
         }
 
-        private static func dispatchLine(line: Data, fd: Int32, instance: Instance) async -> Data {
-            // Record activity at the top of dispatch so an actively-used
-            // daemon never gets idle-killed between consecutive requests.
-            await instance.recordActivity()
-            let started = Date()
-
-            // Parse the incoming request envelope.
-            let parsed: Any
-            do {
-                parsed = try JSONSerialization.jsonObject(with: line, options: [])
-            } catch {
-                let resp = encodeError(requestId: nil, code: .parseError, message: "invalid JSON: \(error)")
-                await emitLog(instance: instance, started: started, method: "<parse-error>", requestId: nil, paramsData: line, resultData: nil, errorMessage: "parseError")
-                return resp
+        private static func executeRequest(
+            _ work: RequestWork, handler: MethodHandler?, instance: Instance, shutdown: ShutdownContext
+        ) async -> Reply {
+            let request = work.request
+            let requestId = try? JSONSerialization.jsonObject(with: request.requestIdJSON, options: [.fragmentsAllowed])
+            if let rejection = request.rejection {
+                emitLog(work, result: nil, error: "parseError")
+                return Reply(bytes: encodeError(requestId: requestId, code: rejection.code, message: rejection.message))
             }
-            guard let obj = parsed as? [String: Any] else {
-                let resp = encodeError(requestId: nil, code: .parseError, message: "request must be JSON object")
-                await emitLog(instance: instance, started: started, method: "<parse-error>", requestId: nil, paramsData: line, resultData: nil, errorMessage: "parseError")
-                return resp
+            if let lifecycle = LifecycleMethod(rawValue: request.method) {
+                switch lifecycle {
+                case .status:
+                    guard let data = await instance.statusResponse(for: work) else { return cancelledReply(work) }
+                    emitLog(work, result: data, error: nil)
+                    return Reply(bytes: encodeResult(requestId: requestId, resultData: data))
+                case .shutdown:
+                    emitLog(work, result: Data("{}".utf8), error: nil)
+                    guard let candidates = await instance.prepareShutdown(shutdown) else { return cancelledReply(work) }
+                    return Reply(bytes: encodeResult(requestId: requestId, resultData: Data("{}".utf8)),
+                                 deadline: ContinuousClock.now.advanced(by: .milliseconds(250)),
+                                 shutdown: ShutdownPlan(context: shutdown, candidates: candidates, caller: work.connectionID))
+                }
             }
-            let requestId = obj["requestId"]
-            guard let method = obj["method"] as? String else {
-                let resp = encodeError(requestId: requestId, code: .parseError, message: "missing 'method'")
-                await emitLog(instance: instance, started: started, method: "<missing>", requestId: requestId, paramsData: Data("{}".utf8), resultData: nil, errorMessage: "parseError")
-                return resp
+            guard let handler else {
+                emitLog(work, result: nil, error: "methodNotFound")
+                return Reply(bytes: encodeError(requestId: requestId, code: .methodNotFound,
+                                                message: "no handler: \(request.method)"))
             }
-            let paramsValue: Any = obj["params"] ?? [:]
-            let paramsData: Data
-            do {
-                paramsData = try JSONSerialization.data(withJSONObject: paramsValue, options: [])
-            } catch {
-                let resp = encodeError(requestId: requestId, code: .parseError, message: "unserialisable params")
-                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: Data("{}".utf8), resultData: nil, errorMessage: "parseError")
-                return resp
-            }
-
-            guard let handler = await instance.lookupHandler(method) else {
-                let resp = encodeError(requestId: requestId, code: .methodNotFound, message: "no handler: \(method)")
-                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: nil, errorMessage: "methodNotFound")
-                return resp
-            }
-
-            // Section 6: register the in-flight request so a concurrent
-            // `daemon.shutdown` can find this connection and emit a
-            // `cancelled` envelope to it. The slot is cleared after the
-            // handler completes (success OR error). Encode requestId
-            // here so the actor never holds a non-Sendable `Any`.
-            let requestIdJSON = encodeRequestId(requestId)
-            await instance.markInFlight(fd: fd, requestIdJSON: requestIdJSON)
             let context = DaemonRequestContext()
             do {
-                let resultData = try await DaemonRequestContext.$current.withValue(context) {
+                let result = try await DaemonRequestContext.$current.withValue(context) {
                     try await PerformanceTrace.$daemonErrorTimingSink.withValue({ context.recordErrorTiming($0) }) {
-                        try await handler(paramsData)
+                        try Task.checkCancellation()
+                        return try await handler(request.params)
                     }
                 }
-                await instance.clearInFlight(fd: fd)
-                let resp = encodeResult(requestId: requestId, resultData: resultData, diagnostics: context.diagnostics)
-                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: resultData, errorMessage: nil)
-                return resp
+                let response = encodeResult(requestId: requestId, resultData: result, diagnostics: context.diagnostics)
+                emitLog(work, result: result, error: nil)
+                return Reply(bytes: response)
             } catch {
-                await instance.clearInFlight(fd: fd)
-                let resp = encodeError(requestId: requestId, code: .handlerError, message: "\(error)", diagnostics: context.diagnostics, timing: context.errorTiming)
-                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: nil, errorMessage: "\(error)")
-                return resp
+                let response = encodeError(requestId: requestId, code: .handlerError, message: "\(error)",
+                                           diagnostics: context.diagnostics, timing: context.errorTiming)
+                emitLog(work, result: nil, error: "\(error)")
+                return Reply(bytes: response)
             }
         }
 
-        /// Emit a single redacted/truncated log entry for the dispatched
-        /// request via the instance's installed `logWriter`. No-op when no
-        /// writer is configured. All payload routing through `DaemonLog`
-        /// honors the `logFull` flag so the contract is centralized.
-        private static func emitLog(
-            instance: Instance,
-            started: Date,
-            method: String,
-            requestId: Any?,
-            paramsData: Data,
-            resultData: Data?,
-            errorMessage: String?
-        ) async {
-            guard let writer = await instance.currentLogWriter() else { return }
-            let logFull = await instance.currentLogFull()
-            let durationMs = Int(Date().timeIntervalSince(started) * 1000)
-            let paramsLog = String(
-                data: DaemonLog.redactParams(method: method, paramsJSON: paramsData, logFull: logFull),
-                encoding: .utf8
-            ) ?? "{}"
-            let resultLog: String? = resultData.flatMap { rd in
-                String(data: DaemonLog.truncateResult(resultJSON: rd, logFull: logFull), encoding: .utf8)
+        private static func performShutdown(_ plan: ShutdownPlan, instance: Instance) async {
+            guard await instance.ownsShutdown(plan.context) else { return }
+            let deadline = ContinuousClock.now.advanced(by: .milliseconds(250))
+            for slot in plan.candidates where slot.connectionID != plan.caller {
+                guard ContinuousClock.now < deadline else { break }
+                guard let work = await instance.cancellationTarget(slot, context: plan.context) else { continue }
+                let frame = encodeErrorRaw(requestIdJSON: slot.requestIdJSON, code: .cancelled,
+                                           message: "cancelled by daemon shutdown")
+                let reply = Reply(bytes: frame, deadline: deadline, closesConnection: true)
+                guard await instance.offerCancellation(reply, to: work, context: plan.context) else { continue }
+                let timer = Task.detached {
+                    do { try await ContinuousClock().sleep(until: deadline) } catch { return }
+                    guard !Task.isCancelled else { return }
+                    work.replyFinished.cancel()
+                }
+                _ = await work.replyFinished.wait()
+                timer.cancel()
             }
-            let entry = DaemonLog.formatEntry(
-                timestamp: started,
-                method: method,
-                requestId: requestId,
-                durationMs: durationMs,
-                paramsLog: paramsLog,
-                resultLog: resultLog,
-                errorLog: errorMessage
-            )
-            writer(entry)
+            await instance.completeShutdown(plan.context)
+        }
+
+        /// The writer and privacy mode belong to the admitted request. A late
+        /// operation does not borrow the replacement run's logger.
+        private static func emitLog(_ work: RequestWork, result: Data?, error: String?) {
+            guard let writer = work.log.writer else { return }
+            let request = work.request
+            let requestId = try? JSONSerialization.jsonObject(with: request.requestIdJSON, options: [.fragmentsAllowed])
+            let params = String(data: DaemonLog.redactParams(method: request.method, paramsJSON: request.params,
+                                                            logFull: work.log.full), encoding: .utf8) ?? "{}"
+            let resultLog = result.flatMap {
+                String(data: DaemonLog.truncateResult(resultJSON: $0, logFull: work.log.full), encoding: .utf8)
+            }
+            writer(DaemonLog.formatEntry(timestamp: request.started, method: request.method, requestId: requestId,
+                                        durationMs: Int(Date().timeIntervalSince(request.started) * 1000),
+                                        paramsLog: params, resultLog: resultLog, errorLog: error))
         }
 
         // MARK: - Response encoding
@@ -1211,20 +1333,15 @@ enum DaemonServer {
 
         // MARK: - Line I/O (POSIX)
 
-        private static func writeLine(fd: Int32, line: Data) -> Bool {
-            var payload = Data(line)
+        private static func writeLine(
+            connection: DaemonConnection, line: Data, deadline: ContinuousClock.Instant? = nil
+        ) async -> Bool {
+            var payload = line
             payload.append(0x0A)
-            return payload.withUnsafeBytes { rawBuf -> Bool in
-                guard let base = rawBuf.baseAddress else { return false }
-                var written = 0
-                while written < rawBuf.count {
-                    let n = write(fd, base.advanced(by: written), rawBuf.count - written)
-                    if n <= 0 { return false }
-                    written += n
-                }
-                return true
-            }
+            do { try await connection.write(payload, deadline: deadline); return true }
+            catch { return false }
         }
+
     }
 
     enum DaemonError: Error, CustomStringConvertible {
