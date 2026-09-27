@@ -12,6 +12,7 @@ final class BoundedDialogProbeTests: XCTestCase {
         var text: String?
         var title: String?
         var roleDelay: TimeInterval = 0
+        var summaryDelay: TimeInterval = 0
         var valueSettable: Bool? = false
         var roleFails = false
     }
@@ -95,6 +96,7 @@ final class BoundedDialogProbeTests: XCTestCase {
             guard batched else { return try composedSummary(node, remaining: remaining) }
             try calls.touch(.summary, timeout: remaining())
             let n = nodes[node]!
+            if n.summaryDelay > 0 { Thread.sleep(forTimeInterval: n.summaryDelay) }
             if n.roleFails { throw DialogProbeReadError.unavailable }
             return .init(role: n.role, subrole: n.subrole, children: n.children)
         }
@@ -403,8 +405,10 @@ final class BoundedDialogProbeTests: XCTestCase {
             for batched in [false, true] {
                 var nodes = Self.measuredTree
                 nodes[9] = Node(role: role, children: [11])
-                XCTAssertEqual(makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)), .unprobed,
-                               "a WebArea does not prove its siblings are only page scrollbars: \(role)")
+                let result = makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42))
+                if role == "AXGroup" { XCTAssertEqual(result, .unprobed) }
+                else if case .present = result { /* positive modal evidence survives classification */ }
+                else { XCTFail("known modal must be reported, not hidden beside WebArea: \(role)") }
             }
         }
     }
@@ -412,14 +416,16 @@ final class BoundedDialogProbeTests: XCTestCase {
     func testViewportDoesNotHideAModalScrollbarSubrole() {
         var nodes = Self.measuredTree
         nodes[9] = Node(role: "AXScrollBar", subrole: "AXDialog", children: [11])
-        XCTAssertEqual(makeProbe(nodes: nodes, batched: true).check(windowKey: .id(42)), .unprobed)
+        guard case .present = makeProbe(nodes: nodes, batched: true).check(windowKey: .id(42)) else {
+            return XCTFail("known modal scrollbar subrole must be reported")
+        }
     }
 
     func testViewportClassificationUsesTheNodeBudget() {
         let calls = Calls()
-        XCTAssertEqual(makeProbe(calls: calls, nodes: Self.measuredTree, maxNodes: 14, batched: true)
+        XCTAssertEqual(makeProbe(calls: calls, nodes: Self.measuredTree, maxNodes: 15, batched: true)
             .check(windowKey: .id(42)), .unprobed)
-        XCTAssertLessThanOrEqual(calls.operations.filter { $0 == .summary }.count, 14)
+        XCTAssertLessThanOrEqual(calls.operations.filter { $0 == .summary }.count, 15)
     }
 
     func testBatchedWebAreaIgnoresUnusedAttributeErrors() throws {
@@ -474,13 +480,73 @@ final class BoundedDialogProbeTests: XCTestCase {
         XCTAssertEqual(summary.children, [child])
     }
 
+    func testShallowScrollAreaStillFindsDialogBesideUnreadableSibling() {
+        for children in [[3, 4], [4, 3]] {
+            for batched in [false, true] {
+                let nodes: [Int: Node] = [
+                    1: Node(role: "AXWindow", children: [2], windowID: 42),
+                    2: Node(role: "AXScrollArea", children: children),
+                    3: Node(role: "AXDialog"),
+                    4: Node(roleFails: true),
+                ]
+                guard case .present = makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)) else {
+                    XCTFail("classification must not discard a readable modal beside a failed child")
+                    continue
+                }
+            }
+        }
+    }
+
+    func testWebAreaDoesNotHideModalUnderScrollbar() {
+        for atDepthLimit in [false, true] {
+            for batched in [false, true] {
+                var nodes = Self.measuredTree
+                if !atDepthLimit { nodes[1] = Node(role: "AXWindow", children: [7], windowID: 42) }
+                nodes[11] = Node(role: "AXDialog")
+                guard case .present = makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)) else {
+                    XCTFail("a non-modal scrollbar does not prove its descendants are non-modal")
+                    continue
+                }
+            }
+        }
+    }
+
+    func testViewportWithNonLeafScrollbarPartRemainsIncomplete() {
+        var nodes = Self.measuredTree
+        nodes[11] = Node(role: "AXValueIndicator", children: [12])
+        nodes[12] = Node(role: "AXDialog")
+        XCTAssertEqual(makeProbe(nodes: nodes, batched: true).check(windowKey: .id(42)), .unprobed)
+    }
+
+    func testViewportClassificationStopsAtEachReadBudgetBoundary() {
+        var nodes = Self.measuredTree
+        nodes[1] = Node(role: "AXWindow", children: [2], windowID: 42)
+        for limit in [8, 9, 10] {
+            let calls = Calls()
+            let verdict = makeProbe(calls: calls, nodes: nodes, maxNodes: limit, batched: true).check(windowKey: .id(42))
+            XCTAssertEqual(verdict, limit == 10 ? .clear : .unprobed)
+            XCTAssertEqual(calls.operations.filter { $0 == .summary }.count, limit)
+        }
+    }
+
+    func testViewportClassificationReadCannotOutliveCallerBudget() {
+        for batched in [false, true] {
+            var nodes = Self.measuredTree
+            nodes[9] = Node(role: "AXScrollBar", roleDelay: 0.15, summaryDelay: 0.15)
+            let probe = makeProbe(nodes: nodes, batched: batched)
+            let start = Date()
+            XCTAssertEqual(probe.check(windowKey: .id(42), budget: 0.03), .unprobed)
+            XCTAssertLessThan(Date().timeIntervalSince(start), 0.3)
+        }
+    }
+
     func testTraversalReadsEachNodeInOneRoundTrip() {
         // Three single-attribute reads per node left the first probe of a
         // process a few milliseconds inside its 95 ms budget on a real window.
         let calls = Calls()
         XCTAssertEqual(makeProbe(calls: calls, nodes: Self.measuredTree, batched: true).check(windowKey: .id(42)), .clear)
         let ops = calls.operations
-        XCTAssertEqual(ops.filter { $0 == .summary }.count, 15, "one summary per inspected node, including viewport children: \(ops)")
+        XCTAssertEqual(ops.filter { $0 == .summary }.count, 16, "one summary per inspected node, including viewport children: \(ops)")
         XCTAssertFalse(ops.contains(.subrole) || ops.contains(.children), "no per-attribute reads while traversing: \(ops)")
         XCTAssertFalse(ops.contains(.role), "viewport children also use the batched summary: \(ops)")
     }

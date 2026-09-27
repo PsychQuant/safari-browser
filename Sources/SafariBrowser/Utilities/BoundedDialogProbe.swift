@@ -142,23 +142,41 @@ final class BoundedDialogProbe: @unchecked Sendable {
                                                 maxDepth: maxDepth, maxNodes: maxNodes))
                     }
                     let children = summary.children
-                    // #187: only a fully classified page viewport may be a
-                    // leaf. A WebArea alone says nothing about its siblings.
-                    // Count these classification reads against the same node
-                    // budget, and never hide an unreadable or unknown child.
-                    if summary.role == "AXScrollArea", !children.isEmpty {
+                    // #187: the measured viewport lands exactly at the
+                    // depth limit. Shallower scroll areas keep the original
+                    // traversal, including unreadable siblings and descendants.
+                    // At the limit, certify only this bounded shape: WebAreas
+                    // plus non-modal scrollbars whose own children are leaves.
+                    if depth >= maxDepth, summary.role == "AXScrollArea", !children.isEmpty {
                         var hasWebArea = false
-                        var onlyPageParts = true
+                        var completePageShape = true
                         for child in children {
-                            guard inspected < maxNodes else { throw DialogProbeReadError.unavailable }
+                            guard inspected < maxNodes else { completePageShape = false; break }
                             inspected += 1
-                            let part = try provider.summary(child, remaining: { try budget.remaining() })
-                            if part.role == "AXWebArea" { hasWebArea = true }
-                            else if part.role != "AXScrollBar" || isNativeModal(role: part.role, subrole: part.subrole) {
-                                onlyPageParts = false
-                            }
+                            do {
+                                let part = try provider.summary(child, remaining: { try budget.remaining() })
+                                if isNativeModal(role: part.role, subrole: part.subrole) {
+                                    return .present(details(of: child, provider: provider, budget: budget,
+                                                            maxDepth: maxDepth, maxNodes: maxNodes))
+                                }
+                                if part.role == "AXWebArea" { hasWebArea = true }
+                                else if part.role == "AXScrollBar" {
+                                    for leaf in part.children {
+                                        guard inspected < maxNodes else { completePageShape = false; break }
+                                        inspected += 1
+                                        do {
+                                            let leafSummary = try provider.summary(leaf, remaining: { try budget.remaining() })
+                                            if isNativeModal(role: leafSummary.role, subrole: leafSummary.subrole) {
+                                                return .present(details(of: leaf, provider: provider, budget: budget,
+                                                                        maxDepth: maxDepth, maxNodes: maxNodes))
+                                            }
+                                            if !leafSummary.children.isEmpty { completePageShape = false }
+                                        } catch { completePageShape = false }
+                                    }
+                                } else { completePageShape = false }
+                            } catch { completePageShape = false }
                         }
-                        if hasWebArea && onlyPageParts { continue }
+                        if hasWebArea && completePageShape { continue }
                     }
                     if depth >= maxDepth {
                         incomplete = incomplete || !children.isEmpty
