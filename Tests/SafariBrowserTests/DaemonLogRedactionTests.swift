@@ -23,6 +23,16 @@ final class DaemonLogRedactionTests: XCTestCase {
         XCTAssertTrue(s.contains("bytes>"), "must report byte count: \(s)")
     }
 
+    func testEphemeralMethodRedactsSource() throws {
+        let params = Data(#"{"source":"return \"private fixture\""}"#.utf8)
+        let input = try XCTUnwrap(JSONSerialization.jsonObject(with: params) as? [String: String])
+        XCTAssertTrue(input["source"]?.contains("private fixture") == true)
+        let redacted = DaemonLog.redactParams(method: "applescript.executeEphemeral", paramsJSON: params, logFull: false)
+        let output = String(decoding: redacted, as: UTF8.self)
+        XCTAssertFalse(output.contains("private fixture"))
+        XCTAssertTrue(output.contains("redacted"))
+    }
+
     func testRedactParams_appleScriptExecute_byteCountMatchesOriginal() throws {
         let source = "tell application \"Safari\" to return name"
         let originalBytes = source.utf8.count

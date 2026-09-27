@@ -46,6 +46,11 @@ enum DaemonDispatch {
         await server.register("applescript.execute") { [cache] params in
             try await Handlers.appleScriptExecute(paramsData: params, cache: cache)
         }
+        // Separate method: old daemons reject it before running source, allowing
+        // safe stateless fallback instead of silently ignoring a cache hint.
+        await server.register("applescript.executeEphemeral") { [cache] params in
+            try await Handlers.appleScriptExecute(paramsData: params, cache: cache, policy: .ephemeral)
+        }
         // Section 10 v2 of `script-exec-command`: connection-shared
         // execution. The client sends a single `exec.runScript` request
         // carrying steps + target + maxSteps; the daemon runs the
@@ -81,7 +86,7 @@ enum DaemonDispatch {
     enum Handlers {
         static func cachedScriptText(source: String, cache: PreCompiledScripts.CompileCache) async throws -> String {
             do {
-                let output = try await cache.execute(source: source).stringValue ?? ""
+                let output = try await cache.execute(source: source, policy: DaemonRequestContext.appleScriptCachePolicy).stringValue ?? ""
                 return output.trimmingCharacters(in: .whitespacesAndNewlines)
             } catch PreCompiledScripts.Error.compilationFailed(let message) {
                 throw SafariBrowserError.appleScriptFailed(message)
@@ -215,7 +220,8 @@ enum DaemonDispatch {
 
         static func appleScriptExecute(
             paramsData: Data,
-            cache: PreCompiledScripts.CompileCache
+            cache: PreCompiledScripts.CompileCache,
+            policy: PreCompiledScripts.CachePolicy = .reuse
         ) async throws -> Data {
             struct Params: Decodable {
                 // Retain the original decode error so opted-in malformed
@@ -233,7 +239,7 @@ enum DaemonDispatch {
             return try await PerformanceTrace.withDaemonTiming(enabled: params.timing) {
             let source = try params.source.get()
             do {
-                let result = try await cache.execute(source: source)
+                let result = try await cache.execute(source: source, policy: policy)
                 let response: [String: Any] = [
                     "status": "ok",
                     "output": result.stringValue ?? "",

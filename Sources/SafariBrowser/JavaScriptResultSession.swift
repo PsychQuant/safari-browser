@@ -11,12 +11,16 @@ struct JavaScriptResultSession {
         case unavailable
         case preparationFailed
         case executionResultLost
+        case runtimeErrorDetailsLost
         case malformed
+        case invalidUTF16
         var description: String {
             switch self {
             case .preparationFailed: return "Could not prepare fresh JavaScript result state; user code was not executed"
+            case .runtimeErrorDetailsLost: return "JavaScript reported a runtime error but its details were lost; code was not retried"
             case .executionResultLost: return "JavaScript ran but its result state was lost; code was not retried"
             case .unavailable: return "JavaScript result state was lost or execution could not be confirmed; code was not retried"
+            case .invalidUTF16: return "JavaScript result contains an unpaired UTF-16 surrogate and cannot be transferred losslessly"
             case .malformed: return "JavaScript result transfer was incomplete or belonged to another invocation"
             }
         }
@@ -41,7 +45,7 @@ struct JavaScriptResultSession {
         (function(){var s=window.\(key);if(!s||s.token!=='\(token)'||(s.phase!=='done'&&s.phase!=='error')||typeof s.text!=='string'||s.text.length!==\(total))return '';
         var text=s.text,end=\(end),start=\(offset);
         if(end<text.length){var a=text.charCodeAt(end-1),b=text.charCodeAt(end);if(a>=55296&&a<=56319&&b>=56320&&b<=57343)end--;}
-        for(var i=start;i<end;i++){var c=text.charCodeAt(i);if(c>=55296&&c<=56319){if(i+1>=end)return '';var d=text.charCodeAt(++i);if(d<56320||d>57343)return '';}else if(c>=56320&&c<=57343)return '';}
+        for(var i=start;i<end;i++){var c=text.charCodeAt(i);if(c>=55296&&c<=56319){if(i+1>=end)return '\(token):invalid-utf16';var d=text.charCodeAt(++i);if(d<56320||d>57343)return '\(token):invalid-utf16';}else if(c>=56320&&c<=57343)return '\(token):invalid-utf16';}
         return '\(token):\(offset):'+end+':'+text.substring(start,end)+':\(token)';})()
         """
     }
@@ -61,7 +65,15 @@ struct JavaScriptResultSession {
         return (phase, length)
     }
 
+    private func evaluationReceipt(_ raw: String) throws -> Phase? {
+        if raw.isEmpty { return nil } // Expression syntax failure has no receipt.
+        if raw == "\(token):done" { return .done }
+        if raw == "\(token):error" { return .error }
+        throw TransferFailure.malformed
+    }
+
     private func decodeFrame(_ raw: String, offset: Int, requestedEnd: Int) throws -> (String, Int) {
+        if raw == "\(token):invalid-utf16" { throw TransferFailure.invalidUTF16 }
         // Parse ASCII framing as bytes. A payload-leading combining mark can
         // join the delimiter's grapheme cluster, so Character slicing is wrong.
         let bytes = Array(raw.utf8)
@@ -83,7 +95,9 @@ struct JavaScriptResultSession {
     private func readResult(length: Int, chunked: Bool, evaluate: (String) async throws -> String) async throws -> String {
         if length == 0 { return "" }
         if !chunked {
+            try Task.checkCancellation()
             let raw = try await evaluate(frameScript(offset: 0, end: length, total: length))
+            try Task.checkCancellation()
             // Safari can return empty for a large reply. Re-read the captured
             // value in chunks, never the user's code. Nonempty bad frames fail.
             if !raw.isEmpty {
@@ -95,8 +109,16 @@ struct JavaScriptResultSession {
         var result = ""
         var offset = 0
         while offset < length {
+            try Task.checkCancellation()
             let end = offset + min(chunkSize, length - offset)
             let raw = try await evaluate(frameScript(offset: offset, end: end, total: length))
+            try Task.checkCancellation()
+            if raw.isEmpty {
+                // A lost page is not a short payload. Re-observe owned state;
+                // missing state can then reach receipt-gated navigation handling.
+                _ = try metadata(await evaluate(metadataScript))
+                throw TransferFailure.malformed
+            }
             let (text, next) = try decodeFrame(raw, offset: offset, requestedEnd: end)
             result += text
             offset = next
@@ -107,42 +129,54 @@ struct JavaScriptResultSession {
 
     func execute(_ code: String, allowStatements: Bool, chunked: Bool,
                  evaluate: (String) async throws -> String) async throws -> String {
-        var executionConfirmed = false
+        try await DaemonRequestContext.$appleScriptCachePolicy.withValue(.ephemeral) {
+            try await executeOwned(code, allowStatements: allowStatements, chunked: chunked, evaluate: evaluate)
+        }
+    }
+
+    private func executeOwned(_ code: String, allowStatements: Bool, chunked: Bool,
+                              evaluate: (String) async throws -> String) async throws -> String {
+        try Task.checkCancellation()
+        var evaluationPhase: Phase?
         do {
             guard try await evaluate(prepareScript) == "\(token):prepared" else { throw TransferFailure.preparationFailed }
-            let expressionAck = try await evaluate(JSWrapper.invocationWrapper(code, key: key, token: token, statement: false))
-            guard expressionAck.isEmpty || expressionAck == "\(token):executed" else { throw TransferFailure.malformed }
-            executionConfirmed = expressionAck == "\(token):executed"
+            try Task.checkCancellation()
+            evaluationPhase = try evaluationReceipt(await evaluate(JSWrapper.invocationWrapper(code, key: key, token: token, statement: false)))
+            try Task.checkCancellation()
             var state = try metadata(await evaluate(metadataScript))
-            if state.0 == .prepared && executionConfirmed { throw TransferFailure.malformed }
+            try Task.checkCancellation()
+            if let evaluationPhase, state.0 != evaluationPhase { throw TransferFailure.malformed }
             if state.0 == .prepared && allowStatements {
-                let statementAck = try await evaluate(JSWrapper.invocationWrapper(code, key: key, token: token, statement: true))
-                guard statementAck.isEmpty || statementAck == "\(token):executed" else { throw TransferFailure.malformed }
-                executionConfirmed = statementAck == "\(token):executed"
+                evaluationPhase = try evaluationReceipt(await evaluate(JSWrapper.invocationWrapper(code, key: key, token: token, statement: true)))
+                try Task.checkCancellation()
                 state = try metadata(await evaluate(metadataScript))
+                try Task.checkCancellation()
             }
+            if let evaluationPhase, state.0 != evaluationPhase { throw TransferFailure.malformed }
             if state.0 == .prepared {
-                guard !executionConfirmed else { throw TransferFailure.malformed }
                 throw SafariBrowserError.appleScriptFailed("JavaScript syntax error: the provided code did not parse in the supported expression or function-body form")
             }
             guard state.0 == .done || state.0 == .error else { throw TransferFailure.unavailable }
-            executionConfirmed = true // Fresh completed metadata independently confirms execution.
+            evaluationPhase = state.0 // Fresh metadata independently confirms the outcome.
             let value = try await readResult(length: state.1, chunked: chunked, evaluate: evaluate)
             if state.0 == .error {
                 throw SafariBrowserError.appleScriptFailed("JavaScript error: \(value)\(JSWrapper.cspEvalHint(for: value) ?? "")")
             }
             _ = try? await evaluate(cleanupScript)
+            try Task.checkCancellation()
             return value
         } catch {
-            // Cleanup is best effort when the page/transport has disappeared;
-            // never erase another call or replace the original failure.
             _ = try? await evaluate(cleanupScript)
-            if executionConfirmed {
-                if case TransferFailure.unavailable = error { throw TransferFailure.executionResultLost }
-                if let bridgeError = error as? SafariBrowserError, SafariBridge.isTargetDangleError(bridgeError) {
-                    throw TransferFailure.executionResultLost
-                }
+            var stateLost = false
+            if case TransferFailure.unavailable = error { stateLost = true }
+            if let bridgeError = error as? SafariBrowserError {
+                if case .targetTabChanged = bridgeError { stateLost = true }
+                else if SafariBridge.isTargetDangleError(bridgeError) { stateLost = true }
             }
+            // A receipt for an error is execution evidence, but never evidence
+            // of successful navigation. Preserve failure even if its page is gone.
+            if stateLost, evaluationPhase == .error { throw TransferFailure.runtimeErrorDetailsLost }
+            if stateLost, evaluationPhase == .done { throw TransferFailure.executionResultLost }
             throw error
         }
     }

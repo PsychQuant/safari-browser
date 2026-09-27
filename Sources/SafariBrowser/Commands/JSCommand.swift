@@ -28,6 +28,7 @@ struct JSCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        try Task.checkCancellation()
         let jsCode: String
         if let file {
             let path = (file as NSString).expandingTildeInPath
@@ -61,6 +62,7 @@ struct JSCommand: AsyncParsableCommand {
             warnWriter: warnWriter, profile: profile
         ) else { return }
 
+        try Task.checkCancellation()
         if let output {
             let path = (output as NSString).expandingTildeInPath
             try result.write(toFile: path, atomically: true, encoding: .utf8)
@@ -79,6 +81,7 @@ struct JSCommand: AsyncParsableCommand {
         warnWriter: ((String) -> Void)?,
         profile: String?
     ) async throws -> String? {
+        try Task.checkCancellation()
         let preNavURL = try? await SafariBridge.getCurrentURL(
             target: target, firstMatch: firstMatch, warnWriter: nil, profile: profile)
         do {
@@ -89,12 +92,10 @@ struct JSCommand: AsyncParsableCommand {
                     firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
             }
         } catch JavaScriptResultSession.TransferFailure.executionResultLost {
-            if let url = try await Self.navigatedAwayURL(
-                from: preNavURL, target: target, firstMatch: firstMatch, profile: profile) {
-                Self.reportNavigation(to: url)
-                return nil
-            }
-            throw JavaScriptResultSession.TransferFailure.executionResultLost
+            try await Self.settleNavigationOrRethrow(
+                JavaScriptResultSession.TransferFailure.executionResultLost,
+                preNavURL: preNavURL, target: target, firstMatch: firstMatch, profile: profile)
+            return nil
         }
     }
 
@@ -146,19 +147,18 @@ struct JSCommand: AsyncParsableCommand {
             target: target, firstMatch: firstMatch, warnWriter: nil, profile: profile)
     }
 
-    /// #82: a mid-command `targetTabChanged` means the tab stopped matching —
-    /// which is what a successful navigation looks like from the guard's point
-    /// of view. Confirm against the URL before deciding: only report success if
-    /// the tab genuinely moved somewhere new. If it did not (or the tab is gone
-    /// entirely), the original error is the honest answer and is rethrown.
+    /// Only receipt-confirmed result loss permits navigation settlement.
+    /// Raw target changes before execution and all other errors remain errors.
+    /// URL observation still uses the existing positional heuristic; #188 owns
+    /// stronger identity across tab closure/reordering and navigation.
     static func settleNavigationOrRethrow(
-        _ error: SafariBrowserError,
+        _ error: Error,
         preNavURL: String?,
         target: SafariBridge.TargetDocument,
         firstMatch: Bool,
         profile: String?
     ) async throws {
-        guard case .targetTabChanged = error else { throw error }
+        guard case JavaScriptResultSession.TransferFailure.executionResultLost = error else { throw error }
         guard let navURL = try await navigatedAwayURL(
             from: preNavURL, target: target, firstMatch: firstMatch, profile: profile)
         else { throw error }

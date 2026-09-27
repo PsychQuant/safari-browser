@@ -11,7 +11,7 @@ enum JSWrapper {
         (function(){var \(state)=window.\(key);if(!\(state)||\(state).token!=='\(token)'||\(state).phase!=='prepared')return '';
         \(state).phase='running';try{\(state).text=''+\(value);\(state).phase='done';}
         catch(\(error)){try{\(state).text=(\(error)&&typeof \(error).message==='string')?\(error).message:''+\(error);}catch(_){\(state).text='JavaScript exception';}\(state).phase='error';}
-        return '\(token):executed';})()
+        return '\(token):'+\(state).phase;})()
         """
     }
 

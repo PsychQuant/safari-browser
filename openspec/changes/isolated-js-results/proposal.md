@@ -26,6 +26,7 @@
 ### Modified Capabilities
 
 - `js-execution`: 新增逐呼叫結果歸屬、完整性與生命週期契約。
+- `persistent-daemon`: 為逐呼叫腳本新增不保留編譯物件的執行方法及舊 daemon 相容退回。
 
 ## Impact
 
@@ -36,3 +37,9 @@
 - Sources/SafariBrowser/Commands/GetCommand.swift
 - SnapshotCommand 的共用 helper 呼叫相容性
 - Tests/SafariBrowserTests/JSResultIsolationTests.swift、JSWrapperTests.swift、導頁及 bridge 回歸測試
+
+## 第一輪審查後補充
+
+694734a 的審查確認：每次識別使 CompileCache 保留量無界成長，必須在本次修正。採用明確的 ephemeral 編譯政策及獨立 RPC，不能讓舊 daemon 靜默忽略快取提示。另修正 guarded 目標的導頁處理，所有成功導頁判斷仍要求本次執行證據。
+
+新增影響：DaemonRequestContext、DaemonDispatch、DaemonRouter、PreCompiledScripts、DaemonLog 及對應 RPC／快取測試。

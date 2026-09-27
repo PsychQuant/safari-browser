@@ -65,3 +65,18 @@ The CLI `js` result paths and the shared large-result bridge SHALL associate res
 #### Scenario: Contradictory execution evidence
 - **WHEN** a current executed receipt is followed by prepared metadata
 - **THEN** the CLI SHALL reject the inconsistent response without dispatching a second form
+
+#### Scenario: Cooperative cancellation at protocol boundaries
+- **WHEN** the task is cancelled during preparation, execution, frame read, or cleanup
+- **THEN** the session SHALL throw cancellation instead of returning a publishable result
+- **AND** cancellation observed after preparation SHALL prevent dispatch of user code
+- **AND** cleanup SHALL only attempt removal of this invocation's state
+
+#### Scenario: Unpaired UTF-16 result
+- **WHEN** user code returns a string containing an unpaired high surrogate U+D800
+- **THEN** the operation SHALL fail with an explicit UTF-16 lossless-transfer diagnostic rather than substitute U+FFFD
+
+#### Scenario: Runtime error followed by page replacement
+- **WHEN** the evaluation receipt reports error and navigation removes the error detail before readback
+- **THEN** the CLI SHALL report failure rather than successful navigation
+- **AND** it SHALL NOT evaluate the user code again

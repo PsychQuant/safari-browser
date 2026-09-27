@@ -96,7 +96,9 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
                 await page.evaluateJS($0)
             }
             XCTFail("Expected malformed Unicode failure")
-        } catch JavaScriptResultSession.TransferFailure.malformed { }
+        } catch let error as JavaScriptResultSession.TransferFailure {
+            XCTAssertTrue(error.description.contains("UTF-16"))
+        }
     }
 
     func testInitializationMismatchDoesNotExecuteCode() async throws {
@@ -193,7 +195,7 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
                 }
             }
             XCTFail("Failed preparation must not report successful execution")
-        } catch { }
+        } catch JavaScriptResultSession.TransferFailure.preparationFailed { }
         let counter = await page.evaluateJS("typeof window.counter")
         XCTAssertEqual(counter, "undefined")
     }
@@ -305,6 +307,184 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    func testNonceSessionsDoNotAccumulateCompiledHandles() async throws {
+        let page = try ScriptPage(interleave: false)
+        let cache = PreCompiledScripts.CompileCache()
+        _ = try await DaemonDispatch.Handlers.cachedScriptText(source: "return 42", cache: cache)
+        for _ in 0..<4 {
+            let value = try await JavaScriptResultSession().execute("'x'", allowStatements: true, chunked: true) { script in
+                let reply = await page.evaluateJS(script)
+                // Exercise the production in-process cache route with real
+                // NSAppleScript, using only a harmless return (no Safari).
+                return try await DaemonDispatch.Handlers.cachedScriptText(
+                    source: "return \"\(reply.escapedForAppleScript)\"", cache: cache)
+            }
+            XCTAssertEqual(value, "x")
+        }
+        let retained = await cache.cacheCount
+        XCTAssertEqual(retained, 1, "Only the reusable prewarmed script should remain")
+    }
+
+    func testExactURLGuardNavigationRunsThroughRealBridgeRetryAndSettlement() async throws {
+        let page = try ScriptPage(interleave: false, fault: .navigateAfterExecution)
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try "keep-me".write(to: output, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let command = try JSCommand.parse(["--url-exact", "https://fixture.invalid/", "--output", output.path,
+            "window.counter=(window.counter||0)+1; return 'done'"])
+        let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        try await DaemonRequestContext.$current.withValue(request) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                try await command.run()
+            }
+        }
+        let count = await page.evaluateJS("window.counter")
+        XCTAssertEqual(count, "1")
+        XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "keep-me")
+    }
+
+    func testFinalGuardedTargetChangeIsMappedOnlyAfterExecutionReceipt() async throws {
+        for afterExecution in [false, true] {
+            let page = try ScriptPage(interleave: false)
+            let session = JavaScriptResultSession()
+            do {
+                _ = try await session.execute("(window.counter=1)", allowStatements: true, chunked: true) { script in
+                    if (!afterExecution && script == session.prepareScript)
+                        || (afterExecution && script.contains("s.phase+':'+s.text.length")) {
+                        // Final error emitted after the bridge's matcher retry
+                        // cannot find the original URL following navigation.
+                        throw SafariBrowserError.targetTabChanged(expected: "fixture.invalid", actualURL: nil)
+                    }
+                    return await page.evaluateJS(script)
+                }
+                XCTFail("Expected guarded target change")
+            } catch JavaScriptResultSession.TransferFailure.executionResultLost {
+                XCTAssertTrue(afterExecution)
+            } catch SafariBrowserError.targetTabChanged {
+                XCTAssertFalse(afterExecution, "Confirmed execution must reach the navigation decision path")
+            }
+            let counter = await page.evaluateJS("typeof window.counter==='undefined'?'undefined':window.counter")
+            XCTAssertEqual(counter, afterExecution ? "1" : "undefined")
+        }
+    }
+
+    func testStateLostDuringFrameReadCanSettleConfirmedNavigation() async throws {
+        let page = try ScriptPage(interleave: false, fault: .eraseBeforeFrame)
+        let command = try JSCommand.parse(["--large", "window.counter=1; return 'done'"])
+        let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        try await DaemonRequestContext.$current.withValue(request) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                try await command.run()
+            }
+        }
+        let count = await page.evaluateJS("window.counter")
+        XCTAssertEqual(count, "1")
+    }
+
+    func testCancellationAtProtocolBoundariesNeverReturnsPublishableResult() async throws {
+        for boundary in ["prepare", "execute", "frame", "cleanup"] {
+            let page = try ScriptPage(interleave: false)
+            let session = JavaScriptResultSession()
+            let task = Task {
+                try await session.execute("(window.counter=1)", allowStatements: true, chunked: true) { script in
+                    let result = await page.evaluateJS(script)
+                    let cancel = (boundary == "prepare" && script == session.prepareScript)
+                        || (boundary == "execute" && (result.hasSuffix(":done") || result.hasSuffix(":error")))
+                        || (boundary == "frame" && script.contains("var text=s.text,end="))
+                        || (boundary == "cleanup" && script == session.cleanupScript)
+                    if cancel { withUnsafeCurrentTask { $0?.cancel() } }
+                    return result
+                }
+            }
+            do {
+                _ = try await task.value
+                XCTFail("Cancellation at \(boundary) must not return a result")
+            } catch is CancellationError { }
+            let count = await page.evaluateJS("typeof window.counter==='undefined'?'undefined':window.counter")
+            XCTAssertEqual(count, boundary == "prepare" ? "undefined" : "1")
+        }
+    }
+
+    func testGetTextWithoutSelectorUsesCheckedFallbackAndReportsMissingBody() async throws {
+        for hasBody in [true, false] {
+            let page = try ScriptPage(interleave: false, maximumReplyLength: 300_000)
+            _ = await page.evaluateJS(hasBody ? "var document={body:{innerText:'T'.repeat(300001)}}" : "var document={}")
+            let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+            do {
+                let output = try await captureStdout {
+                    try await DaemonRequestContext.$current.withValue(request) {
+                        try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                            try await GetText.parse([]).run()
+                        }
+                    }
+                }
+                XCTAssertTrue(hasBody)
+                XCTAssertEqual(output, String(repeating: "T", count: 300001) + "\n")
+            } catch SafariBrowserError.appleScriptFailed(let message) {
+                XCTAssertFalse(hasBody)
+                XCTAssertTrue(message.contains("JavaScript error:"))
+            }
+        }
+    }
+
+    func testGetLargeFallbackRuntimeErrorsRemainExplicit() async throws {
+        for html in [false, true] {
+            let page = try ScriptPage(interleave: false, maximumReplyLength: 300_000)
+            let property = html ? "innerHTML" : "textContent"
+            _ = await page.evaluateJS("var reads=0; var fixture={}; Object.defineProperty(fixture,'\(property)',{get:function(){if(++reads===3)throw new Error('owned fallback failure');return 'G'.repeat(300001)}}); var document={querySelector:function(){return fixture}}")
+            let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+            do {
+                _ = try await captureStdout {
+                    try await DaemonRequestContext.$current.withValue(request) {
+                        try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                            if html { try await GetHTML.parse(["#fixture"]).run() }
+                            else { try await GetText.parse(["#fixture"]).run() }
+                        }
+                    }
+                }
+                XCTFail("A fallback exception must not become a successful empty result")
+            } catch SafariBrowserError.appleScriptFailed(let message) {
+                XCTAssertTrue(message.contains("owned fallback failure"))
+            }
+            let reads = await page.evaluateJS("reads")
+            XCTAssertEqual(reads, "3")
+        }
+    }
+
+    func testAlreadyCancelledCommandDoesNotDispatchAnyAppleScript() async throws {
+        let page = try ScriptPage(interleave: false)
+        let task = Task {
+            let command = try JSCommand.parse(["window.counter=1"])
+            let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+            withUnsafeCurrentTask { $0?.cancel() }
+            try await DaemonRequestContext.$current.withValue(request) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                    try await command.run()
+                }
+            }
+        }
+        do { try await task.value; XCTFail("Expected cancellation") }
+        catch is CancellationError { }
+        let calls = await page.scriptCallCount()
+        XCTAssertEqual(calls, 0)
+    }
+
+    func testRuntimeErrorCannotBeSettledAsNavigationSuccess() async throws {
+        let page = try ScriptPage(interleave: false, fault: .navigateAfterExecution)
+        let command = try JSCommand.parse(["--large", "window.counter=1; throw new Error('owned runtime failure')"])
+        let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        do {
+            try await DaemonRequestContext.$current.withValue(request) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                    try await command.run()
+                }
+            }
+            XCTFail("A reported runtime error must not turn into navigation success")
+        } catch JavaScriptResultSession.TransferFailure.runtimeErrorDetailsLost { }
+        let count = await page.evaluateJS("window.counter")
+        XCTAssertEqual(count, "1")
+    }
+
     func testSharedLargeBridgeUsesCapturedResultProtocol() async throws {
         let page = try ScriptPage(interleave: false)
         let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
@@ -319,7 +499,7 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
 }
 
 private actor ScriptPage {
-    enum Fault { case none, staleFrame, shortFrame, eraseExecutedState, invalidLength, wrongOffset, emptySecondFrame, rejectPreparationAfterNavigation, navigateAfterExecution, navigateWithoutReceipt, preparedAfterReceipt }
+    enum Fault { case none, staleFrame, shortFrame, eraseExecutedState, invalidLength, wrongOffset, emptySecondFrame, rejectPreparationAfterNavigation, navigateAfterExecution, navigateWithoutReceipt, preparedAfterReceipt, eraseBeforeFrame }
     private let fault: Fault
     private let maximumReplyLength: Int?
     private let context: JSContext
@@ -327,6 +507,7 @@ private actor ScriptPage {
     private var interleaved = false
     private var frameCount = 0
     private var executionCalls = 0
+    private var scriptCalls = 0
     private var sharedResultWritten = false
     private var pageURL = "https://fixture.invalid/"
 
@@ -341,13 +522,22 @@ private actor ScriptPage {
 
     func didInterleave() -> Bool { interleaved }
     func executionCallCount() -> Int { executionCalls }
+    func scriptCallCount() -> Int { scriptCalls }
     func framesRead() -> Int { frameCount }
     func wroteSharedResult() -> Bool { sharedResultWritten }
 
     func run(_ source: String) throws -> String {
+        scriptCalls += 1
+        if source.contains("SB_TARGET_CHANGED") && pageURL != "https://fixture.invalid/" {
+            throw SafariBrowserError.appleScriptFailed("SB_TARGET_CHANGED")
+        }
         guard let start = source.range(of: "do JavaScript \"") else {
+            if source.contains("set GS to (character id 29)") {
+                return ["1", "1", "1", pageURL, "Fixture", "Fixture", "71"].joined(separator: "\u{1d}") + "\u{1e}"
+            }
             if source.contains("get id of window") { return "71" }
             if source.contains("URL of") { return pageURL }
+            if source.contains("text of") { return "" }
             throw CocoaError(.coderInvalidValue, userInfo: [NSLocalizedDescriptionKey: "Unexpected non-JS fixture source: \(source)"])
         }
         let opening = source.index(before: start.upperBound)
@@ -366,6 +556,10 @@ private actor ScriptPage {
     }
 
     func evaluateJS(_ js: String) -> String {
+        if fault == .eraseBeforeFrame && js.contains("var text=s.text,end=") {
+            context.evaluateScript("Object.keys(window).filter(k=>k.startsWith('__sbInvocation_')).forEach(k=>delete window[k])")
+            pageURL = "https://fixture.invalid/after"
+        }
         if js.contains("window.__sbResult =") { sharedResultWritten = true }
         if js.contains(".phase='running';try{") { executionCalls += 1 }
         context.exception = nil
@@ -389,7 +583,7 @@ private actor ScriptPage {
             pageURL = "https://fixture.invalid/after"
             return "stale-token:prepared"
         }
-        if (fault == .navigateAfterExecution || fault == .navigateWithoutReceipt) && result.hasSuffix(":executed") {
+        if (fault == .navigateAfterExecution || fault == .navigateWithoutReceipt) && (result.hasSuffix(":done") || result.hasSuffix(":error")) {
             context.evaluateScript("Object.keys(window).filter(k=>k.startsWith('__sbInvocation_')).forEach(k=>delete window[k])")
             pageURL = "https://fixture.invalid/after"
             if fault == .navigateWithoutReceipt { return "" }
@@ -397,7 +591,7 @@ private actor ScriptPage {
         if fault == .preparedAfterReceipt && js.contains("s.phase+':'+s.text.length") {
             return result.split(separator: ":").first.map { String($0) + ":prepared:0" } ?? ""
         }
-        if fault == .eraseExecutedState && result.hasSuffix(":executed") {
+        if fault == .eraseExecutedState && (result.hasSuffix(":done") || result.hasSuffix(":error")) {
             context.evaluateScript("Object.keys(window).filter(k=>k.startsWith('__sbInvocation_')).forEach(k=>delete window[k])")
         }
         if fault == .invalidLength && js.contains("s.phase+':'+s.text.length") {

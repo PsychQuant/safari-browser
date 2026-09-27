@@ -53,3 +53,29 @@ js、js --large、js --output 及 doJavaScriptLarge 共用逐呼叫結果協定�
 - 舊 #82 同 URL 導頁可能重跑 → prepared 身分仍存在才允許 fallback，否則明確失敗。
 
 - 每次識別會改變 AppleScript source；現有 CompileCache 以完整 source 保留 NSAppleScript → #170 先前「重複 js 有快取命中、編譯成本低」的判斷必須重測，且需檢查長時間 daemon 的快取成長。此風險尚未以實測排除，不宣稱維持原暖啟動效能。
+
+## 2026-09-28 審查修正
+
+### 暫時編譯與舊 daemon 相容
+
+PreCompiledScripts.CachePolicy 區分 reuse 與 ephemeral。ephemeral 在原有 MainActor 上編譯與執行，不讀取或寫入永久 CompileCache；reuse 保持原行為。JavaScriptResultSession 的操作範圍以 TaskLocal 傳遞 ephemeral，in-process runner 消費政策，跨行程 router 改呼叫 applescript.executeEphemeral。此範圍也可能使操作內的目標查詢重新編譯，不能宣稱原暖啟動效能不變；#170 需在新基底量測。
+
+新方法採用既有 source／timing 參數與 status／output／errorKind／message 回覆形狀，日誌維持 source 遮蔽。既有 applescript.execute 預設 reuse。使用不同方法名稱，讓舊 daemon 明確以 methodNotFound 拒絕且沒有執行腳本，再走既有安全的 stateless fallback；不送一個可能被舊版忽略的 cacheable 參數。已送出而結果未知的傳輸失敗仍不得重跑。
+
+真實 NSAppleScript 回歸：四次新 session 經 in-process cache 路徑，修正前永久項目由 1 增至 18，修正後維持 1。RPC 測試涵蓋暫時執行、原快取保留、舊方法拒絕後只退回一次，以及編譯／執行錯誤不留存。
+
+### 導頁、取消與診斷收尾
+
+有本次 executed／completed 證據時，bridge 最終的 targetTabChanged 也轉成 executionResultLost，再由 JSCommand 正式呼叫的 settleNavigationOrRethrow 比對 URL。執行前的 raw targetTabChanged 保留失敗，不能僅因 URL 改變便宣稱程式已跑。框架回空則重新觀察本次 metadata；狀態消失可進導頁判讀，狀態仍在但資料無效仍失敗。
+
+操作開始、程式派送、讀取分塊及回傳／發布前檢查合作式取消。取消不能撤銷已送出的副作用；清理仍僅對本次 key 盡力執行。未配對 UTF-16 回傳帶本次 token 的明確錯誤標記，顯示無法無損傳輸，不冒充另一呼叫的資料錯誤。
+
+導頁後的 URL 仍依既有 windowID／tab 位置觀察；關閉或重排造成同位置換分頁的限制仍由 #188 處理。本次不以分頁數等弱條件冒充身分證明。
+
+### 驗證範圍與後續
+
+20 筆純 AppleScript return-fixture RPC 微量測：ephemeral p50 0.575 ms／p95 0.838 ms；reuse p50 0.251 ms／p95 0.366 ms。這是受控原生 RPC／編譯路徑，沒有 Safari 或頁面操作，不能代替 Safari 指令延遲，也不證明真實暖啟動沒有回歸。#170 已同步量測前提；真實 Safari／CSP 時段仍待提供。
+
+硬終止／cleanup 不可用後的頁面狀態累積另由 #193 追蹤。本次不掃描刪除其他呼叫的屬性；後續回收需有有效呼叫的保護證據。
+
+最終評估確認攜帶 done 或 error，不只標示「曾執行」。error 確認後即使頁面導走、錯誤本文遺失，仍須明確失敗，不能轉成成功導頁；確認狀態與 metadata 矛盾時拒絕且不重跑。

@@ -470,6 +470,10 @@ state permits the expression-to-function-body fallback. Confirmed execution foll
 by a changed URL keeps the navigation notice; same-URL context loss is an error.
 This isolates the CLI's transport state, not the meaning of your page data: use
 request IDs or content checks for asynchronous objects such as API response caches.
+Nonce-bearing protocol requests use temporary daemon compilation instead of growing
+the reusable script cache. An older daemon rejects that RPC before execution, so the
+existing stateless fallback remains safe. Cleanup is best effort if the client is
+forcibly terminated; orphaned page-state reclamation is tracked in #193.
 
 Two edge notes (#76 verify round):
 

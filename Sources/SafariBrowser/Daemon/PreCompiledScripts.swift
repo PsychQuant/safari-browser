@@ -22,6 +22,7 @@ import Foundation
 /// Actual Safari-side execution of these compiled handles happens in the
 /// daemon dispatch layer (task 4.1) and in routing (task 7.1).
 enum PreCompiledScripts {
+    enum CachePolicy: Sendable, Equatable { case reuse, ephemeral }
 
     enum Error: Swift.Error, CustomStringConvertible {
         case missingPlaceholder(String)
@@ -219,8 +220,8 @@ enum PreCompiledScripts {
 
         /// Compile (cached) and execute the script, returning a Sendable
         /// snapshot of the result descriptor.
-        func execute(source: String) throws -> ExecutionResult {
-            let script = try compiledLocked(for: source)
+        func execute(source: String, policy: CachePolicy = .reuse) throws -> ExecutionResult {
+            let script = try compiledLocked(for: source, policy: policy)
             return try PerformanceTrace.span(.daemonExecute) {
                 var errorInfo: NSDictionary?
                 let descriptor = script.executeAndReturnError(&errorInfo)
@@ -243,8 +244,8 @@ enum PreCompiledScripts {
 
         // MARK: - Actor-isolated helpers
 
-        private func compiledLocked(for source: String) throws -> NSAppleScript {
-            if let existing = cache[source] { return PerformanceTrace.span(.daemonCacheHit) { existing } }
+        private func compiledLocked(for source: String, policy: CachePolicy = .reuse) throws -> NSAppleScript {
+            if policy == .reuse, let existing = cache[source] { return PerformanceTrace.span(.daemonCacheHit) { existing } }
             return try PerformanceTrace.span(.daemonCompile) {
                 guard let script = NSAppleScript(source: source) else {
                     throw Error.compilationFailed("NSAppleScript init returned nil")
@@ -255,7 +256,7 @@ enum PreCompiledScripts {
                         ?? String(describing: errorInfo)
                     throw Error.compilationFailed(message)
                 }
-                cache[source] = script
+                if policy == .reuse { cache[source] = script }
                 return script
             }
         }

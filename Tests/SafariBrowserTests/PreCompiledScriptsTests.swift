@@ -127,4 +127,18 @@ final class PreCompiledScriptsTests: XCTestCase {
         let count = await cache.cacheCount
         XCTAssertEqual(count, 1)
     }
+
+    func testEphemeralExecutionDoesNotReadOrReplaceReusableHandle() async throws {
+        let cache = PreCompiledScripts.CompileCache()
+        let source = "property n : 0\non run\nset n to n + 1\nreturn n\nend run"
+        let first = try await cache.execute(source: source)
+        let fresh = try await cache.execute(source: source, policy: .ephemeral)
+        let warm = try await cache.execute(source: source)
+        XCTAssertEqual(first.int32Value, 1)
+        XCTAssertEqual(fresh.int32Value, 1)
+        XCTAssertEqual(warm.int32Value, 2)
+        let count = await cache.cacheCount
+        XCTAssertEqual(count, 1)
+    }
+
 }
