@@ -570,6 +570,13 @@ enum DaemonServer {
             context.generation == shutdownGeneration
         }
 
+        /// Read-only fixture seam for the final handoff after a valid shutdown
+        /// plan was captured. It invokes the same guarded completion as the RPC.
+        func capturedShutdownCompletionForTesting() -> @Sendable () async -> Void {
+            let context = ShutdownContext(generation: shutdownGeneration, hook: shutdownHook)
+            return { await self.completeShutdown(context) }
+        }
+
         private func completeShutdown(_ context: ShutdownContext) async {
             guard context.generation == shutdownGeneration else { return }
             if let hook = context.hook {

@@ -11,4 +11,4 @@
 ## 3. 整合驗證
 
 - [x] 3.1 執行所有 daemon 相關測試、關鍵 guard／notification 變異與 make test-all，確認不重播、診斷 writer 不阻擋清理、stop 不等待 accept loop；保留 RED／GREEN 與錯誤路徑證據。
-- [ ] 3.2 更新 CLAUDE.md／CHANGELOG.md，完成 spectra analyze／validate、六方確認與規格同步歸檔；提交和 PR 引用 #198。
+- [x] 3.2 更新 CLAUDE.md／CHANGELOG.md，完成 spectra analyze／validate、六方確認與規格同步歸檔；提交和 PR 引用 #198。

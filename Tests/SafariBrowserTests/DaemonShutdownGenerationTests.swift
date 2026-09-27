@@ -76,4 +76,32 @@ final class DaemonShutdownGenerationTests: XCTestCase {
         await server.stop()
         XCTAssertFalse(FileManager.default.fileExists(atPath: path))
     }
+    func testCapturedHookCompletionCannotAffectNewGeneration() async throws {
+        try await checkCapturedCompletion(useHook: true)
+    }
+
+    func testCapturedFallbackCompletionCannotAffectNewGeneration() async throws {
+        try await checkCapturedCompletion(useHook: false)
+    }
+
+    private func checkCapturedCompletion(useHook: Bool) async throws {
+        let path = NSTemporaryDirectory() + "h198-" + String(UUID().uuidString.prefix(8)) + ".sock"
+        let calls = Counter(), server = DaemonServer.Instance()
+        defer { unlink(path) }
+        if useHook { await server.setShutdownHook { calls.increment(); await server.stop() } }
+        try await server.start(socketPath: path)
+        let oldCompletion = await server.capturedShutdownCompletionForTesting()
+        await server.stop()
+        try await server.start(socketPath: path)
+        await oldCompletion()
+        XCTAssertEqual(calls.read(), 0)
+        let fd = try connect(path)
+        defer { close(fd) }
+        try TestUnixSocket.writeLine(fd: fd, line: #"{"method":"daemon.status","params":{},"requestId":198}"#)
+        let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try TestUnixSocket.readLine(fd: fd).utf8)) as? [String: Any])
+        XCTAssertNotNil(reply["result"])
+        await server.stop()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+    }
+
 }

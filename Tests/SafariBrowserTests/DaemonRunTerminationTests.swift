@@ -38,7 +38,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         defer { unlink(p.socket); unlink(p.pid) }
         // Failure may be delivered during start or immediately afterward.
         do {
-            try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600,
+            try await startWithinDeadline(server, socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600,
                                    acceptEnvironment: .init(wait: { _, _ in .failed(EINVAL) }))
         } catch { XCTAssertTrue(error is DaemonServer.ListenerFailure) }
         let pidRemoved = await removed(p.pid)
@@ -96,6 +96,25 @@ final class DaemonRunTerminationTests: XCTestCase {
         await fulfillment(of: [completed], timeout: 2)
         worker.cancel()
         return result.get()
+    }
+
+    private enum FixtureError: Error { case startupTimedOut }
+
+    private func startWithinDeadline(
+        _ server: DaemonServeLoop.Server,
+        socketPath: String, pidPath: String, idleTimeout: TimeInterval,
+        acceptEnvironment: DaemonServer.AcceptEnvironment = .init(),
+        lifecycle: DaemonServeLoop.LifecycleEnvironment = .init()
+    ) async throws {
+        let outcome: Result<Void, Error>? = await valueWithinDeadline("startup completes") {
+            do {
+                try await server.start(socketPath: socketPath, pidPath: pidPath, idleTimeout: idleTimeout,
+                                       acceptEnvironment: acceptEnvironment, lifecycle: lifecycle)
+                return .success(())
+            } catch { return .failure(error) }
+        }
+        guard let outcome else { throw FixtureError.startupTimedOut }
+        try outcome.get()
     }
 
     private func stopWithinDeadline(_ server: DaemonServeLoop.Server) async -> Bool {
@@ -187,7 +206,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         XCTAssertEqual(reason, .listenerFailed(expected))
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.socket))
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.pid))
-        try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
+        try await startWithinDeadline(server, socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
         try assertHealthy(socket: p.socket)
         guard await stopWithinDeadline(server) else { return }
         task.cancel()
@@ -201,7 +220,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         let stopJoined = expectation(description: "ordinary stop joined failure cleanup")
         let finished = expectation(description: "three completed waiters")
         finished.expectedFulfillmentCount = 3
-        try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600,
+        try await startWithinDeadline(server, socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600,
                                acceptEnvironment: .init(accept: { _ in (-1, EBADF) }, wait: { _, _ in .ready },
                                                         beforeFailureNotification: { await failureGate.wait() }),
                                lifecycle: .init(beforeTeardown: { cleaning.fulfill(); await cleanupGate.wait() },
@@ -247,7 +266,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         let restarted = expectation(description: "restart finished")
         let newBound = Box(false)
         defer { unlink(p.socket); unlink(p.pid) }
-        try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600,
+        try await startWithinDeadline(server, socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600,
                                lifecycle: .init(beforeTeardown: { cleaning.fulfill(); await cleanupGate.wait() },
                                                 observe: { event in
             if case .joinedStop = event { secondStopJoined.fulfill() }
@@ -281,7 +300,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         let server = DaemonServeLoop.Server(), p = paths(), gate = Gate()
         let delayed = expectation(description: "old notification delayed after inner cleanup")
         let released = expectation(description: "old notification fully handled")
-        try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600,
+        try await startWithinDeadline(server, socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600,
                                acceptEnvironment: .init(wait: { _, _ in .failed(EINVAL) },
                                                         beforeFailureNotification: {
             delayed.fulfill(); await gate.wait()
@@ -300,7 +319,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: p.socket, encoding: .utf8), socketMarker)
         let oldReason = await valueWithinDeadline("old stop reason delivered") { await server.waitUntilStopped() }
         XCTAssertEqual(oldReason, .requested)
-        try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
+        try await startWithinDeadline(server, socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
         await gate.open()
         await fulfillment(of: [released], timeout: 1)
         try assertHealthy(socket: p.socket)
@@ -312,13 +331,13 @@ final class DaemonRunTerminationTests: XCTestCase {
     func testStartupBindFailureCleansPidAndReturnsStartupFailureReason() async throws {
         let server = DaemonServeLoop.Server(), p = paths()
         do {
-            try await server.start(socketPath: p.socket + String(repeating: "x", count: 120), pidPath: p.pid, idleTimeout: 3600)
+            try await startWithinDeadline(server, socketPath: p.socket + String(repeating: "x", count: 120), pidPath: p.pid, idleTimeout: 3600)
             XCTFail("overlong socket must fail")
         } catch { XCTAssertTrue(error is DaemonServer.DaemonError) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.pid))
         let reason = await valueWithinDeadline("stop reason delivered") { await server.waitUntilStopped() }
         XCTAssertEqual(reason, .startupFailed)
-        try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
+        try await startWithinDeadline(server, socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
         try assertHealthy(socket: p.socket)
         guard await stopWithinDeadline(server) else { return }
     }
@@ -351,7 +370,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         let server = DaemonServeLoop.Server(), p = paths(), oldSleep = Gate()
         let sleeping = expectation(description: "old watchdog sleeping")
         let awake = expectation(description: "old watchdog wakes after cancellation")
-        try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 1,
+        try await startWithinDeadline(server, socketPath: p.socket, pidPath: p.pid, idleTimeout: 1,
                                lifecycle: .init(watchdogSleep: {
             sleeping.fulfill(); await oldSleep.wait(); awake.fulfill()
         }))
@@ -359,7 +378,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         guard await stopWithinDeadline(server) else { return }
         let idleAccepted = expectation(description: "new watchdog accepts idle stop")
         let newSleep = Gate()
-        try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: -1,
+        try await startWithinDeadline(server, socketPath: p.socket, pidPath: p.pid, idleTimeout: -1,
                                lifecycle: .init(observe: { event in
             if case .beganStop(let reason) = event {
                 XCTAssertEqual(reason, .idleTimeout); idleAccepted.fulfill()
