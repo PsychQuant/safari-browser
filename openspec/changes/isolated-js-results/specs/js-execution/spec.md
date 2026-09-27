@@ -57,3 +57,11 @@ The CLI `js` result paths and the shared large-result bridge SHALL associate res
 - **WHEN** GetText, GetHTML or SnapshotCommand reads a large result through the shared bridge
 - **THEN** the result SHALL use the same invocation ownership and complete-transfer checks
 - **AND** GetText and GetHTML SHALL NOT stage results through a shared `window.__sbResult` property
+
+#### Scenario: Preparation failure during an unrelated navigation
+- **WHEN** initialization returns a stale identity before user code is dispatched and the page URL changes
+- **THEN** the command SHALL fail rather than claim that user code executed successfully
+
+#### Scenario: Contradictory execution evidence
+- **WHEN** a current executed receipt is followed by prepared metadata
+- **THEN** the CLI SHALL reject the inconsistent response without dispatching a second form

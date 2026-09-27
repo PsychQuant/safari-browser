@@ -462,6 +462,15 @@ expression's value implicitly (old page-context `eval()` semantics); without
 `return` the result is `undefined`. Code that itself calls `eval()`/`new
 Function()` still fails on strict-CSP pages — the error includes a hint.
 
+Result transfer uses a fresh per-call identity (#190). Ordinary and chunked reads
+share the same captured value; a large-output fallback never re-executes your code.
+Missing, stale or incomplete transfer frames fail before an output file is replaced.
+A lost page context is not a reason to retry: only an intact, unexecuted prepared
+state permits the expression-to-function-body fallback. Confirmed execution followed
+by a changed URL keeps the navigation notice; same-URL context loss is an error.
+This isolates the CLI's transport state, not the meaning of your page data: use
+request IDs or content checks for asynchronous objects such as API response caches.
+
 Two edge notes (#76 verify round):
 
 - Grammatically ambiguous inputs now parse as expressions: `js "{}"` yields
