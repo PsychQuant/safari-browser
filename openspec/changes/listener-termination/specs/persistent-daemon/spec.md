@@ -17,7 +17,7 @@ An accept or poll error classified as permanently invalid by the existing accept
 
 ### Requirement: Daemon run cleanup is generation owned
 
-The outer Server SHALL bind startup, shutdown hooks, listener notifications, watchdog decisions, resource handles, and stop waiters to a Run identity. Concurrent starts SHALL share the same startup operation. A new start during teardown SHALL wait for that teardown before binding paths. Concurrent stops SHALL share one cleanup operation. Startup failures and listener failures SHALL clean the owning run without waiting for its accept loop or diagnostic writer. PID cleanup SHALL remove only an entry whose captured device/inode still matches; replaced or unconfirmed entries SHALL be retained.
+The outer Server SHALL bind startup, shutdown hooks, listener notifications, watchdog decisions, resource handles, and stop waiters to a Run identity. Connections SHALL capture their shutdown generation and hook when admitted; a shutdown request suspended across stop/start SHALL NOT obtain the replacement run's hook, in-flight snapshot, or process watchdog. Each new run SHALL begin a fresh idle interval. Concurrent starts SHALL share the same startup operation. A new start during teardown SHALL wait for that teardown before binding paths. Concurrent stops SHALL share one cleanup operation. Startup failures and listener failures SHALL clean the owning run without waiting for its accept loop or diagnostic writer. PID cleanup SHALL remove only an entry whose captured device/inode still matches; replaced or unconfirmed entries SHALL be retained.
 
 #### Scenario: Failure before startup completes
 
@@ -29,6 +29,12 @@ The outer Server SHALL bind startup, shutdown hooks, listener notifications, wat
 - **WHEN** two stop callers and a subsequent start overlap
 - **THEN** both stop callers await the same old cleanup, and the new run binds its paths only after that cleanup finishes
 - **AND** delayed old listener, shutdown, or watchdog callbacks cannot stop the new run
+
+#### Scenario: Shutdown resumes after a replacement run starts
+
+- **WHEN** an accepted shutdown request is paused in logging while its run stops and a replacement run starts
+- **THEN** the resumed request returns a cancelled error without invoking a shutdown hook or process watchdog for the replacement run
+- **AND** a hook-free embedded instance applies the same generation guard before fallback stop
 
 #### Scenario: PID entry replaced before old cleanup
 

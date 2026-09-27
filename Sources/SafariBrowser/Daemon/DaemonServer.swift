@@ -312,6 +312,7 @@ enum DaemonServer {
         private var wakeWriteFd: Int32 = -1
         private var acceptTask: Task<Void, Never>?
         private var listenerGeneration: UUID?
+        private var shutdownGeneration = UUID()
         private var socketPath: String?
         private var connectionTasks: [Task<Void, Never>] = []
 
@@ -540,6 +541,7 @@ enum DaemonServer {
         /// listener bind, not actor allocation.
         func recordStartTimestamp(_ at: Date = Date()) {
             startedAt = at
+            lastActivity = at
         }
 
         /// Install the shutdown hook invoked by the lifecycle bypass on
@@ -550,7 +552,32 @@ enum DaemonServer {
             shutdownHook = hook
         }
 
-        fileprivate func currentShutdownHook() -> (@Sendable () async -> Void)? { shutdownHook }
+        /// Admission captures a capability, never a lookup of a later run's hook.
+        private struct ShutdownContext: Sendable {
+            let generation: UUID
+            let hook: (@Sendable () async -> Void)?
+        }
+
+        private func prepareShutdown(_ context: ShutdownContext) -> [InFlightSlot]? {
+            guard !Task.isCancelled, context.generation == shutdownGeneration else { return nil }
+            // The process-level watchdog is scheduled only for a still-current
+            // request, in the same actor turn as the generation check.
+            shutdownWatchdog?()
+            return snapshotInFlight()
+        }
+
+        private func ownsShutdown(_ context: ShutdownContext) -> Bool {
+            context.generation == shutdownGeneration
+        }
+
+        private func completeShutdown(_ context: ShutdownContext) async {
+            guard context.generation == shutdownGeneration else { return }
+            if let hook = context.hook {
+                await hook()
+            } else {
+                cleanListener(cancelAcceptTask: true)
+            }
+        }
 
         /// Mark a client connection as having an in-flight request whose
         /// requestId is `requestIdJSON` (already JSON-encoded). Called
@@ -678,6 +705,7 @@ enum DaemonServer {
             let wakeRead = wake[0]
             let generation = UUID()
             listenerGeneration = generation
+            shutdownGeneration = generation
             self.acceptTask = Task.detached(priority: .userInitiated) {
                 guard let termination = await Self.acceptLoopResult(
                     listenerFd: fd, wakeFd: wakeRead, instance: instance, environment: environment
@@ -714,6 +742,7 @@ enum DaemonServer {
 
         private func cleanListener(cancelAcceptTask: Bool) {
             listenerGeneration = nil
+            shutdownGeneration = UUID()
             diagnosticEnabled = false
             diagnosticGeneration = UUID()
             diagnosticBudget.discardPending()
@@ -757,8 +786,9 @@ enum DaemonServer {
                 close(clientFd)
                 return
             }
+            let shutdown = ShutdownContext(generation: shutdownGeneration, hook: shutdownHook)
             let task = Task.detached(priority: .userInitiated) {
-                await Self.serveConnection(clientFd: clientFd, instance: self)
+                await Self.serveConnection(clientFd: clientFd, instance: self, shutdown: shutdown)
             }
             connectionTasks.append(task)
         }
@@ -880,7 +910,7 @@ enum DaemonServer {
             await instance.recordDiagnostic(.init(kind: event, errno: code, disposition: disposition, count: count))
         }
 
-        private static func serveConnection(clientFd: Int32, instance: Instance) async {
+        private static func serveConnection(clientFd: Int32, instance: Instance, shutdown: ShutdownContext) async {
             var ownsClient = true
             defer { if ownsClient { close(clientFd) } }
             guard !Task.isCancelled else { return }
@@ -918,7 +948,7 @@ enum DaemonServer {
                 // block them.
                 let response: Data
                 if let lifecycle = peekLifecycleMethod(line: line) {
-                    response = await dispatchLifecycle(lifecycle: lifecycle, line: line, instance: instance, fd: clientFd)
+                    response = await dispatchLifecycle(lifecycle: lifecycle, line: line, instance: instance, fd: clientFd, shutdown: shutdown)
                 } else {
                     response = await dispatchLine(line: line, fd: clientFd, instance: instance)
                 }
@@ -960,7 +990,8 @@ enum DaemonServer {
             lifecycle: LifecycleMethod,
             line: Data,
             instance: Instance,
-            fd: Int32
+            fd: Int32,
+            shutdown: ShutdownContext
         ) async -> Data {
             await instance.recordActivity()
             let started = Date()
@@ -987,9 +1018,6 @@ enum DaemonServer {
                 response = encodeResult(requestId: requestId, resultData: resultData)
                 await emitLog(instance: instance, started: started, method: lifecycle.rawValue, requestId: requestId, paramsData: Data("{}".utf8), resultData: resultData, errorMessage: nil)
             case .shutdown:
-                // Snapshot in-flight clients BEFORE replying so the
-                // teardown can cancel them deterministically.
-                let inFlight = await instance.snapshotInFlight()
                 response = encodeResult(requestId: requestId, resultData: Data("{}".utf8))
                 await emitLog(instance: instance, started: started, method: lifecycle.rawValue, requestId: requestId, paramsData: Data("{}".utf8), resultData: Data("{}".utf8), errorMessage: nil)
 
@@ -999,8 +1027,14 @@ enum DaemonServer {
                 // closes them and stops the listener. 5s watchdog
                 // guarantees the process exits even if graceful path
                 // stalls (e.g., NSAppleScript still running).
-                let hook = await instance.currentShutdownHook()
+                // Logging may suspend across a full stop/start. Do not obtain
+                // the replacement run's hook, in-flight clients or watchdog.
+                guard let inFlight = await instance.prepareShutdown(shutdown) else {
+                    return encodeError(requestId: requestId, code: .cancelled,
+                                       message: "daemon run stopped before shutdown")
+                }
                 Task.detached {
+                    guard await instance.ownsShutdown(shutdown) else { return }
                     for slot in inFlight where slot.fd != fd {
                         let envelope = encodeErrorRaw(
                             requestIdJSON: slot.requestIdJSON,
@@ -1009,16 +1043,8 @@ enum DaemonServer {
                         )
                         _ = writeLine(fd: slot.fd, line: envelope)
                     }
-                    if let hook = hook {
-                        await hook()
-                    } else {
-                        await instance.stop()
-                    }
+                    await instance.completeShutdown(shutdown)
                 }
-                // The production entry owns process termination. Tests and
-                // other embedded users keep normal teardown without _exit.
-                let watchdog = await instance.shutdownWatchdog
-                watchdog?()
             }
             return response
         }

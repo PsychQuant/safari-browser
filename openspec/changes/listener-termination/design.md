@@ -30,7 +30,7 @@ Stop 設定該 Run 的第一次原因、取消 startup/watchdog，並建立一�
 
 ### 原因與舊工作隔離
 
-StopReason 區分 requested、idleTimeout、startupFailed、listenerFailed。waitUntilStopped 回傳所註冊 Run 的原因，已停止時回傳最近完成原因；多個 waiter 不互相覆蓋。shutdown hook、watchdog 與 listener callback 均捕捉 Run ID，只有仍擁有 current Run 者能停止它。第一個已接受的停止原因不被晚到原因覆蓋。
+StopReason 區分 requested、idleTimeout、startupFailed、listenerFailed。waitUntilStopped 回傳所註冊 Run 的原因，已停止時回傳最近完成原因；多個 waiter 不互相覆蓋。shutdown hook、watchdog 與 listener callback 均捕捉 Run ID，只有仍擁有 current Run 者能停止它。RPC 在 admission 捕捉所屬 listener 的 shutdown capability，日誌等待後重新驗證世代；過期請求回 cancelled，不拿新 Run 的 hook／in-flight snapshot／process watchdog。無 hook 的 Instance fallback stop 同樣按世代檢查。新 Run 設定 start timestamp 時同步重設 idle 起點。第一個已接受的停止原因不被晚到原因覆蓋。
 
 __serve 等待結果若為 listenerFailed，拋出只含固定 operation／errno 的錯誤，非零退出；正常 stop／idle 仍正常退出。pid/socket 的單獨身分保護與 Run guard 不改既有同 UID IPC 信任模型。
 

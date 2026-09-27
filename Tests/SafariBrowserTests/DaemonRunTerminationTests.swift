@@ -271,6 +271,8 @@ final class DaemonRunTerminationTests: XCTestCase {
         await server.stop()
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.pid))
         XCTAssertEqual(try String(contentsOfFile: p.socket, encoding: .utf8), socketMarker)
+        let oldReason = await server.waitUntilStopped()
+        XCTAssertEqual(oldReason, .requested)
         try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
         await gate.open()
         await fulfillment(of: [released], timeout: 1)
@@ -413,4 +415,52 @@ final class DaemonRunTerminationTests: XCTestCase {
         await fulfillment(of: [finished], timeout: 2)
         host.cancel()
     }
+    func testNewRunTimestampResetsPreviousIdleDeadline() async {
+        let server = DaemonServer.Instance()
+        let old = Date(timeIntervalSince1970: 100)
+        let now = old.addingTimeInterval(1000)
+        await server.configureIdleTimeout(60)
+        await server.recordActivity(at: old)
+        await server.recordStartTimestamp(now)
+        let immediatelyIdle = await server.isIdle(now: now.addingTimeInterval(1))
+        let laterIdle = await server.isIdle(now: now.addingTimeInterval(60))
+        XCTAssertFalse(immediatelyIdle, "a new run starts a fresh idle interval")
+        XCTAssertTrue(laterIdle)
+    }
+
+    func testCancelledJoinedStarterStopsSharedStartupForBothCallers() async {
+        let server = DaemonServeLoop.Server(), p = paths(), gate = Gate()
+        let entered = expectation(description: "first startup paused")
+        let joined = expectation(description: "second starter joined")
+        let accepted = expectation(description: "shared cancellation accepted")
+        let finished = expectation(description: "both starters returned cancellation")
+        finished.expectedFulfillmentCount = 2
+        let lifecycle = DaemonServeLoop.LifecycleEnvironment(beforeListenerStart: {
+            entered.fulfill(); await gate.wait()
+        }, observe: {
+            if case .joinedStartup = $0 { joined.fulfill() }
+            if case .beganStop = $0 { accepted.fulfill() }
+        })
+        let start: @Sendable () async -> Void = {
+            do {
+                try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600, lifecycle: lifecycle)
+                XCTFail("cancelled shared startup must not succeed")
+            } catch { XCTAssertTrue(error is CancellationError) }
+            finished.fulfill()
+        }
+        let a = Task { await start() }
+        await fulfillment(of: [entered], timeout: 1)
+        let b = Task { await start() }
+        await fulfillment(of: [joined], timeout: 1)
+        b.cancel()
+        await fulfillment(of: [accepted], timeout: 1)
+        await gate.open()
+        await fulfillment(of: [finished], timeout: 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: p.socket))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: p.pid))
+        let reason = await server.waitUntilStopped()
+        XCTAssertEqual(reason, .requested)
+        a.cancel()
+    }
+
 }
