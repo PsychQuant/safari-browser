@@ -49,3 +49,13 @@ CLI 在等待前確認 (min,max) 至少包含兩個可表示的整數奈秒，�
 ## Implementation Contract
 
 TruncatedCauchy 保留原有 CLI 預設值與四個分布參數；接受可達的界外 location 解。WaitCommand 在 validate 拒絕不可隨機化的奈秒區間，run 使用檢查後的奈秒轉換。固定毫秒、URL、JS 等待模式不變。獨立解析 CDF／CDF 積分參考值驗中位數與多個分位數；測試列出界外 location、中央與對稱邊界、極端 scale、奈秒上下界、零／單量子拒絕與溢位。
+
+## 2026-09-27 參數使用性接續（#186）
+
+未明確指定 scale 時改採 0.8 × min(median-min,max-median)，預設參數仍為 800。這在數學上讓中位數可達，但不撤除 Double 與奈秒可表示性檢查。IQR 以新的中位數中心反函數計算，不能重用已刪除的 CDF 端點欄位。
+
+近乎固定的警告採 IQR < 5% median **或** IQR < 1ns。後者是新基底回歸測試證實的缺口：[0,3e-6] ms、median=1e-6、scale=1e-7 的 IQR 超過 5% median，仍小於一個時鐘刻度；原實作不警告。警告寫到 stderr 並照常等待，不拒絕刻意指定的尺度。數值太小的 IQR 以有效位數顯示，避免顯示為 0.0 ms。
+
+--max > 3600000 ms 需 --allow-long-wait；先經 #182 可表示性與 #153 溢位檢查，再檢查一小時限制。run 保留有檢查的內部奈秒轉換、注入 sleep 與 throws 抽樣 API。此次不改 Safari 目標解析或其他等待模式。
+
+少數合法 tick 本身不等於近乎固定：例如 [0,2.9e-6] ms、中位數 1.45e-6 ms、推導 scale 的連續 IQR > 1ns，實際會在 1ns 與 2ns 之間變動，容許不警告。警告判準是分布集中程度，不是合法 tick 總數；只有零／單 tick 區間才由 #182 拒絕。近界中位數可能無法藉增加 scale 解決警告，因此訊息需同時指出可調整中位數或界限，不把增加 scale 說成必然可行。

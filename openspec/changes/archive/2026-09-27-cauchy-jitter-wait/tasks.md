@@ -19,3 +19,10 @@
 - [x] 4.3 更新 README／CHANGELOG／spec 的可達範圍、量化與種子保證；Spectra analyze/validate、完整測試與最終快照審查通過後更新 PR。
 
 驗收紀錄：2026-09-27 修正後執行 `make test-all` exit 0（1253 XCTest、24 Swift Testing、66 smoke、簽章 49 PASS / 2 身分需求略過）；六方對 61e0780 程式碼審查 CODE PASS。最終差異僅文件與註解。Spectra validate 有效、analyze 無發現。原簽章失敗與系統 Python 缺少 waitid 的診斷紀錄保留，未宣稱已找出簽章失敗根因。
+
+## 5. 參數使用性（#186）
+- [x] 5.1 測試先失敗：預設 scale 隨區間推導、近乎固定的警告、`--max` 超過一小時需 `--allow-long-wait`
+- [x] 5.2 實作並更新 README、CHANGELOG、spec
+- [x] 5.3 更新至修正後 #182，涵蓋奈秒量化警告案例，重新測試與六方審查。
+
+#186 最終驗收：2026-09-27，六方對 e62328f CODE PASS；4703832 的警告文字／測試／文件差異由獨立 Codex 補審 PASS。make test-all exit 0，1253 XCTest + 38 Swift Testing + 66 smoke；簽章 49 PASS / 2 身分需求略過。新增兩項 run 整合測試在刻意移除 sleep 後失敗，還原後通過。CLI 的 stderr、退出碼與近界中位數提示均已實測。

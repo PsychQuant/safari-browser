@@ -38,8 +38,16 @@ struct WaitCommand: AsyncParsableCommand {
     @Option(name: .customLong("median"), help: "Median of the truncated jitter distribution in milliseconds (default: 3000)")
     var jitterMedian: Double?
 
-    @Option(name: .customLong("scale"), help: "Cauchy scale in milliseconds (default: 800)")
+    @Option(name: .customLong("scale"), help: "Cauchy scale in milliseconds (default: 0.8 × the distance from --median to the nearer bound; 800 for the default bounds)")
     var jitterScale: Double?
+
+    // #186: a typo such as --max 600000000 (about a week) would otherwise be
+    // accepted, and the heavy tail makes a long draw a matter of time.
+    @Flag(name: .customLong("allow-long-wait"), help: "Allow a jitter --max above one hour (3600000 ms)")
+    var allowLongWait = false
+
+    /// The largest `--max` accepted without `--allow-long-wait`.
+    static let longJitterMaxMilliseconds = 3_600_000.0
 
     // #182 verify R1: every `wait` is its own process, so a seed cannot carry a
     // sequence across calls — the same seed always yields the same single draw.
@@ -60,18 +68,18 @@ struct WaitCommand: AsyncParsableCommand {
             min: jitterMin ?? TruncatedCauchy.defaultMin,
             max: jitterMax ?? TruncatedCauchy.defaultMax,
             median: jitterMedian ?? TruncatedCauchy.defaultMedian,
-            scale: jitterScale ?? TruncatedCauchy.defaultScale
+            scale: jitterScale
         )
     }
 
     private var hasJitterParameter: Bool {
-        jitterMin != nil || jitterMax != nil || jitterMedian != nil || jitterScale != nil || seed != nil
+        jitterMin != nil || jitterMax != nil || jitterMedian != nil || jitterScale != nil || seed != nil || allowLongWait
     }
 
     private func validateJitter() throws {
         guard jitter != nil else {
             if hasJitterParameter {
-                throw ValidationError("--min, --max, --median, --scale and --seed require --jitter cauchy")
+                throw ValidationError("--min, --max, --median, --scale, --seed and --allow-long-wait require --jitter cauchy")
             }
             return
         }
@@ -80,6 +88,14 @@ struct WaitCommand: AsyncParsableCommand {
         }
         let distribution = try jitterDistribution()
         _ = try JitterNanosecondRange(min: distribution.min, max: distribution.max)
+        // After the representability check: an unrepresentable --max is an
+        // error whatever the flags; a long one only needs an explicit opt-in.
+        if distribution.max > Self.longJitterMaxMilliseconds && !allowLongWait {
+            throw ValidationError(
+                "--max \(Int(distribution.max.rounded(.up))) ms is over one hour; a single jittered wait can last "
+                    + "that long. Pass --allow-long-wait if that is intended"
+            )
+        }
     }
 
     func validate() throws {
@@ -195,7 +211,10 @@ struct WaitCommand: AsyncParsableCommand {
 
     /// The single jitter duration this invocation sleeps for, in milliseconds.
     func drawJitterMilliseconds() throws -> Double {
-        let distribution = try jitterDistribution()
+        try drawJitterMilliseconds(from: jitterDistribution())
+    }
+
+    private func drawJitterMilliseconds(from distribution: TruncatedCauchy) throws -> Double {
         if let seed {
             var generator = SplitMix64(seed: seed)
             return try distribution.sample(using: &generator)
@@ -213,7 +232,10 @@ struct WaitCommand: AsyncParsableCommand {
         if jitter != nil {
             let distribution = try jitterDistribution()
             let range = try JitterNanosecondRange(min: distribution.min, max: distribution.max)
-            let drawn = try drawJitterMilliseconds()
+            if let warning = distribution.nearlyFixedWarning {
+                FileHandle.standardError.write(Data((warning + "\n").utf8))
+            }
+            let drawn = try drawJitterMilliseconds(from: distribution)
             try await sleep(range.nanoseconds(for: drawn))
         } else if let forUrl {
             try await waitForURL(pattern: forUrl)
