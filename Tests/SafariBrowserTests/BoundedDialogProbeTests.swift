@@ -515,17 +515,22 @@ final class BoundedDialogProbeTests: XCTestCase {
         var nodes = Self.measuredTree
         nodes[11] = Node(role: "AXValueIndicator", children: [12])
         nodes[12] = Node(role: "AXDialog")
-        XCTAssertEqual(makeProbe(nodes: nodes, batched: true).check(windowKey: .id(42)), .unprobed)
+        for batched in [false, true] {
+            XCTAssertEqual(makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)), .unprobed)
+        }
     }
 
     func testViewportClassificationStopsAtEachReadBudgetBoundary() {
         var nodes = Self.measuredTree
         nodes[1] = Node(role: "AXWindow", children: [2], windowID: 42)
-        for limit in [8, 9, 10] {
-            let calls = Calls()
-            let verdict = makeProbe(calls: calls, nodes: nodes, maxNodes: limit, batched: true).check(windowKey: .id(42))
-            XCTAssertEqual(verdict, limit == 10 ? .clear : .unprobed)
-            XCTAssertEqual(calls.operations.filter { $0 == .summary }.count, limit)
+        for batched in [false, true] {
+            for limit in [8, 9, 10] {
+                let calls = Calls()
+                let verdict = makeProbe(calls: calls, nodes: nodes, maxNodes: limit, batched: batched).check(windowKey: .id(42))
+                XCTAssertEqual(verdict, limit == 10 ? .clear : .unprobed)
+                let nodeRead: Operation = batched ? .summary : .role
+                XCTAssertEqual(calls.operations.filter { $0 == nodeRead }.count, limit)
+            }
         }
     }
 
