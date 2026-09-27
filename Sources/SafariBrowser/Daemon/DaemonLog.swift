@@ -210,6 +210,27 @@ enum DaemonLog {
 
     // MARK: - Format
 
+    /// #178: one JSON line for a server-side event that is not a request
+    /// (accept failures, connection setup failures). Carries only the event
+    /// name, errno, disposition and a streak count — nothing a client sent.
+    static func formatEvent(
+        timestamp: Date, event: String, errno code: Int32, disposition: String, count: Int
+    ) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let object: [String: Any] = [
+            "timestamp": formatter.string(from: timestamp),
+            "event": event,
+            "errno": Int(code),
+            "disposition": disposition,
+            "count": count,
+        ]
+        // Terminated like `formatEntry`: the writer appends lines verbatim.
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else { return "{}\n" }
+        return line + "\n"
+    }
+
     /// Compose a single log entry as a stable JSON-line. Every field
     /// goes in the same shape so `jq`-driven grep over the daemon log
     /// stays straightforward.
