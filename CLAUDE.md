@@ -210,9 +210,9 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 
 accept、連線初始化與 request 拒絕的診斷事件共用 logging-session 額度：最多 8 筆突發、每秒補 2 筆；一般事件保留最後 1 筆給終止原因，所以初始一般事件最多連續 7 筆。成功、incident 重設、安靜間隔或同 writer 的 stop/start 不會額外重設額度；明確更換 writer 才開始新 logging session。此額度限制紀錄放行時間，不是底層 writer／檔案 flush 的物理速率。既有每請求日誌不受此額度控制。
 
-被抑制的是候選日誌紀錄，並非底層 syscall 失敗總數。`suppressed` 包含 total、固定七種 byEvent 計數、first、lastRecovery、lastTerminal；只有固定事件／處置名稱及整數 errno／count，logFull 也不加入 source、URL、requestId 或前綴。下一筆可送事件會合併摘要；沒有新流量時，單一 500 ms flusher 依相同額度送出 diagnostics_suppressed 行。
+被抑制的是候選日誌紀錄，並非底層 syscall 失敗總數。`suppressed` 包含 total、固定七種 byEvent 與五種 byDisposition 計數、first、lastRecovery、lastTerminal；只有固定事件／處置名稱及整數 errno／count，logFull 也不加入 source、URL、requestId 或前綴。摘要不保留逐 incident 首筆或完整 errno 分布；byDisposition 可保留曾發生 backoff 的類別訊號。下一筆可送事件會合併摘要；沒有新流量時，單一 500 ms flusher 依相同額度送出 diagnostics_suppressed 行。
 
-writer 在 actor 外執行；request 拒絕先關閉 fd 並釋放 reader，再處理診斷。stop 不等額度、timer 或 writer，未送摘要會捨棄；日誌維持 best-effort，沒有終止前一定落盤的保證。更換 logger 會使舊 timer 失效，已準備的紀錄只持有原 writer；舊 writer 卡住時不再新增另一個 flusher。排程來源失敗不會在同世代自動忙轉重試，後續候選事件仍可再嘗試。
+writer 在 actor 外執行；request 拒絕先關閉 fd 並釋放 reader，再處理診斷。stop 不等額度、timer 或 writer，未送摘要會捨棄；日誌維持 best-effort，沒有終止前一定落盤的保證；timestamp 在呼叫 writer 前產生，不是放行時間，也不保證檔案中各行的先後順序。更換 logger 會使舊 timer 失效，已準備的紀錄只持有原 writer；舊 writer 卡住時不再新增另一個 flusher；新 session 的 timer 摘要也會等它結束，但新的放行事件仍可攜帶摘要。排程來源失敗不會在同世代自動忙轉重試，後續候選事件仍可再嘗試。
 
 ### Request size limits（#194）
 

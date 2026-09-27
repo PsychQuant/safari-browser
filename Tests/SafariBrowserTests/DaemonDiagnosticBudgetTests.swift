@@ -88,11 +88,12 @@ final class DaemonDiagnosticBudgetTests: XCTestCase {
     }
 
     func testSuppressionCountersSaturateWithoutGrowingUnboundedKeys() {
-        var summary = Budget.Suppression(total: Int.max, byEvent: [.acceptError: Int.max])
+        var summary = Budget.Suppression(total: Int.max, byEvent: [.acceptError: Int.max], byDisposition: [.retry: Int.max])
         summary.append(error)
         XCTAssertEqual(summary.total, Int.max)
         XCTAssertEqual(summary.byEvent[.acceptError], Int.max)
         XCTAssertEqual(summary.byEvent.count, 1)
+        XCTAssertEqual(summary.byDisposition[.retry], Int.max)
     }
 
     final class Clock: @unchecked Sendable {
@@ -126,6 +127,8 @@ final class DaemonDiagnosticBudgetTests: XCTestCase {
         XCTAssertEqual(sink.all.count, 8)
         let summary = try XCTUnwrap(sink.objects.last?["suppressed"] as? [String: Any])
         XCTAssertEqual(summary["total"] as? Int, 93)
+        XCTAssertEqual((summary["first"] as? [String: Any])?["errno"] as? Int, 3)
+        XCTAssertEqual((summary["lastRecovery"] as? [String: Any])?["errno"] as? Int, 5)
         await server.stop()
     }
 
@@ -144,6 +147,7 @@ final class DaemonDiagnosticBudgetTests: XCTestCase {
             outcomes.append((-1, EINTR))
             outcomes.append((pipeFDs[0], 0))
         }
+        outcomes.append((-1, EBADF)) // terminal comes from the real loop
         let script = DaemonAcceptRecoveryTests.ScriptedListener(outcomes)
         let listener = socket(AF_UNIX, SOCK_STREAM, 0)
         var wake: [Int32] = [-1, -1]
@@ -151,9 +155,9 @@ final class DaemonDiagnosticBudgetTests: XCTestCase {
         defer { close(wake[1]) }
         await DaemonServer.Instance.acceptLoop(listenerFd: listener, wakeFd: wake[0], instance: server,
                                                environment: script.environment(realSleep: false))
-        XCTAssertEqual(sink.all.count, 7, "success between errors must not restore diagnostic credit")
-        await server.recordDiagnostic(.init(kind: .acceptWaitError, errno: EBADF, disposition: .stop))
-        XCTAssertEqual(sink.all.count, 8)
+        XCTAssertEqual(sink.all.count, 8, "seven ordinary lines plus the real terminal, with no credit reset")
+        XCTAssertEqual(sink.objects.last?["errno"] as? Int, Int(EBADF))
+        XCTAssertEqual(sink.objects.last?["disposition"] as? String, "stop")
         XCTAssertEqual((sink.objects.last?["suppressed"] as? [String: Any])?["total"] as? Int, 34)
         await server.stop()
     }
@@ -330,6 +334,105 @@ final class DaemonDiagnosticBudgetTests: XCTestCase {
         XCTAssertEqual((sink.objects[7]["suppressed"] as? [String: Any])?["total"] as? Int, 13)
         XCTAssertNil(sink.objects.last?["suppressed"])
         await server.stop(); await sleeper.tick()
+    }
+
+    func testWriterRejectsTheNanosecondBeforeRefillBoundary() async {
+        let clock = Clock(), sink = Sink(), sleeper = Sleeper()
+        let server = DaemonServer.Instance(diagnosticClock: { clock.now }, diagnosticSleep: { try await sleeper.sleep() })
+        await server.setLogWriter { sink.append($0) }
+        for _ in 0..<8 { await server.recordDiagnostic(error) }
+        clock.advance(.nanoseconds(499_999_999))
+        await server.recordDiagnostic(error)
+        XCTAssertEqual(sink.all.count, 7)
+        clock.advance(.nanoseconds(1))
+        await server.recordDiagnostic(error)
+        XCTAssertEqual(sink.all.count, 8)
+        XCTAssertEqual((sink.objects.last?["suppressed"] as? [String: Any])?["total"] as? Int, 2)
+        await server.stop(); await sleeper.tick()
+    }
+
+    func testTimerAndCandidateRacePreserveTheEntireCandidateCount() async {
+        let candidate = error, ending = terminal
+        for _ in 0..<10 {
+            let clock = Clock(), sink = Sink(), sleeper = Sleeper()
+            let server = DaemonServer.Instance(diagnosticClock: { clock.now }, diagnosticSleep: { try await sleeper.sleep() })
+            await server.setLogWriter { sink.append($0) }
+            for _ in 0..<100 { await server.recordDiagnostic(candidate) }
+            let waiting = await waitForSleeper(sleeper)
+            XCTAssertTrue(waiting)
+            clock.advance(.milliseconds(500))
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await sleeper.tick() }
+                group.addTask { await server.recordDiagnostic(candidate) }
+            }
+            await server.recordDiagnostic(ending)
+            for _ in 0..<200 {
+                if sink.all.count == 9 { break }
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            let rows = sink.objects
+            let admitted = rows.filter { $0["event"] as? String != "diagnostics_suppressed" }.count
+            let withheld = rows.reduce(0) { $0 + (($1["suppressed"] as? [String: Any])?["total"] as? Int ?? 0) }
+            XCTAssertEqual(rows.count, 9)
+            XCTAssertEqual(admitted + withheld, 102, "the supplied candidate total is conserved across records and aggregates")
+            await server.stop(); await sleeper.tick()
+        }
+    }
+
+    func testAcceptLoopQuietGapAndChangedErrnoKeepSharedSummary() async {
+        let clock = Clock(), sink = Sink(), sleeper = Sleeper()
+        let server = DaemonServer.Instance(diagnosticClock: { clock.now }, diagnosticSleep: { try await sleeper.sleep() })
+        await server.setLogWriter { sink.append($0) }
+        var peers: [Int32] = [], outcomes: [(fd: Int32, errno: Int32)] = []
+        defer { peers.forEach { close($0) } }
+        for index in 0..<20 {
+            var pair: [Int32] = [-1, -1]
+            XCTAssertEqual(pipe(&pair), 0)
+            peers.append(pair[1])
+            outcomes += [(-1, index.isMultiple(of: 2) ? EINTR : ECONNABORTED), (pair[0], 0)]
+        }
+        outcomes += [(-1, EMFILE), (-1, EINTR), (-1, EBADF)]
+        let script = DaemonAcceptRecoveryTests.ScriptedListener(outcomes, beforeAccept: { call in
+            if call == 41 { clock.advance(.seconds(6)) }
+        })
+        var environment = script.environment(realSleep: false)
+        environment.now = { clock.now }
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        var wake: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&wake), 0)
+        defer { close(wake[1]) }
+        await DaemonServer.Instance.acceptLoop(listenerFd: listener, wakeFd: wake[0], instance: server, environment: environment)
+        let rows = sink.objects
+        XCTAssertEqual(rows.count, 9)
+        if rows.count == 9 {
+            XCTAssertEqual(rows[7]["errno"] as? Int, Int(EMFILE))
+            XCTAssertEqual(rows[7]["disposition"] as? String, "backoff")
+            let summary = rows[7]["suppressed"] as? [String: Any]
+            XCTAssertEqual(summary?["total"] as? Int, 34)
+            XCTAssertEqual((summary?["first"] as? [String: Any])?["errno"] as? Int, Int(ECONNABORTED))
+            XCTAssertEqual((summary?["lastRecovery"] as? [String: Any])?["errno"] as? Int, Int(ECONNABORTED))
+            XCTAssertEqual(rows[8]["errno"] as? Int, Int(EBADF))
+            XCTAssertEqual(rows[8]["disposition"] as? String, "stop")
+        }
+        await server.stop(); await sleeper.tick()
+    }
+
+    func testSuppressionRetainsBackoffClassBetweenOtherFailuresAndRecoveries() throws {
+        let now = ContinuousClock.now
+        var budget = Budget(now: now)
+        for _ in 0..<7 { _ = budget.record(error, at: now) }
+        for event in [error,
+            Budget.Event(kind: .acceptError, errno: EMFILE, disposition: .backoff),
+            Budget.Event(kind: .acceptRecovered, errno: EMFILE, disposition: .recovered),
+            error, Budget.Event(kind: .acceptRecovered, errno: EINTR, disposition: .recovered)] {
+            XCTAssertNil(budget.record(event, at: now))
+        }
+        let emission = try XCTUnwrap(budget.drain(at: now.advanced(by: .milliseconds(500))))
+        let encoded = DaemonLog.formatDiagnostic(timestamp: Date(timeIntervalSince1970: 0), emission: emission)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [String: Any])
+        let summary = try XCTUnwrap(object["suppressed"] as? [String: Any])
+        XCTAssertEqual(summary["byDisposition"] as? [String: Int], ["retry": 2, "backoff": 1, "recovered": 2])
+        XCTAssertEqual(summary["total"] as? Int, 5)
     }
 
 }

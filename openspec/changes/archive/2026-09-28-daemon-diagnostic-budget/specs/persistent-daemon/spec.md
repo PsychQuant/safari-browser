@@ -19,7 +19,7 @@ Each Instance logging session SHALL share one diagnostic token bucket with capac
 
 ### Requirement: Bounded and private suppression summaries
 
-Suppression SHALL retain a saturating total and counters for a fixed set of seven event kinds: accept_error, accept_wait_error, accept_recovered, connection_setup_failed, connection_setup_recovered, request_too_long, and request_read_failed. It SHALL retain the first suppressed candidate and the latest suppressed recovery and terminal evidence. Evidence SHALL contain only fixed event and disposition values plus integer errno and count. Suppressed counts SHALL count eligible log candidates, not underlying syscall failures. No payload, URL, requestId, source, or request prefix SHALL enter diagnostic records, including when full request logging is enabled.
+Suppression SHALL retain a saturating total and counters for a fixed set of seven event kinds: accept_error, accept_wait_error, accept_recovered, connection_setup_failed, connection_setup_recovered, request_too_long, and request_read_failed. It SHALL also retain saturating counts for the five fixed dispositions retry, backoff, stop, closed, and recovered, so an intervening backoff does not disappear when later recovery evidence replaces it. It SHALL retain the first suppressed candidate and the latest suppressed recovery and terminal evidence. Evidence SHALL contain only fixed event and disposition values plus integer errno and count. Suppressed counts SHALL count eligible log candidates, not underlying syscall failures. No payload, URL, requestId, source, or request prefix SHALL enter diagnostic records, including when full request logging is enabled.
 
 #### Scenario: Summary without new clients
 

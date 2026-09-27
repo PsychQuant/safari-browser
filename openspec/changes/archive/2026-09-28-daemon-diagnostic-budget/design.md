@@ -18,7 +18,7 @@
 
 ### 固定摘要與定時排出
 
-保留七個固定事件種類的被抑制候選紀錄筆數、總數、第一筆抑制紀錄、最後的 recovery 及 terminal。計數採飽和加法，不以任意 errno 或輸入建立無界 map。計數是被抑制的候選日誌筆數，不是底層 syscall 失敗總數；#178 原有 incident 過濾保留。
+保留七個固定事件種類及五種 disposition 的被抑制候選紀錄筆數、總數、第一筆抑制紀錄、最後的 recovery 及 terminal。計數採飽和加法，不以任意 errno 或輸入建立無界 map。計數是被抑制的候選日誌筆數，不是底層 syscall 失敗總數；#178 原有 incident 過濾保留。
 
 下一個可送出的事件可攜帶整份摘要，或由單一 flusher 每 500 ms 嘗試送出 diagnostics_suppressed 行。摘要也消耗額度；writer 可用且排程正常時，無新事件的 pending summary 最多等兩個 tick 即可取得至少一個可用 slot。firstSuppressed／lastRecovery／lastTerminal 僅含 event、errno、disposition、count，不含 client 資料。
 
@@ -36,7 +36,7 @@ request_too_long／request_read_failed 的分類只有固定事件名與整數 e
 
 ## Implementation Contract
 
-新建 DaemonDiagnosticBudget 的 typed Event／Disposition、Suppression、Emission 資料。輸出的既有事件欄位維持 timestamp/event/errno/disposition/count；有摘要時新增 suppressed，內含 total、byEvent、first、lastRecovery、lastTerminal。timer 單獨排出時頂層 event 為 diagnostics_suppressed、errno 為 0、disposition 為 suppressed、count 為 summary.total。所有 enum 值固定，不接受任意字串或原始請求。
+新建 DaemonDiagnosticBudget 的 typed Event／Disposition、Suppression、Emission 資料。輸出的既有事件欄位維持 timestamp/event/errno/disposition/count；有摘要時新增 suppressed，內含 total、byEvent、byDisposition、first、lastRecovery、lastTerminal。timer 單獨排出時頂層 event 為 diagnostics_suppressed、errno 為 0、disposition 為 suppressed、count 為 summary.total。所有 enum 值固定，不接受任意字串或原始請求。
 
 Instance 提供內部診斷 clock／sleep 注入接點，正式 caller 使用 ContinuousClock 與 500 ms sleep。accept、setup 與 request 拒絕共用 record/prepareEmission 路徑。正常 request log 的格式、寫入呼叫與 logFull 語意維持原狀；logFull 也不能讓診斷事件攜帶 payload。
 

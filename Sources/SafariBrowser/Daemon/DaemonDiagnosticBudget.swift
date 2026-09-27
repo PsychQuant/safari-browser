@@ -24,6 +24,7 @@ struct DaemonDiagnosticBudget {
     struct Suppression: Sendable {
         var total = 0
         var byEvent: [Kind: Int] = [:]
+        var byDisposition: [Disposition: Int] = [:]
         var first: Event?
         var lastRecovery: Event?
         var lastTerminal: Event?
@@ -32,6 +33,8 @@ struct DaemonDiagnosticBudget {
             if total < Int.max { total += 1 }
             let count = byEvent[event.kind, default: 0]
             byEvent[event.kind] = count < Int.max ? count + 1 : Int.max
+            let dispositionCount = byDisposition[event.disposition, default: 0]
+            byDisposition[event.disposition] = dispositionCount < Int.max ? dispositionCount + 1 : Int.max
             if first == nil { first = event }
             if event.isRecovery { lastRecovery = event }
             if event.isTerminal { lastTerminal = event }

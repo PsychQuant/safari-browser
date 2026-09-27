@@ -60,13 +60,17 @@ final class DaemonRequestBoundsTests: XCTestCase {
         throw POSIXError(.EMSGSIZE)
     }
 
-    private func start(limit: Int = DaemonServer.maxRequestLineBytes) async throws -> (DaemonServer.Instance, String, String) {
+    private func start(
+        limit: Int = DaemonServer.maxRequestLineBytes,
+        diagnosticClock: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
+        diagnosticSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(500)) }
+    ) async throws -> (DaemonServer.Instance, String, String) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("r194-" + String(UUID().uuidString.prefix(8)))
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         directories.append(directory)
         let name = "owned"
         let path = DaemonClient.socketPath(dir: directory.path, name: name)
-        let server = DaemonServer.Instance(requestLineLimit: limit)
+        let server = DaemonServer.Instance(requestLineLimit: limit, diagnosticClock: diagnosticClock, diagnosticSleep: diagnosticSleep)
         servers.append(server)
         try await server.start(socketPath: path)
         return (server, name, directory.path)
@@ -419,6 +423,28 @@ final class DaemonRequestBoundsTests: XCTestCase {
         XCTAssertFalse(sink.all.joined().contains("private-prefix-197"))
         XCTAssertEqual(sink.objects.first?["errno"] as? Int, Int(EAGAIN))
         await server.stop()
+    }
+
+    func testRejectedRequestClosesWhenDiagnosticBudgetIsExhausted() async throws {
+        let clock = DaemonDiagnosticBudgetTests.Clock(), sleeper = DaemonDiagnosticBudgetTests.Sleeper()
+        let (server, name, directory) = try await start(limit: 128, diagnosticClock: { clock.now },
+            diagnosticSleep: { try await sleeper.sleep() })
+        let sink = DaemonDiagnosticBudgetTests.Sink()
+        await server.setLogWriter { sink.append($0) }
+        for _ in 0..<7 { await server.recordDiagnostic(.init(kind: .acceptError, errno: EINTR, disposition: .retry)) }
+        let calls = Counter()
+        await server.register("owned") { _ in calls.hit(); return Data("true".utf8) }
+        let fd = try connect(name: name, directory: directory)
+        defer { close(fd) }
+        try writeAll(fd, Data(repeating: 65, count: 129))
+        var byte: UInt8 = 0
+        let n = read(fd, &byte, 1)
+        XCTAssertTrue(n == 0 || (n < 0 && errno == ECONNRESET))
+        XCTAssertEqual(calls.value, 0)
+        let reply = try await DaemonClient.sendRequest(name: name, method: "owned", params: Data("{}".utf8),
+            requestId: 8, timeout: 2, socketDir: directory)
+        XCTAssertEqual(reply, Data("true".utf8))
+        XCTAssertEqual(calls.value, 1)
     }
 
 }

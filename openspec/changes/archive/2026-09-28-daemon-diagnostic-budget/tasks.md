@@ -11,4 +11,4 @@
 ## 3. 整合驗證與文件
 
 - [x] 3.1 以實際 accept/setup/recovery 事件路徑、控制時鐘驗證交替與連續錯誤、不同 errno、quiet gap 共享額度；執行 daemon 相關測試、變異測試與 make test-all。
-- [ ] 3.2 更新 CLAUDE.md／CHANGELOG.md 的額度、固定摘要及 best-effort 停止邊界；spectra analyze／validate、六方審查通過後同步規格、歸檔，提交與 PR 均引用 #197。
+- [x] 3.2 更新 CLAUDE.md／CHANGELOG.md 的額度、固定摘要及 best-effort 停止邊界；spectra analyze／validate、六方審查通過後同步規格、歸檔，提交與 PR 均引用 #197。
