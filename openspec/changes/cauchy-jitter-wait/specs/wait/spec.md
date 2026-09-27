@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Wait for a randomized duration
-The system SHALL support `safari-browser wait --jitter cauchy`, which draws one duration from a Cauchy distribution doubly truncated to [`--min`, `--max`] milliseconds and then pauses for that duration. Truncation SHALL discard mass outside the interval and renormalize; the system SHALL NOT clamp out-of-range draws to a bound. `--median` SHALL specify the median of the truncated distribution. Defaults SHALL be `--min 2000`, `--max 60000`, `--median 3000`, `--scale 800`. `--scale` SHALL NOT exceed 100 × (`--max` − `--min`). `--seed <n>` SHALL fix the single duration drawn by that invocation, so that tests are reproducible; because each invocation is a separate process, repeating the same seed SHALL yield the same duration. `--max` SHALL be the only cap on a jittered wait; `--timeout` SHALL NOT apply. `--jitter` SHALL NOT be combined with positional milliseconds, `--for-url`, or `--js`.
+The system SHALL support `safari-browser wait --jitter cauchy`, which draws one duration from a Cauchy distribution doubly truncated to [`--min`, `--max`] milliseconds and then pauses for that duration. Truncation SHALL discard mass outside the interval and renormalize; the system SHALL NOT clamp out-of-range draws to a bound. `--median` SHALL specify the median of the truncated distribution. Defaults SHALL be `--min 2000`, `--max 60000`, `--median 3000`, `--scale 800`. `--scale` SHALL NOT exceed 100 × (`--max` − `--min`). `--seed <n>` SHALL fix the single duration drawn by that invocation, so that tests are reproducible within the same supported numerical environment; because each invocation is a separate process, repeating the same seed SHALL yield the same duration. `--max` SHALL be the only cap on a jittered wait; `--timeout` SHALL NOT apply. `--jitter` SHALL NOT be combined with positional milliseconds, `--for-url`, or `--js`.
 
 #### Scenario: Default randomized wait stays within bounds
 - **WHEN** user runs `safari-browser wait --jitter cauchy`
@@ -30,3 +30,20 @@ The system SHALL support `safari-browser wait --jitter cauchy`, which draws one 
 #### Scenario: Invalid parameters are rejected
 - **WHEN** `--min` is negative, `--min` is not less than `--median`, `--median` is not less than `--max`, `--scale` is not positive, or `--max` exceeds the representable nanosecond range
 - **THEN** the CLI returns a validation error before starting a wait
+
+#### Scenario: Achievable median needs a location outside the truncation interval
+- **WHEN** bounds are [0,10] ms, scale is 1 ms, and the requested median is 0.902 ms
+- **THEN** the distribution SHALL be accepted and solved on the central monotone branch without restricting its untruncated location to [0,10]
+
+#### Scenario: Sub-nanosecond or single-quantum interval
+- **WHEN** the open interval between min and max contains fewer than two integer nanosecond durations
+- **THEN** the CLI SHALL reject the request before sleeping rather than produce a fixed zero or single-quantum wait
+
+#### Scenario: Sleep API quantization
+- **WHEN** a valid continuous duration is drawn
+- **THEN** the CLI SHALL use the nearest representable integer nanosecond duration strictly inside the bounds represented by the parsed Double parameters, with checked conversion and no endpoint sleep
+- **AND** it SHALL preserve the continuous truncated-Cauchy draw before this documented clock quantization
+
+#### Scenario: Numerical sampling failure
+- **WHEN** bounded numerical resampling cannot produce a finite interior sample
+- **THEN** the operation SHALL fail explicitly rather than substitute a fixed median

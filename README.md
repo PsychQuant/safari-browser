@@ -1019,6 +1019,13 @@ safari-browser wait --jitter cauchy --min 1500 --max 20000 --median 4000
 # --scale defaults to 800 regardless of the bounds, so a short interval can make
 # the median unreachable (e.g. --min 1000 --max 3000 --median 1500); the error
 # prints the achievable range — lower --scale or move --median into it.
+# The underlying Cauchy location can lie outside the configured bounds; the
+# solver checks the full attainable truncated-median range.
+# Bounds are parsed as Double milliseconds. Sleep quantizes to the nearest
+# interior integer nanosecond; at least two such durations must exist.
+# This clock quantization is separate from the continuous distribution, and
+# OS scheduling can make actual elapsed time longer than the requested sleep.
+# Seeds are reproducible within the same supported numerical environment.
 # Target flags (--url, --window, ...) are accepted but ignored in this mode.
 
 # Multi-window targeting (#23): wait polls the targeted document, not

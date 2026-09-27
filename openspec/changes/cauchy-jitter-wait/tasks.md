@@ -9,3 +9,11 @@
 ## 3. 文件與收尾
 - [x] 3.1 README、CHANGELOG
 - [x] 3.2 `make test` 全綠、spectra validate、issue 狀態同步
+
+## 4. 跨模型補審修正
+
+既有 [x] 是先前快照的歷史完成紀錄；本節完成前不得視為已驗收。原「缺符號」編譯失敗不是行為 RED，新增回歸須實際執行並失敗。
+
+- [x] [P] 4.1 完整可達中位數與穩定反解：修改 TruncatedCauchy 與其測試，履行 Wait for a randomized duration，先重現界外 location 的可達中位數被拒，再以獨立 CDF／分位數檢查及反解範圍測試驗證；數值耗盡明確失敗而非固定中位數後備。
+- [x] [P] 4.2 奈秒可表示性與等待轉換：修改 WaitCommand 與新的 JitterNanosecondTests，履行 Wait for a randomized duration，先重現 sub-nanosecond 輸入被接受，再驗零／單量子區間拒絕、整數與小數界限、UInt64 邊界及實際 sleep 參數。配合 sampler 的 throws API。
+- [ ] 4.3 更新 README／CHANGELOG／spec 的可達範圍、量化與種子保證；Spectra analyze/validate、完整測試與最終快照審查通過後更新 PR。
