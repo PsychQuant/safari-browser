@@ -1021,12 +1021,11 @@ enum DaemonServer {
                 response = encodeResult(requestId: requestId, resultData: Data("{}".utf8))
                 await emitLog(instance: instance, started: started, method: lifecycle.rawValue, requestId: requestId, paramsData: Data("{}".utf8), resultData: Data("{}".utf8), errorMessage: nil)
 
-                // Async teardown — runs after we return so the shutdown
-                // caller's `{}` reply lands on the wire. Cancellation
-                // envelopes go to each in-flight fd; the daemon then
-                // closes them and stops the listener. 5s watchdog
-                // guarantees the process exits even if graceful path
-                // stalls (e.g., NSAppleScript still running).
+                // Teardown and the caller's response write can interleave.
+                // Cancellation envelopes are best-effort; established-client
+                // read cancellation/descriptor retirement remains #199.
+                // The process host retains its five-second exit watchdog
+                // after a still-authorized shutdown request is accepted.
                 // Logging may suspend across a full stop/start. Do not obtain
                 // the replacement run's hook, in-flight clients or watchdog.
                 guard let inFlight = await instance.prepareShutdown(shutdown) else {

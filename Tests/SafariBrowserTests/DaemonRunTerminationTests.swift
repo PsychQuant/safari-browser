@@ -43,7 +43,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         } catch { XCTAssertTrue(error is DaemonServer.ListenerFailure) }
         let pidRemoved = await removed(p.pid)
         XCTAssertTrue(pidRemoved, "permanent listener failure must clean the outer PID without waiting for idle timeout")
-        await server.stop()
+        guard await stopWithinDeadline(server) else { return }
     }
 
     func testStopDuringStartupPreventsLateBind() async throws {
@@ -62,11 +62,15 @@ final class DaemonRunTerminationTests: XCTestCase {
         // startup to finish and the resumed startup must not bind afterward.
         await fulfillment(of: [stopAccepted], timeout: 1)
         await gate.open()
-        _ = await starting.result
-        await stopping.value
+        guard await valueWithinDeadline("startup exits after stop", operation: {
+            _ = await starting.result; return true
+        }) == true else { starting.cancel(); stopping.cancel(); return }
+        guard await valueWithinDeadline("stop joins cleanup", operation: {
+            await stopping.value; return true
+        }) == true else { stopping.cancel(); return }
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.socket), "a stop accepted during startup must prevent a late bind")
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.pid))
-        await server.stop()
+        guard await stopWithinDeadline(server) else { return }
     }
 
     private final class Box<T>: @unchecked Sendable {
@@ -75,6 +79,27 @@ final class DaemonRunTerminationTests: XCTestCase {
         init(_ value: T) { self.value = value }
         func set(_ value: T) { lock.withLock { self.value = value } }
         func get() -> T { lock.withLock { value } }
+    }
+
+    /// Observe completion without joining a task that may be deadlocked.
+    /// Cancellation is cleanup intent, not a substitute for the timeout check.
+    private func valueWithinDeadline<T: Sendable>(
+        _ description: String,
+        operation: @escaping @Sendable () async -> T
+    ) async -> T? {
+        let completed = expectation(description: description)
+        let result = Box<T?>(nil)
+        let worker = Task {
+            result.set(await operation())
+            completed.fulfill()
+        }
+        await fulfillment(of: [completed], timeout: 2)
+        worker.cancel()
+        return result.get()
+    }
+
+    private func stopWithinDeadline(_ server: DaemonServeLoop.Server) async -> Bool {
+        await valueWithinDeadline("stop completes") { await server.stop(); return true } == true
     }
 
     private func assertHealthy(socket: String) throws {
@@ -129,7 +154,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         await fulfillment(of: [completed], timeout: 2)
         XCTAssertTrue(results.get().isEmpty)
         try assertHealthy(socket: p.socket)
-        await server.stop()
+        guard await stopWithinDeadline(server) else { return }
         a.cancel(); b.cancel()
     }
 
@@ -158,13 +183,13 @@ final class DaemonRunTerminationTests: XCTestCase {
         await fulfillment(of: [finished], timeout: 2)
         let expected = DaemonServer.ListenerFailure(operation: .poll, errno: EINVAL)
         XCTAssertEqual(errorBox.get(), expected)
-        let reason = await server.waitUntilStopped()
+        let reason = await valueWithinDeadline("stop reason delivered") { await server.waitUntilStopped() }
         XCTAssertEqual(reason, .listenerFailed(expected))
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.socket))
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.pid))
         try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
         try assertHealthy(socket: p.socket)
-        await server.stop()
+        guard await stopWithinDeadline(server) else { return }
         task.cancel()
     }
 
@@ -204,7 +229,9 @@ final class DaemonRunTerminationTests: XCTestCase {
         await fulfillment(of: [finished], timeout: 2)
         let expected = DaemonServeLoop.StopReason.listenerFailed(.init(operation: .accept, errno: EBADF))
         XCTAssertTrue(results.allSatisfy { $0.get() == expected })
-        await stop.value
+        guard await valueWithinDeadline("stop caller completes", operation: {
+            await stop.value; return true
+        }) == true else { stop.cancel(); return }
         tasks.forEach { $0.cancel() }
     }
 
@@ -244,7 +271,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         let hook = try XCTUnwrap(oldHook.get())
         await hook()
         try assertHealthy(socket: p.socket)
-        await server.stop()
+        guard await stopWithinDeadline(server) else { return }
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.socket))
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.pid))
         a.cancel(); b.cancel(); c.cancel()
@@ -268,17 +295,17 @@ final class DaemonRunTerminationTests: XCTestCase {
         try Data(contentsOf: URL(fileURLWithPath: savedPid)).write(to: URL(fileURLWithPath: p.pid))
         let socketMarker = "replacement socket owner"
         try socketMarker.write(toFile: p.socket, atomically: true, encoding: .utf8)
-        await server.stop()
+        guard await stopWithinDeadline(server) else { return }
         XCTAssertTrue(FileManager.default.fileExists(atPath: p.pid))
         XCTAssertEqual(try String(contentsOfFile: p.socket, encoding: .utf8), socketMarker)
-        let oldReason = await server.waitUntilStopped()
+        let oldReason = await valueWithinDeadline("old stop reason delivered") { await server.waitUntilStopped() }
         XCTAssertEqual(oldReason, .requested)
         try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
         await gate.open()
         await fulfillment(of: [released], timeout: 1)
         try assertHealthy(socket: p.socket)
-        await server.stop()
-        let reason = await server.waitUntilStopped()
+        guard await stopWithinDeadline(server) else { return }
+        let reason = await valueWithinDeadline("stop reason delivered") { await server.waitUntilStopped() }
         XCTAssertEqual(reason, .requested)
     }
 
@@ -289,11 +316,11 @@ final class DaemonRunTerminationTests: XCTestCase {
             XCTFail("overlong socket must fail")
         } catch { XCTAssertTrue(error is DaemonServer.DaemonError) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.pid))
-        let reason = await server.waitUntilStopped()
+        let reason = await valueWithinDeadline("stop reason delivered") { await server.waitUntilStopped() }
         XCTAssertEqual(reason, .startupFailed)
         try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: 3600)
         try assertHealthy(socket: p.socket)
-        await server.stop()
+        guard await stopWithinDeadline(server) else { return }
     }
 
     func testCancellationOfStartingCallerCleansBeforeReturning() async throws {
@@ -317,7 +344,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         await fulfillment(of: [accepted], timeout: 1)
         await gate.open()
         await fulfillment(of: [done], timeout: 2)
-        await server.stop()
+        guard await stopWithinDeadline(server) else { return }
     }
 
     func testIdleCompletionAndCancelledOldWatchdogCannotStopNewRun() async throws {
@@ -329,7 +356,7 @@ final class DaemonRunTerminationTests: XCTestCase {
             sleeping.fulfill(); await oldSleep.wait(); awake.fulfill()
         }))
         await fulfillment(of: [sleeping], timeout: 1)
-        await server.stop()
+        guard await stopWithinDeadline(server) else { return }
         let idleAccepted = expectation(description: "new watchdog accepts idle stop")
         let newSleep = Gate()
         try await server.start(socketPath: p.socket, pidPath: p.pid, idleTimeout: -1,
@@ -343,9 +370,9 @@ final class DaemonRunTerminationTests: XCTestCase {
         try assertHealthy(socket: p.socket)
         await newSleep.open()
         await fulfillment(of: [idleAccepted], timeout: 1)
-        let reason = await server.waitUntilStopped()
+        let reason = await valueWithinDeadline("stop reason delivered") { await server.waitUntilStopped() }
         XCTAssertEqual(reason, .idleTimeout)
-        XCTAssertNoThrow(try reason.throwIfListenerFailed())
+        XCTAssertNoThrow(try reason?.throwIfListenerFailed())
     }
 
     func testProcessCompletionMapsOnlyPermanentFailureToError() throws {
@@ -380,7 +407,9 @@ final class DaemonRunTerminationTests: XCTestCase {
         await fulfillment(of: [stopping], timeout: 1)
         await gate.open()
         await fulfillment(of: [finished], timeout: 2)
-        await stop.value
+        guard await valueWithinDeadline("stop caller completes", operation: {
+            await stop.value; return true
+        }) == true else { stop.cancel(); return }
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.pid))
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.socket))
         host.cancel()
@@ -458,7 +487,7 @@ final class DaemonRunTerminationTests: XCTestCase {
         await fulfillment(of: [finished], timeout: 2)
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.socket))
         XCTAssertFalse(FileManager.default.fileExists(atPath: p.pid))
-        let reason = await server.waitUntilStopped()
+        let reason = await valueWithinDeadline("stop reason delivered") { await server.waitUntilStopped() }
         XCTAssertEqual(reason, .requested)
         a.cancel()
     }
