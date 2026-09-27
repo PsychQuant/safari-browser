@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Randomized wait** (#182): `wait --jitter cauchy` samples a doubly truncated Cauchy in milliseconds (defaults: bounds 2000/60000, truncated median 3000, scale 800). The analytic central-branch solver uses the full attainable median range, including valid locations outside the bounds. Continuous draws are never clamped to a configured endpoint; numerical exhaustion is an error. Sleep uses the nearest interior integer nanosecond, and intervals with fewer than two legal durations are rejected before sleeping. The scale/width cap remains 100. Seeds reproduce a call's draw in the same numerical environment and are for tests, not repeated pacing. `--max` is the cap; `--timeout` and targeting flags do not apply to jitter. Existing fixed/URL/JS waits are unchanged. The separate plugin documentation update is tracked in PsychQuant/psychquant-claude-plugins#134.
+
 - **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
 
 - **Daemon early disconnects** (#175): close an accepted connection when its per-socket SIGPIPE protection cannot be installed, instead of writing an unprotected handshake that could terminate the service. Other clients, error replies and shutdown retain their existing behavior.
