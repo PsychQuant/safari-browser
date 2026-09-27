@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 import XCTest
 @testable import SafariBrowser
@@ -11,11 +12,13 @@ final class BoundedDialogProbeTests: XCTestCase {
         var text: String?
         var title: String?
         var roleDelay: TimeInterval = 0
+        var summaryDelay: TimeInterval = 0
         var valueSettable: Bool? = false
+        var roleFails = false
     }
 
     private enum Operation: String, CaseIterable, Sendable {
-        case windows, windowID, role, subrole, children, text, buttonTitle, valueSettable
+        case windows, windowID, role, subrole, children, text, buttonTitle, valueSettable, summary
     }
 
     private final class Calls: @unchecked Sendable {
@@ -57,6 +60,8 @@ final class BoundedDialogProbeTests: XCTestCase {
         let roots: [Int]
         let calls: Calls
         var denied = false
+        /// Answers `summary` in one recorded call, like the AX provider.
+        var batched = false
         func windows(timeout: Float) throws -> [Int] {
             try calls.touch(.windows, timeout: timeout)
             if denied { throw DialogProbeReadError.accessibilityDenied }
@@ -68,6 +73,7 @@ final class BoundedDialogProbeTests: XCTestCase {
         func role(_ node: Int, timeout: Float) throws -> String {
             try calls.touch(.role, timeout: timeout)
             if nodes[node]!.roleDelay > 0 { Thread.sleep(forTimeInterval: nodes[node]!.roleDelay) }
+            if nodes[node]!.roleFails { throw DialogProbeReadError.unavailable }
             return nodes[node]!.role
         }
         func subrole(_ node: Int, timeout: Float) throws -> String? {
@@ -86,6 +92,14 @@ final class BoundedDialogProbeTests: XCTestCase {
         func buttonTitle(_ node: Int, timeout: Float) throws -> String? {
             try calls.touch(.buttonTitle, timeout: timeout); return nodes[node]!.title
         }
+        func summary(_ node: Int, remaining: () throws -> Float) throws -> DialogProbeNodeSummary<Int> {
+            guard batched else { return try composedSummary(node, remaining: remaining) }
+            try calls.touch(.summary, timeout: remaining())
+            let n = nodes[node]!
+            if n.summaryDelay > 0 { Thread.sleep(forTimeInterval: n.summaryDelay) }
+            if n.roleFails { throw DialogProbeReadError.unavailable }
+            return .init(role: n.role, subrole: n.subrole, children: n.children)
+        }
     }
 
     private static let dialogTree: [Int: Node] = [
@@ -100,13 +114,35 @@ final class BoundedDialogProbeTests: XCTestCase {
 
     private func makeProbe(
         calls: Calls = Calls(), roots: [Int] = [1],
-        nodes: [Int: Node] = dialogTree, maxDepth: Int = 5, maxNodes: Int = 128
+        nodes: [Int: Node] = dialogTree, maxDepth: Int = 5, maxNodes: Int = 128, batched: Bool = false
     ) -> BoundedDialogProbe {
         BoundedDialogProbe(maxDepth: maxDepth, maxNodes: maxNodes) {
             _ = calls.factory()
-            return Provider(nodes: nodes, roots: roots, calls: calls)
+            return Provider(nodes: nodes, roots: roots, calls: calls, batched: batched)
         }
     }
+
+    /// #187: the tree measured on macOS 27.2 Safari. The page sits in a scroll
+    /// area at depth 5, beside a scroll bar that has children of its own.
+    private static let measuredTree: [Int: Node] = [
+        1: Node(role: "AXWindow", children: [2, 20, 30], windowID: 42),
+        2: Node(role: "AXSplitGroup", children: [3, 4]),
+        3: Node(role: "AXSplitter"),
+        4: Node(role: "AXTabGroup", children: [5]),
+        5: Node(children: [6]),
+        6: Node(children: [7]),
+        7: Node(role: "AXScrollArea", children: [8, 9]),
+        8: Node(role: "AXWebArea", children: [10]),
+        9: Node(role: "AXScrollBar", children: [11]),
+        10: Node(role: "AXStaticText", text: "page"),
+        11: Node(role: "AXValueIndicator"),
+        20: Node(role: "AXToolbar", children: [21]),
+        21: Node(role: "AXButton"),
+        30: Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList", children: [31]),
+        31: Node(role: "AXRadioButton", subrole: "AXTabButton", children: [32, 33]),
+        32: Node(role: "AXImage"),
+        33: Node(role: "AXStaticText"),
+    ]
 
     func testRecognizesDepthThreeDialogAndCollectsTextAndButtons() {
         let probe = makeProbe()
@@ -265,7 +301,8 @@ final class BoundedDialogProbeTests: XCTestCase {
             if operation == .valueSettable {
                 nodes[5] = Node(role: "AXTextArea", text: "這是訊息")
             }
-            let probe = makeProbe(calls: calls, nodes: nodes)
+            // The batched provider is the one that makes the one-round-trip read.
+            let probe = makeProbe(calls: calls, nodes: nodes, batched: operation == .summary)
             let started = Date()
             XCTAssertEqual(probe.check(windowKey: .id(42)), .unprobed, operation.rawValue)
             XCTAssertLessThan(Date().timeIntervalSince(started), 0.3, "scheduler tolerance for \(operation)")
@@ -309,5 +346,213 @@ final class BoundedDialogProbeTests: XCTestCase {
         XCTAssertGreaterThan(timeouts.count, 8)
         XCTAssertTrue(timeouts.allSatisfy { $0 > 0 && $0 <= 0.1 })
         XCTAssertTrue(zip(timeouts, timeouts.dropFirst()).allSatisfy { $0 >= $1 })
+    }
+
+    // MARK: - #187 page viewport and one round trip per node
+
+    func testPageViewportAtTheDepthLimitIsALeafNotATruncation() {
+        // Every ordinary window reported `unprobed`: the scroll area holding
+        // the page sits exactly at maxDepth and still has children.
+        XCTAssertEqual(makeProbe(nodes: Self.measuredTree).check(windowKey: .id(42)), .clear)
+        XCTAssertEqual(makeProbe(nodes: Self.measuredTree, batched: true).check(windowKey: .id(42)), .clear)
+    }
+
+    func testViewportIsRecognisedWhateverTheOrderOfItsChildren() {
+        var nodes = Self.measuredTree
+        nodes[7] = Node(role: "AXScrollArea", children: [9, 8])
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .clear)
+    }
+
+    func testNativeDialogBesideThePageViewportIsStillFound() {
+        var nodes = Self.measuredTree
+        nodes[4] = Node(role: "AXTabGroup", children: [5, 50])
+        nodes[50] = Node(subrole: "AXDialog", children: [51, 52])
+        nodes[51] = Node(role: "AXStaticText", text: "Leave page?")
+        nodes[52] = Node(role: "AXButton", title: "OK")
+        for batched in [false, true] {
+            XCTAssertEqual(makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)),
+                           .present(.init(message: "Leave page?", buttons: ["OK"])))
+        }
+    }
+
+    func testScrollAreaThatDoesNotHostThePageStillCountsAsTruncated() {
+        // Only the page viewport is a leaf. Any other node at the depth limit
+        // with children remains an honest truncation.
+        var nodes = Self.measuredTree
+        nodes[8] = Node(role: "AXGroup", children: [10])
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .unprobed)
+    }
+
+    func testUnreadableViewportChildIsIncompleteNotClear() {
+        var nodes = Self.measuredTree
+        nodes[8] = Node(role: "AXWebArea", children: [10], roleFails: true)
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .unprobed)
+    }
+
+    func testWebAreaDoesNotHideAnUnreadableViewportSibling() {
+        for batched in [false, true] {
+            for children in [[8, 9], [9, 8]] {
+                var nodes = Self.measuredTree
+                nodes[7] = Node(role: "AXScrollArea", children: children)
+                nodes[9] = Node(role: "AXScrollBar", roleFails: true)
+                XCTAssertEqual(makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)), .unprobed)
+            }
+        }
+    }
+
+    func testWebAreaDoesNotHideUnexpectedNativeViewportChildren() {
+        for role in ["AXDialog", "AXSheet", "AXGroup"] {
+            for batched in [false, true] {
+                var nodes = Self.measuredTree
+                nodes[9] = Node(role: role, children: [11])
+                let result = makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42))
+                if role == "AXGroup" { XCTAssertEqual(result, .unprobed) }
+                else if case .present = result { /* positive modal evidence survives classification */ }
+                else { XCTFail("known modal must be reported, not hidden beside WebArea: \(role)") }
+            }
+        }
+    }
+
+    func testViewportDoesNotHideAModalScrollbarSubrole() {
+        var nodes = Self.measuredTree
+        nodes[9] = Node(role: "AXScrollBar", subrole: "AXDialog", children: [11])
+        guard case .present = makeProbe(nodes: nodes, batched: true).check(windowKey: .id(42)) else {
+            return XCTFail("known modal scrollbar subrole must be reported")
+        }
+    }
+
+    func testViewportClassificationUsesTheNodeBudget() {
+        let calls = Calls()
+        XCTAssertEqual(makeProbe(calls: calls, nodes: Self.measuredTree, maxNodes: 15, batched: true)
+            .check(windowKey: .id(42)), .unprobed)
+        XCTAssertLessThanOrEqual(calls.operations.filter { $0 == .summary }.count, 15)
+    }
+
+    func testBatchedWebAreaIgnoresUnusedAttributeErrors() throws {
+        var code = AXError.cannotComplete
+        let error = try XCTUnwrap(AXValueCreate(.axError, &code))
+        let summary = try AXDialogProbeProvider.decodeSummary(["AXWebArea" as NSString, error, error])
+        XCTAssertEqual(summary.role, "AXWebArea")
+        XCTAssertTrue(summary.children.isEmpty)
+    }
+
+    func testBatchedSummaryTreatsCFNullAsAbsent() throws {
+        // AXUIElement.h explicitly allows CFNull for unsupported slots.
+        let summary = try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, NSNull(), NSNull()])
+        XCTAssertNil(summary.subrole)
+        XCTAssertTrue(summary.children.isEmpty)
+    }
+
+    func testBatchedSummaryDecodesAbsentAndFailedAXErrorSlots() throws {
+        for absent in [AXError.attributeUnsupported, .noValue] {
+            var code = absent
+            let error = try XCTUnwrap(AXValueCreate(.axError, &code))
+            let summary = try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, error, error])
+            XCTAssertNil(summary.subrole)
+            XCTAssertTrue(summary.children.isEmpty)
+        }
+        var code = AXError.cannotComplete
+        let error = try XCTUnwrap(AXValueCreate(.axError, &code))
+        XCTAssertThrowsError(try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, error, NSArray()]))
+        XCTAssertThrowsError(try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, NSNull(), error]))
+    }
+
+    func testBatchedNativeModalDoesNotRequireReadableChildren() throws {
+        var code = AXError.cannotComplete
+        let error = try XCTUnwrap(AXValueCreate(.axError, &code))
+        let summary = try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, "AXDialog" as NSString, error])
+        XCTAssertEqual(summary.subrole, "AXDialog")
+        XCTAssertTrue(summary.children.isEmpty)
+    }
+
+    func testBatchedSummaryRejectsMalformedSlots() {
+        for values: [AnyObject] in [[], ["AXGroup" as NSString],
+            [NSNull(), NSNull(), NSArray()],
+            ["AXGroup" as NSString, NSNumber(value: 42), NSArray()],
+            ["AXGroup" as NSString, NSNull(), NSArray(object: NSNumber(value: 42))]] {
+            XCTAssertThrowsError(try AXDialogProbeProvider.decodeSummary(values))
+        }
+    }
+
+    func testBatchedSummaryPreservesAXChildren() throws {
+        let child = AXUIElementCreateApplication(getpid())
+        let summary = try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, NSNull(), NSArray(object: child)])
+        XCTAssertEqual(summary.children, [child])
+    }
+
+    func testShallowScrollAreaStillFindsDialogBesideUnreadableSibling() {
+        for children in [[3, 4], [4, 3]] {
+            for batched in [false, true] {
+                let nodes: [Int: Node] = [
+                    1: Node(role: "AXWindow", children: [2], windowID: 42),
+                    2: Node(role: "AXScrollArea", children: children),
+                    3: Node(role: "AXDialog"),
+                    4: Node(roleFails: true),
+                ]
+                guard case .present = makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)) else {
+                    XCTFail("classification must not discard a readable modal beside a failed child")
+                    continue
+                }
+            }
+        }
+    }
+
+    func testWebAreaDoesNotHideModalUnderScrollbar() {
+        for atDepthLimit in [false, true] {
+            for batched in [false, true] {
+                var nodes = Self.measuredTree
+                if !atDepthLimit { nodes[1] = Node(role: "AXWindow", children: [7], windowID: 42) }
+                nodes[11] = Node(role: "AXDialog")
+                guard case .present = makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)) else {
+                    XCTFail("a non-modal scrollbar does not prove its descendants are non-modal")
+                    continue
+                }
+            }
+        }
+    }
+
+    func testViewportWithNonLeafScrollbarPartRemainsIncomplete() {
+        var nodes = Self.measuredTree
+        nodes[11] = Node(role: "AXValueIndicator", children: [12])
+        nodes[12] = Node(role: "AXDialog")
+        for batched in [false, true] {
+            XCTAssertEqual(makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)), .unprobed)
+        }
+    }
+
+    func testViewportClassificationStopsAtEachReadBudgetBoundary() {
+        var nodes = Self.measuredTree
+        nodes[1] = Node(role: "AXWindow", children: [2], windowID: 42)
+        for batched in [false, true] {
+            for limit in [8, 9, 10] {
+                let calls = Calls()
+                let verdict = makeProbe(calls: calls, nodes: nodes, maxNodes: limit, batched: batched).check(windowKey: .id(42))
+                XCTAssertEqual(verdict, limit == 10 ? .clear : .unprobed)
+                let nodeRead: Operation = batched ? .summary : .role
+                XCTAssertEqual(calls.operations.filter { $0 == nodeRead }.count, limit)
+            }
+        }
+    }
+
+    func testViewportClassificationReadCannotOutliveCallerBudget() {
+        for batched in [false, true] {
+            var nodes = Self.measuredTree
+            nodes[9] = Node(role: "AXScrollBar", roleDelay: 0.15, summaryDelay: 0.15)
+            let probe = makeProbe(nodes: nodes, batched: batched)
+            let start = Date()
+            XCTAssertEqual(probe.check(windowKey: .id(42), budget: 0.03), .unprobed)
+            XCTAssertLessThan(Date().timeIntervalSince(start), 0.3)
+        }
+    }
+
+    func testTraversalReadsEachNodeInOneRoundTrip() {
+        // Three single-attribute reads per node left the first probe of a
+        // process a few milliseconds inside its 95 ms budget on a real window.
+        let calls = Calls()
+        XCTAssertEqual(makeProbe(calls: calls, nodes: Self.measuredTree, batched: true).check(windowKey: .id(42)), .clear)
+        let ops = calls.operations
+        XCTAssertEqual(ops.filter { $0 == .summary }.count, 16, "one summary per inspected node, including viewport children: \(ops)")
+        XCTAssertFalse(ops.contains(.subrole) || ops.contains(.children), "no per-attribute reads while traversing: \(ops)")
+        XCTAssertFalse(ops.contains(.role), "viewport children also use the batched summary: \(ops)")
     }
 }
