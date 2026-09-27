@@ -231,6 +231,33 @@ enum DaemonLog {
         return line + "\n"
     }
 
+    static func formatDiagnostic(timestamp: Date, emission: DaemonDiagnosticBudget.Emission) -> String {
+        func fields(_ event: DaemonDiagnosticBudget.Event) -> [String: Any] {
+            ["event": event.kind.rawValue, "errno": Int(event.errno),
+             "disposition": event.disposition.rawValue, "count": event.count]
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var object: [String: Any] = emission.event.map(fields) ?? [
+            "event": "diagnostics_suppressed", "errno": 0,
+            "disposition": "suppressed", "count": emission.suppressed?.total ?? 0
+        ]
+        object["timestamp"] = formatter.string(from: timestamp)
+        if let summary = emission.suppressed {
+            var value: [String: Any] = [
+                "total": summary.total,
+                "byEvent": Dictionary(uniqueKeysWithValues: summary.byEvent.map { ($0.key.rawValue, $0.value) })
+            ]
+            if let first = summary.first { value["first"] = fields(first) }
+            if let recovery = summary.lastRecovery { value["lastRecovery"] = fields(recovery) }
+            if let terminal = summary.lastTerminal { value["lastTerminal"] = fields(terminal) }
+            object["suppressed"] = value
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else { return "{}\n" }
+        return line + "\n"
+    }
+
     /// Compose a single log entry as a stable JSON-line. Every field
     /// goes in the same shape so `jq`-driven grep over the daemon log
     /// stays straightforward.

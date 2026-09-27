@@ -353,4 +353,72 @@ final class DaemonRequestBoundsTests: XCTestCase {
         XCTAssertEqual(shutdowns.value, 0)
     }
 
+    func testRejectedRequestClosesBeforeBlockedPrivateDiagnosticAndOtherClientWorks() async throws {
+        let (server, name, directory) = try await start(limit: 128)
+        let sink = DaemonDiagnosticBudgetTests.Sink()
+        let entered = expectation(description: "payload-free rejection diagnostic")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        await server.setLogWriter({ line in
+            sink.append(line)
+            if line.contains("request_too_long") {
+                entered.fulfill()
+                _ = release.wait(timeout: .now() + 5)
+            }
+        }, logFull: true)
+        let calls = Counter()
+        await server.register("owned") { _ in calls.hit(); return Data("true".utf8) }
+        let fd = try connect(name: name, directory: directory)
+        defer { close(fd) }
+        var payload = Data(#"{"method":"owned","params":{"source":"private-prefix-197"},"requestId":7}"#.utf8)
+        payload.append(Data(repeating: 32, count: 129 - payload.count))
+        try writeAll(fd, payload)
+        var byte: UInt8 = 0
+        let count = read(fd, &byte, 1)
+        XCTAssertTrue(count == 0 || (count < 0 && errno == ECONNRESET))
+        await fulfillment(of: [entered], timeout: 1)
+        XCTAssertEqual(calls.value, 0)
+        let result = try await DaemonClient.sendRequest(name: name, method: "owned", params: Data("{}".utf8),
+            requestId: 8, timeout: 2, socketDir: directory)
+        XCTAssertEqual(result, Data("true".utf8))
+        XCTAssertEqual(calls.value, 1)
+        XCTAssertFalse(sink.all.joined().contains("private-prefix-197"))
+        let diagnostic = try XCTUnwrap(sink.objects.first { $0["event"] as? String == "request_too_long" })
+        XCTAssertEqual(Set(diagnostic.keys), ["timestamp", "event", "errno", "disposition", "count"])
+        XCTAssertEqual(diagnostic["disposition"] as? String, "closed")
+        release.signal()
+    }
+
+    func testReadFailureProducesDiagnosticWithoutDispatchingItsPrefix() async throws {
+        let (accepted, peer) = try pair(); defer { close(peer) }
+        var timeout = timeval(tv_sec: 0, tv_usec: 50_000)
+        setsockopt(accepted, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        let server = DaemonServer.Instance()
+        let sink = DaemonDiagnosticBudgetTests.Sink()
+        let logged = expectation(description: "read error diagnostic")
+        await server.setLogWriter { line in
+            sink.append(line)
+            if line.contains("request_read_failed") { logged.fulfill() }
+        }
+        let calls = Counter()
+        await server.register("owned") { _ in calls.hit(); return Data("true".utf8) }
+        let listener = socket(AF_UNIX, SOCK_STREAM, 0)
+        var wake: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&wake), 0)
+        defer { close(wake[1]) }
+        let script = DaemonAcceptRecoveryTests.ScriptedListener([(accepted, 0)])
+        await DaemonServer.Instance.acceptLoop(listenerFd: listener, wakeFd: wake[0], instance: server,
+                                               environment: script.environment(realSleep: false))
+        _ = try line(peer)
+        try writeAll(peer, Data(#"{"method":"owned","params":{"source":"private-prefix-197"},"requestId":7}"#.utf8))
+        var byte: UInt8 = 0
+        let count = read(peer, &byte, 1)
+        XCTAssertTrue(count == 0 || (count < 0 && errno == ECONNRESET))
+        await fulfillment(of: [logged], timeout: 1)
+        XCTAssertEqual(calls.value, 0)
+        XCTAssertFalse(sink.all.joined().contains("private-prefix-197"))
+        XCTAssertEqual(sink.objects.first?["errno"] as? Int, Int(EAGAIN))
+        await server.stop()
+    }
+
 }

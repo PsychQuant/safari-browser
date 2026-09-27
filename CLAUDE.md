@@ -206,6 +206,14 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 
 這五種會 fallback 到 stateless 並在 stderr 印一行 `[daemon fallback: <reason>]`。**Domain errors**（例如 `ambiguousWindowMatch`）**不 fallback** — 因為 stateless path 會產生一樣的 ambiguity，fallback 沒意義。
 
+### Diagnostic event budget（#197）
+
+accept、連線初始化與 request 拒絕的診斷事件共用 logging-session 額度：最多 8 筆突發、每秒補 2 筆；一般事件保留最後 1 筆給終止原因，所以初始一般事件最多連續 7 筆。成功、incident 重設、安靜間隔或同 writer 的 stop/start 不會額外重設額度；明確更換 writer 才開始新 logging session。此額度限制紀錄放行時間，不是底層 writer／檔案 flush 的物理速率。既有每請求日誌不受此額度控制。
+
+被抑制的是候選日誌紀錄，並非底層 syscall 失敗總數。`suppressed` 包含 total、固定七種 byEvent 計數、first、lastRecovery、lastTerminal；只有固定事件／處置名稱及整數 errno／count，logFull 也不加入 source、URL、requestId 或前綴。下一筆可送事件會合併摘要；沒有新流量時，單一 500 ms flusher 依相同額度送出 diagnostics_suppressed 行。
+
+writer 在 actor 外執行；request 拒絕先關閉 fd 並釋放 reader，再處理診斷。stop 不等額度、timer 或 writer，未送摘要會捨棄；日誌維持 best-effort，沒有終止前一定落盤的保證。更換 logger 會使舊 timer 失效，已準備的紀錄只持有原 writer；舊 writer 卡住時不再新增另一個 flusher。排程來源失敗不會在同世代自動忙轉重試，後續候選事件仍可再嘗試。
+
 ### Request size limits（#194）
 
 伺服端每筆 request 的完整 JSON 行上限為 128 MiB（134,217,728 bytes，不含結尾 LF），包含 method、params 與 requestId；大型 source／exec 共用此限制。超量時在讀取中關閉該連線，不解析、不呼叫 handler，也不掃描前綴取 requestId。客戶端沿用送出後結果未知／不重播的分類；其他連線仍可繼續服務。

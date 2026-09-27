@@ -180,6 +180,13 @@ enum DaemonServer {
         case backoff
         /// The listener is gone or invalid, so retrying can never succeed.
         case stop
+        var diagnosticDisposition: DaemonDiagnosticBudget.Disposition {
+            switch self {
+            case .retry: return .retry
+            case .backoff: return .backoff
+            case .stop: return .stop
+            }
+        }
     }
 
     /// Only an errno that proves the listener unusable ends the loop. Anything
@@ -351,12 +358,24 @@ enum DaemonServer {
 
         private let shutdownWatchdog: (@Sendable () -> Void)?
         private nonisolated let requestLineLimit: Int
+        private let diagnosticClock: @Sendable () -> ContinuousClock.Instant
+        private let diagnosticSleep: @Sendable () async throws -> Void
+        private var diagnosticBudget: DaemonDiagnosticBudget
+        private var diagnosticEnabled = false
+        private var diagnosticGeneration = UUID()
+        private var diagnosticFlushToken: UUID?
+        private var diagnosticFlushTask: Task<Void, Never>?
 
         init(shutdownWatchdog: (@Sendable () -> Void)? = nil,
-             requestLineLimit: Int = DaemonServer.maxRequestLineBytes) {
+             requestLineLimit: Int = DaemonServer.maxRequestLineBytes,
+             diagnosticClock: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
+             diagnosticSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(500)) }) {
             precondition(requestLineLimit > 0 && requestLineLimit < Int.max)
             self.shutdownWatchdog = shutdownWatchdog
             self.requestLineLimit = requestLineLimit
+            self.diagnosticClock = diagnosticClock
+            self.diagnosticSleep = diagnosticSleep
+            self.diagnosticBudget = DaemonDiagnosticBudget(now: diagnosticClock())
         }
 
 
@@ -373,6 +392,73 @@ enum DaemonServer {
         func setLogWriter(_ writer: (@Sendable (String) -> Void)?, logFull: Bool = false) {
             self.logWriter = writer
             self.logFull = logFull
+            diagnosticGeneration = UUID()
+            diagnosticFlushTask?.cancel()
+            diagnosticEnabled = writer != nil
+            diagnosticBudget = DaemonDiagnosticBudget(now: diagnosticClock())
+        }
+
+        struct DiagnosticEmission: Sendable {
+            let writer: @Sendable (String) -> Void
+            let value: DaemonDiagnosticBudget.Emission
+            func write() { writer(DaemonLog.formatDiagnostic(timestamp: Date(), emission: value)) }
+        }
+
+        nonisolated func recordDiagnostic(_ event: DaemonDiagnosticBudget.Event) async {
+            guard let emission = await prepareDiagnostic(event) else { return }
+            emission.write()
+        }
+
+        private func prepareDiagnostic(_ event: DaemonDiagnosticBudget.Event) -> DiagnosticEmission? {
+            guard diagnosticEnabled, let writer = logWriter, !Task.isCancelled else { return nil }
+            let value = diagnosticBudget.record(event, at: diagnosticClock())
+            scheduleDiagnosticFlush()
+            return value.map { DiagnosticEmission(writer: writer, value: $0) }
+        }
+
+        private func scheduleDiagnosticFlush() {
+            guard diagnosticEnabled, logWriter != nil, diagnosticBudget.hasPending,
+                  diagnosticFlushTask == nil else { return }
+            let token = UUID(), generation = diagnosticGeneration
+            let sleep = diagnosticSleep
+            diagnosticFlushToken = token
+            diagnosticFlushTask = Task.detached { [weak self] in
+                var schedulingFailed = false
+                do {
+                    while !Task.isCancelled {
+                        try await sleep()
+                        guard !Task.isCancelled, let owner = self else { break }
+                        if let emission = await owner.prepareDiagnosticFlush(token: token, generation: generation) {
+                            emission.write()
+                        }
+                        guard await owner.keepDiagnosticFlush(token: token, generation: generation) else { break }
+                    }
+                } catch { schedulingFailed = true }
+                await self?.finishDiagnosticFlush(token: token, failedGeneration: schedulingFailed ? generation : nil)
+            }
+        }
+
+        private func prepareDiagnosticFlush(token: UUID, generation: UUID) -> DiagnosticEmission? {
+            guard diagnosticFlushToken == token, diagnosticGeneration == generation,
+                  diagnosticEnabled, let writer = logWriter, !Task.isCancelled else { return nil }
+            return diagnosticBudget.drain(at: diagnosticClock()).map { DiagnosticEmission(writer: writer, value: $0) }
+        }
+
+        private func keepDiagnosticFlush(token: UUID, generation: UUID) -> Bool {
+            diagnosticFlushToken == token && diagnosticGeneration == generation
+                && diagnosticEnabled && diagnosticBudget.hasPending && !Task.isCancelled
+        }
+
+        private func finishDiagnosticFlush(token: UUID, failedGeneration: UUID?) {
+            guard diagnosticFlushToken == token else { return }
+            diagnosticFlushTask = nil
+            diagnosticFlushToken = nil
+            // A broken scheduling source must not busy-loop on the same
+            // pending state. A later candidate can attempt scheduling again.
+            if failedGeneration == diagnosticGeneration { return }
+            // A replacement writer can accumulate new state while the old
+            // writer is blocked. Start its worker only after this one ends.
+            scheduleDiagnosticFlush()
         }
 
         fileprivate func currentLogWriter() -> (@Sendable (String) -> Void)? { logWriter }
@@ -567,6 +653,7 @@ enum DaemonServer {
                 throw DaemonError.bindFailed("wake pipe setup failed: errno=\(code)")
             }
 
+            diagnosticEnabled = logWriter != nil
             self.wakeWriteFd = wake[1]
             self.socketPath = socketPath
 
@@ -584,6 +671,10 @@ enum DaemonServer {
         /// and remove the socket file. Returns without waiting for the accept
         /// loop, which closes the listener itself once it observes the wake.
         func stop() async {
+            diagnosticEnabled = false
+            diagnosticGeneration = UUID()
+            diagnosticBudget.discardPending()
+            diagnosticFlushTask?.cancel()
             acceptTask?.cancel()
             acceptTask = nil
             // #178: wake the loop rather than close its listener. The loop is
@@ -666,8 +757,8 @@ enum DaemonServer {
                 guard clientFd >= 0 else {
                     let step = incident.recordFailure(errno: code, at: env.now())
                     if step.log {
-                        await logEvent(instance, waited == .ready ? "accept_error" : "accept_wait_error",
-                                       errno: code, disposition: step.disposition.rawValue, count: incident.streak)
+                        await logEvent(instance, waited == .ready ? .acceptError : .acceptWaitError,
+                                       errno: code, disposition: step.disposition.diagnosticDisposition, count: incident.streak)
                     }
                     switch step.disposition {
                     case .stop: return
@@ -678,8 +769,8 @@ enum DaemonServer {
                     }
                 }
                 if let ended = incident.recordSuccess() {
-                    await logEvent(instance, "accept_recovered", errno: ended.errno,
-                                   disposition: "recovered", count: ended.streak)
+                    await logEvent(instance, .acceptRecovered, errno: ended.errno,
+                                   disposition: .recovered, count: ended.streak)
                 }
                 await admit(clientFd, instance: instance, at: env.now(), setupFailures: &setupFailures)
             }
@@ -699,14 +790,14 @@ enum DaemonServer {
                 close(clientFd)
                 let step = setupFailures.recordFailure(at: now)
                 if step.log {
-                    await logEvent(instance, "connection_setup_failed", errno: setupErrno,
-                                   disposition: "closed", count: step.count)
+                    await logEvent(instance, .setupFailed, errno: setupErrno,
+                                   disposition: .closed, count: step.count)
                 }
                 return
             }
             if let ended = setupFailures.recordSuccess() {
-                await logEvent(instance, "connection_setup_recovered", errno: 0,
-                               disposition: "recovered", count: ended)
+                await logEvent(instance, .setupRecovered, errno: 0,
+                               disposition: .recovered, count: ended)
             }
             // Ownership transfers to the actor, which either closes a revoked
             // client or creates and tracks its handler without an await gap.
@@ -716,16 +807,15 @@ enum DaemonServer {
         /// One redacted-by-construction event line: event name, errno,
         /// disposition and count only — no paths, no client data.
         private static func logEvent(
-            _ instance: Instance, _ event: String, errno code: Int32,
-            disposition: String, count: Int
+            _ instance: Instance, _ event: DaemonDiagnosticBudget.Kind, errno code: Int32,
+            disposition: DaemonDiagnosticBudget.Disposition, count: Int
         ) async {
-            guard let writer = await instance.currentLogWriter() else { return }
-            writer(DaemonLog.formatEvent(timestamp: Date(), event: event, errno: code,
-                                         disposition: disposition, count: count))
+            await instance.recordDiagnostic(.init(kind: event, errno: code, disposition: disposition, count: count))
         }
 
         private static func serveConnection(clientFd: Int32, instance: Instance) async {
-            defer { close(clientFd) }
+            var ownsClient = true
+            defer { if ownsClient { close(clientFd) } }
             guard !Task.isCancelled else { return }
             // Send the handshake first line per the `Version handshake refuses
             // mismatched client` spec. The client reads one line before
@@ -737,12 +827,22 @@ enum DaemonServer {
                 do {
                     guard let next = try reader.readLine(fd: clientFd) else { return }
                     line = next
-                } catch {
-                    // No requestId can safely be recovered from an excessive
-                    // or interrupted frame. Close without parsing or dispatch;
-                    // the client's existing post-send no-replay policy applies.
+                } catch let failure as RequestLineReader.ReadError {
+                    // Reject before any logging wait. A blocked writer cannot
+                    // keep this fd open or retain the rejected frame's buffer.
+                    close(clientFd)
+                    ownsClient = false
+                    reader = RequestLineReader(maxBytes: instance.requestLineLimit)
+                    let event: DaemonDiagnosticBudget.Event
+                    switch failure {
+                    case .lineTooLong:
+                        event = .init(kind: .requestTooLong, errno: EMSGSIZE, disposition: .closed)
+                    case .readFailed(let code):
+                        event = .init(kind: .requestReadFailed, errno: code, disposition: .closed)
+                    }
+                    await instance.recordDiagnostic(event)
                     return
-                }
+                } catch { return }
                 // Section 6 — lifecycle bypass. Peek at the method
                 // before entering the regular dispatch path. Lifecycle
                 // commands (`daemon.status`, `daemon.shutdown`) take a
