@@ -46,6 +46,60 @@ enum DaemonServer {
         case cancelled
     }
 
+    /// Complete request JSON line, excluding LF. Applies to every method.
+    static let maxRequestLineBytes = 128 * 1024 * 1024
+
+    struct RequestLineReader {
+        enum ReadError: Error, Equatable { case lineTooLong, readFailed(Int32) }
+        let maxBytes: Int
+        private(set) var pending = Data()
+        private var scanned = 0
+
+        init(maxBytes: Int = DaemonServer.maxRequestLineBytes) {
+            precondition(maxBytes > 0 && maxBytes < Int.max)
+            self.maxBytes = maxBytes
+        }
+
+        mutating func readLine(
+            fd: Int32,
+            readOperation: (Int32, UnsafeMutableRawPointer, Int) -> Int = { Darwin.read($0, $1, $2) }
+        ) throws -> Data? {
+            var buffer = [UInt8](repeating: 0, count: 8192)
+            while true {
+                let unscanned = pending.index(pending.startIndex, offsetBy: scanned)
+                if let newline = pending[unscanned...].firstIndex(of: 10) {
+                    let length = pending.distance(from: pending.startIndex, to: newline)
+                    guard length <= maxBytes else { throw ReadError.lineTooLong }
+                    let line = Data(pending[..<newline])
+                    pending.removeSubrange(...newline)
+                    scanned = 0
+                    return line
+                }
+                scanned = pending.count
+                guard pending.count <= maxBytes else { throw ReadError.lineTooLong }
+                // Exactly maxBytes may still be followed by LF. Read at most
+                // that one excess byte, never an unbounded unfinished frame.
+                let allowance = min(buffer.count, maxBytes + 1 - pending.count)
+                let count = buffer.withUnsafeMutableBytes { readOperation(fd, $0.baseAddress!, allowance) }
+                if count > 0 {
+                    pending.append(contentsOf: buffer.prefix(count))
+                } else if count == 0 {
+                    // Preserve the existing EOF-terminated final-line behavior.
+                    guard !pending.isEmpty else { return nil }
+                    let line = pending
+                    pending = Data()
+                    scanned = 0
+                    return line
+                } else {
+                    let code = errno
+                    if code == EINTR { continue }
+                    // A failed read is not EOF and must not dispatch a prefix.
+                    throw ReadError.readFailed(code)
+                }
+            }
+        }
+    }
+
     // MARK: - Accept-loop recovery (#178)
 
     /// `accept(2)` as a value, so the loop can be driven by a scripted errno
@@ -296,9 +350,13 @@ enum DaemonServer {
         private var shutdownHook: (@Sendable () async -> Void)?
 
         private let shutdownWatchdog: (@Sendable () -> Void)?
+        private nonisolated let requestLineLimit: Int
 
-        init(shutdownWatchdog: (@Sendable () -> Void)? = nil) {
+        init(shutdownWatchdog: (@Sendable () -> Void)? = nil,
+             requestLineLimit: Int = DaemonServer.maxRequestLineBytes) {
+            precondition(requestLineLimit > 0 && requestLineLimit < Int.max)
             self.shutdownWatchdog = shutdownWatchdog
+            self.requestLineLimit = requestLineLimit
         }
 
 
@@ -673,8 +731,18 @@ enum DaemonServer {
             // mismatched client` spec. The client reads one line before
             // sending any request and aborts if the version does not match.
             if !writeLine(fd: clientFd, line: DaemonProtocol.encodeHandshake()) { return }
+            var reader = RequestLineReader(maxBytes: instance.requestLineLimit)
             while !Task.isCancelled {
-                guard let line = readLine(fd: clientFd) else { return }
+                let line: Data
+                do {
+                    guard let next = try reader.readLine(fd: clientFd) else { return }
+                    line = next
+                } catch {
+                    // No requestId can safely be recovered from an excessive
+                    // or interrupted frame. Close without parsing or dispatch;
+                    // the client's existing post-send no-replay policy applies.
+                    return
+                }
                 // Section 6 — lifecycle bypass. Peek at the method
                 // before entering the regular dispatch path. Lifecycle
                 // commands (`daemon.status`, `daemon.shutdown`) take a
@@ -943,23 +1011,6 @@ enum DaemonServer {
         }
 
         // MARK: - Line I/O (POSIX)
-
-        private static func readLine(fd: Int32) -> Data? {
-            var bytes: [UInt8] = []
-            var buf = [UInt8](repeating: 0, count: 1)
-            while true {
-                let n = buf.withUnsafeMutableBufferPointer { ptr -> Int in
-                    read(fd, ptr.baseAddress, 1)
-                }
-                if n <= 0 {
-                    if bytes.isEmpty { return nil }
-                    break
-                }
-                if buf[0] == 0x0A { break }
-                bytes.append(buf[0])
-            }
-            return Data(bytes)
-        }
 
         private static func writeLine(fd: Int32, line: Data) -> Bool {
             var payload = Data(line)

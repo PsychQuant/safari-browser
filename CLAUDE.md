@@ -206,6 +206,12 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 
 這五種會 fallback 到 stateless 並在 stderr 印一行 `[daemon fallback: <reason>]`。**Domain errors**（例如 `ambiguousWindowMatch`）**不 fallback** — 因為 stateless path 會產生一樣的 ambiguity，fallback 沒意義。
 
+### Request size limits（#194）
+
+伺服端每筆 request 的完整 JSON 行上限為 128 MiB（134,217,728 bytes，不含結尾 LF），包含 method、params 與 requestId；大型 source／exec 共用此限制。超量時在讀取中關閉該連線，不解析、不呼叫 handler，也不掃描前綴取 requestId。客戶端沿用送出後結果未知／不重播的分類；其他連線仍可繼續服務。
+
+分段讀取每次最多 8 KiB，只掃新增資料並保存多行剩餘資料。沒有 LF 的行最多累積上限加 1 byte 即拒絕；恰好上限加 LF 可接受。真 EOF 保留舊有最後一行可無 LF 的行為，但 EINTR 會重試，其他讀取錯誤直接結束連線，不把部分資料當作完整請求。這是刻意的輸入相容界線，超過上限的合法 JSON 也會拒絕；不是全行程記憶體上限，JSON 解析、既有字串與多條連線仍有額外配置。已接納連線的取消／回收另見 #199。
+
 ### Reply size limits（#174）
 
 These limits count the complete wire line, including timing and all envelope fields, before the line-ending LF—not total process memory. JSON parsing, Foundation bridging, and re-encoding the returned result can allocate additional memory. The timing lower-bound precheck only avoids the Collector's own encoding pass when its bound already exceeds 64 KiB; rejected timing fields are not removed from the result envelope. Server-side request-line limits are tracked separately in #194.
