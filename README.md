@@ -1007,6 +1007,33 @@ safari-browser wait --for-url <pattern>  # wait for URL match
 safari-browser wait --js <expr>          # wait for JS truthy
 safari-browser wait --timeout <ms>       # custom timeout (default 30s)
 
+# Randomized pacing between steps (#182): one duration drawn from a Cauchy
+# distribution doubly truncated to [--min, --max] ms. --median is the median
+# of the truncated distribution. Defaults: 2000..60000 ms, median 3000, scale 800.
+# Out-of-range draws are discarded, never clamped, so no delay piles up on a bound.
+safari-browser wait --jitter cauchy
+safari-browser wait --jitter cauchy --min 1500 --max 20000 --median 4000
+# --max is the only cap (--timeout does not apply). --scale may be at most
+# 100 × (--max − --min). --seed is for tests only: each wait is its own process,
+# so the same seed gives the same delay every call — never use it to pace a script.
+# Without --scale, the scale is 0.8 × the distance from --median to the nearer
+# bound (800 for the defaults), so short intervals no longer inherit an unsuitable fixed scale.
+# An explicit --scale that makes the median unreachable is an error that prints
+# the achievable range. When the middle half of all delays spans less than
+# 5% of the median or one nanosecond, a "nearly fixed" warning is printed.
+# Numerical representability checks still apply. A --max over one hour
+# (3600000 ms) requires --allow-long-wait: the heavy tail makes a long draw
+# a matter of time.
+# The underlying Cauchy location can lie outside the configured bounds; the
+# solver checks the full attainable truncated-median range.
+# Bounds are parsed as Double milliseconds. Sleep quantizes to the nearest
+# interior integer nanosecond; at least two such durations must exist.
+# Large millisecond offsets remain limited by Double precision.
+# This clock quantization is separate from the continuous distribution, and
+# OS scheduling can make actual elapsed time longer than the requested sleep.
+# Seeds are reproducible within the same supported numerical environment.
+# Target flags (--url, --window, ...) are accepted but ignored in this mode.
+
 # Multi-window targeting (#23): wait polls the targeted document, not
 # the front window, so you can wait for a Plaud redirect while some
 # other window has focus.

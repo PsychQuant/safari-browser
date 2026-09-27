@@ -99,7 +99,13 @@ enum PerformanceTrace {
         /// Optional peer metadata never changes execution success/failure.
         /// Decode into closed enums before retaining anything from the peer.
         func importRemote(_ object: Any, parentID: Int?) -> Bool {
-            guard JSONSerialization.isValidJSONObject(object),
+            // #174: bound the size BEFORE re-encoding. The encoding is only
+            // attempted when a lower bound of its length fits the limit; an
+            // object whose bound already exceeds it is rejected unencoded.
+            // Passing the bound does not prove the encoding fits — the exact
+            // check below still decides.
+            guard PerformanceTrace.jsonSizeLowerBound(object, budget: 65536) != nil,
+                  JSONSerialization.isValidJSONObject(object),
                   let data = try? JSONSerialization.data(withJSONObject: object), data.count <= 65536,
                   let summary = try? JSONDecoder().decode(Summary.self, from: data),
                   let ordered = PerformanceTrace.validatedSpans(in: summary) else { return false }
@@ -126,6 +132,66 @@ enum PerformanceTrace {
             end >= start ? end - start : 0
         }
     }
+    /// #174: a lower bound on the byte length of `object`'s JSON encoding,
+    /// or nil as soon as the bound passes `budget`. A nil answer proves the
+    /// real encoding is over budget; a non-nil answer never rejects legal
+    /// input, but it does not prove the encoding fits — the caller still
+    /// checks the encoded size. Strings count their UTF-8 bytes, quotes, and
+    /// one extra byte per quote, backslash or control character (the shortest
+    /// escape); integers and booleans their exact text; floating-point numbers
+    /// one byte, since their formatting is not pinned; containers their
+    /// brackets and separators.
+    static func jsonSizeLowerBound(_ object: Any, budget: Int) -> Int? {
+        var total = 0
+        var stack: [Any] = [object]
+        while let next = stack.popLast() {
+            switch next {
+            case let string as String:
+                guard let size = stringSizeLowerBound(string, budget: budget - total) else { return nil }
+                total += size
+            case let dictionary as [String: Any]:
+                total += 2 + max(dictionary.count - 1, 0)
+                for (key, value) in dictionary {
+                    guard let size = stringSizeLowerBound(key, budget: budget - total) else { return nil }
+                    total += size + 1
+                    stack.append(value)
+                    if total > budget { return nil }
+                }
+            case let array as [Any]:
+                total += 2 + max(array.count - 1, 0)
+                if total > budget { return nil }
+                stack.append(contentsOf: array)
+            case is NSNull:
+                total += 4
+            case let number as NSNumber:
+                if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                    total += number.boolValue ? 4 : 5
+                } else if CFNumberIsFloatType(number) {
+                    total += 1
+                } else {
+                    total += number.stringValue.utf8.count
+                }
+            default:
+                total += 1
+            }
+            if total > budget { return nil }
+        }
+        return total
+    }
+
+    /// Quotes, UTF-8 bytes, and one byte per character that must be escaped;
+    /// nil once past `budget`. The UTF-8 length is checked first, so an
+    /// oversized string is rejected before escape-by-escape accounting.
+    private static func stringSizeLowerBound(_ string: String, budget: Int) -> Int? {
+        var size = string.utf8.count + 2
+        guard size <= budget else { return nil }
+        for byte in string.utf8 where byte < 0x20 || byte == 0x22 || byte == 0x5C {
+            size += 1
+            if size > budget { return nil }
+        }
+        return size
+    }
+
     /// Share validation between imported metadata and separation of our own
     /// child trace from the command's ordinary error text.
     private static func validatedSpans(in summary: Summary) -> [Span]? {
