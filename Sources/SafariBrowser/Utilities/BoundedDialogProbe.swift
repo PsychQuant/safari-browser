@@ -142,13 +142,23 @@ final class BoundedDialogProbe: @unchecked Sendable {
                                                 maxDepth: maxDepth, maxNodes: maxNodes))
                     }
                     let children = summary.children
-                    // #187: the page viewport — a scroll area hosting the
-                    // WebArea — is page content like the WebArea itself; its
-                    // other children are the viewport's scroll bars. Neither
-                    // holds native modal UI, so it is a leaf, not a truncation.
-                    if summary.role == "AXScrollArea",
-                       try children.contains(where: { try provider.role($0, timeout: budget.remaining()) == "AXWebArea" }) {
-                        continue
+                    // #187: only a fully classified page viewport may be a
+                    // leaf. A WebArea alone says nothing about its siblings.
+                    // Count these classification reads against the same node
+                    // budget, and never hide an unreadable or unknown child.
+                    if summary.role == "AXScrollArea", !children.isEmpty {
+                        var hasWebArea = false
+                        var onlyPageParts = true
+                        for child in children {
+                            guard inspected < maxNodes else { throw DialogProbeReadError.unavailable }
+                            inspected += 1
+                            let part = try provider.summary(child, remaining: { try budget.remaining() })
+                            if part.role == "AXWebArea" { hasWebArea = true }
+                            else if part.role != "AXScrollBar" || isNativeModal(role: part.role, subrole: part.subrole) {
+                                onlyPageParts = false
+                            }
+                        }
+                        if hasWebArea && onlyPageParts { continue }
                     }
                     if depth >= maxDepth {
                         incomplete = incomplete || !children.isEmpty
@@ -296,15 +306,24 @@ struct AXDialogProbeProvider: CurrentWindowDialogProvider {
         let names = [kAXRoleAttribute, kAXSubroleAttribute, kAXChildrenAttribute] as CFArray
         var values: CFArray?
         guard AXUIElementCopyMultipleAttributeValues(node, names, AXCopyMultipleAttributeOptions(rawValue: 0), &values) == .success,
-              let items = values as? [AnyObject], items.count == 3,
-              let role = items[0] as? String else {
+              let items = values as? [AnyObject] else {
             throw DialogProbeReadError.unavailable
         }
+        return try Self.decodeSummary(items)
+    }
+
+    static func decodeSummary(_ items: [AnyObject]) throws -> DialogProbeNodeSummary<AXUIElement> {
+        guard items.count == 3, let role = items[0] as? String else {
+            throw DialogProbeReadError.unavailable
+        }
+        // Preserve the composed provider's early return: WebArea subrole and
+        // children do not participate in native-dialog classification.
+        if role == "AXWebArea" { return .init(role: role, subrole: nil, children: []) }
         let subrole: String?
         if try Self.isAbsent(items[1]) { subrole = nil }
         else if let string = items[1] as? String { subrole = string }
         else { throw DialogProbeReadError.unavailable }
-        if role == "AXWebArea" || BoundedDialogProbe.isNativeModal(role: role, subrole: subrole) {
+        if BoundedDialogProbe.isNativeModal(role: role, subrole: subrole) {
             return .init(role: role, subrole: subrole, children: [])
         }
         if try Self.isAbsent(items[2]) { return .init(role: role, subrole: subrole, children: []) }
@@ -319,6 +338,9 @@ struct AXDialogProbeProvider: CurrentWindowDialogProvider {
     /// unsupported or has no value, false when the slot holds a value; throws
     /// for any other AXError.
     private static func isAbsent(_ item: AnyObject) throws -> Bool {
+        // AXUIElementCopyMultipleAttributeValues also uses CFNull for an
+        // unsupported slot (documented by AXUIElement.h).
+        if CFGetTypeID(item) == CFNullGetTypeID() { return true }
         guard CFGetTypeID(item) == AXValueGetTypeID() else { return false }
         let value = item as! AXValue // type ID checked above
         guard AXValueGetType(value) == .axError else { return false }

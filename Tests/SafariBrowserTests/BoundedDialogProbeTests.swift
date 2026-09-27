@@ -1,3 +1,4 @@
+import ApplicationServices
 import Foundation
 import XCTest
 @testable import SafariBrowser
@@ -386,14 +387,101 @@ final class BoundedDialogProbeTests: XCTestCase {
         XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .unprobed)
     }
 
+    func testWebAreaDoesNotHideAnUnreadableViewportSibling() {
+        for batched in [false, true] {
+            for children in [[8, 9], [9, 8]] {
+                var nodes = Self.measuredTree
+                nodes[7] = Node(role: "AXScrollArea", children: children)
+                nodes[9] = Node(role: "AXScrollBar", roleFails: true)
+                XCTAssertEqual(makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)), .unprobed)
+            }
+        }
+    }
+
+    func testWebAreaDoesNotHideUnexpectedNativeViewportChildren() {
+        for role in ["AXDialog", "AXSheet", "AXGroup"] {
+            for batched in [false, true] {
+                var nodes = Self.measuredTree
+                nodes[9] = Node(role: role, children: [11])
+                XCTAssertEqual(makeProbe(nodes: nodes, batched: batched).check(windowKey: .id(42)), .unprobed,
+                               "a WebArea does not prove its siblings are only page scrollbars: \(role)")
+            }
+        }
+    }
+
+    func testViewportDoesNotHideAModalScrollbarSubrole() {
+        var nodes = Self.measuredTree
+        nodes[9] = Node(role: "AXScrollBar", subrole: "AXDialog", children: [11])
+        XCTAssertEqual(makeProbe(nodes: nodes, batched: true).check(windowKey: .id(42)), .unprobed)
+    }
+
+    func testViewportClassificationUsesTheNodeBudget() {
+        let calls = Calls()
+        XCTAssertEqual(makeProbe(calls: calls, nodes: Self.measuredTree, maxNodes: 14, batched: true)
+            .check(windowKey: .id(42)), .unprobed)
+        XCTAssertLessThanOrEqual(calls.operations.filter { $0 == .summary }.count, 14)
+    }
+
+    func testBatchedWebAreaIgnoresUnusedAttributeErrors() throws {
+        var code = AXError.cannotComplete
+        let error = try XCTUnwrap(AXValueCreate(.axError, &code))
+        let summary = try AXDialogProbeProvider.decodeSummary(["AXWebArea" as NSString, error, error])
+        XCTAssertEqual(summary.role, "AXWebArea")
+        XCTAssertTrue(summary.children.isEmpty)
+    }
+
+    func testBatchedSummaryTreatsCFNullAsAbsent() throws {
+        // AXUIElement.h explicitly allows CFNull for unsupported slots.
+        let summary = try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, NSNull(), NSNull()])
+        XCTAssertNil(summary.subrole)
+        XCTAssertTrue(summary.children.isEmpty)
+    }
+
+    func testBatchedSummaryDecodesAbsentAndFailedAXErrorSlots() throws {
+        for absent in [AXError.attributeUnsupported, .noValue] {
+            var code = absent
+            let error = try XCTUnwrap(AXValueCreate(.axError, &code))
+            let summary = try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, error, error])
+            XCTAssertNil(summary.subrole)
+            XCTAssertTrue(summary.children.isEmpty)
+        }
+        var code = AXError.cannotComplete
+        let error = try XCTUnwrap(AXValueCreate(.axError, &code))
+        XCTAssertThrowsError(try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, error, NSArray()]))
+        XCTAssertThrowsError(try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, NSNull(), error]))
+    }
+
+    func testBatchedNativeModalDoesNotRequireReadableChildren() throws {
+        var code = AXError.cannotComplete
+        let error = try XCTUnwrap(AXValueCreate(.axError, &code))
+        let summary = try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, "AXDialog" as NSString, error])
+        XCTAssertEqual(summary.subrole, "AXDialog")
+        XCTAssertTrue(summary.children.isEmpty)
+    }
+
+    func testBatchedSummaryRejectsMalformedSlots() {
+        for values: [AnyObject] in [[], ["AXGroup" as NSString],
+            [NSNull(), NSNull(), NSArray()],
+            ["AXGroup" as NSString, NSNumber(value: 42), NSArray()],
+            ["AXGroup" as NSString, NSNull(), NSArray(object: NSNumber(value: 42))]] {
+            XCTAssertThrowsError(try AXDialogProbeProvider.decodeSummary(values))
+        }
+    }
+
+    func testBatchedSummaryPreservesAXChildren() throws {
+        let child = AXUIElementCreateApplication(getpid())
+        let summary = try AXDialogProbeProvider.decodeSummary(["AXGroup" as NSString, NSNull(), NSArray(object: child)])
+        XCTAssertEqual(summary.children, [child])
+    }
+
     func testTraversalReadsEachNodeInOneRoundTrip() {
         // Three single-attribute reads per node left the first probe of a
         // process a few milliseconds inside its 95 ms budget on a real window.
         let calls = Calls()
         XCTAssertEqual(makeProbe(calls: calls, nodes: Self.measuredTree, batched: true).check(windowKey: .id(42)), .clear)
         let ops = calls.operations
-        XCTAssertEqual(ops.filter { $0 == .summary }.count, 13, "one summary per visited node: \(ops)")
+        XCTAssertEqual(ops.filter { $0 == .summary }.count, 15, "one summary per inspected node, including viewport children: \(ops)")
         XCTAssertFalse(ops.contains(.subrole) || ops.contains(.children), "no per-attribute reads while traversing: \(ops)")
-        XCTAssertEqual(ops.filter { $0 == .role }.count, 1, "only the viewport check reads a child role: \(ops)")
+        XCTAssertFalse(ops.contains(.role), "viewport children also use the batched summary: \(ops)")
     }
 }
