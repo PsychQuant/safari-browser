@@ -54,6 +54,22 @@ struct JitterUsabilityTests {
         #expect(spike.interquartileRange < 3)
     }
 
+    @Test func `Nanosecond concentration warns even above the relative spread threshold`() throws {
+        let distribution = try TruncatedCauchy(min: 0, max: 3e-6, median: 1e-6, scale: 1e-7)
+        #expect(distribution.interquartileRange > 0.05 * distribution.median)
+        #expect(distribution.interquartileRange < 1e-6)
+        let warning = try #require(distribution.nearlyFixedWarning)
+        #expect(warning.contains("nanosecond"))
+        #expect(warning.contains("around 1e-06 ms"))
+        #expect(warning.contains("default for these bounds is 8e-07"))
+    }
+
+    @Test func `Reviewer large median tiny scale case warns`() throws {
+        let distribution = try TruncatedCauchy(min: 0, max: 10000, median: 5000, scale: 1e-7)
+        #expect(distribution.nearlyFixedWarning != nil)
+        #expect(distribution.interquartileRange < 1e-6)
+    }
+
     @Test func `Ordinary and deliberately narrow settings are not reported`() throws {
         #expect(try TruncatedCauchy().nearlyFixedWarning == nil)
         #expect(abs(try TruncatedCauchy().interquartileRange - 1338.8) < 1)

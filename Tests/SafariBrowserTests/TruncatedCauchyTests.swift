@@ -5,6 +5,103 @@ import Testing
 
 /// #182: doubly truncated Cauchy sampler behind `wait --jitter cauchy`.
 struct TruncatedCauchyTests {
+    @Test func `Achievable median with location below the interval is accepted`() throws {
+        let distribution = try TruncatedCauchy(min: 0, max: 10, median: 0.902, scale: 1)
+        #expect(distribution.location < 0)
+        let left = atan((0.902 - distribution.location) / 1) - atan(-distribution.location / 1)
+        let total = atan((10 - distribution.location) / 1) - atan(-distribution.location / 1)
+        #expect(abs(left / total - 0.5) < 1e-12)
+    }
+
+    /// The oracle uses the original Cauchy angle integral, not sampler helpers
+    /// or its median-centered inverse formula.
+    private func conditionalCDF(_ value: Double, distribution: TruncatedCauchy) -> Double {
+        let lower = atan((distribution.min - distribution.location) / distribution.scale)
+        let upper = atan((distribution.max - distribution.location) / distribution.scale)
+        return (atan((value - distribution.location) / distribution.scale) - lower) / (upper - lower)
+    }
+
+    @Test func `Global extrema include locations outside both bounds`() throws {
+        let range = TruncatedCauchy.achievableMedianRange(scale: 1, min: 0, max: 10)
+        // Independent solution of p*(10-p) = 10-2*p, from the discriminant.
+        let expectedLow = 6 - sqrt(26.0)
+        #expect(abs(range.lowerBound - expectedLow) < 1e-14)
+        #expect(abs(range.upperBound - (10 - expectedLow)) < 1e-14)
+        for target in [range.lowerBound, 0.902, 5, 9.098, range.upperBound] {
+            let distribution = try TruncatedCauchy(min: 0, max: 10, median: target, scale: 1)
+            #expect(abs(conditionalCDF(target, distribution: distribution) - 0.5) < 1e-12)
+            if target < 0.904 { #expect(distribution.location < 0) }
+            if target > 9.096 { #expect(distribution.location > 10) }
+        }
+        for target in [range.lowerBound - 1e-7, range.upperBound + 1e-7] {
+            #expect(throws: ValidationError.self) {
+                _ = try TruncatedCauchy(min: 0, max: 10, median: target, scale: 1)
+            }
+        }
+        // A scan of locations beyond both turning points independently checks
+        // that the attainable range contains their conditional medians.
+        for index in -200...300 {
+            let location = Double(index) / 10
+            let angle = (atan(-location) + atan(10 - location)) / 2
+            let median = location + tan(angle)
+            #expect(median >= range.lowerBound - 1e-12)
+            #expect(median <= range.upperBound + 1e-12)
+        }
+    }
+
+    @Test(arguments: [0.000001, 0.1, 1.0, 100.0])
+    func `Full range endpoints are solved across supported scale ratios`(ratio: Double) throws {
+        let range = TruncatedCauchy.achievableMedianRange(scale: ratio, min: 0, max: 1)
+        for target in [range.lowerBound, range.upperBound] {
+            let distribution = try TruncatedCauchy(min: 0, max: 1, median: target, scale: ratio)
+            #expect(abs(conditionalCDF(target, distribution: distribution) - 0.5) < 1e-11)
+        }
+    }
+
+    private struct FixedBits: RandomNumberGenerator {
+        let value: UInt64
+        var count = 0
+        mutating func next() -> UInt64 { count += 1; return value }
+    }
+
+    @Test(arguments: [
+        (0.0, 10.0, 0.902, 1.0),
+        (0.0, 10.0, 9.098, 1.0),
+        (2000.0, 60000.0, 3000.0, 800.0),
+        (0.0, 10.0, 5.0, 1000.0),
+        (0.0, 1.0, 0.5, 0.000001),
+        (1e9, 1e9 + 1000, 1e9 + 500, 100.0),
+        (0.0, 1e-9, 0.5e-9, 1e-10),
+    ])
+    func `Nonmedian quantiles match an independent conditional CDF`(parameters: (Double, Double, Double, Double)) throws {
+        let distribution = try TruncatedCauchy(min: parameters.0, max: parameters.1, median: parameters.2, scale: parameters.3)
+        for eighth in 1...7 {
+            var generator = FixedBits(value: UInt64(eighth) << 61)
+            let draw = try distribution.sample(using: &generator)
+            let probability = Double(eighth) / 8
+            // Quantization of a large-offset Double contributes at most one
+            // ulp / scale to this CDF comparison; ordinary cases use 1e-10.
+            let tolerance = Swift.max(1e-10, draw.ulp / distribution.scale)
+            #expect(abs(conditionalCDF(draw, distribution: distribution) - probability) < tolerance)
+            #expect(generator.count == 1)
+        }
+    }
+
+    @Test func `Unrepresentable central spread is explicitly rejected`() {
+        #expect(throws: ValidationError.self) {
+            _ = try TruncatedCauchy(min: 0, max: 1, median: 0.5, scale: 1e-100)
+        }
+    }
+
+    @Test func `Numerical retry exhaustion throws instead of returning a median`() throws {
+        let distribution = try TruncatedCauchy(min: 0, max: 10, median: 5, scale: 1)
+        var generator = FixedBits(value: 0)
+        #expect(throws: TruncatedCauchy.SamplingError.self) {
+            _ = try distribution.sample(using: &generator)
+        }
+        #expect(generator.count == 64)
+    }
+
     @Test func `Default parameters solve the location for a 3000ms truncated median`() throws {
         let distribution = try TruncatedCauchy()
         #expect(abs(distribution.location - 2611.455) < 0.01)
@@ -18,7 +115,7 @@ struct TruncatedCauchyTests {
         var draws: [Double] = []
         draws.reserveCapacity(100_000)
         for _ in 0..<100_000 {
-            draws.append(distribution.sample(using: &generator))
+            draws.append(try distribution.sample(using: &generator))
         }
         #expect(draws.allSatisfy { $0 > 2000 && $0 < 60000 })
         draws.sort()
@@ -30,8 +127,8 @@ struct TruncatedCauchyTests {
         let distribution = try TruncatedCauchy()
         var first = SplitMix64(seed: 42)
         var second = SplitMix64(seed: 42)
-        let a = (0..<100).map { _ in distribution.sample(using: &first) }
-        let b = (0..<100).map { _ in distribution.sample(using: &second) }
+        let a = try (0..<100).map { _ in try distribution.sample(using: &first) }
+        let b = try (0..<100).map { _ in try distribution.sample(using: &second) }
         #expect(a == b)
     }
 
@@ -39,8 +136,8 @@ struct TruncatedCauchyTests {
         let distribution = try TruncatedCauchy()
         var first = SplitMix64(seed: 1)
         var second = SplitMix64(seed: 2)
-        let a = (0..<10).map { _ in distribution.sample(using: &first) }
-        let b = (0..<10).map { _ in distribution.sample(using: &second) }
+        let a = try (0..<10).map { _ in try distribution.sample(using: &first) }
+        let b = try (0..<10).map { _ in try distribution.sample(using: &second) }
         #expect(a != b)
     }
 
@@ -79,7 +176,7 @@ struct TruncatedCauchyTests {
     @Test func `Scale is accepted up to the cap and rejected above it`() throws {
         let atCap = try TruncatedCauchy(min: 0, max: 10, median: 5, scale: 1000)
         var generator = SplitMix64(seed: 9)
-        let draws = (0..<10_000).map { _ in atCap.sample(using: &generator) }
+        let draws = try (0..<10_000).map { _ in try atCap.sample(using: &generator) }
         #expect(draws.allSatisfy { $0 > 0 && $0 < 10 })
         #expect(throws: ValidationError.self) {
             _ = try TruncatedCauchy(min: 0, max: 10, median: 5, scale: 1000.001)

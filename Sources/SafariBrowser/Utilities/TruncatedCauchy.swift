@@ -9,7 +9,7 @@ import Foundation
 /// 2.0 s — the fixed interval the jitter was meant to avoid.
 ///
 /// `median` is the median of the *truncated* distribution. The location
-/// parameter that produces it is solved numerically in `init`.
+/// parameter that produces it is solved on the central branch in `init`.
 struct TruncatedCauchy {
     static let defaultMin = 2000.0
     static let defaultMax = 60000.0
@@ -60,71 +60,88 @@ struct TruncatedCauchy {
         guard scale > 0 else {
             throw ValidationError("--scale must be positive, got \(scale)")
         }
-        // #182 verify R1: when --scale is huge relative to the interval, both
-        // CDF values round to 0.5 and quantile() multiplies the rounding noise
-        // by --scale. The computed truncated median then stops being monotone
-        // (the range below inverted and trapped) and F(min) == F(max) (the
-        // uniform draw trapped). Measured: strictly monotone at every tested
-        // interval width and offset up to a ratio of 100, broken at 1000. At a
-        // ratio of 100 the truncated distribution is already nearly uniform on
-        // [min, max], so nothing useful lies beyond the cap.
-        let maxScale = Self.maxScaleToWidthRatio * (max - min)
-        guard scale <= maxScale else {
+        let width = max - min
+        let g = scale / width
+        let maxScale = Self.maxScaleToWidthRatio * width
+        guard g <= Self.maxScaleToWidthRatio else {
             throw ValidationError(
                 "--scale \(scale) is too large for [\(min), \(max)]; it must be at most "
                     + "\(Int(Self.maxScaleToWidthRatio)) × (--max − --min) = \(Self.format(maxScale))"
             )
         }
-        let lowMedian = Self.truncatedMedian(location: min, scale: scale, min: min, max: max)
-        let highMedian = Self.truncatedMedian(location: max, scale: scale, min: min, max: max)
-        guard lowMedian.isFinite, highMedian.isFinite, lowMedian < highMedian else {
-            throw ValidationError("Jitter parameters are numerically degenerate for [\(min), \(max)] with --scale \(scale)")
+        let p = (median - min) / width
+        let q = (max - median) / width
+        guard g > 0, p > 0, q > 0, min.nextUp < max else {
+            throw ValidationError("Jitter parameters are numerically degenerate")
         }
-        guard (lowMedian...highMedian).contains(median) else {
+        let range = Self.achievableMedianRange(scale: scale, min: min, max: max)
+        guard range.contains(median) else {
             throw ValidationError(
                 "--median \(median) is not achievable with --scale \(scale) on [\(min), \(max)]; "
-                    + "achievable medians are \(Self.inwardRange(lowMedian, highMedian, width: max - min)). "
+                    + "achievable medians are \(Self.inwardRange(range.lowerBound, range.upperBound, width: width)). "
                     + "Lower --scale or move --median into that range."
             )
         }
-        let location = Self.solveLocation(median: median, scale: scale, min: min, max: max)
-        // Verify the solve instead of trusting it: bisection converges on
-        // whatever the arithmetic says, and the arithmetic is what failed in R1.
-        // The tolerance is relative to the interval width, not to the median:
-        // at a large offset a median-relative tolerance can exceed the whole
-        // interval and accept anything (#182 verify R2). The ulp floor keeps a
-        // width near the Double resolution from demanding the impossible.
-        let solved = Self.truncatedMedian(location: location, scale: scale, min: min, max: max)
-        let tolerance = Swift.max(1e-6 * (max - min), 4 * median.ulp)
-        guard solved > min, solved < max, abs(solved - median) <= tolerance else {
+        // In normalized coordinates, y = median - location satisfies
+        // (q-p)y² - 2pq*y + (q-p)g² = 0. The central branch uses the
+        // rationalized small root, continuous through y=0 at p=q.
+        // Dividing in stages avoids underflow in p*q for tiny scales.
+        let rawR = ((q - p) * g / p) / q
+        // Roundoff in q-p is amplified by g/(p*q), especially near the
+        // midpoint with a large scale. Permit its propagated rounding budget
+        // at the discriminant, after checking the full attainable range.
+        let rTolerance = 16 * Double.ulpOfOne * Swift.max(1, (g / p) / q)
+        guard rawR.isFinite, abs(rawR) <= 1 + rTolerance else {
+            throw ValidationError("Could not solve the jitter location precisely")
+        }
+        let r = Swift.max(-1, Swift.min(1, rawR))
+        let k = r / (1 + sqrt((1 - r) * (1 + r))) // y / g, within [-1,1]
+        let lowerAngle = atan2(g * k - p, g)
+        let upperAngle = atan2(q + g * k, g)
+        let span = upperAngle - lowerAngle
+        // Independent back-substitution in angular CDF space. This does not
+        // trust the quadratic root merely because it is finite.
+        let solvedProbability = (atan(k) - lowerAngle) / span
+        guard span.isFinite, span > 0,
+              abs(solvedProbability - 0.5) <= 1e-11 else {
             throw ValidationError("Could not solve the jitter location precisely for --median \(median) with --scale \(scale)")
         }
-        let cdfLower = Self.cdf(min, location: location, scale: scale)
-        let cdfUpper = Self.cdf(max, location: location, scale: scale)
-        guard cdfUpper > cdfLower else {
-            throw ValidationError("Jitter parameters are numerically degenerate for [\(min), \(max)] with --scale \(scale)")
+        // When both central quartiles collapse to the median, Double cannot
+        // represent the distribution's central shape. Reject that numerical
+        // input rather than lose the central shape in Double arithmetic.
+        // This does not guarantee distinct durations after nanosecond quantization.
+        let quarterTangent = tan(span / 4)
+        let lowerQuartile = median - scale * ((1 + k * k) * quarterTangent / (1 + k * quarterTangent))
+        let upperQuartile = median + scale * ((1 + k * k) * quarterTangent / (1 - k * quarterTangent))
+        guard lowerQuartile < median, upperQuartile > median else {
+            throw ValidationError("Jitter parameters are numerically degenerate at the requested median's precision")
         }
         self.min = min
         self.max = max
         self.median = median
         self.scale = scale
-        self.location = location
-        self.cdfLower = cdfLower
-        self.cdfUpper = cdfUpper
-        self.solvedMedian = solved
+        self.location = median - scale * k
+        self.angleSpan = span
+        self.medianLocationRatio = k
     }
 
-    /// `--scale` may be at most this multiple of `max − min`; see `init`.
+    /// Retained public scale/width limit; calculations use normalized coordinates.
     static let maxScaleToWidthRatio = 100.0
+    private let angleSpan: Double
+    private let medianLocationRatio: Double
 
-    private let cdfLower: Double
-    private let cdfUpper: Double
-    /// The truncated median at `location`, verified in `init` to lie strictly inside the bounds.
-    private let solvedMedian: Double
+    enum SamplingError: Error, CustomStringConvertible {
+        case numericalExhaustion
+        var description: String {
+            "Could not draw a finite interior jitter duration after 64 numerical attempts"
+        }
+    }
 
     /// The `p`-quantile of the truncated distribution.
     func truncatedQuantile(_ p: Double) -> Double {
-        Self.quantile(cdfLower + (cdfUpper - cdfLower) * p, location: location, scale: scale)
+        let tangent = tan((p - 0.5) * angleSpan)
+        let k = medianLocationRatio
+        return median + scale * ((1 + k * k) * tangent / (1 - k * tangent))
     }
 
     /// Spread of the middle half of all draws, in milliseconds.
@@ -133,35 +150,33 @@ struct TruncatedCauchy {
     /// A one-line warning when the draws are nearly fixed (#186), else nil.
     var nearlyFixedWarning: String? {
         let iqr = interquartileRange
-        guard iqr < Self.nearlyFixedIQRFraction * median else { return nil }
-        return "⚠ jitter is nearly fixed: half of all delays fall within \(Self.format(iqr)) ms of each other "
-            + "around \(Self.format(median)) ms. Raise --scale (the default for these bounds is "
-            + "\(Self.format(Self.defaultScale(min: min, max: max, median: median)))) or widen --min/--max."
+        let belowClockResolution = iqr < 0.000001 // one nanosecond, in milliseconds
+        guard belowClockResolution || iqr < Self.nearlyFixedIQRFraction * median else { return nil }
+        let clockNote = belowClockResolution ? " The spread is below one nanosecond of sleep resolution." : ""
+        return "⚠ jitter is nearly fixed: half of all delays fall within \(String(format: "%.6g", iqr)) ms of each other "
+            + "around \(String(format: "%.6g", median)) ms. Raise --scale (the default for these bounds is "
+            + "\(String(format: "%.6g", Self.defaultScale(min: min, max: max, median: median)))) or widen --min/--max." + clockNote
     }
 
-    /// Draws one duration in milliseconds, strictly inside `(min, max)`.
-    ///
-    /// Inverse-CDF sampling: `u ~ U(F(min), F(max))`, `x = F⁻¹(u)`. One uniform draw
-    /// per call, so the cost does not grow as the interval narrows (rejection
-    /// sampling would).
-    ///
-    /// The uniform is built from the generator's raw 53 high bits rather than
-    /// `Double.random(in:using:)`, whose algorithm the standard library does not
-    /// promise to keep stable — a seeded draw must be the same on every toolchain.
-    func sample<G: RandomNumberGenerator>(using generator: inout G) -> Double {
-        let width = cdfUpper - cdfLower
-        // Floating-point rounding near u == F(min) can land exactly on (or a hair
-        // outside) a bound. init() guarantees a non-empty CDF interval, so such
-        // draws are rare; the cap only makes termination unconditional.
+    /// Inverse-CDF draw strictly inside `(min, max)`, without endpoint clamping.
+    /// Numerical endpoint results are retried at most 64 times, then fail.
+    /// Raw high bits fix the uniform sequence; final floating-point draws are
+    /// reproducible within the same supported numerical environment (libm is
+    /// not promised to be bit-identical across platforms or toolchains).
+    func sample<G: RandomNumberGenerator>(using generator: inout G) throws -> Double {
         for _ in 0..<64 {
             let unit = Double(generator.next() >> 11) * 0x1p-53
-            let x = Self.quantile(cdfLower + width * unit, location: location, scale: scale)
-            if x > min && x < max { return x }
+            guard unit > 0 else { continue }
+            // Center at the requested median rather than subtracting a distant
+            // location. Tangent addition gives the same inverse CDF while
+            // avoiding loss of scale at a large offset.
+            let tangent = tan((unit - 0.5) * angleSpan)
+            let k = medianLocationRatio
+            let displacement = scale * ((1 + k * k) * tangent / (1 - k * tangent))
+            let x = median + displacement
+            if x.isFinite, x > min, x < max { return x }
         }
-        // Unreachable in practice. Return the truncated median computed in init(),
-        // which init() verified lies strictly inside the bounds — the very value,
-        // not a recomputation that could round differently.
-        return solvedMedian
+        throw SamplingError.numericalExhaustion
     }
 
     // MARK: - Distribution functions
@@ -176,44 +191,21 @@ struct TruncatedCauchy {
 
     /// Median of the Cauchy(`location`, `scale`) truncated to `[min, max]`.
     static func truncatedMedian(location: Double, scale: Double, min: Double, max: Double) -> Double {
-        let half = (cdf(min, location: location, scale: scale) + cdf(max, location: location, scale: scale)) / 2
-        return quantile(half, location: location, scale: scale)
+        let lower = atan2(min - location, scale)
+        let upper = atan2(max - location, scale)
+        return location + scale * tan(lower + (upper - lower) / 2)
     }
 
-    /// Medians reachable with `location` restricted to `[min, max]`.
-    ///
-    /// Over the whole real line the truncated median is NOT monotone in the
-    /// location: as the location moves far outside the interval the truncated
-    /// distribution flattens and its median folds back toward the midpoint.
-    /// Restricted to `[min, max]` it is monotone in exact arithmetic, and its
-    /// global extremes occur at the endpoints, so this range is the set of
-    /// achievable medians.
-    ///
-    /// In floating point that holds only while `scale` is at most
-    /// `maxScaleToWidthRatio × (max − min)`; beyond it the computed endpoints can
-    /// invert (#182 verify R1). The bounds are ordered here so an inverted pair
-    /// cannot trap; `init` rejects such parameters before relying on the range.
+    /// Full range over all real locations. The median equation has a real
+    /// location iff p*q >= abs(q-p)*g. Solving its equality for p gives t;
+    /// its reflection gives 1-t. Global extrema can require locations outside
+    /// the truncation interval; no artificial location restriction is used.
     static func achievableMedianRange(scale: Double, min: Double, max: Double) -> ClosedRange<Double> {
-        let a = truncatedMedian(location: min, scale: scale, min: min, max: max)
-        let b = truncatedMedian(location: max, scale: scale, min: min, max: max)
-        return Swift.min(a, b)...Swift.max(a, b)
-    }
-
-    /// Bisection on `[min, max]`, where the truncated median is monotone increasing
-    /// under the scale cap enforced by `init`.
-    private static func solveLocation(median: Double, scale: Double, min: Double, max: Double) -> Double {
-        var low = min
-        var high = max
-        for _ in 0..<200 {
-            let middle = (low + high) / 2
-            if middle == low || middle == high { break }
-            if truncatedMedian(location: middle, scale: scale, min: min, max: max) < median {
-                low = middle
-            } else {
-                high = middle
-            }
-        }
-        return (low + high) / 2
+        let width = max - min
+        let g = scale / width
+        let t = g / (0.5 + g + hypot(0.5, g))
+        let inset = width * t
+        return (min + inset)...(max - inset)
     }
 
     private static func format(_ value: Double) -> String {

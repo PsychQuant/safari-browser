@@ -87,13 +87,7 @@ struct WaitCommand: AsyncParsableCommand {
             throw ValidationError("--jitter cannot be combined with positional milliseconds, --for-url, or --js")
         }
         let distribution = try jitterDistribution()
-        // Double → Int traps on out-of-range values, so bound-check before
-        // handing the upper bound to the #153 overflow check.
-        let upper = distribution.max.rounded(.up)
-        guard upper < Double(Int.max), let upperMilliseconds = Int(exactly: upper) else {
-            throw ValidationError("--max \(distribution.max) exceeds the maximum representable wait")
-        }
-        _ = try Self.nanoseconds(forMilliseconds: upperMilliseconds)
+        _ = try JitterNanosecondRange(min: distribution.min, max: distribution.max)
         // After the representability check: an unrepresentable --max is an
         // error whatever the flags; a long one only needs an explicit opt-in.
         if distribution.max > Self.longJitterMaxMilliseconds && !allowLongWait {
@@ -133,36 +127,123 @@ struct WaitCommand: AsyncParsableCommand {
         return converted.partialValue
     }
 
+    /// Quantizes continuous milliseconds to the nearest *interior* clock tick.
+    /// It never changes the sampler's continuous draw or admits an endpoint.
+    struct JitterNanosecondRange {
+        let minMilliseconds: Double
+        let maxMilliseconds: Double
+        let lower: UInt64
+        let upper: UInt64
+
+        init(min: Double, max: Double) throws {
+            guard min.isFinite, max.isFinite, min >= 0, min < max else {
+                throw ValidationError("Jitter bounds must be finite and satisfy 0 <= min < max")
+            }
+            // Preserve the existing #153 whole-millisecond upper-bound guard.
+            let ceiling = max.rounded(.up)
+            guard ceiling < Double(Int.max), let whole = Int(exactly: ceiling) else {
+                throw ValidationError("--max \(max) exceeds the maximum representable wait")
+            }
+            _ = try WaitCommand.nanoseconds(forMilliseconds: whole)
+            let minimum = try Self.parts(min)
+            let maximum = try Self.parts(max)
+            let first = minimum.floor.addingReportingOverflow(1)
+            let last = maximum.ceil.subtractingReportingOverflow(1)
+            guard !first.overflow, !last.overflow, first.partialValue < last.partialValue else {
+                throw ValidationError("Jitter bounds must contain at least two integer nanosecond durations strictly inside (min, max)")
+            }
+            minMilliseconds = min
+            maxMilliseconds = max
+            lower = first.partialValue
+            upper = last.partialValue
+        }
+
+        func nanoseconds(for milliseconds: Double) throws -> UInt64 {
+            guard milliseconds.isFinite, milliseconds > minMilliseconds, milliseconds < maxMilliseconds else {
+                throw ValidationError("Jitter draw must be finite and strictly inside (min, max)")
+            }
+            let rounded = try Self.parts(milliseconds).nearest
+            // Only clock quantization is restricted to the legal ticks. No
+            // out-of-bounds Cauchy draw is silently clamped to a configured bound.
+            return Swift.min(upper, Swift.max(lower, rounded))
+        }
+
+        private static func parts(_ milliseconds: Double) throws -> (floor: UInt64, ceil: UInt64, nearest: UInt64) {
+            guard milliseconds.isFinite, milliseconds >= 0,
+                  let whole = UInt64(exactly: milliseconds.rounded(.down)) else {
+                throw ValidationError("Jitter duration cannot be represented in nanoseconds")
+            }
+            let base = whole.multipliedReportingOverflow(by: 1_000_000)
+            guard !base.overflow else {
+                throw ValidationError("Jitter duration exceeds the maximum representable wait")
+            }
+            // Multiplying the complete Double would lose low integer bits for
+            // large waits. Split first; the fractional product is at most 1e6.
+            let fraction = milliseconds - Double(whole)
+            let product = fraction * 1_000_000
+            // Fused multiply-add recovers the product's rounding error. This
+            // distinguishes a true integer/half tick from a rounded one, even
+            // immediately beside a bound (e.g. (1 / 128).nextDown milliseconds).
+            let error = (-product).addingProduct(fraction, 1_000_000)
+            let floorProduct = product.rounded(.down)
+            var floor = floorProduct
+            var ceil = product.rounded(.up)
+            var nearest = product.rounded(.toNearestOrAwayFromZero)
+            if product == floorProduct {
+                if error < 0 { floor -= 1 }
+                if error > 0 { ceil += 1 }
+            } else if product - floorProduct == 0.5, error < 0 {
+                nearest = floorProduct
+            }
+            func combined(_ offset: Double) throws -> UInt64 {
+                guard let integer = UInt64(exactly: offset) else {
+                    throw ValidationError("Jitter duration cannot be represented in nanoseconds")
+                }
+                let sum = base.partialValue.addingReportingOverflow(integer)
+                guard !sum.overflow else {
+                    throw ValidationError("Jitter duration exceeds the maximum representable wait")
+                }
+                return sum.partialValue
+            }
+            return try (combined(floor), combined(ceil), combined(nearest))
+        }
+    }
+
     /// The single jitter duration this invocation sleeps for, in milliseconds.
     func drawJitterMilliseconds() throws -> Double {
         try drawJitterMilliseconds(from: jitterDistribution())
     }
 
-    private func drawJitterMilliseconds(from distribution: TruncatedCauchy) -> Double {
+    private func drawJitterMilliseconds(from distribution: TruncatedCauchy) throws -> Double {
         if let seed {
             var generator = SplitMix64(seed: seed)
-            return distribution.sample(using: &generator)
+            return try distribution.sample(using: &generator)
         }
         var generator = SystemRandomNumberGenerator()
-        return distribution.sample(using: &generator)
+        return try distribution.sample(using: &generator)
     }
 
     func run() async throws {
+        try await run(sleep: { try await Task.sleep(nanoseconds: $0) })
+    }
+
+    /// Keep the real sleep argument observable without relying on scheduler timing.
+    func run(sleep: (UInt64) async throws -> Void) async throws {
         if jitter != nil {
             let distribution = try jitterDistribution()
+            let range = try JitterNanosecondRange(min: distribution.min, max: distribution.max)
             if let warning = distribution.nearlyFixedWarning {
                 FileHandle.standardError.write(Data((warning + "\n").utf8))
             }
-            let drawn = drawJitterMilliseconds(from: distribution)
-            // drawn < --max, which validate() proved representable in nanoseconds.
-            try await Task.sleep(nanoseconds: UInt64(drawn * 1_000_000))
+            let drawn = try drawJitterMilliseconds(from: distribution)
+            try await sleep(range.nanoseconds(for: drawn))
         } else if let forUrl {
             try await waitForURL(pattern: forUrl)
         } else if let js {
             try await waitForJS(expression: js)
         } else if let milliseconds {
             let duration = try Self.nanoseconds(forMilliseconds: milliseconds)
-            try await Task.sleep(nanoseconds: duration)
+            try await sleep(duration)
         }
     }
 
