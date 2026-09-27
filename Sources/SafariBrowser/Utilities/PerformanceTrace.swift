@@ -181,7 +181,7 @@ enum PerformanceTrace {
 
     /// Quotes, UTF-8 bytes, and one byte per character that must be escaped;
     /// nil once past `budget`. The UTF-8 length is checked first, so an
-    /// oversized string is rejected without scanning it.
+    /// oversized string is rejected before escape-by-escape accounting.
     private static func stringSizeLowerBound(_ string: String, budget: Int) -> Int? {
         var size = string.utf8.count + 2
         guard size <= budget else { return nil }

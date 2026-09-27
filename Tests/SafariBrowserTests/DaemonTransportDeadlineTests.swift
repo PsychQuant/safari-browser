@@ -356,6 +356,17 @@ extension DaemonTransportDeadlineTests {
         XCTAssertEqual(line.count, 1000)
     }
 
+    func testExactLimitWithNewlineArrivingInTheNextRead() throws {
+        let (r, w) = pair(); defer { close(r); close(w) }
+        XCTAssertTrue(DeadlinePeer.write(w, Data(repeating: 65, count: 1000)))
+        DispatchQueue.global().async {
+            usleep(20_000)
+            _ = DeadlinePeer.write(w, Data([10]))
+        }
+        var reader = DaemonClient.LineReader()
+        XCTAssertEqual(try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 2), maxBytes: 1000).count, 1000)
+    }
+
     func testLineOneByteOverTheLimitIsRejected() {
         let (r, w) = pair(); defer { close(r); close(w) }
         XCTAssertTrue(DeadlinePeer.write(w, Data(repeating: 65, count: 1001) + Data([10])))
@@ -397,6 +408,15 @@ extension DaemonTransportDeadlineTests {
         XCTAssertEqual(String(decoding: try reader.readLine(fd: r, deadline: deadline, maxBytes: 64), as: UTF8.self), "{\"b\":2}")
     }
 
+    func testCoalescedLinesUseTheirOwnPhaseLimits() throws {
+        let (r, w) = pair(); defer { close(r); close(w) }
+        XCTAssertTrue(DeadlinePeer.write(w, Data("ok\nlarge-reply\n".utf8)))
+        var reader = DaemonClient.LineReader()
+        let deadline = DaemonClient.Deadline(timeout: 2)
+        XCTAssertEqual(try reader.readLine(fd: r, deadline: deadline, maxBytes: 5), Data("ok".utf8))
+        XCTAssertEqual(try reader.readLine(fd: r, deadline: deadline, maxBytes: 20), Data("large-reply".utf8))
+    }
+
     func testEOFBeforeNewlineIsStillAnError() {
         let (r, w) = pair(); defer { close(r) }
         XCTAssertTrue(DeadlinePeer.write(w, Data("partial".utf8)))
@@ -412,14 +432,21 @@ extension DaemonTransportDeadlineTests {
             _ = DeadlinePeer.write(fd, Data(repeating: 65, count: 8192))   // no newline, over the test limit
         }
         defer { peer.stop() }
+        var fallbackCalls = 0
         do {
-            _ = try await DaemonClient.sendRequest(name: peer.name, method: "mutate", params: Data("{}".utf8),
-                                                   requestId: 7, timeout: 2, socketDir: peer.directory,
-                                                   responseLineLimit: 1024)
+            _ = try await SafariBridge.runViaRouter(source: "owned fixture", daemonOptIn: true,
+                daemonFn: { _ in
+                    let data = try await DaemonClient.sendRequest(name: peer.name, method: "mutate", params: Data("{}".utf8),
+                        requestId: 7, timeout: 2, socketDir: peer.directory, responseLineLimit: 1024)
+                    return String(decoding: data, as: UTF8.self)
+                }, statelessFn: { _ in fallbackCalls += 1; return "replayed" })
             XCTFail("an oversized reply must not count as success")
         } catch let error as DaemonClient.Error {
+            guard case .requestOutcomeUnknown = error else { return XCTFail("Unexpected classification: \(error)") }
+            XCTAssertTrue(error.description.contains("limit"), "Must reject size, not merely observe EOF")
             XCTAssertNil(error.fallbackReason, "the request was transmitted: an oversized reply must not authorize replay")
         }
+        XCTAssertEqual(fallbackCalls, 0)
     }
 
     func testLegitimateLargeJSONReplyPassesThroughClient() async throws {
@@ -464,6 +491,47 @@ extension DaemonTransportDeadlineTests {
         }
     }
 
+    func testOversizedOptionalTimingPreservesRemoteError() async throws {
+        let response = try JSONSerialization.data(withJSONObject: [
+            "requestId": 7, "error": ["code": "ownedFailure", "message": "owned message"],
+            "timing": ["blob": String(repeating: "x", count: 100_000)]
+        ]) + Data([10])
+        let peer = try DeadlinePeer { fd in
+            DeadlinePeer.handshake(fd)
+            _ = DeadlinePeer.readRequest(fd)
+            _ = DeadlinePeer.write(fd, response)
+        }
+        defer { peer.stop() }
+        let collector = PerformanceTrace.Collector()
+        do {
+            _ = try await PerformanceTrace.$context.withValue(.init(collector: collector, parentID: nil)) {
+                try await peer.request(timeout: 5)
+            }
+            XCTFail("Expected the original remote error")
+        } catch DaemonClient.Error.remoteError(let code, let message) {
+            XCTAssertEqual(code, "ownedFailure")
+            XCTAssertEqual(message, "owned message")
+        }
+        let trace = try XCTUnwrap(collector.finish(status: .error))
+        XCTAssertEqual(trace.spans.count, 1)
+        XCTAssertEqual(trace.status, .error)
+    }
+
+    func testHandshakeAtProductionLimitAcceptsTrailingJSONWhitespace() async throws {
+        var handshake = DaemonProtocol.encodeHandshake()
+        handshake.append(Data(repeating: 32, count: DaemonClient.maxHandshakeLineBytes - handshake.count))
+        handshake.append(10)
+        let frame = handshake
+        let peer = try DeadlinePeer { fd in
+            _ = DeadlinePeer.write(fd, frame)
+            _ = DeadlinePeer.readRequest(fd)
+            _ = DeadlinePeer.write(fd, Data(#"{"requestId":7,"result":"owned"}"#.utf8) + Data([10]))
+        }
+        defer { peer.stop() }
+        let result = try await peer.request(timeout: 5)
+        XCTAssertEqual(String(decoding: result, as: UTF8.self), #""owned""#)
+    }
+
     func testOversizedHandshakeFailsBeforeTheRequestIsSent() async throws {
         let sent = ExecSubprocessOutputTests.Output()
         let peer = try DeadlinePeer { fd in
@@ -476,6 +544,7 @@ extension DaemonTransportDeadlineTests {
             _ = try await peer.request(timeout: 1)
             XCTFail("an oversized handshake must fail")
         } catch let error as DaemonClient.Error {
+            XCTAssertTrue(error.description.contains("limit"), "Must reject size, not merely time out")
             XCTAssertNotNil(error.fallbackReason, "nothing was sent yet, so the stateless path stays available")
         }
         XCTAssertTrue(sent.text.isEmpty, "the request must never be written after an oversized handshake")

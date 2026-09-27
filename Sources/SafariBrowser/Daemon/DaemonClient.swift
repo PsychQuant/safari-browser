@@ -144,8 +144,8 @@ enum DaemonClient {
     /// The deadline covers connection, handshake, the request frame, and the
     /// entire response. Once any request bytes are sent, unverified outcomes
     /// must never authorize replay of a potentially mutating operation.
-    /// #174: the handshake is one short JSON object; anything near this size
-    /// is not a daemon. Exceeding it happens before the request is written,
+    /// #174: limit the normally small handshake independently of large replies.
+    /// Exceeding this limit happens before the request is written,
     /// so the stateless path stays available.
     static let maxHandshakeLineBytes = 64 * 1024
 
@@ -404,7 +404,7 @@ enum DaemonClient {
                     }
                     let line = Data(pending[..<newline])
                     pending.removeSubrange(...newline)
-                    pending = Data(pending)   // rebase indices to 0 for the next scan
+                    pending = Data(pending)
                     scanned = 0
                     return line
                 }
