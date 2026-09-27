@@ -22,6 +22,6 @@
 
 - [x] 4.1 「導頁、取消與診斷收尾」：帶 matcher 的正式 bridge 重試路徑先 RED 再 GREEN；取消各邊界、遺失 frame 狀態與 UTF-16 診斷先重現，再以 focused tests 驗證。
 - [x] 4.2 「暫時編譯與舊 daemon 相容」／Ephemeral AppleScript compilation：cache 18→1 行為 RED／GREEN，驗新 RPC、舊 daemon 拒絕後安全退回、可重用 handle 不變及日誌遮蔽。
-- [ ] 4.3 補量測與驗證：記錄暫時編譯保留量及可取得的延遲證據，區分純 fixture 與 Safari 真實指令；更新 #170 的量測前提，執行完整測試與第二輪六方審查。
+- [ ] 4.3 「驗證範圍與後續」：補量測與驗證，記錄暫時編譯保留量及可取得的延遲證據，區分純 fixture 與 Safari 真實指令；更新 #170 的量測前提，執行完整測試與第二輪六方審查。
 
 R2 目前：真正 NSAppleScript 與 RPC 的保留量／相容性測試通過；20 筆 return-fixture RPC 延遲已記錄於 design，並未當作 Safari 端到端量測。#193 追蹤硬終止後的頁面回收。
