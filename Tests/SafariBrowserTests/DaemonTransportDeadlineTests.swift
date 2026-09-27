@@ -422,6 +422,48 @@ extension DaemonTransportDeadlineTests {
         }
     }
 
+    func testLegitimateLargeJSONReplyPassesThroughClient() async throws {
+        let expected = String(repeating: "漢字😀", count: 300_000)
+        let response = try JSONSerialization.data(withJSONObject: [
+            "requestId": 7, "result": ["status": "ok", "output": expected]
+        ]) + Data([10])
+        let peer = try DeadlinePeer { fd in
+            DeadlinePeer.handshake(fd)
+            _ = DeadlinePeer.readRequest(fd)
+            _ = DeadlinePeer.write(fd, response)
+        }
+        defer { peer.stop() }
+        let result = try await peer.request(timeout: 10)
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: result) as? [String: String])
+        XCTAssertEqual(payload["output"], expected)
+        XCTAssertEqual(payload["status"], "ok")
+    }
+
+    func testMalformedAndOversizedOptionalTimingPreserveClientResult() async throws {
+        for timing in [["spans": "not an array"], ["blob": String(repeating: "x", count: 100_000)]] {
+            let response = try JSONSerialization.data(withJSONObject: [
+                "requestId": 7, "result": ["status": "ok", "output": "owned result", "timing": timing]
+            ]) + Data([10])
+            let peer = try DeadlinePeer { fd in
+                DeadlinePeer.handshake(fd)
+                _ = DeadlinePeer.readRequest(fd)
+                _ = DeadlinePeer.write(fd, response)
+            }
+            defer { peer.stop() }
+            let collector = PerformanceTrace.Collector()
+            let result = try await PerformanceTrace.$context.withValue(.init(collector: collector, parentID: nil)) {
+                try await peer.request(timeout: 5)
+            }
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: result) as? [String: Any])
+            XCTAssertEqual(payload["status"] as? String, "ok")
+            XCTAssertEqual(payload["output"] as? String, "owned result")
+            let trace = try XCTUnwrap(collector.finish(status: .ok))
+            XCTAssertEqual(trace.spans.count, 1, "Invalid peer timing must not add imported spans")
+            XCTAssertEqual(trace.spans.first?.phase, .daemonRequest)
+            XCTAssertEqual(trace.status, .ok)
+        }
+    }
+
     func testOversizedHandshakeFailsBeforeTheRequestIsSent() async throws {
         let sent = ExecSubprocessOutputTests.Output()
         let peer = try DeadlinePeer { fd in
