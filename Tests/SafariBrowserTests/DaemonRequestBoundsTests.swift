@@ -145,7 +145,9 @@ final class DaemonRequestBoundsTests: XCTestCase {
         request.append(10)
         try writeAll(fd, request)
         var byte: UInt8 = 0
-        XCTAssertEqual(read(fd, &byte, 1), 0, "oversized request must close before a response or handler")
+        let rejected = read(fd, &byte, 1)
+        XCTAssertTrue(rejected == 0 || (rejected < 0 && errno == ECONNRESET),
+                      "oversized request must close before a response or handler")
         XCTAssertEqual(counter.value, 0)
         let reply = try await DaemonClient.sendRequest(name: name, method: "owned", params: Data("{}".utf8),
             requestId: 8, timeout: 2, socketDir: directory)
@@ -185,13 +187,15 @@ final class DaemonRequestBoundsTests: XCTestCase {
     }
 
     func testMultimegabyteLineUsesManyBoundedReads() throws {
-        let (r, w) = try pair(); defer { close(r); close(w) }
+        let (r, w) = try pair(); defer { close(r) }
         let payload = Data(repeating: 65, count: 8 * 1024 * 1024) + Data([10])
         let group = DispatchGroup()
         let failed = Counter()
         group.enter()
         DispatchQueue.global().async {
-            defer { group.leave() }
+            // The writer owns this fd until its last write, even if a
+            // failing test cannot join promptly. Never close beneath it.
+            defer { close(w); group.leave() }
             payload.withUnsafeBytes { bytes in
                 var sent = 0
                 while sent < bytes.count {
@@ -205,14 +209,16 @@ final class DaemonRequestBoundsTests: XCTestCase {
         defer { shutdown(r, SHUT_RDWR); _ = group.wait(timeout: .now() + 3) }
         var reader = DaemonServer.RequestLineReader()
         var reads = 0
+        var smallestRequestedChunk = Int.max
         let result = try reader.readLine(fd: r) { fd, buffer, size in
             XCTAssertLessThanOrEqual(size, 8192)
             reads += 1
+            smallestRequestedChunk = min(smallestRequestedChunk, size)
             return Darwin.read(fd, buffer, size)
         }
         XCTAssertEqual(result, payload.dropLast())
         XCTAssertGreaterThan(reads, 1000)
-        XCTAssertLessThan(reads, 4096, "chunking must not regress to byte-at-a-time reads")
+        XCTAssertGreaterThan(smallestRequestedChunk, 1, "request chunks without assuming how much the kernel returns")
         XCTAssertEqual(group.wait(timeout: .now() + 3), .success)
         XCTAssertEqual(failed.value, 0)
     }
@@ -268,22 +274,27 @@ final class DaemonRequestBoundsTests: XCTestCase {
         let (server, name, directory) = try await start(limit: 1024)
         let counter = Counter()
         await server.register("owned") { _ in counter.hit(); return Data("true".utf8) }
-        let params = try JSONSerialization.data(withJSONObject: ["source": String(repeating: "x", count: 4000)])
-        var fallbackCalls = 0
-        do {
-            _ = try await SafariBridge.runViaRouter(source: "owned request", daemonOptIn: true,
-                daemonFn: { _ in
-                    let data = try await DaemonClient.sendRequest(name: name, method: "owned", params: params,
-                        requestId: 7, timeout: 2, socketDir: directory)
-                    return String(decoding: data, as: UTF8.self)
-                }, statelessFn: { _ in fallbackCalls += 1; return "replayed" })
-            XCTFail("oversized request cannot succeed")
-        } catch let error as DaemonClient.Error {
-            guard case .requestOutcomeUnknown = error else { return XCTFail("unexpected classification: \(error)") }
-            XCTAssertNil(error.fallbackReason)
+        for sourceBytes in [4000, 4_000_000] {
+            let params = try JSONSerialization.data(withJSONObject: ["source": String(repeating: "x", count: sourceBytes)])
+            var fallbackCalls = 0
+            do {
+                _ = try await SafariBridge.runViaRouter(source: "owned request", daemonOptIn: true,
+                    daemonFn: { _ in
+                        let data = try await DaemonClient.sendRequest(name: name, method: "owned", params: params,
+                            requestId: 7, timeout: 5, socketDir: directory)
+                        return String(decoding: data, as: UTF8.self)
+                    }, statelessFn: { _ in fallbackCalls += 1; return "replayed" })
+                XCTFail("oversized request cannot succeed")
+            } catch let error as DaemonClient.Error {
+                guard case .requestOutcomeUnknown(let reason) = error else { return XCTFail("unexpected classification: \(error)") }
+                if sourceBytes == 4_000_000 {
+                    XCTAssertTrue(reason.contains("request transmission interrupted"), "exercise the interrupted-write path: \(reason)")
+                }
+                XCTAssertNil(error.fallbackReason)
+            }
+            XCTAssertEqual(counter.value, 0)
+            XCTAssertEqual(fallbackCalls, 0)
         }
-        XCTAssertEqual(counter.value, 0)
-        XCTAssertEqual(fallbackCalls, 0)
     }
 
     func testCoalescedOversizedFrameDoesNotDispatchOrSkipToFollowingFrame() async throws {
@@ -320,6 +331,26 @@ final class DaemonRequestBoundsTests: XCTestCase {
         var byte: UInt8 = 0
         XCTAssertEqual(read(fd, &byte, 1), 0)
         XCTAssertEqual(counter.value, 1)
+    }
+
+    func testOversizedLifecycleRequestCannotBypassTheReaderLimit() async throws {
+        let (server, name, directory) = try await start(limit: 128)
+        let shutdowns = Counter()
+        await server.setShutdownHook { shutdowns.hit() }
+        await server.register("owned") { _ in Data("true".utf8) }
+        let fd = try connect(name: name, directory: directory)
+        defer { close(fd) }
+        var request = Data(#"{"method":"daemon.shutdown","params":{},"requestId":7}"#.utf8)
+        request.append(Data(repeating: 32, count: 129 - request.count))
+        try writeAll(fd, request + Data([10]))
+        var byte: UInt8 = 0
+        let n = read(fd, &byte, 1)
+        XCTAssertTrue(n == 0 || (n < 0 && errno == ECONNRESET), "lifecycle routing must not parse an oversized frame")
+        XCTAssertEqual(shutdowns.value, 0)
+        let response = try await DaemonClient.sendRequest(name: name, method: "owned", params: Data("{}".utf8),
+            requestId: 8, timeout: 2, socketDir: directory)
+        XCTAssertEqual(response, Data("true".utf8))
+        XCTAssertEqual(shutdowns.value, 0)
     }
 
 }

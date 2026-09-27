@@ -59,6 +59,30 @@ code:
 
 The daemon SHALL listen on a Unix domain socket at the path `${TMPDIR:-/tmp}/safari-browser-<NAME>.sock`, where `<NAME>` is the namespace identifier. The wire format SHALL be newline-delimited JSON, one JSON object per line in each direction. Requests SHALL have the shape `{"method": string, "params": object, "requestId": number}`. Successful responses SHALL have `{"requestId": number, "result": object}`. Error responses SHALL have `{"requestId": number, "error": {"code": string, "message": string, "data": object}}`.
 
+The server SHALL limit each complete encoded request line to 128 MiB (134,217,728 bytes), excluding its terminating LF and including all JSON envelope fields. It SHALL enforce the limit while reading, before parsing or dispatching the offending frame, and SHALL close that connection on excess without parsing a prefix to recover requestId or sending a new error envelope. This is a per-frame wire limit, not a process-memory ceiling. Previously completed frames on the same connection remain completed; the offending frame and later frames SHALL NOT be dispatched. Clients SHALL retain the existing post-send outcome-unknown and no-replay handling.
+
+The server SHALL preserve coalesced request lines and accept a final in-limit JSON request terminated by true EOF for compatibility. EINTR SHALL retry the same unfinished frame; other read errors SHALL end the connection without treating a partial frame as EOF.
+
+#### Scenario: Exact limit and excess requests
+
+- **WHEN** an encoded request has exactly 134,217,728 bytes before LF
+- **THEN** it is eligible for the normal JSON parsing and dispatch path
+- **WHEN** the unfinished line contains one additional non-LF byte
+- **THEN** the server closes the connection before parsing or dispatching that frame, without waiting for LF or EOF
+
+#### Scenario: A rejected frame does not authorize skipping or replay
+
+- **WHEN** a connection supplies a valid frame, an oversized frame, and another valid frame
+- **THEN** only the first frame may be dispatched, the connection ends at the oversized frame, and the later frame is not processed
+- **AND** a client that has transmitted request bytes keeps the outcome-unknown/no-replay classification after the connection closes
+
+#### Scenario: EOF is distinct from a read error
+
+- **WHEN** the peer half-closes after an in-limit final JSON object without LF
+- **THEN** the server processes that final frame at most once
+- **WHEN** reading an unfinished frame fails with an error other than EINTR
+- **THEN** the server closes the connection without dispatching the incomplete frame
+
 #### Scenario: Client can inspect the protocol with nc
 
 - **WHEN** a developer runs `nc -U ${TMPDIR:-/tmp}/safari-browser-default.sock` and types a valid JSON request followed by a newline
