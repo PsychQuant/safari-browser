@@ -332,11 +332,15 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
         let command = try JSCommand.parse(["--url-exact", "https://fixture.invalid/",
             "window.counter=(window.counter||0)+1; return 'done'"])
         let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
-        try await DaemonRequestContext.$current.withValue(request) {
-            try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
-                try await command.run()
+        let stderr = try await captureOutput(descriptor: STDERR_FILENO) {
+            try await DaemonRequestContext.$current.withValue(request) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                    try await command.run()
+                }
             }
         }
+        XCTAssertTrue(stderr.contains("ran successfully"))
+        XCTAssertTrue(stderr.contains("https://fixture.invalid/after"))
         let count = await page.evaluateJS("window.counter")
         XCTAssertEqual(count, "1")
     }
@@ -485,21 +489,29 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
 
     func testCancellationCannotBecomeNavigationSuccessDuringFailureCleanupOrURLRead() async throws {
         for fault in [ScriptPage.Fault.cancelFailureCleanup, .cancelNavigationRead] {
-            let page = try ScriptPage(interleave: false, fault: fault)
-            let stderr = try await captureOutput(descriptor: STDERR_FILENO) {
-            let task = Task {
-                let command = try JSCommand.parse(["--large", "window.counter=1; return 'done'"])
-                let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
-                try await DaemonRequestContext.$current.withValue(request) {
-                    try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
-                        try await command.run()
+            for outputRequested in [false, true] {
+                let page = try ScriptPage(interleave: false, fault: fault)
+                let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                if outputRequested { try "keep-me".write(to: output, atomically: true, encoding: .utf8) }
+                defer { try? FileManager.default.removeItem(at: output) }
+                let arguments = (outputRequested ? ["--output", output.path] : ["--large"])
+                    + ["window.counter=1; return 'done'"]
+                let stderr = try await captureOutput(descriptor: STDERR_FILENO) {
+                    let task = Task {
+                        let command = try JSCommand.parse(arguments)
+                        let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+                        try await DaemonRequestContext.$current.withValue(request) {
+                            try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                                try await command.run()
+                            }
+                        }
                     }
+                    do { try await task.value; XCTFail("Cancellation cannot settle into successful navigation") }
+                    catch is CancellationError { }
                 }
+                XCTAssertFalse(stderr.contains("ran successfully"))
+                if outputRequested { XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "keep-me") }
             }
-            do { try await task.value; XCTFail("Cancellation cannot settle into successful navigation") }
-            catch is CancellationError { }
-            }
-            XCTAssertFalse(stderr.contains("ran successfully"))
         }
     }
 
@@ -517,7 +529,12 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
                 }
             }
             XCTFail("--output must fail when no fresh result was written")
-        } catch JavaScriptResultSession.TransferFailure.outputUnavailableAfterNavigation { }
+        } catch let error as JavaScriptResultSession.TransferFailure {
+            guard case .outputUnavailableAfterNavigation = error else { throw error }
+            XCTAssertNotEqual(JSCommand.exitCode(for: error), .success)
+            XCTAssertTrue(JSCommand.message(for: error).contains("--output"))
+            XCTAssertTrue(JSCommand.message(for: error).contains("not retried"))
+        }
         XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "old-batch")
     }
 
