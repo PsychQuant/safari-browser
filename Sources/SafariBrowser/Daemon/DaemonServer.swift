@@ -522,7 +522,7 @@ enum DaemonServer {
             }
         }
 
-        /// Stop accepting new connections, close existing connections,
+        /// Stop accepting new connections, cancel existing connection tasks,
         /// and remove the socket file. Returns without waiting for the accept
         /// loop, which closes the listener itself once it observes the wake.
         func stop() async {
@@ -555,7 +555,7 @@ enum DaemonServer {
             handlers[method]
         }
 
-        /// The caller is the accept task owned by this instance. stop()
+        /// In production the caller is the accept task owned by this instance. stop()
         /// cancels that task before clearing tracked connections. Checking
         /// cancellation, creating the handler and tracking it in one actor
         /// turn makes admission atomic with stop(), including stop/start:

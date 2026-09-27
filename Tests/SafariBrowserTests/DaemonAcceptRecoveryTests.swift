@@ -492,16 +492,21 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         defer { unlink(path) }
         let server = DaemonServer.Instance()
         await server.register("echo") { $0 }
-        for round in 1...2 {
-            try await server.start(socketPath: path)
-            let reply = try await DaemonClient.sendRequest(name: name, method: "echo",
-                                                           params: Data("{\"r\":\(round)}".utf8), requestId: round)
-            XCTAssertEqual(String(decoding: reply, as: UTF8.self), "{\"r\":\(round)}",
-                           "an accepted client must be served with blocking I/O (round \(round))")
-            let stopping = Date()
+        do {
+            for round in 1...2 {
+                try await server.start(socketPath: path)
+                let reply = try await DaemonClient.sendRequest(name: name, method: "echo",
+                                                               params: Data("{\"r\":\(round)}".utf8), requestId: round)
+                XCTAssertEqual(String(decoding: reply, as: UTF8.self), "{\"r\":\(round)}",
+                               "an accepted client must be served with blocking I/O (round \(round))")
+                let stopping = Date()
+                await server.stop()
+                XCTAssertLessThan(Date().timeIntervalSince(stopping), 1.0, "stop() returns without waiting for the accept loop")
+                XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+            }
+        } catch {
             await server.stop()
-            XCTAssertLessThan(Date().timeIntervalSince(stopping), 1.0, "stop() returns without waiting for the accept loop")
-            XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+            throw error
         }
     }
 
@@ -527,11 +532,17 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         await server.setLogWriter { line in
             if line.contains("accept_recovered") {
                 entered.fulfill()
-                _ = release.wait(timeout: .now() + 5)
+                XCTAssertEqual(release.wait(timeout: .now() + 5), .success,
+                               "fixture gate must be released by the test, not its timeout")
             }
         }
         let path = "\(NSTemporaryDirectory())acc-\(UUID().uuidString.prefix(8)).sock"
-        try await server.start(socketPath: path, environment: script.environment())
+        do {
+            try await server.start(socketPath: path, environment: script.environment())
+        } catch {
+            close(pair[0]) // start failed before transferring the scripted fd
+            throw error
+        }
         await fulfillment(of: [entered], timeout: 3)
         await server.stop()
         if restart {
@@ -546,7 +557,15 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
         shutdown(pair[1], SHUT_WR)
         // Drain any handshake from the defective implementation and observe
         // peer EOF so even the RED run does not leave a handler behind.
-        if n > 0 { XCTAssertEqual(read(pair[1], &buffer, buffer.count), 0) }
+        if n > 0 {
+            var drained = n
+            var next = read(pair[1], &buffer, buffer.count)
+            while next > 0 && drained < 65_536 {
+                drained += next
+                next = read(pair[1], &buffer, buffer.count)
+            }
+            XCTAssertEqual(next, 0, "RED cleanup must drain a segmented handshake to EOF")
+        }
         await server.stop()
     }
 
