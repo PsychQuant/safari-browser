@@ -2,7 +2,12 @@
 
 使用者已決定（#182 decision comment）：分布為 doubly truncated Cauchy，以反函數法抽樣，參數定義在截斷後分布上，界限不得以 clamp 表達。
 
-## Decisions（以下為先前版本；中位數與轉換設計已由 2026-09-27 校正取代）
+## 歷史設計（已取代，不作為實作或驗收依據）
+
+<details>
+<summary>展開先前設計與當時的驗證紀錄</summary>
+
+以下保留當時的錯誤前提與數值檢查紀錄，供追溯使用。現行設計以「2026-09-27 校正」及 Implementation Contract 為準。
 
 **抽樣**：令 $F_\mu(x) = \tfrac12 + \tfrac1\pi\arctan\tfrac{x-\mu}{\sigma}$。取 $u \sim \mathrm{U}(F_\mu(a), F_\mu(b))$，$x = \mu + \sigma\tan(\pi(u-\tfrac12))$。每次呼叫固定成本；拒絕抽樣在界限窄時需多次重抽，不採用。$x$ 以 Double 毫秒保留小數，直接換成奈秒，不先取整毫秒（取整會在整數毫秒上形成離散點）。
 
@@ -13,6 +18,8 @@
 **亂數**：預設用系統亂數；`--seed` 時用本檔內的 SplitMix64，不新增依賴。抽樣器接受注入的 generator 以便測試。均勻亂數直接由 generator 的高 53 位元換算，不經 `Double.random(in:using:)`（標準函式庫不保證其演算法跨版本穩定）。`--seed` 僅供測試：每次 `wait` 是獨立程序，種子固定的是該次呼叫的單一抽樣，重複使用會得到相同的等待時間（verify R1）。
 
 **介面**：`--jitter` 只接受 `cauchy`（保留日後 `lognormal` 等值）。與位置毫秒、`--for-url`、`--js` 同時出現時在 `validate()` 拒絕，避免猜測語意。參數檢查：$0 \le a < m < b$、$\sigma > 0$，且 $b$ 必須通過既有 `nanoseconds(forMilliseconds:)` 溢位檢查（#153）。
+
+</details>
 
 ## Validation
 
@@ -29,13 +36,13 @@
 
 ### 完整可達中位數與穩定反解
 
-令 L=b-a，p=m-a，q=b-m，d=q-p。中位數方程可化為 d*y²-2*p*q*y+d*scale²=0（y=m-location）。選擇連續通過中央 location 的根：r=d*scale/(p*q)，y=scale*r/(1+sqrt(1-r²))，location=m-y；中央中位數時 r=0。全域最小中位數距離下界為 L*t，t=2*g/(1+2*g+hypot(1,2*g))、g=scale/L；最大值對稱。使用正規化座標避免大數乘積與相消，並回代檢查數值結果。對機器精度無法可靠表示的輸入明確報錯，不以較窄的 location 人工限制代替原需求。維持既有 scale/width 上限 100。
+令 L=b-a，p=m-a，q=b-m，d=q-p。中位數方程可化為 d*y²-2*p*q*y+d*scale²=0（y=m-location）。選擇連續通過中央 location 的根：r=d*scale/(p*q)，y=scale*r/(1+sqrt(1-r²))，location=m-y；中央中位數時 r=0。某些中位數有兩個 location 解，本實作固定選擇中央分支，不宣稱 location 唯一。全域最小中位數距離下界為 L*t，t=2*g/(1+2*g+hypot(1,2*g))、g=scale/L；最大值對稱。使用正規化座標避免大數乘積與相消，並回代檢查數值結果。對機器精度無法可靠表示的輸入明確報錯，不以較窄的 location 人工限制代替原需求。維持既有 scale/width 上限 100。
 
 反函數抽樣仍使用真正截斷分布；數值造成端點結果時可有界重抽，但不得在耗盡重抽後默默回傳固定中位數。`sample(using:) throws -> Double` 在無法取得有效數值時明確失敗。種子重現限定同一支援的數值環境，不宣稱 libm 跨平台位元完全一致。
 
 ### 奈秒可表示性與等待轉換
 
-CLI 在等待前確認 (min,max) 至少包含兩個可表示的整數奈秒，拒絕完全小於 1ns 或只有一個合法時間點的區間。保留既有 #153 上界溢位保護。抽樣值先保留 Double 毫秒，再轉成最接近且嚴格在設定界限內的整數奈秒；這是睡眠 API 的必要量化，不把 Cauchy 界外抽樣值 clamp 到設定界限。一般數值下量化誤差至多約 1ns；不得輸出設定端點或固定零等待。
+CLI 在等待前確認 (min,max) 至少包含兩個可表示的整數奈秒，拒絕完全小於 1ns 或只有一個合法時間點的區間。保留既有 #153 上界溢位保護。抽樣值先保留 Double 毫秒，再轉成最接近且嚴格在設定界限內的整數奈秒；這是睡眠 API 的必要量化，不把 Cauchy 界外抽樣值 clamp 到設定界限。大型毫秒偏移仍受 Double 間距限制；奈秒轉換不會增加原抽樣值的精度。一般數值下量化誤差至多約 1ns；不得輸出設定端點或固定零等待。
 
 轉換以整數毫秒與小數部分分開處理，對乘法／加法與 UInt64 轉型做檢查，避免大數的 Double 乘積捨入繞過上下界。同一轉換函式必須由實際 run 路徑使用，測試檢查傳給 sleep 的 UInt64，不只測 sampler Double 或含排程誤差的壁鐘。
 

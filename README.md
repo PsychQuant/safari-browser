@@ -1023,6 +1023,7 @@ safari-browser wait --jitter cauchy --min 1500 --max 20000 --median 4000
 # solver checks the full attainable truncated-median range.
 # Bounds are parsed as Double milliseconds. Sleep quantizes to the nearest
 # interior integer nanosecond; at least two such durations must exist.
+# Large millisecond offsets remain limited by Double precision.
 # This clock quantization is separate from the continuous distribution, and
 # OS scheduling can make actual elapsed time longer than the requested sleep.
 # Seeds are reproducible within the same supported numerical environment.

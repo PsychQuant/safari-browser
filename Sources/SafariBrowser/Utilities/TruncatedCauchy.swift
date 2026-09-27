@@ -89,7 +89,8 @@ struct TruncatedCauchy {
         }
         // When both central quartiles collapse to the median, Double cannot
         // represent the distribution's central shape. Reject that numerical
-        // input rather than silently turning most draws into a fixed wait.
+        // input rather than lose the central shape in Double arithmetic.
+        // This does not guarantee distinct durations after nanosecond quantization.
         let quarterTangent = tan(span / 4)
         let lowerQuartile = median - scale * ((1 + k * k) * quarterTangent / (1 + k * quarterTangent))
         let upperQuartile = median + scale * ((1 + k * k) * quarterTangent / (1 - k * quarterTangent))
