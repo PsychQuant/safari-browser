@@ -154,8 +154,9 @@ struct TruncatedCauchy {
         guard belowClockResolution || iqr < Self.nearlyFixedIQRFraction * median else { return nil }
         let clockNote = belowClockResolution ? " The spread is below one nanosecond of sleep resolution." : ""
         return "⚠ jitter is nearly fixed: half of all delays fall within \(String(format: "%.6g", iqr)) ms of each other "
-            + "around \(String(format: "%.6g", median)) ms. Raise --scale (the default for these bounds is "
-            + "\(String(format: "%.6g", Self.defaultScale(min: min, max: max, median: median)))) or widen --min/--max." + clockNote
+            + "around \(String(format: "%.6g", median)) ms. Consider adjusting --median or widening --min/--max; "
+            + "a larger --scale helps only while the median remains achievable (the default for these bounds is "
+            + "\(String(format: "%.6g", Self.defaultScale(min: min, max: max, median: median))))." + clockNote
     }
 
     /// Inverse-CDF draw strictly inside `(min, max)`, without endpoint clamping.

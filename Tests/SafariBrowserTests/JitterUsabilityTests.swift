@@ -64,6 +64,32 @@ struct JitterUsabilityTests {
         #expect(warning.contains("default for these bounds is 8e-07"))
     }
 
+    @Test func `Clock warning still calls the real run sleep once with a legal duration`() async throws {
+        let command = try WaitCommand.parse([
+            "--jitter", "cauchy", "--min", "0", "--max", "0.000003",
+            "--median", "0.000001", "--scale", "0.0000001", "--seed", "42"
+        ])
+        #expect(try command.jitterDistribution().nearlyFixedWarning != nil)
+        var calls: [UInt64] = []
+        try await command.run(sleep: { calls.append($0) })
+        #expect(calls.count == 1)
+        #expect(calls.allSatisfy { $0 == 1 || $0 == 2 || $0 == 3 })
+        // The parsed Double 3e-6 is slightly above 3 ns, so 3 is interior too.
+    }
+
+    @Test func `Two legal ticks with enough relative spread remain usable without warning`() async throws {
+        var observed = Set<UInt64>()
+        for seed in 0..<32 {
+            let command = try WaitCommand.parse([
+                "--jitter", "cauchy", "--min", "0", "--max", "0.0000029",
+                "--median", "0.00000145", "--seed", String(seed)
+            ])
+            #expect(try command.jitterDistribution().nearlyFixedWarning == nil)
+            try await command.run(sleep: { observed.insert($0) })
+        }
+        #expect(observed == [1, 2])
+    }
+
     @Test func `Reviewer large median tiny scale case warns`() throws {
         let distribution = try TruncatedCauchy(min: 0, max: 10000, median: 5000, scale: 1e-7)
         #expect(distribution.nearlyFixedWarning != nil)

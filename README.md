@@ -1019,8 +1019,8 @@ safari-browser wait --jitter cauchy --min 1500 --max 20000 --median 4000
 # Without --scale, the scale is 0.8 × the distance from --median to the nearer
 # bound (800 for the defaults), so short intervals no longer inherit an unsuitable fixed scale.
 # An explicit --scale that makes the median unreachable is an error that prints
-# the achievable range. A scale so small that half of all delays fall within 5%
-# of the median, or within one nanosecond, prints a "nearly fixed" warning.
+# the achievable range. When the middle half of all delays spans less than
+# 5% of the median or one nanosecond, a "nearly fixed" warning is printed.
 # Numerical representability checks still apply. A --max over one hour
 # (3600000 ms) requires --allow-long-wait: the heavy tail makes a long draw
 # a matter of time.
