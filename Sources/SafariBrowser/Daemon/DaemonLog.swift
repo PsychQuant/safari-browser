@@ -210,22 +210,29 @@ enum DaemonLog {
 
     // MARK: - Format
 
-    /// #178: one JSON line for a server-side event that is not a request
-    /// (accept failures, connection setup failures). Carries only the event
-    /// name, errno, disposition and a streak count — nothing a client sent.
-    static func formatEvent(
-        timestamp: Date, event: String, errno code: Int32, disposition: String, count: Int
-    ) -> String {
+    static func formatDiagnostic(timestamp: Date, emission: DaemonDiagnosticBudget.Emission) -> String {
+        func fields(_ event: DaemonDiagnosticBudget.Event) -> [String: Any] {
+            ["event": event.kind.rawValue, "errno": Int(event.errno),
+             "disposition": event.disposition.rawValue, "count": event.count]
+        }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let object: [String: Any] = [
-            "timestamp": formatter.string(from: timestamp),
-            "event": event,
-            "errno": Int(code),
-            "disposition": disposition,
-            "count": count,
+        var object: [String: Any] = emission.event.map(fields) ?? [
+            "event": "diagnostics_suppressed", "errno": 0,
+            "disposition": "suppressed", "count": emission.suppressed?.total ?? 0
         ]
-        // Terminated like `formatEntry`: the writer appends lines verbatim.
+        object["timestamp"] = formatter.string(from: timestamp)
+        if let summary = emission.suppressed {
+            var value: [String: Any] = [
+                "total": summary.total,
+                "byEvent": Dictionary(uniqueKeysWithValues: summary.byEvent.map { ($0.key.rawValue, $0.value) }),
+                "byDisposition": Dictionary(uniqueKeysWithValues: summary.byDisposition.map { ($0.key.rawValue, $0.value) })
+            ]
+            if let first = summary.first { value["first"] = fields(first) }
+            if let recovery = summary.lastRecovery { value["lastRecovery"] = fields(recovery) }
+            if let terminal = summary.lastTerminal { value["lastTerminal"] = fields(terminal) }
+            object["suppressed"] = value
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
               let line = String(data: data, encoding: .utf8) else { return "{}\n" }
         return line + "\n"

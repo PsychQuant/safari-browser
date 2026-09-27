@@ -572,8 +572,8 @@ final class DaemonAcceptRecoveryTests: XCTestCase {
     // MARK: - Log format carries no private data
 
     func testEventLineIsOneTerminatedJSONLineWithOnlyItsFields() throws {
-        let line = DaemonLog.formatEvent(timestamp: Date(timeIntervalSince1970: 0), event: "accept_error",
-                                         errno: EMFILE, disposition: "backoff", count: 3)
+        let line = DaemonLog.formatDiagnostic(timestamp: Date(timeIntervalSince1970: 0),
+            emission: .init(event: .init(kind: .acceptError, errno: EMFILE, disposition: .backoff, count: 3), suppressed: nil))
         // Verify R1: the writer appends lines verbatim, so a line without its
         // terminator runs into the next one on disk.
         XCTAssertTrue(line.hasSuffix("\n"), "the production writer does not add a terminator")
