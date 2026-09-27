@@ -28,6 +28,7 @@ struct JSCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        try Task.checkCancellation()
         let jsCode: String
         if let file {
             let path = (file as NSString).expandingTildeInPath
@@ -56,119 +57,47 @@ struct JSCommand: AsyncParsableCommand {
             warnWriter: warnWriter,
             profile: profile
         )
-        let result: String
-        if large || output != nil {
-            result = try await runLargePath(jsCode, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
-        } else {
-            guard let nonLarge = try await runNonLargePath(
-                jsCode, target: documentTarget, firstMatch: firstMatch,
-                warnWriter: warnWriter, profile: profile
-            ) else { return }   // #82: the code navigated — reported, nothing to print
-            result = nonLarge
-        }
-
+        let received = try await runResultPath(
+            jsCode, target: documentTarget, firstMatch: firstMatch,
+            warnWriter: warnWriter, profile: profile
+        )
+        try Task.checkCancellation()
+        guard let result = received else { return }
         if let output {
             let path = (output as NSString).expandingTildeInPath
             try result.write(toFile: path, atomically: true, encoding: .utf8)
-            FileHandle.standardError.write(Data("Written \(result.count) bytes to \(output)\n".utf8))
+            FileHandle.standardError.write(Data("Written \(result.utf8.count) bytes to \(output)\n".utf8))
         } else if !result.isEmpty {
             print(result)
         }
     }
 
-    /// #76 non-large protocol: expression form first, statement form as the
-    /// parse-failure retry, with the sentinel distinguishing the two.
-    ///
-    /// #82: returns `nil` when the user's own code navigated the page. Every
-    /// channel this protocol reports through — the sentinel, the result global,
-    /// even the tab's identity guard — lives in the document that navigation
-    /// replaces, so a successful navigation is indistinguishable from failure
-    /// unless it is checked for explicitly. Both failure shapes are covered:
-    /// the sentinel reading unset (wrapper's writes wiped) and the #79 guard
-    /// throwing `targetTabChanged` (tab no longer matches). Reporting either as
-    /// an error would tell the caller a navigation that plainly succeeded had
-    /// failed, and retrying it would re-run code that already took effect.
-    private func runNonLargePath(
-        _ jsCode: String,
-        target documentTarget: SafariBridge.TargetDocument,
+    /// One owned state for evaluation and all result reads. A large-response
+    /// fallback reads the captured value instead of evaluating code again.
+    private func runResultPath(
+        _ code: String,
+        target: SafariBridge.TargetDocument,
         firstMatch: Bool,
         warnWriter: ((String) -> Void)?,
         profile: String?
     ) async throws -> String? {
+        try Task.checkCancellation()
         let preNavURL = try? await SafariBridge.getCurrentURL(
-            target: documentTarget, firstMatch: firstMatch, warnWriter: nil, profile: profile)
+            target: target, firstMatch: firstMatch, warnWriter: nil, profile: profile)
         do {
-            // #76: user code is inlined into the injected string instead of
-            // routed through page-context eval() — strict-CSP pages refuse
-            // eval, while `do JavaScript` itself is UA-privileged and exempt.
-            // The preset clears stale globals from a crashed prior run so the
-            // sentinel read only ever reflects this invocation.
-            _ = try await SafariBridge.doJavaScript(JSWrapper.presetProtocolGlobals, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-            _ = try await SafariBridge.doJavaScript(
-                JSWrapper.expressionWrapper(jsCode),
-                target: documentTarget,
-                firstMatch: firstMatch,
-                warnWriter: warnWriter
-            )
-            var lenStr = try await SafariBridge.doJavaScript("'' + window.__sbLen", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-            if lenStr.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                if let navURL = try await Self.navigatedAwayURL(
-                    from: preNavURL, target: documentTarget,
-                    firstMatch: firstMatch, profile: profile) {
-                    Self.reportNavigation(to: navURL)
-                    return nil
-                }
-                _ = try await SafariBridge.doJavaScript(
-                    JSWrapper.statementWrapper(jsCode),
-                    target: documentTarget,
-                    firstMatch: firstMatch,
-                    warnWriter: warnWriter
-                )
-                lenStr = try await SafariBridge.doJavaScript("'' + window.__sbLen", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                if lenStr.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                    // The statement form may itself have navigated — check
-                    // again before blaming the code for not parsing.
-                    if let navURL = try await Self.navigatedAwayURL(
-                        from: preNavURL, target: documentTarget,
-                        firstMatch: firstMatch, profile: profile) {
-                        Self.reportNavigation(to: navURL)
-                        return nil
-                    }
-                    throw SafariBrowserError.appleScriptFailed(
-                        "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"
-                    )
-                }
+            return try await JavaScriptResultSession().execute(
+                code, allowStatements: true, chunked: large || output != nil
+            ) { script in
+                try await SafariBridge.doJavaScript(script, target: target,
+                    firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
             }
-            // AppleScript returns numbers as "9.0" — parse via Double then truncate
-            let len = Int(Double(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
-
-            let value: String
-            if len == -1 {
-                let errMsg = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                // #76: user code calling eval()/new Function() on a strict-CSP
-                // page surfaces here as a caught EvalError — append the hint.
-                throw SafariBrowserError.appleScriptFailed("JavaScript error: \(errMsg)\(JSWrapper.cspEvalHint(for: errMsg) ?? "")")
-            } else if len == 0 {
-                value = ""
-            } else {
-                let stored = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                if stored.isEmpty && len > 0 {
-                    value = try await SafariBridge.doJavaScriptLarge("window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                    FileHandle.standardError.write(Data("warning: output was large, used chunked read. Use --large to skip this.\n".utf8))
-                } else {
-                    value = stored
-                }
-            }
-            _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-            return value
-        } catch let error as SafariBrowserError {
-            // The wrapper's own writes succeeded but a later round-trip found
-            // the tab somewhere else — settle it as navigation if the URL
-            // agrees, otherwise the original error stands.
-            try await Self.settleNavigationOrRethrow(
-                error, preNavURL: preNavURL, target: documentTarget,
-                firstMatch: firstMatch, profile: profile)
+        } catch JavaScriptResultSession.TransferFailure.executionResultLost {
+            let url = try await Self.settleNavigationOrRethrow(
+                JavaScriptResultSession.TransferFailure.executionResultLost,
+                preNavURL: preNavURL, target: target, firstMatch: firstMatch, profile: profile)
+            try Task.checkCancellation()
+            if output != nil { throw JavaScriptResultSession.TransferFailure.outputUnavailableAfterNavigation }
+            Self.reportNavigation(to: url)
             return nil
         }
     }
@@ -176,13 +105,11 @@ struct JSCommand: AsyncParsableCommand {
     /// #82: the URL the target now sits on, if the user's code navigated away
     /// from `preURL` — `nil` when it did not move (or when either read failed,
     /// which stays conservative: an unknown URL is treated as "no navigation"
-    /// so the existing parse-failure path still runs).
+    /// and the missing-result failure remains explicit).
     ///
     /// Same-URL navigation (`location.reload()`, a form post back to the same
-    /// address) is invisible to this check by construction. Those cases still
-    /// fall through to the retry, so a reload can still fire twice — detecting
-    /// it would need a page-side beacon that survives the very navigation it is
-    /// meant to observe.
+    /// address) is invisible to this check by construction. Those cases fail with unavailable result state;
+    /// only a still-present prepared object permits a parse-form retry.
     static func navigatedAwayURL(
         from preURL: String?,
         target: SafariBridge.TargetDocument,
@@ -200,10 +127,10 @@ struct JSCommand: AsyncParsableCommand {
 
     /// #82: read the target's URL **without** the #79 identity guard. Once the
     /// user's code navigates, the guard's matcher by definition no longer
-    /// matches, so a guarded read fails with `targetTabChanged` — which is
-    /// precisely the situation we are trying to describe. The window id and
-    /// tab position still address the same physical tab, so drop only the
-    /// matcher and keep the coordinates.
+    /// matches, so a guarded read fails with `targetTabChanged`.
+    /// Retain the last-known window id and tab position, dropping only the
+    /// matcher. These coordinates do not prove identity after closure or
+    /// reordering; that existing limitation is tracked by #188.
     ///
     /// Falls back to the guarded read for legacy positional targets, which
     /// carry no matcher to drop.
@@ -223,23 +150,25 @@ struct JSCommand: AsyncParsableCommand {
             target: target, firstMatch: firstMatch, warnWriter: nil, profile: profile)
     }
 
-    /// #82: a mid-command `targetTabChanged` means the tab stopped matching —
-    /// which is what a successful navigation looks like from the guard's point
-    /// of view. Confirm against the URL before deciding: only report success if
-    /// the tab genuinely moved somewhere new. If it did not (or the tab is gone
-    /// entirely), the original error is the honest answer and is rethrown.
+    /// Only receipt-confirmed result loss permits navigation settlement.
+    /// Raw target changes before execution and all other errors remain errors.
+    /// URL observation still uses the existing positional heuristic; #188 owns
+    /// stronger identity across tab closure/reordering and navigation.
+    @discardableResult
     static func settleNavigationOrRethrow(
-        _ error: SafariBrowserError,
+        _ error: Error,
         preNavURL: String?,
         target: SafariBridge.TargetDocument,
         firstMatch: Bool,
         profile: String?
-    ) async throws {
-        guard case .targetTabChanged = error else { throw error }
-        guard let navURL = try await navigatedAwayURL(
+    ) async throws -> String {
+        try Task.checkCancellation()
+        guard case JavaScriptResultSession.TransferFailure.executionResultLost = error else { throw error }
+        let observedURL = try await navigatedAwayURL(
             from: preNavURL, target: target, firstMatch: firstMatch, profile: profile)
-        else { throw error }
-        reportNavigation(to: navURL)
+        try Task.checkCancellation()
+        guard let navURL = observedURL else { throw error }
+        return navURL
     }
 
     /// #82: navigation is a successful outcome, not a result — the globals the
@@ -254,87 +183,4 @@ struct JSCommand: AsyncParsableCommand {
         "note: the code navigated the page (now at \(url)); it ran successfully but returned no readable value — the page context that would carry it was replaced.\n"
     }
 
-    /// #76: `--large` / `--output` path without page-context eval().
-    /// doJavaScriptLarge wraps its argument as `'' + (code)`, so the
-    /// expression form is just newline-guarded parens. Parse failure is
-    /// detected the same way as the non-large path: preset the protocol
-    /// globals, then check whether the wrapper ever set __sbResultLen.
-    ///
-    /// INVARIANT (verify-round finding, #76): the empty-result vs
-    /// parse-failure discrimination below requires that doJavaScriptLarge
-    /// does NOT delete __sbResultLen on its zero-length early return —
-    /// a legitimately-empty result must leave __sbResultLen == 0 (set by
-    /// the wrapper), while a parse failure leaves it undefined (preset).
-    /// If doJavaScriptLarge is ever refactored to always run its cleanup,
-    /// every empty `--large` result would misread as a parse failure.
-    /// Pinned by the `--large ""` cases in Tests/e2e-csp.sh.
-    private func runLargePath(
-        _ jsCode: String,
-        target: SafariBridge.TargetDocument,
-        firstMatch: Bool,
-        warnWriter: ((String) -> Void)?,
-        profile: String?
-    ) async throws -> String {
-        // #82: same navigation ambiguity as the non-large path — an unset
-        // marker means either "never parsed" or "ran, then navigated away and
-        // took the globals with it". Capture the starting URL so the two can be
-        // told apart before anything is retried.
-        let preNavURL = try? await SafariBridge.getCurrentURL(
-            target: target, firstMatch: firstMatch, warnWriter: nil, profile: profile)
-        _ = try await SafariBridge.doJavaScript(JSWrapper.presetLargeProtocolGlobals, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-        var result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeExpression(jsCode), target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-        if result.isEmpty {
-            // Order matters: a runtime error is captured in-band (the wrapper
-            // returns '' after recording __sbLargeErr, so __sbResultLen reads
-            // 0, not the sentinel) — check it BEFORE the parse-failure marker,
-            // and never retry after it: re-running user code that already
-            // executed would double its side effects.
-            try await throwLargeRuntimeErrorIfAny(target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-            let marker = try await SafariBridge.doJavaScript("'' + window.__sbResultLen", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-            if marker.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                // #82: navigation before the retry, or the retry re-runs code
-                // that already took effect.
-                if let navURL = try await Self.navigatedAwayURL(
-                    from: preNavURL, target: target, firstMatch: firstMatch, profile: profile) {
-                    Self.reportNavigation(to: navURL)
-                    return ""
-                }
-                // Expression form never parsed (nothing ran) — retry as function body.
-                result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeStatement(jsCode), target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-                if result.isEmpty {
-                    try await throwLargeRuntimeErrorIfAny(target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-                    let marker2 = try await SafariBridge.doJavaScript("'' + window.__sbResultLen", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-                    if marker2.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                        if let navURL = try await Self.navigatedAwayURL(
-                            from: preNavURL, target: target, firstMatch: firstMatch, profile: profile) {
-                            Self.reportNavigation(to: navURL)
-                            return ""
-                        }
-                        throw SafariBrowserError.appleScriptFailed(
-                            "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"
-                        )
-                    }
-                }
-            }
-        }
-        return result
-    }
-
-    /// #76: `do JavaScript` swallows uncaught runtime throws as silently as
-    /// SyntaxErrors, so the large-path wrappers record them to
-    /// window.__sbLargeErr in-band. Throws the normalized `JavaScript
-    /// error:` form (matching the non-large path) with the CSP hint when
-    /// the user code itself called eval()/new Function() on a strict-CSP
-    /// page.
-    private func throwLargeRuntimeErrorIfAny(
-        target: SafariBridge.TargetDocument,
-        firstMatch: Bool,
-        warnWriter: ((String) -> Void)?
-    ) async throws {
-        let errMsg = try await SafariBridge.doJavaScript("'' + window.__sbLargeErr", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-        let trimmed = errMsg.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed != JSWrapper.lenUnsetSentinel, !trimmed.isEmpty else { return }
-        _ = try? await SafariBridge.doJavaScript("delete window.__sbLargeErr", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-        throw SafariBrowserError.appleScriptFailed("JavaScript error: \(errMsg)\(JSWrapper.cspEvalHint(for: errMsg) ?? "")")
-    }
 }

@@ -34,9 +34,11 @@ extension SafariBridge {
     /// an unknown outcome, because repeating the script could repeat effects.
     static func executeAppleScriptViaDaemon(
         source: String,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        name: String? = nil,
+        socketDir: String? = nil
     ) async throws -> String {
-        let name = DaemonClient.resolveName(flag: nil)
+        let name = name ?? DaemonClient.resolveName(flag: nil)
         var parameters: [String: Any] = ["source": source]
         if PerformanceTrace.isActive { parameters["timing"] = true }
         let paramsData = try JSONSerialization.data(withJSONObject: parameters, options: [])
@@ -44,10 +46,12 @@ extension SafariBridge {
         // wait beyond the 15-second daemon contract.
         let resultData = try await DaemonClient.sendRequest(
             name: name,
-            method: "applescript.execute",
+            method: DaemonRequestContext.appleScriptCachePolicy == .ephemeral
+                ? "applescript.executeEphemeral" : "applescript.execute",
             params: paramsData,
             requestId: Int.random(in: 1...Int.max),
-            timeout: min(timeout, DaemonClient.defaultTimeoutSeconds)
+            timeout: min(timeout, DaemonClient.defaultTimeoutSeconds),
+            socketDir: socketDir
         )
         guard let result = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any],
               let status = result["status"] as? String else {

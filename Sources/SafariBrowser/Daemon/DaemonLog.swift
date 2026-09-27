@@ -38,6 +38,7 @@ enum DaemonLog {
     /// contributor must pass through.
     private static let sensitiveParamKeys: [String: [String]] = [
         "applescript.execute": ["source"],
+        "applescript.executeEphemeral": ["source"],
         // Defensive: future Safari.js family. The exact method name
         // hasn't shipped yet, but redaction is keyed on key-name
         // anyway so any method whose params include `code` gets

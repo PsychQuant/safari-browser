@@ -21,10 +21,7 @@ final class JSNavigationSettleTests: XCTestCase {
         XCTAssertNil(result, "an unknown starting URL must not be treated as navigation")
     }
 
-    /// Only `targetTabChanged` is ambiguous between "navigated" and "failed".
-    /// Every other error means what it says and must survive untouched — a
-    /// syntax error swallowed as "navigated" would report success for code
-    /// that never ran.
+    /// Syntax and other failures are never navigation evidence.
     func testSettleNavigation_rethrowsNonTabChangedErrors() async {
         let syntaxError = SafariBrowserError.appleScriptFailed("JavaScript syntax error: …")
         do {
@@ -46,27 +43,27 @@ final class JSNavigationSettleTests: XCTestCase {
         }
     }
 
-    /// `targetTabChanged` with no baseline URL cannot be confirmed as
-    /// navigation, so the original error stands. This is the fail-closed
-    /// direction: an unconfirmed guess reports the error, never success.
-    func testSettleNavigation_rethrowsTabChangedWhenNavigationUnconfirmed() async {
-        let tabChanged = SafariBrowserError.targetTabChanged(expected: "example", actualURL: nil)
+    func testSettleNavigation_rethrowsConfirmedLossWhenBaselineUnavailable() async {
         do {
             try await JSCommand.settleNavigationOrRethrow(
-                tabChanged,
-                preNavURL: nil,   // nothing to compare against
+                JavaScriptResultSession.TransferFailure.executionResultLost,
+                preNavURL: nil,
                 target: .resolvedTab(windowID: 1, tabInWindow: 1, rematch: nil, profile: nil),
-                firstMatch: false,
-                profile: nil
-            )
-            XCTFail("an unconfirmed tab change must not be reported as success")
-        } catch let error as SafariBrowserError {
-            guard case .targetTabChanged = error else {
-                return XCTFail("expected the original targetTabChanged, got \(error)")
-            }
-        } catch {
-            XCTFail("expected SafariBrowserError, got \(error)")
-        }
+                firstMatch: false, profile: nil)
+            XCTFail("An unconfirmed URL change must remain a failure")
+        } catch JavaScriptResultSession.TransferFailure.executionResultLost { }
+        catch { XCTFail("Unexpected replacement error: \(error)") }
+    }
+
+    func testSettleNavigation_rethrowsRawTargetChangeWithoutExecutionReceipt() async {
+        do {
+            try await JSCommand.settleNavigationOrRethrow(
+                SafariBrowserError.targetTabChanged(expected: "fixture", actualURL: nil),
+                preNavURL: "https://fixture.invalid/",
+                target: .frontWindow, firstMatch: false, profile: nil)
+            XCTFail("A raw target change is not proof of execution")
+        } catch SafariBrowserError.targetTabChanged { }
+        catch { XCTFail("Unexpected replacement error: \(error)") }
     }
 
     /// The note must name where the page went and read as a success — a caller

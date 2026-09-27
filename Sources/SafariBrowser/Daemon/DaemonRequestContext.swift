@@ -5,6 +5,7 @@ final class DaemonRequestContext: @unchecked Sendable {
     typealias AppleScriptRunner = @Sendable (String) async throws -> String
     @TaskLocal static var current: DaemonRequestContext?
     @TaskLocal static var appleScriptRunner: AppleScriptRunner?
+    @TaskLocal static var appleScriptCachePolicy: PreCompiledScripts.CachePolicy = .reuse
 
     let id = UUID()
     private let probe: ((BlockingDialogGate.WindowKey) -> BlockingDialogState)?

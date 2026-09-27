@@ -1566,10 +1566,8 @@ enum SafariBridge {
             """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
     }
 
-    /// Execute JS and read large results via chunked transfer.
-    /// Stores result in window.__sbResult, then reads back in 256KB chunks.
-    /// All chunks are read from the same target document so results stay
-    /// consistent across multi-document Safari sessions.
+    /// Capture once and transfer only frames belonging to this invocation.
+    /// Expression-only callers get explicit syntax/runtime/transfer failures.
     static func doJavaScriptLarge(
         _ code: String,
         target: TargetDocument = .frontWindow,
@@ -1577,53 +1575,13 @@ enum SafariBridge {
         warnWriter: ((String) -> Void)? = nil,
         profile: String? = nil
     ) async throws -> String {
-        // Store result in window variable. Only the first doJavaScript
-        // call forwards the warnWriter — subsequent chunked reads reuse
-        // the already-resolved tab, so re-emitting the multi-match
-        // warning each chunk would spam the caller. profile likewise
-        // only on the first call (filter validates once at resolution).
-        _ = try await doJavaScript(
-            "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()",
-            target: target,
-            firstMatch: firstMatch,
-            warnWriter: warnWriter,
-            profile: profile
-        )
-
-        // Get total length
-        let lenStr = try await doJavaScript("window.__sbResultLen", target: target)
-        // AppleScript returns numbers as "9.0" — parse via Double then truncate.
-        // Mirrors the non-large path in JSCommand.swift; #74. Int("5489.0")
-        // returns nil → length parses to 0 → the whole chunked read returns ""
-        // (silent data loss on every --large / --output / `get text` invocation).
-        let totalLen = Int(Double(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
-        // #76 INVARIANT: this early return must NOT delete the protocol
-        // globals — JSCommand.runLargePath reads __sbResultLen afterward to
-        // distinguish "legitimately empty result" (0, set by the wrapper)
-        // from "wrapper never parsed" (undefined, preset). Moving the
-        // cleanup above this guard breaks every empty `--large` result.
-        guard totalLen > 0 else {
-            return ""
+        var firstCall = true
+        return try await JavaScriptResultSession().execute(code, allowStatements: false, chunked: true) { script in
+            let warning = firstCall ? warnWriter : nil
+            firstCall = false
+            return try await doJavaScript(script, target: target, firstMatch: firstMatch,
+                warnWriter: warning, profile: profile)
         }
-
-        // Read in chunks
-        let chunkSize = 262144 // 256KB
-        var result = ""
-        var offset = 0
-        while offset < totalLen {
-            let end = min(offset + chunkSize, totalLen)
-            let chunk = try await doJavaScript(
-                "window.__sbResult.substring(\(offset), \(end))",
-                target: target
-            )
-            result += chunk
-            offset = end
-        }
-
-        // Cleanup
-        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen", target: target)
-
-        return result
     }
 
     // MARK: - Page Info
