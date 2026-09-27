@@ -200,7 +200,7 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(counter, "undefined")
     }
 
-    func testNavigationSuccessRequiresExecutionEvidenceAndDoesNotPublishEmptyFile() async throws {
+    func testOutputNavigationPreservesFileAndReportsFailure() async throws {
         for (fault, success) in [(ScriptPage.Fault.navigateAfterExecution, true), (.navigateWithoutReceipt, false)] {
             let page = try ScriptPage(interleave: false, fault: fault)
             let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -214,7 +214,9 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
                         try await command.run()
                     }
                 }
-                XCTAssertTrue(success, "An unconfirmed execution must remain a failure")
+                XCTFail("Navigation cannot fulfill an output-file request")
+            } catch JavaScriptResultSession.TransferFailure.outputUnavailableAfterNavigation {
+                XCTAssertTrue(success)
             } catch JavaScriptResultSession.TransferFailure.unavailable {
                 XCTAssertFalse(success)
             }
@@ -239,18 +241,18 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
 
     // The XCTest runner executes this suite serially, as with the repository's
     // existing descriptor-capture tests. Use a file so large output cannot fill a pipe.
-    private func captureStdout(_ body: () async throws -> Void) async throws -> String {
+    private func captureOutput(descriptor: Int32 = STDOUT_FILENO, _ body: () async throws -> Void) async throws -> String {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }
         let fd = open(url.path, O_CREAT | O_EXCL | O_RDWR, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { close(fd) }
         fflush(nil)
-        let saved = dup(STDOUT_FILENO)
+        let saved = dup(descriptor)
         guard saved >= 0 else { throw CocoaError(.fileWriteUnknown) }
         defer { close(saved) }
-        guard dup2(fd, STDOUT_FILENO) >= 0 else { throw CocoaError(.fileWriteUnknown) }
-        defer { fflush(nil); _ = dup2(saved, STDOUT_FILENO) }
+        guard dup2(fd, descriptor) >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { fflush(nil); _ = dup2(saved, descriptor) }
         try await body()
         fflush(nil)
         return try String(contentsOf: url, encoding: .utf8)
@@ -261,7 +263,7 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
             let page = try ScriptPage(interleave: false, maximumReplyLength: 300_000)
             _ = await page.evaluateJS("var fixture={textContent:'G'.repeat(300001),innerHTML:'<p>'+'G'.repeat(300001)+'</p>'}; var document={querySelector:function(){return fixture}}")
             let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
-            let output = try await captureStdout {
+            let output = try await captureOutput {
                 try await DaemonRequestContext.$current.withValue(request) {
                     try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
                         if html { try await GetHTML.parse(["#fixture"]).run() }
@@ -289,7 +291,7 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
                 function getComputedStyle(){return {display:'block',visibility:'visible'}};
                 """)
             let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
-            let output = try await captureStdout {
+            let output = try await captureOutput {
                 try await DaemonRequestContext.$current.withValue(request) {
                     try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
                         try await SnapshotCommand.parse(fullPage ? ["--page", "--json"] : ["--json"]).run()
@@ -327,10 +329,7 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
 
     func testExactURLGuardNavigationRunsThroughRealBridgeRetryAndSettlement() async throws {
         let page = try ScriptPage(interleave: false, fault: .navigateAfterExecution)
-        let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try "keep-me".write(to: output, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: output) }
-        let command = try JSCommand.parse(["--url-exact", "https://fixture.invalid/", "--output", output.path,
+        let command = try JSCommand.parse(["--url-exact", "https://fixture.invalid/",
             "window.counter=(window.counter||0)+1; return 'done'"])
         let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         try await DaemonRequestContext.$current.withValue(request) {
@@ -340,7 +339,6 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
         }
         let count = await page.evaluateJS("window.counter")
         XCTAssertEqual(count, "1")
-        XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "keep-me")
     }
 
     func testFinalGuardedTargetChangeIsMappedOnlyAfterExecutionReceipt() async throws {
@@ -411,7 +409,7 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
             _ = await page.evaluateJS(hasBody ? "var document={body:{innerText:'T'.repeat(300001)}}" : "var document={}")
             let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
             do {
-                let output = try await captureStdout {
+                let output = try await captureOutput {
                     try await DaemonRequestContext.$current.withValue(request) {
                         try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
                             try await GetText.parse([]).run()
@@ -434,7 +432,7 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
             _ = await page.evaluateJS("var reads=0; var fixture={}; Object.defineProperty(fixture,'\(property)',{get:function(){if(++reads===3)throw new Error('owned fallback failure');return 'G'.repeat(300001)}}); var document={querySelector:function(){return fixture}}")
             let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
             do {
-                _ = try await captureStdout {
+                _ = try await captureOutput {
                     try await DaemonRequestContext.$current.withValue(request) {
                         try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
                             if html { try await GetHTML.parse(["#fixture"]).run() }
@@ -485,6 +483,44 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(count, "1")
     }
 
+    func testCancellationCannotBecomeNavigationSuccessDuringFailureCleanupOrURLRead() async throws {
+        for fault in [ScriptPage.Fault.cancelFailureCleanup, .cancelNavigationRead] {
+            let page = try ScriptPage(interleave: false, fault: fault)
+            let stderr = try await captureOutput(descriptor: STDERR_FILENO) {
+            let task = Task {
+                let command = try JSCommand.parse(["--large", "window.counter=1; return 'done'"])
+                let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+                try await DaemonRequestContext.$current.withValue(request) {
+                    try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                        try await command.run()
+                    }
+                }
+            }
+            do { try await task.value; XCTFail("Cancellation cannot settle into successful navigation") }
+            catch is CancellationError { }
+            }
+            XCTAssertFalse(stderr.contains("ran successfully"))
+        }
+    }
+
+    func testOutputNavigationCannotReportSuccessWhilePreservingStaleFile() async throws {
+        let page = try ScriptPage(interleave: false, fault: .navigateAfterExecution)
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try "old-batch".write(to: output, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let command = try JSCommand.parse(["--output", output.path, "window.counter=1; return 'new-batch'"])
+        let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        do {
+            try await DaemonRequestContext.$current.withValue(request) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ try await page.run($0) }) {
+                    try await command.run()
+                }
+            }
+            XCTFail("--output must fail when no fresh result was written")
+        } catch JavaScriptResultSession.TransferFailure.outputUnavailableAfterNavigation { }
+        XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "old-batch")
+    }
+
     func testSharedLargeBridgeUsesCapturedResultProtocol() async throws {
         let page = try ScriptPage(interleave: false)
         let request = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
@@ -499,7 +535,7 @@ final class JSResultIsolationTests: XCTestCase, @unchecked Sendable {
 }
 
 private actor ScriptPage {
-    enum Fault { case none, staleFrame, shortFrame, eraseExecutedState, invalidLength, wrongOffset, emptySecondFrame, rejectPreparationAfterNavigation, navigateAfterExecution, navigateWithoutReceipt, preparedAfterReceipt, eraseBeforeFrame }
+    enum Fault { case none, staleFrame, shortFrame, eraseExecutedState, invalidLength, wrongOffset, emptySecondFrame, rejectPreparationAfterNavigation, navigateAfterExecution, navigateWithoutReceipt, preparedAfterReceipt, eraseBeforeFrame, cancelFailureCleanup, cancelNavigationRead }
     private let fault: Fault
     private let maximumReplyLength: Int?
     private let context: JSContext
@@ -536,7 +572,12 @@ private actor ScriptPage {
                 return ["1", "1", "1", pageURL, "Fixture", "Fixture", "71"].joined(separator: "\u{1d}") + "\u{1e}"
             }
             if source.contains("get id of window") { return "71" }
-            if source.contains("URL of") { return pageURL }
+            if source.contains("URL of") {
+                if fault == .cancelNavigationRead && pageURL != "https://fixture.invalid/" {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+                return pageURL
+            }
             if source.contains("text of") { return "" }
             throw CocoaError(.coderInvalidValue, userInfo: [NSLocalizedDescriptionKey: "Unexpected non-JS fixture source: \(source)"])
         }
@@ -583,7 +624,7 @@ private actor ScriptPage {
             pageURL = "https://fixture.invalid/after"
             return "stale-token:prepared"
         }
-        if (fault == .navigateAfterExecution || fault == .navigateWithoutReceipt) && (result.hasSuffix(":done") || result.hasSuffix(":error")) {
+        if (fault == .navigateAfterExecution || fault == .navigateWithoutReceipt || fault == .cancelFailureCleanup || fault == .cancelNavigationRead) && (result.hasSuffix(":done") || result.hasSuffix(":error")) {
             context.evaluateScript("Object.keys(window).filter(k=>k.startsWith('__sbInvocation_')).forEach(k=>delete window[k])")
             pageURL = "https://fixture.invalid/after"
             if fault == .navigateWithoutReceipt { return "" }
@@ -605,6 +646,9 @@ private actor ScriptPage {
                 return "stale-token" + result[colon...]
             }
             if fault == .shortFrame { return result.replacingOccurrences(of: ":new-batch:", with: ":short:") }
+        }
+        if fault == .cancelFailureCleanup && js.hasPrefix("delete window.__sbInvocation_") {
+            withUnsafeCurrentTask { $0?.cancel() }
         }
         if let maximumReplyLength, result.utf16.count > maximumReplyLength { return "" }
         return result

@@ -14,12 +14,14 @@ struct JavaScriptResultSession {
         case runtimeErrorDetailsLost
         case malformed
         case invalidUTF16
+        case outputUnavailableAfterNavigation
         var description: String {
             switch self {
             case .preparationFailed: return "Could not prepare fresh JavaScript result state; user code was not executed"
             case .runtimeErrorDetailsLost: return "JavaScript reported a runtime error but its details were lost; code was not retried"
             case .executionResultLost: return "JavaScript ran but its result state was lost; code was not retried"
             case .unavailable: return "JavaScript result state was lost or execution could not be confirmed; code was not retried"
+            case .outputUnavailableAfterNavigation: return "JavaScript completed but navigated before a result could be saved; --output was left unchanged. The code was not retried."
             case .invalidUTF16: return "JavaScript result contains an unpaired UTF-16 surrogate and cannot be transferred losslessly"
             case .malformed: return "JavaScript result transfer was incomplete or belonged to another invocation"
             }
@@ -167,6 +169,7 @@ struct JavaScriptResultSession {
             return value
         } catch {
             _ = try? await evaluate(cleanupScript)
+            try Task.checkCancellation()
             var stateLost = false
             if case TransferFailure.unavailable = error { stateLost = true }
             if let bridgeError = error as? SafariBrowserError {

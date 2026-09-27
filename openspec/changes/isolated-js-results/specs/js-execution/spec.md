@@ -43,7 +43,7 @@ The CLI `js` result paths and the shared large-result bridge SHALL associate res
 #### Scenario: Page state lost after execution
 - **WHEN** the invocation state disappears after user code starts, including a same-URL page replacement
 - **THEN** the CLI SHALL NOT retry the user code as another form
-- **AND** it SHALL report unavailable result state unless an actual changed URL establishes the existing navigation-success outcome
+- **AND** it SHALL report unavailable result state unless an actual changed URL establishes the navigation-success outcome for a call without an output-file request
 
 #### Scenario: Large fallback reads the captured value
 - **WHEN** the ordinary result read returns empty because its completed payload exceeds the transport limit
@@ -80,3 +80,13 @@ The CLI `js` result paths and the shared large-result bridge SHALL associate res
 - **WHEN** the evaluation receipt reports error and navigation removes the error detail before readback
 - **THEN** the CLI SHALL report failure rather than successful navigation
 - **AND** it SHALL NOT evaluate the user code again
+
+#### Scenario: Output-file navigation cannot report stale-file success
+- **GIVEN** --output points to an existing file containing `old-batch`
+- **WHEN** successful evaluation navigates away before its result can be retrieved
+- **THEN** the command SHALL fail, preserve `old-batch`, and report that code already executed but no fresh result was saved
+- **AND** it SHALL NOT re-execute the code or publish an invented empty result
+
+#### Scenario: Cancellation during failure cleanup or navigation observation
+- **WHEN** result state is lost after a done receipt and the task is cancelled during failure cleanup or the subsequent URL read
+- **THEN** the command SHALL throw cancellation and SHALL NOT emit a successful-navigation notice

@@ -466,8 +466,11 @@ Result transfer uses a fresh per-call identity (#190). Ordinary and chunked read
 share the same captured value; a large-output fallback never re-executes your code.
 Missing, stale or incomplete transfer frames fail before an output file is replaced.
 A lost page context is not a reason to retry: only an intact, unexecuted prepared
-state permits the expression-to-function-body fallback. Confirmed execution followed
-by a changed URL keeps the navigation notice; same-URL context loss is an error.
+state permits the expression-to-function-body fallback. Confirmed successful execution followed
+by a changed URL keeps the navigation notice when no output file was requested.
+With `--output`, missing result data is an error: the existing file stays unchanged,
+and the diagnostic states that code already executed and was not retried.
+Same-URL context loss is an error.
 This isolates the CLI's transport state, not the meaning of your page data: use
 request IDs or content checks for asynchronous objects such as API response caches.
 Nonce-bearing protocol requests use temporary daemon compilation instead of growing

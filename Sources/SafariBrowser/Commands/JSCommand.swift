@@ -57,12 +57,12 @@ struct JSCommand: AsyncParsableCommand {
             warnWriter: warnWriter,
             profile: profile
         )
-        guard let result = try await runResultPath(
+        let received = try await runResultPath(
             jsCode, target: documentTarget, firstMatch: firstMatch,
             warnWriter: warnWriter, profile: profile
-        ) else { return }
-
+        )
         try Task.checkCancellation()
+        guard let result = received else { return }
         if let output {
             let path = (output as NSString).expandingTildeInPath
             try result.write(toFile: path, atomically: true, encoding: .utf8)
@@ -92,9 +92,12 @@ struct JSCommand: AsyncParsableCommand {
                     firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
             }
         } catch JavaScriptResultSession.TransferFailure.executionResultLost {
-            try await Self.settleNavigationOrRethrow(
+            let url = try await Self.settleNavigationOrRethrow(
                 JavaScriptResultSession.TransferFailure.executionResultLost,
                 preNavURL: preNavURL, target: target, firstMatch: firstMatch, profile: profile)
+            try Task.checkCancellation()
+            if output != nil { throw JavaScriptResultSession.TransferFailure.outputUnavailableAfterNavigation }
+            Self.reportNavigation(to: url)
             return nil
         }
     }
@@ -124,10 +127,10 @@ struct JSCommand: AsyncParsableCommand {
 
     /// #82: read the target's URL **without** the #79 identity guard. Once the
     /// user's code navigates, the guard's matcher by definition no longer
-    /// matches, so a guarded read fails with `targetTabChanged` — which is
-    /// precisely the situation we are trying to describe. The window id and
-    /// tab position still address the same physical tab, so drop only the
-    /// matcher and keep the coordinates.
+    /// matches, so a guarded read fails with `targetTabChanged`.
+    /// Retain the last-known window id and tab position, dropping only the
+    /// matcher. These coordinates do not prove identity after closure or
+    /// reordering; that existing limitation is tracked by #188.
     ///
     /// Falls back to the guarded read for legacy positional targets, which
     /// carry no matcher to drop.
@@ -151,18 +154,21 @@ struct JSCommand: AsyncParsableCommand {
     /// Raw target changes before execution and all other errors remain errors.
     /// URL observation still uses the existing positional heuristic; #188 owns
     /// stronger identity across tab closure/reordering and navigation.
+    @discardableResult
     static func settleNavigationOrRethrow(
         _ error: Error,
         preNavURL: String?,
         target: SafariBridge.TargetDocument,
         firstMatch: Bool,
         profile: String?
-    ) async throws {
+    ) async throws -> String {
+        try Task.checkCancellation()
         guard case JavaScriptResultSession.TransferFailure.executionResultLost = error else { throw error }
-        guard let navURL = try await navigatedAwayURL(
+        let observedURL = try await navigatedAwayURL(
             from: preNavURL, target: target, firstMatch: firstMatch, profile: profile)
-        else { throw error }
-        reportNavigation(to: navURL)
+        try Task.checkCancellation()
+        guard let navURL = observedURL else { throw error }
+        return navURL
     }
 
     /// #82: navigation is a successful outcome, not a result — the globals the
