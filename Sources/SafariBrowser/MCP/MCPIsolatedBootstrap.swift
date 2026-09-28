@@ -59,9 +59,13 @@ enum MCPIsolatedBootstrap {
         let leaseFlags = fcntl(4, F_GETFL)
         guard leaseFlags >= 0, fcntl(4, F_SETFL, leaseFlags | O_NONBLOCK) == 0,
               fcntl(5, F_SETNOSIGPIPE, 1) == 0 else { throw MCPWorkerLaunchError.descriptors }
-        // Preserve the independent lease monitor and the CLI's TERM grace.
-        // MCPWorkerSpawn restores the actual CLI's default signal disposition.
-        _ = signal(SIGTERM, SIG_IGN)
+        // The host blocks TERM at process birth, before any runtime thread can
+        // receive it. Keep it pending (SIG_IGN would discard cancellation), so
+        // the independent lease monitor and the CLI's TERM grace stay alive.
+        var mask = sigset_t()
+        guard pthread_sigmask(SIG_BLOCK, nil, &mask) == 0, sigismember(&mask, SIGTERM) == 1 else {
+            throw MCPWorkerLaunchError.supervisorContext
+        }
         let ownGroup = getpid()
         let monitor = DispatchSource.makeReadSource(fileDescriptor: 4, queue: DispatchQueue(label: "mcp.isolated.lease"))
         monitor.setEventHandler {
@@ -79,6 +83,7 @@ enum MCPIsolatedBootstrap {
             var environmentData = Data()
             var buffer = [UInt8](repeating: 0, count: 8192)
             while true {
+                try MCPWorkerSpawn.checkPendingTermination()
                 guard ProcessInfo.processInfo.systemUptime < context.deadline else { throw MCPWorkerLaunchError.invalidConfiguration }
                 let count = Darwin.read(3, &buffer, buffer.count)
                 if count == 0 { break }
@@ -99,7 +104,8 @@ enum MCPIsolatedBootstrap {
             let executable = URL(fileURLWithPath: CommandLine.arguments[0])
             let worker = try MCPWorkerSpawn.child(executable: executable,
                 arguments: Array(CommandLine.arguments.dropFirst()), environment: environment,
-                descriptors: [0: 0, 1: 1, 2: 2], group: .inherit, deadline: context.deadline)
+                descriptors: [0: 0, 1: 1, 2: 2], group: .inherit, deadline: context.deadline,
+                rejectPendingTermination: true)
             for descriptor: Int32 in [0, 1, 2] { Darwin.close(descriptor) }
             var status: Int32 = 0
             var waited: pid_t

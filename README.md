@@ -117,6 +117,13 @@ exceeds the transport cap, select supervised one-shot execution before dispatch.
 They preserve kernel admission and the same invocation deadline; this is not a
 retry of a failure. Cancellation can race command startup during the bounded
 grace period; it does not guarantee that an admitted command never starts.
+The one-shot supervisor retains pending TERM from process creation and rejects
+CLI startup when cancellation is observed before its final spawn check. The
+check and kernel spawn are not atomic; cancellation arriving between them may
+still allow brief execution. A CLI born after that TERM may only receive the
+later KILL. Already-running CLI children receive TERM normally, preserving their
+cleanup grace and the independent lease monitor. Pending checks remain on the
+bootstrap's initial main thread because Darwin exposes thread-specific pending signals.
 A persistent timeout may retain `exit_code: null` if no correlated completion
 arrives. Isolated mode reports the actual signal status when its record is
 available, otherwise null. Both outcomes remain incomplete errors and must not

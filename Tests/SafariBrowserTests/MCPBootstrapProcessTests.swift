@@ -56,7 +56,7 @@ final class MCPBootstrapProcessTests: XCTestCase, @unchecked Sendable {
             arguments: ["-c", "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('executed')", marker.path],
             environment: [MCPWorkerContext.directKey: "2", MCPWorkerContext.imageKey: "fixture"],
             descriptors: [0: null, 1: outputWrite.value, 2: outputWrite.value, 3: metadataRead.value,
-                          4: leaseRead.value, 5: statusWrite.value], argument0: "/usr/bin/python3")
+                          4: leaseRead.value, 5: statusWrite.value], argument0: "/usr/bin/python3", blockTermination: true)
         metadataRead.close(); leaseRead.close(); outputWrite.close(); statusWrite.close()
         return Harness(child: child, metadata: metadataWrite, lease: leaseWrite, output: outputRead, status: statusRead)
     }
@@ -123,6 +123,51 @@ final class MCPBootstrapProcessTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertNil(result.failure)
         let cleanup = await runner.shutdown(); XCTAssertNil(cleanup)
+    }
+
+    func testCancellationWhileEnvironmentRemainsOpenRejectsBeforeDeadline() throws {
+        let directory = try directory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("partial-cancel-effect")
+        let fixture = try launch(marker: marker); defer { fixture.cleanup() }
+        let prefix = Data(repeating: 32, count: 256 * 1024)
+        XCTAssertEqual(try fixture.send(prefix), prefix.count)
+        XCTAssertEqual(kill(-fixture.child.pid, SIGTERM), 0)
+        // Metadata and lease remain OPEN, and no host retirement/KILL runs
+        // before the assertion. Only the read-loop cancellation check can
+        // reject promptly; the final spawn gate is unreachable without EOF.
+        XCTAssertTrue(try fixture.exited(within: 0.5), "Partial metadata cancellation must not wait for the 3s deadline")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testCancellationAfterCompleteEnvironmentDoesNotStartCLI() throws {
+        let directory = try directory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("cancelled-effect")
+        let fixture = try launch(marker: marker); defer { fixture.cleanup() }
+        // A consumed prefix larger than the pipe proves the helper reached the
+        // environment loop, after installing its TERM policy and lease monitor.
+        let prefix = Data(repeating: 32, count: 256 * 1024)
+        XCTAssertEqual(try fixture.send(prefix), prefix.count)
+        XCTAssertEqual(kill(-fixture.child.pid, SIGSTOP), 0)
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.5
+        var stopped = false
+        repeat {
+            var info = siginfo_t()
+            let result = waitid(P_PID, id_t(fixture.child.pid), &info, WSTOPPED | WNOHANG | WNOWAIT)
+            if result == 0, info.si_pid == fixture.child.pid, info.si_code == CLD_STOPPED { stopped = true; break }
+            usleep(1_000)
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        XCTAssertTrue(stopped, "The owned helper must be stopped before completing metadata")
+        guard stopped else { return }
+        // The full environment plus EOF is now available before TERM. Stopping
+        // only schedules the window; no product test hook changes its behavior.
+        let environment = try JSONEncoder().encode([MCPWorkerContext.directKey: "2", MCPWorkerContext.imageKey: "fixture"])
+        XCTAssertEqual(try fixture.send(environment, within: 0.1), environment.count)
+        fixture.metadata.close()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertEqual(kill(-fixture.child.pid, SIGTERM), 0)
+        XCTAssertEqual(kill(-fixture.child.pid, SIGCONT), 0)
+        XCTAssertTrue(try fixture.exited(within: 1))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path), "A cancellation delivered before CLI spawn must prevent the owned side effect")
     }
 
     func testMissingTruncatedOversizedAndInvalidStatusRemainIncomplete() async {

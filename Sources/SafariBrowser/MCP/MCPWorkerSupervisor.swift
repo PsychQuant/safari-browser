@@ -3,7 +3,7 @@ import Darwin
 
 /// Fixed diagnostics: neither argv nor environment data belong in launch errors.
 enum MCPWorkerLaunchError: Error, LocalizedError {
-    case invalidConfiguration, descriptors, spawn, ownershipLost, status, supervisorContext
+    case invalidConfiguration, descriptors, spawn, ownershipLost, status, supervisorContext, cancelled
     case spawnSystemError(Int32)
     var errorDescription: String? {
         switch self {
@@ -14,6 +14,7 @@ enum MCPWorkerLaunchError: Error, LocalizedError {
         case .ownershipLost: "Private worker ownership was lost before cleanup."
         case .status: "Private worker status could not be observed."
         case .supervisorContext: "Invalid private worker supervisor context."
+        case .cancelled: "Private worker launch was cancelled."
         }
     }
 }
@@ -164,10 +165,21 @@ final class MCPWorkerFD: @unchecked Sendable {
 enum MCPWorkerSpawn {
     enum Group { case create, inherit }
 
+    static func checkPendingTermination() throws {
+        // Darwin reports the calling thread's pending set. The bootstrap runs
+        // synchronously on the initial main thread before its first await;
+        // moving this check to a dispatch worker could silently miss TERM.
+        guard pthread_main_np() == 1 else { throw MCPWorkerLaunchError.supervisorContext }
+        var pending = sigset_t()
+        guard sigpending(&pending) == 0 else { throw MCPWorkerLaunchError.status }
+        if sigismember(&pending, SIGTERM) == 1 { throw MCPWorkerLaunchError.cancelled }
+    }
+
     /// `descriptors` maps inherited target slots to borrowed source descriptors.
     /// All sources are duplicated before constructing any dup2/close action.
     static func child(executable: URL, arguments: [String], environment: [String: String],
-                      descriptors: [Int32: Int32], group: Group = .create, deadline: TimeInterval? = nil, argument0: String? = nil) throws -> MCPChildReservation {
+                      descriptors: [Int32: Int32], group: Group = .create, deadline: TimeInterval? = nil, argument0: String? = nil,
+                      blockTermination: Bool = false, rejectPendingTermination: Bool = false) throws -> MCPChildReservation {
         let argv = [argument0 ?? executable.path] + arguments
         guard executable.isFileURL, !executable.path.isEmpty,
               argv.allSatisfy({ !$0.utf8.contains(0) }),
@@ -185,10 +197,13 @@ enum MCPWorkerSpawn {
             error |= posix_spawn_file_actions_adddup2(&actions, mapping.source.value, mapping.target)
             error |= posix_spawn_file_actions_addclose(&actions, mapping.source.value)
         }
-        var emptyMask = sigset_t(), defaults = sigset_t()
-        sigemptyset(&emptyMask); sigemptyset(&defaults)
+        var signalMask = sigset_t(), defaults = sigset_t()
+        sigemptyset(&signalMask); sigemptyset(&defaults)
+        // Set the supervisor mask at birth, before Foundation/GCD can start
+        // other threads. Actual CLI children retain the empty-mask default.
+        if blockTermination { sigaddset(&signalMask, SIGTERM) }
         for number in [SIGPIPE, SIGTERM, SIGINT, SIGHUP, SIGCHLD] { sigaddset(&defaults, number) }
-        error |= posix_spawnattr_setsigmask(&attributes, &emptyMask)
+        error |= posix_spawnattr_setsigmask(&attributes, &signalMask)
         error |= posix_spawnattr_setsigdefault(&attributes, &defaults)
         var flags = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)
         if group == .create {
@@ -207,9 +222,13 @@ enum MCPWorkerSpawn {
             guard deadline.isFinite, ProcessInfo.processInfo.systemUptime < deadline else { throw MCPWorkerLaunchError.invalidConfiguration }
         }
         var pid: pid_t = 0
-        let result = argvPointers.withUnsafeBufferPointer { argv in
-            envPointers.withUnsafeBufferPointer { environment in
-                posix_spawn(&pid, executable.path, &actions, &attributes, argv.baseAddress!, environment.baseAddress!)
+        let result = try argvPointers.withUnsafeBufferPointer { argv in
+            try envPointers.withUnsafeBufferPointer { environment in
+                // This gate follows all argument preparation. A TERM arriving
+                // after this check still races with spawn: no atomic rollback
+                // is claimed, and the host's bounded retirement still applies.
+                if rejectPendingTermination { try checkPendingTermination() }
+                return posix_spawn(&pid, executable.path, &actions, &attributes, argv.baseAddress!, environment.baseAddress!)
             }
         }
         guard result == 0 else { throw MCPWorkerLaunchError.spawnSystemError(result) }
