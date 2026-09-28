@@ -122,7 +122,7 @@ final class BlockingDialogGate: @unchecked Sendable {
 
     private static let processGate = BlockingDialogGate()
     static var shared: BlockingDialogGate {
-        DaemonRequestContext.current?.gate ?? processGate
+        DaemonRequestContext.current?.gate ?? MCPInvocationContext.current?.gate ?? processGate
     }
 
     /// Set to exactly `1` to disable the probe for batch scripts that accept

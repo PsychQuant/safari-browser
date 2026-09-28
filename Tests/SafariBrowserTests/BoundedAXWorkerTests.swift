@@ -10,6 +10,25 @@ final class BoundedAXWorkerTests: XCTestCase {
         var count: Int { lock.lock(); defer { lock.unlock() }; return value }
     }
 
+    func testQuiescenceStaysFalseUntilTimedOutWorkActuallyReturns() {
+        let worker = BoundedAXWorker()
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        XCTAssertTrue(worker.isQuiescent)
+        XCTAssertEqual(worker.run(budget: 0.03, fallback: "expired") { _ in
+            entered.signal()
+            _ = release.wait(timeout: .now() + 2)
+            return "late"
+        }, "expired")
+        XCTAssertEqual(entered.wait(timeout: .now() + 0.5), .success)
+        XCTAssertFalse(worker.isQuiescent)
+        release.signal()
+        assertEventuallyAvailable(worker)
+        XCTAssertTrue(worker.isQuiescent)
+        worker.withExclusive(fallback: ()) { XCTAssertFalse(worker.isQuiescent) }
+        XCTAssertTrue(worker.isQuiescent)
+    }
+
     func testInvalidBudgetsDoNotRunOrAcquireTheAllowance() {
         let worker = BoundedAXWorker()
         let calls = Counter()

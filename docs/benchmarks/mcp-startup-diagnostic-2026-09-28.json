@@ -1,0 +1,2603 @@
+{
+  "binarySHA256": "b56eb24a8fdb4946d07db916aff7cc5c019d3aead68023adcafdb9cf966630c2",
+  "base": "ea5e019",
+  "instrumented": true,
+  "units": "nanoseconds",
+  "limitations": [
+    "Diagnostic only, restricted wait 0; instrumentation overhead included.",
+    "spawnCallNS is a subset of spawnToEntryNS; do not sum inclusive intervals.",
+    "Original runtime source was restored before feature implementation."
+  ],
+  "groups": [
+    {
+      "mode": "fresh-worker",
+      "samples": [
+        {
+          "wallNS": 31953083,
+          "runnerNS": 31580167,
+          "setupNS": 107542,
+          "spawnCallNS": 195333,
+          "spawnToEntryNS": 5375833,
+          "outerParseNS": 2794167,
+          "exitCleanupNS": 12573667,
+          "startupAndParsingNS": 18871958,
+          "iterations": [
+            {
+              "pid": 37603,
+              "parseNS": 10701958,
+              "commandNS": 27000
+            }
+          ]
+        },
+        {
+          "wallNS": 30910125,
+          "runnerNS": 30543625,
+          "setupNS": 107500,
+          "spawnCallNS": 169750,
+          "spawnToEntryNS": 5093042,
+          "outerParseNS": 2888625,
+          "exitCleanupNS": 11160583,
+          "startupAndParsingNS": 19253459,
+          "iterations": [
+            {
+              "pid": 37655,
+              "parseNS": 11271792,
+              "commandNS": 22083
+            }
+          ]
+        },
+        {
+          "wallNS": 32469792,
+          "runnerNS": 32018208,
+          "setupNS": 107000,
+          "spawnCallNS": 185833,
+          "spawnToEntryNS": 5404166,
+          "outerParseNS": 2708584,
+          "exitCleanupNS": 12940917,
+          "startupAndParsingNS": 18945833,
+          "iterations": [
+            {
+              "pid": 37676,
+              "parseNS": 10833083,
+              "commandNS": 24458
+            }
+          ]
+        },
+        {
+          "wallNS": 29782125,
+          "runnerNS": 29283584,
+          "setupNS": 103709,
+          "spawnCallNS": 172000,
+          "spawnToEntryNS": 4807208,
+          "outerParseNS": 2917125,
+          "exitCleanupNS": 10628209,
+          "startupAndParsingNS": 18531833,
+          "iterations": [
+            {
+              "pid": 37709,
+              "parseNS": 10807500,
+              "commandNS": 19833
+            }
+          ]
+        },
+        {
+          "wallNS": 32008416,
+          "runnerNS": 31597000,
+          "setupNS": 343750,
+          "spawnCallNS": 174583,
+          "spawnToEntryNS": 5200458,
+          "outerParseNS": 2568167,
+          "exitCleanupNS": 12675375,
+          "startupAndParsingNS": 18550583,
+          "iterations": [
+            {
+              "pid": 37731,
+              "parseNS": 10781958,
+              "commandNS": 27292
+            }
+          ]
+        },
+        {
+          "wallNS": 32031500,
+          "runnerNS": 31597583,
+          "setupNS": 101750,
+          "spawnCallNS": 172541,
+          "spawnToEntryNS": 5158208,
+          "outerParseNS": 2696208,
+          "exitCleanupNS": 12749167,
+          "startupAndParsingNS": 18720958,
+          "iterations": [
+            {
+              "pid": 37762,
+              "parseNS": 10866542,
+              "commandNS": 25708
+            }
+          ]
+        },
+        {
+          "wallNS": 20748125,
+          "runnerNS": 20343334,
+          "setupNS": 154500,
+          "spawnCallNS": 183167,
+          "spawnToEntryNS": 5017167,
+          "outerParseNS": 2961083,
+          "exitCleanupNS": 1493250,
+          "startupAndParsingNS": 18662209,
+          "iterations": [
+            {
+              "pid": 37802,
+              "parseNS": 10683959,
+              "commandNS": 33375
+            }
+          ]
+        },
+        {
+          "wallNS": 30917125,
+          "runnerNS": 30527583,
+          "setupNS": 110750,
+          "spawnCallNS": 172916,
+          "spawnToEntryNS": 4919666,
+          "outerParseNS": 2656500,
+          "exitCleanupNS": 12280458,
+          "startupAndParsingNS": 18110250,
+          "iterations": [
+            {
+              "pid": 37819,
+              "parseNS": 10534084,
+              "commandNS": 26125
+            }
+          ]
+        },
+        {
+          "wallNS": 31494250,
+          "runnerNS": 31082625,
+          "setupNS": 117125,
+          "spawnCallNS": 171625,
+          "spawnToEntryNS": 5143625,
+          "outerParseNS": 2558750,
+          "exitCleanupNS": 12626292,
+          "startupAndParsingNS": 18316375,
+          "iterations": [
+            {
+              "pid": 37850,
+              "parseNS": 10614000,
+              "commandNS": 22833
+            }
+          ]
+        },
+        {
+          "wallNS": 32624333,
+          "runnerNS": 31952708,
+          "setupNS": 169916,
+          "spawnCallNS": 307667,
+          "spawnToEntryNS": 5513042,
+          "outerParseNS": 2727500,
+          "exitCleanupNS": 12623167,
+          "startupAndParsingNS": 19138500,
+          "iterations": [
+            {
+              "pid": 37873,
+              "parseNS": 10897958,
+              "commandNS": 21125
+            }
+          ]
+        },
+        {
+          "wallNS": 30176250,
+          "runnerNS": 29734333,
+          "setupNS": 108500,
+          "spawnCallNS": 287583,
+          "spawnToEntryNS": 4892542,
+          "outerParseNS": 2586458,
+          "exitCleanupNS": 11606791,
+          "startupAndParsingNS": 17995042,
+          "iterations": [
+            {
+              "pid": 37906,
+              "parseNS": 10516042,
+              "commandNS": 24000
+            }
+          ]
+        },
+        {
+          "wallNS": 32578333,
+          "runnerNS": 32037667,
+          "setupNS": 113667,
+          "spawnCallNS": 207333,
+          "spawnToEntryNS": 5549291,
+          "outerParseNS": 2624792,
+          "exitCleanupNS": 12656917,
+          "startupAndParsingNS": 19242083,
+          "iterations": [
+            {
+              "pid": 37925,
+              "parseNS": 11068000,
+              "commandNS": 25000
+            }
+          ]
+        },
+        {
+          "wallNS": 20594834,
+          "runnerNS": 19865458,
+          "setupNS": 486000,
+          "spawnCallNS": 505833,
+          "spawnToEntryNS": 5247792,
+          "outerParseNS": 2656416,
+          "exitCleanupNS": 672625,
+          "startupAndParsingNS": 18683417,
+          "iterations": [
+            {
+              "pid": 37960,
+              "parseNS": 10779209,
+              "commandNS": 23416
+            }
+          ]
+        },
+        {
+          "wallNS": 19970125,
+          "runnerNS": 19608125,
+          "setupNS": 103916,
+          "spawnCallNS": 180667,
+          "spawnToEntryNS": 5227667,
+          "outerParseNS": 2593458,
+          "exitCleanupNS": 817292,
+          "startupAndParsingNS": 18661792,
+          "iterations": [
+            {
+              "pid": 37972,
+              "parseNS": 10840667,
+              "commandNS": 25125
+            }
+          ]
+        },
+        {
+          "wallNS": 31070667,
+          "runnerNS": 30708917,
+          "setupNS": 103292,
+          "spawnCallNS": 181416,
+          "spawnToEntryNS": 5014125,
+          "outerParseNS": 2740375,
+          "exitCleanupNS": 12190209,
+          "startupAndParsingNS": 18393375,
+          "iterations": [
+            {
+              "pid": 37995,
+              "parseNS": 10638875,
+              "commandNS": 22041
+            }
+          ]
+        },
+        {
+          "wallNS": 32438166,
+          "runnerNS": 32081833,
+          "setupNS": 143167,
+          "spawnCallNS": 180416,
+          "spawnToEntryNS": 5445833,
+          "outerParseNS": 2586292,
+          "exitCleanupNS": 12858833,
+          "startupAndParsingNS": 19060375,
+          "iterations": [
+            {
+              "pid": 38017,
+              "parseNS": 11028250,
+              "commandNS": 19458
+            }
+          ]
+        },
+        {
+          "wallNS": 30486542,
+          "runnerNS": 29918709,
+          "setupNS": 113292,
+          "spawnCallNS": 226708,
+          "spawnToEntryNS": 4921708,
+          "outerParseNS": 2735417,
+          "exitCleanupNS": 11386834,
+          "startupAndParsingNS": 18396792,
+          "iterations": [
+            {
+              "pid": 38066,
+              "parseNS": 10739667,
+              "commandNS": 21791
+            }
+          ]
+        },
+        {
+          "wallNS": 20681167,
+          "runnerNS": 20176333,
+          "setupNS": 108083,
+          "spawnCallNS": 230000,
+          "spawnToEntryNS": 5231875,
+          "outerParseNS": 2563417,
+          "exitCleanupNS": 697292,
+          "startupAndParsingNS": 19345375,
+          "iterations": [
+            {
+              "pid": 38085,
+              "parseNS": 11550083,
+              "commandNS": 25583
+            }
+          ]
+        },
+        {
+          "wallNS": 33340500,
+          "runnerNS": 32937042,
+          "setupNS": 130417,
+          "spawnCallNS": 255875,
+          "spawnToEntryNS": 5946166,
+          "outerParseNS": 3057125,
+          "exitCleanupNS": 12623250,
+          "startupAndParsingNS": 20159625,
+          "iterations": [
+            {
+              "pid": 38107,
+              "parseNS": 11156334,
+              "commandNS": 23750
+            }
+          ]
+        },
+        {
+          "wallNS": 20380750,
+          "runnerNS": 19921166,
+          "setupNS": 112875,
+          "spawnCallNS": 199625,
+          "spawnToEntryNS": 5372791,
+          "outerParseNS": 2728125,
+          "exitCleanupNS": 907583,
+          "startupAndParsingNS": 18871125,
+          "iterations": [
+            {
+              "pid": 38135,
+              "parseNS": 10770209,
+              "commandNS": 29583
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "mode": "repeated-parser-in-one-worker",
+      "samples": [
+        {
+          "wallNS": 210924208,
+          "runnerNS": 210370958,
+          "setupNS": 111416,
+          "spawnCallNS": 187084,
+          "spawnToEntryNS": 5143375,
+          "outerParseNS": 2938417,
+          "exitCleanupNS": 730667,
+          "startupAndParsingNS": 19481459,
+          "iterations": [
+            {
+              "pid": 38865,
+              "parseNS": 11399667,
+              "commandNS": 28125
+            },
+            {
+              "pid": 38865,
+              "parseNS": 10910000,
+              "commandNS": 27458
+            },
+            {
+              "pid": 38865,
+              "parseNS": 10115583,
+              "commandNS": 12292
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9932875,
+              "commandNS": 10166
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9831209,
+              "commandNS": 13750
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9742292,
+              "commandNS": 11125
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9482417,
+              "commandNS": 11333
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9687708,
+              "commandNS": 10834
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9964334,
+              "commandNS": 8791
+            },
+            {
+              "pid": 38865,
+              "parseNS": 10122542,
+              "commandNS": 9667
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9609292,
+              "commandNS": 15500
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9858750,
+              "commandNS": 14666
+            },
+            {
+              "pid": 38865,
+              "parseNS": 10119209,
+              "commandNS": 11166
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9826250,
+              "commandNS": 13042
+            },
+            {
+              "pid": 38865,
+              "parseNS": 10324458,
+              "commandNS": 12917
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9660084,
+              "commandNS": 11333
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9900042,
+              "commandNS": 11125
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9776375,
+              "commandNS": 39084
+            },
+            {
+              "pid": 38865,
+              "parseNS": 10278500,
+              "commandNS": 16167
+            },
+            {
+              "pid": 38865,
+              "parseNS": 9853083,
+              "commandNS": 15000
+            }
+          ]
+        },
+        {
+          "wallNS": 216071333,
+          "runnerNS": 215617375,
+          "setupNS": 161042,
+          "spawnCallNS": 393750,
+          "spawnToEntryNS": 5734125,
+          "outerParseNS": 2699250,
+          "exitCleanupNS": 10714375,
+          "startupAndParsingNS": 19446875,
+          "iterations": [
+            {
+              "pid": 39037,
+              "parseNS": 11013500,
+              "commandNS": 27750
+            },
+            {
+              "pid": 39037,
+              "parseNS": 10562625,
+              "commandNS": 17417
+            },
+            {
+              "pid": 39037,
+              "parseNS": 10156291,
+              "commandNS": 11625
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9706125,
+              "commandNS": 13833
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9636750,
+              "commandNS": 13375
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9561708,
+              "commandNS": 10042
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9333375,
+              "commandNS": 10042
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9460583,
+              "commandNS": 11709
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9850875,
+              "commandNS": 12667
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9624875,
+              "commandNS": 12000
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9441708,
+              "commandNS": 17667
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9556042,
+              "commandNS": 10833
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9527000,
+              "commandNS": 13709
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9711375,
+              "commandNS": 15833
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9867750,
+              "commandNS": 14042
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9854375,
+              "commandNS": 12750
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9810041,
+              "commandNS": 13209
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9976875,
+              "commandNS": 10542
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9507833,
+              "commandNS": 10750
+            },
+            {
+              "pid": 39037,
+              "parseNS": 9219000,
+              "commandNS": 10625
+            }
+          ]
+        },
+        {
+          "wallNS": 209469542,
+          "runnerNS": 208987667,
+          "setupNS": 117917,
+          "spawnCallNS": 213125,
+          "spawnToEntryNS": 5221708,
+          "outerParseNS": 2552250,
+          "exitCleanupNS": 672958,
+          "startupAndParsingNS": 18690375,
+          "iterations": [
+            {
+              "pid": 39217,
+              "parseNS": 10916417,
+              "commandNS": 24833
+            },
+            {
+              "pid": 39217,
+              "parseNS": 10331042,
+              "commandNS": 15333
+            },
+            {
+              "pid": 39217,
+              "parseNS": 10460167,
+              "commandNS": 15292
+            },
+            {
+              "pid": 39217,
+              "parseNS": 10035541,
+              "commandNS": 18792
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9928375,
+              "commandNS": 13041
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9904000,
+              "commandNS": 11625
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9984833,
+              "commandNS": 19583
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9462459,
+              "commandNS": 10500
+            },
+            {
+              "pid": 39217,
+              "parseNS": 10044333,
+              "commandNS": 12625
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9993709,
+              "commandNS": 12791
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9716666,
+              "commandNS": 12084
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9742667,
+              "commandNS": 10875
+            },
+            {
+              "pid": 39217,
+              "parseNS": 10072709,
+              "commandNS": 17250
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9567083,
+              "commandNS": 12958
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9742584,
+              "commandNS": 14166
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9516083,
+              "commandNS": 11000
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9682750,
+              "commandNS": 15500
+            },
+            {
+              "pid": 39217,
+              "parseNS": 9716875,
+              "commandNS": 17709
+            },
+            {
+              "pid": 39217,
+              "parseNS": 10260958,
+              "commandNS": 11834
+            },
+            {
+              "pid": 39217,
+              "parseNS": 10349917,
+              "commandNS": 11875
+            }
+          ]
+        },
+        {
+          "wallNS": 228731250,
+          "runnerNS": 228106042,
+          "setupNS": 160125,
+          "spawnCallNS": 218875,
+          "spawnToEntryNS": 5310709,
+          "outerParseNS": 2961458,
+          "exitCleanupNS": 12977000,
+          "startupAndParsingNS": 19835167,
+          "iterations": [
+            {
+              "pid": 39394,
+              "parseNS": 11563000,
+              "commandNS": 24792
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10534292,
+              "commandNS": 17917
+            },
+            {
+              "pid": 39394,
+              "parseNS": 9803333,
+              "commandNS": 10084
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10188916,
+              "commandNS": 12875
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10562208,
+              "commandNS": 12917
+            },
+            {
+              "pid": 39394,
+              "parseNS": 9749042,
+              "commandNS": 14958
+            },
+            {
+              "pid": 39394,
+              "parseNS": 9966833,
+              "commandNS": 10042
+            },
+            {
+              "pid": 39394,
+              "parseNS": 9904958,
+              "commandNS": 10542
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10045875,
+              "commandNS": 11833
+            },
+            {
+              "pid": 39394,
+              "parseNS": 9924583,
+              "commandNS": 14750
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10756500,
+              "commandNS": 17625
+            },
+            {
+              "pid": 39394,
+              "parseNS": 9874417,
+              "commandNS": 16958
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10392167,
+              "commandNS": 17750
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10002834,
+              "commandNS": 14375
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10242625,
+              "commandNS": 13750
+            },
+            {
+              "pid": 39394,
+              "parseNS": 9828291,
+              "commandNS": 12000
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10174417,
+              "commandNS": 13416
+            },
+            {
+              "pid": 39394,
+              "parseNS": 9666708,
+              "commandNS": 18583
+            },
+            {
+              "pid": 39394,
+              "parseNS": 10597167,
+              "commandNS": 24292
+            },
+            {
+              "pid": 39394,
+              "parseNS": 11859125,
+              "commandNS": 17958
+            }
+          ]
+        },
+        {
+          "wallNS": 226672667,
+          "runnerNS": 226058209,
+          "setupNS": 219542,
+          "spawnCallNS": 356250,
+          "spawnToEntryNS": 5814125,
+          "outerParseNS": 2779417,
+          "exitCleanupNS": 12838917,
+          "startupAndParsingNS": 20094125,
+          "iterations": [
+            {
+              "pid": 39638,
+              "parseNS": 11500583,
+              "commandNS": 22458
+            },
+            {
+              "pid": 39638,
+              "parseNS": 11571750,
+              "commandNS": 21208
+            },
+            {
+              "pid": 39638,
+              "parseNS": 13451125,
+              "commandNS": 12875
+            },
+            {
+              "pid": 39638,
+              "parseNS": 10524459,
+              "commandNS": 12375
+            },
+            {
+              "pid": 39638,
+              "parseNS": 10007833,
+              "commandNS": 16375
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9970333,
+              "commandNS": 17875
+            },
+            {
+              "pid": 39638,
+              "parseNS": 10374583,
+              "commandNS": 16209
+            },
+            {
+              "pid": 39638,
+              "parseNS": 10463542,
+              "commandNS": 19042
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9576000,
+              "commandNS": 12875
+            },
+            {
+              "pid": 39638,
+              "parseNS": 10244541,
+              "commandNS": 12750
+            },
+            {
+              "pid": 39638,
+              "parseNS": 10007125,
+              "commandNS": 13417
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9577291,
+              "commandNS": 11625
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9443958,
+              "commandNS": 11125
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9559916,
+              "commandNS": 12917
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9387666,
+              "commandNS": 11959
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9136041,
+              "commandNS": 16292
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9622584,
+              "commandNS": 20458
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9509833,
+              "commandNS": 11333
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9440166,
+              "commandNS": 14375
+            },
+            {
+              "pid": 39638,
+              "parseNS": 9993542,
+              "commandNS": 14625
+            }
+          ]
+        },
+        {
+          "wallNS": 226740459,
+          "runnerNS": 226236167,
+          "setupNS": 181292,
+          "spawnCallNS": 304125,
+          "spawnToEntryNS": 5943875,
+          "outerParseNS": 2833667,
+          "exitCleanupNS": 11797292,
+          "startupAndParsingNS": 20070833,
+          "iterations": [
+            {
+              "pid": 39837,
+              "parseNS": 11293291,
+              "commandNS": 26875
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10956917,
+              "commandNS": 20083
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10213417,
+              "commandNS": 16333
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10164500,
+              "commandNS": 14916
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10186667,
+              "commandNS": 17292
+            },
+            {
+              "pid": 39837,
+              "parseNS": 9825583,
+              "commandNS": 16625
+            },
+            {
+              "pid": 39837,
+              "parseNS": 9875792,
+              "commandNS": 14500
+            },
+            {
+              "pid": 39837,
+              "parseNS": 9487625,
+              "commandNS": 11458
+            },
+            {
+              "pid": 39837,
+              "parseNS": 9673000,
+              "commandNS": 11000
+            },
+            {
+              "pid": 39837,
+              "parseNS": 9921667,
+              "commandNS": 17500
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10186875,
+              "commandNS": 11167
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10836375,
+              "commandNS": 34833
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10148667,
+              "commandNS": 21125
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10147416,
+              "commandNS": 17167
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10360041,
+              "commandNS": 18084
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10195667,
+              "commandNS": 19541
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10558209,
+              "commandNS": 24333
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10308208,
+              "commandNS": 14583
+            },
+            {
+              "pid": 39837,
+              "parseNS": 10030125,
+              "commandNS": 15542
+            },
+            {
+              "pid": 39837,
+              "parseNS": 9952542,
+              "commandNS": 10916
+            }
+          ]
+        },
+        {
+          "wallNS": 230919125,
+          "runnerNS": 230442291,
+          "setupNS": 106625,
+          "spawnCallNS": 174750,
+          "spawnToEntryNS": 5480875,
+          "outerParseNS": 3084500,
+          "exitCleanupNS": 12646916,
+          "startupAndParsingNS": 19328500,
+          "iterations": [
+            {
+              "pid": 40045,
+              "parseNS": 10763125,
+              "commandNS": 27250
+            },
+            {
+              "pid": 40045,
+              "parseNS": 11140750,
+              "commandNS": 21166
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10112583,
+              "commandNS": 15708
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10243458,
+              "commandNS": 13750
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10273625,
+              "commandNS": 18125
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10511542,
+              "commandNS": 16541
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10260458,
+              "commandNS": 16042
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10654333,
+              "commandNS": 17000
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10473167,
+              "commandNS": 11625
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10136042,
+              "commandNS": 11333
+            },
+            {
+              "pid": 40045,
+              "parseNS": 9975833,
+              "commandNS": 10000
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10287417,
+              "commandNS": 16125
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10185459,
+              "commandNS": 13750
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10677084,
+              "commandNS": 13166
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10256000,
+              "commandNS": 16375
+            },
+            {
+              "pid": 40045,
+              "parseNS": 11488417,
+              "commandNS": 15833
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10596834,
+              "commandNS": 16541
+            },
+            {
+              "pid": 40045,
+              "parseNS": 9959709,
+              "commandNS": 16208
+            },
+            {
+              "pid": 40045,
+              "parseNS": 10260208,
+              "commandNS": 12625
+            },
+            {
+              "pid": 40045,
+              "parseNS": 9821416,
+              "commandNS": 10459
+            }
+          ]
+        },
+        {
+          "wallNS": 227630250,
+          "runnerNS": 227101833,
+          "setupNS": 229083,
+          "spawnCallNS": 271459,
+          "spawnToEntryNS": 5574125,
+          "outerParseNS": 2596542,
+          "exitCleanupNS": 12720375,
+          "startupAndParsingNS": 18683834,
+          "iterations": [
+            {
+              "pid": 40244,
+              "parseNS": 10513167,
+              "commandNS": 26791
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10444333,
+              "commandNS": 23125
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10338875,
+              "commandNS": 18000
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10146958,
+              "commandNS": 14833
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10271250,
+              "commandNS": 14542
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10231416,
+              "commandNS": 10959
+            },
+            {
+              "pid": 40244,
+              "parseNS": 11335042,
+              "commandNS": 19292
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10430208,
+              "commandNS": 16042
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10653042,
+              "commandNS": 12000
+            },
+            {
+              "pid": 40244,
+              "parseNS": 9998375,
+              "commandNS": 21500
+            },
+            {
+              "pid": 40244,
+              "parseNS": 9709625,
+              "commandNS": 11375
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10035375,
+              "commandNS": 16584
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10018959,
+              "commandNS": 16166
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10431959,
+              "commandNS": 10750
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10271917,
+              "commandNS": 11125
+            },
+            {
+              "pid": 40244,
+              "parseNS": 9905458,
+              "commandNS": 16792
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10287958,
+              "commandNS": 13458
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10012459,
+              "commandNS": 15958
+            },
+            {
+              "pid": 40244,
+              "parseNS": 10033875,
+              "commandNS": 14625
+            },
+            {
+              "pid": 40244,
+              "parseNS": 9819125,
+              "commandNS": 12833
+            }
+          ]
+        },
+        {
+          "wallNS": 213200000,
+          "runnerNS": 212663250,
+          "setupNS": 302958,
+          "spawnCallNS": 202709,
+          "spawnToEntryNS": 5076834,
+          "outerParseNS": 2893916,
+          "exitCleanupNS": 579333,
+          "startupAndParsingNS": 18444667,
+          "iterations": [
+            {
+              "pid": 40428,
+              "parseNS": 10473917,
+              "commandNS": 27875
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10158959,
+              "commandNS": 18125
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10285500,
+              "commandNS": 14875
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10204959,
+              "commandNS": 16541
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10385584,
+              "commandNS": 18000
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10313208,
+              "commandNS": 11333
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10574750,
+              "commandNS": 19042
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10761500,
+              "commandNS": 13583
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10265084,
+              "commandNS": 13125
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10228417,
+              "commandNS": 11958
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10362209,
+              "commandNS": 10583
+            },
+            {
+              "pid": 40428,
+              "parseNS": 9837167,
+              "commandNS": 12583
+            },
+            {
+              "pid": 40428,
+              "parseNS": 9697333,
+              "commandNS": 16417
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10056292,
+              "commandNS": 11500
+            },
+            {
+              "pid": 40428,
+              "parseNS": 9881167,
+              "commandNS": 12208
+            },
+            {
+              "pid": 40428,
+              "parseNS": 9600375,
+              "commandNS": 11916
+            },
+            {
+              "pid": 40428,
+              "parseNS": 9722750,
+              "commandNS": 15583
+            },
+            {
+              "pid": 40428,
+              "parseNS": 10182291,
+              "commandNS": 13750
+            },
+            {
+              "pid": 40428,
+              "parseNS": 9891666,
+              "commandNS": 12459
+            },
+            {
+              "pid": 40428,
+              "parseNS": 9872291,
+              "commandNS": 11709
+            }
+          ]
+        },
+        {
+          "wallNS": 211558041,
+          "runnerNS": 211016459,
+          "setupNS": 504125,
+          "spawnCallNS": 295750,
+          "spawnToEntryNS": 5602000,
+          "outerParseNS": 2709792,
+          "exitCleanupNS": 772459,
+          "startupAndParsingNS": 19674500,
+          "iterations": [
+            {
+              "pid": 40601,
+              "parseNS": 11362708,
+              "commandNS": 23667
+            },
+            {
+              "pid": 40601,
+              "parseNS": 10382167,
+              "commandNS": 16500
+            },
+            {
+              "pid": 40601,
+              "parseNS": 10594125,
+              "commandNS": 22666
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9882666,
+              "commandNS": 13125
+            },
+            {
+              "pid": 40601,
+              "parseNS": 10229667,
+              "commandNS": 12375
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9650833,
+              "commandNS": 8875
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9595958,
+              "commandNS": 10750
+            },
+            {
+              "pid": 40601,
+              "parseNS": 10173458,
+              "commandNS": 13125
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9877417,
+              "commandNS": 10458
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9832625,
+              "commandNS": 11834
+            },
+            {
+              "pid": 40601,
+              "parseNS": 10128125,
+              "commandNS": 9541
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9575083,
+              "commandNS": 14542
+            },
+            {
+              "pid": 40601,
+              "parseNS": 10167125,
+              "commandNS": 10833
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9836958,
+              "commandNS": 9458
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9477667,
+              "commandNS": 11000
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9446125,
+              "commandNS": 10917
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9498042,
+              "commandNS": 11541
+            },
+            {
+              "pid": 40601,
+              "parseNS": 10636916,
+              "commandNS": 12709
+            },
+            {
+              "pid": 40601,
+              "parseNS": 9911791,
+              "commandNS": 15292
+            },
+            {
+              "pid": 40601,
+              "parseNS": 10228167,
+              "commandNS": 12458
+            }
+          ]
+        },
+        {
+          "wallNS": 210798417,
+          "runnerNS": 210215458,
+          "setupNS": 291541,
+          "spawnCallNS": 376000,
+          "spawnToEntryNS": 5547667,
+          "outerParseNS": 2719917,
+          "exitCleanupNS": 586625,
+          "startupAndParsingNS": 19441959,
+          "iterations": [
+            {
+              "pid": 40779,
+              "parseNS": 11174375,
+              "commandNS": 25250
+            },
+            {
+              "pid": 40779,
+              "parseNS": 10458750,
+              "commandNS": 15167
+            },
+            {
+              "pid": 40779,
+              "parseNS": 10215000,
+              "commandNS": 23500
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9919334,
+              "commandNS": 11000
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9765208,
+              "commandNS": 18417
+            },
+            {
+              "pid": 40779,
+              "parseNS": 10484708,
+              "commandNS": 15584
+            },
+            {
+              "pid": 40779,
+              "parseNS": 10047292,
+              "commandNS": 13750
+            },
+            {
+              "pid": 40779,
+              "parseNS": 10481209,
+              "commandNS": 16625
+            },
+            {
+              "pid": 40779,
+              "parseNS": 10429916,
+              "commandNS": 12500
+            },
+            {
+              "pid": 40779,
+              "parseNS": 10493916,
+              "commandNS": 16667
+            },
+            {
+              "pid": 40779,
+              "parseNS": 10325959,
+              "commandNS": 15375
+            },
+            {
+              "pid": 40779,
+              "parseNS": 10095625,
+              "commandNS": 12416
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9766791,
+              "commandNS": 12625
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9330166,
+              "commandNS": 12459
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9359583,
+              "commandNS": 10959
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9547541,
+              "commandNS": 15417
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9481458,
+              "commandNS": 15000
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9642458,
+              "commandNS": 13333
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9623042,
+              "commandNS": 13375
+            },
+            {
+              "pid": 40779,
+              "parseNS": 9373416,
+              "commandNS": 8792
+            }
+          ]
+        },
+        {
+          "wallNS": 210788250,
+          "runnerNS": 210065125,
+          "setupNS": 114416,
+          "spawnCallNS": 171709,
+          "spawnToEntryNS": 5153792,
+          "outerParseNS": 2618625,
+          "exitCleanupNS": 876709,
+          "startupAndParsingNS": 18561167,
+          "iterations": [
+            {
+              "pid": 40940,
+              "parseNS": 10788750,
+              "commandNS": 24083
+            },
+            {
+              "pid": 40940,
+              "parseNS": 10311416,
+              "commandNS": 19334
+            },
+            {
+              "pid": 40940,
+              "parseNS": 10730333,
+              "commandNS": 14458
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9672083,
+              "commandNS": 14667
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9982250,
+              "commandNS": 15583
+            },
+            {
+              "pid": 40940,
+              "parseNS": 10199042,
+              "commandNS": 13666
+            },
+            {
+              "pid": 40940,
+              "parseNS": 10151375,
+              "commandNS": 13834
+            },
+            {
+              "pid": 40940,
+              "parseNS": 10334333,
+              "commandNS": 19375
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9636375,
+              "commandNS": 11542
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9858666,
+              "commandNS": 10459
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9306750,
+              "commandNS": 13000
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9825833,
+              "commandNS": 9000
+            },
+            {
+              "pid": 40940,
+              "parseNS": 10178542,
+              "commandNS": 10041
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9636625,
+              "commandNS": 9792
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9508000,
+              "commandNS": 18542
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9832208,
+              "commandNS": 11959
+            },
+            {
+              "pid": 40940,
+              "parseNS": 10347000,
+              "commandNS": 13250
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9929292,
+              "commandNS": 13083
+            },
+            {
+              "pid": 40940,
+              "parseNS": 10344292,
+              "commandNS": 13916
+            },
+            {
+              "pid": 40940,
+              "parseNS": 9735417,
+              "commandNS": 13333
+            }
+          ]
+        },
+        {
+          "wallNS": 223389500,
+          "runnerNS": 222954083,
+          "setupNS": 128750,
+          "spawnCallNS": 172458,
+          "spawnToEntryNS": 4683708,
+          "outerParseNS": 2846250,
+          "exitCleanupNS": 12610541,
+          "startupAndParsingNS": 18850875,
+          "iterations": [
+            {
+              "pid": 41119,
+              "parseNS": 11320917,
+              "commandNS": 19500
+            },
+            {
+              "pid": 41119,
+              "parseNS": 10192667,
+              "commandNS": 32417
+            },
+            {
+              "pid": 41119,
+              "parseNS": 10815583,
+              "commandNS": 18417
+            },
+            {
+              "pid": 41119,
+              "parseNS": 10102417,
+              "commandNS": 13833
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9717958,
+              "commandNS": 14584
+            },
+            {
+              "pid": 41119,
+              "parseNS": 10174791,
+              "commandNS": 14209
+            },
+            {
+              "pid": 41119,
+              "parseNS": 10362708,
+              "commandNS": 9542
+            },
+            {
+              "pid": 41119,
+              "parseNS": 10367916,
+              "commandNS": 16125
+            },
+            {
+              "pid": 41119,
+              "parseNS": 10284666,
+              "commandNS": 10917
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9918500,
+              "commandNS": 12166
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9980417,
+              "commandNS": 14791
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9912458,
+              "commandNS": 14583
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9789708,
+              "commandNS": 13458
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9918917,
+              "commandNS": 14958
+            },
+            {
+              "pid": 41119,
+              "parseNS": 10105875,
+              "commandNS": 11542
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9661875,
+              "commandNS": 13167
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9876959,
+              "commandNS": 11041
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9852417,
+              "commandNS": 11625
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9657875,
+              "commandNS": 15959
+            },
+            {
+              "pid": 41119,
+              "parseNS": 9664667,
+              "commandNS": 11917
+            }
+          ]
+        },
+        {
+          "wallNS": 229527042,
+          "runnerNS": 229116958,
+          "setupNS": 103166,
+          "spawnCallNS": 178334,
+          "spawnToEntryNS": 5532834,
+          "outerParseNS": 3122250,
+          "exitCleanupNS": 12623208,
+          "startupAndParsingNS": 19573375,
+          "iterations": [
+            {
+              "pid": 41318,
+              "parseNS": 10918291,
+              "commandNS": 40542
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10808334,
+              "commandNS": 18833
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10281500,
+              "commandNS": 15958
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10088750,
+              "commandNS": 11417
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10332417,
+              "commandNS": 16166
+            },
+            {
+              "pid": 41318,
+              "parseNS": 9975459,
+              "commandNS": 14916
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10341083,
+              "commandNS": 15167
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10574375,
+              "commandNS": 14667
+            },
+            {
+              "pid": 41318,
+              "parseNS": 9772542,
+              "commandNS": 10666
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10383167,
+              "commandNS": 12708
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10204541,
+              "commandNS": 10709
+            },
+            {
+              "pid": 41318,
+              "parseNS": 9838292,
+              "commandNS": 12292
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10399250,
+              "commandNS": 13584
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10195125,
+              "commandNS": 11917
+            },
+            {
+              "pid": 41318,
+              "parseNS": 9797458,
+              "commandNS": 13375
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10673459,
+              "commandNS": 13041
+            },
+            {
+              "pid": 41318,
+              "parseNS": 9964417,
+              "commandNS": 13250
+            },
+            {
+              "pid": 41318,
+              "parseNS": 9893416,
+              "commandNS": 17292
+            },
+            {
+              "pid": 41318,
+              "parseNS": 11228750,
+              "commandNS": 23042
+            },
+            {
+              "pid": 41318,
+              "parseNS": 10958417,
+              "commandNS": 13750
+            }
+          ]
+        },
+        {
+          "wallNS": 223175583,
+          "runnerNS": 222756750,
+          "setupNS": 110834,
+          "spawnCallNS": 256541,
+          "spawnToEntryNS": 5684291,
+          "outerParseNS": 2695917,
+          "exitCleanupNS": 12301250,
+          "startupAndParsingNS": 19317375,
+          "iterations": [
+            {
+              "pid": 41518,
+              "parseNS": 10937167,
+              "commandNS": 21333
+            },
+            {
+              "pid": 41518,
+              "parseNS": 10608958,
+              "commandNS": 17458
+            },
+            {
+              "pid": 41518,
+              "parseNS": 10766291,
+              "commandNS": 12834
+            },
+            {
+              "pid": 41518,
+              "parseNS": 10200542,
+              "commandNS": 9666
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9587375,
+              "commandNS": 13084
+            },
+            {
+              "pid": 41518,
+              "parseNS": 10210875,
+              "commandNS": 10500
+            },
+            {
+              "pid": 41518,
+              "parseNS": 10131583,
+              "commandNS": 12583
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9863500,
+              "commandNS": 9416
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9823792,
+              "commandNS": 9917
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9725250,
+              "commandNS": 9500
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9607917,
+              "commandNS": 14125
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9703959,
+              "commandNS": 12000
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9675334,
+              "commandNS": 15291
+            },
+            {
+              "pid": 41518,
+              "parseNS": 10125666,
+              "commandNS": 14375
+            },
+            {
+              "pid": 41518,
+              "parseNS": 10028958,
+              "commandNS": 11000
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9881167,
+              "commandNS": 9750
+            },
+            {
+              "pid": 41518,
+              "parseNS": 10799167,
+              "commandNS": 12458
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9789166,
+              "commandNS": 14500
+            },
+            {
+              "pid": 41518,
+              "parseNS": 9560541,
+              "commandNS": 14625
+            },
+            {
+              "pid": 41518,
+              "parseNS": 10035792,
+              "commandNS": 17791
+            }
+          ]
+        },
+        {
+          "wallNS": 216211708,
+          "runnerNS": 215777125,
+          "setupNS": 104417,
+          "spawnCallNS": 199375,
+          "spawnToEntryNS": 5072625,
+          "outerParseNS": 2551708,
+          "exitCleanupNS": 12742875,
+          "startupAndParsingNS": 18861916,
+          "iterations": [
+            {
+              "pid": 41585,
+              "parseNS": 11237583,
+              "commandNS": 23709
+            },
+            {
+              "pid": 41585,
+              "parseNS": 10623583,
+              "commandNS": 15417
+            },
+            {
+              "pid": 41585,
+              "parseNS": 10302334,
+              "commandNS": 13875
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9827792,
+              "commandNS": 10208
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9497750,
+              "commandNS": 12209
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9369125,
+              "commandNS": 14000
+            },
+            {
+              "pid": 41585,
+              "parseNS": 10069250,
+              "commandNS": 13250
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9940333,
+              "commandNS": 11917
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9473542,
+              "commandNS": 11958
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9372209,
+              "commandNS": 15750
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9267250,
+              "commandNS": 9625
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9055750,
+              "commandNS": 11791
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9174166,
+              "commandNS": 10125
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9627209,
+              "commandNS": 9875
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9150958,
+              "commandNS": 9875
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9908542,
+              "commandNS": 10458
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9812417,
+              "commandNS": 8291
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9888792,
+              "commandNS": 11583
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9592292,
+              "commandNS": 9667
+            },
+            {
+              "pid": 41585,
+              "parseNS": 9263000,
+              "commandNS": 13583
+            }
+          ]
+        },
+        {
+          "wallNS": 222454166,
+          "runnerNS": 222035875,
+          "setupNS": 112209,
+          "spawnCallNS": 167375,
+          "spawnToEntryNS": 5200916,
+          "outerParseNS": 2573500,
+          "exitCleanupNS": 12300041,
+          "startupAndParsingNS": 18051875,
+          "iterations": [
+            {
+              "pid": 41682,
+              "parseNS": 10277459,
+              "commandNS": 25291
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10477917,
+              "commandNS": 15458
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10107459,
+              "commandNS": 11708
+            },
+            {
+              "pid": 41682,
+              "parseNS": 9945209,
+              "commandNS": 10875
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10313875,
+              "commandNS": 12041
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10129208,
+              "commandNS": 10750
+            },
+            {
+              "pid": 41682,
+              "parseNS": 9779084,
+              "commandNS": 13500
+            },
+            {
+              "pid": 41682,
+              "parseNS": 9580459,
+              "commandNS": 9791
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10232959,
+              "commandNS": 17416
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10383791,
+              "commandNS": 11834
+            },
+            {
+              "pid": 41682,
+              "parseNS": 9670209,
+              "commandNS": 11333
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10255000,
+              "commandNS": 9625
+            },
+            {
+              "pid": 41682,
+              "parseNS": 9354000,
+              "commandNS": 12834
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10451000,
+              "commandNS": 13209
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10576625,
+              "commandNS": 13708
+            },
+            {
+              "pid": 41682,
+              "parseNS": 10198833,
+              "commandNS": 13042
+            },
+            {
+              "pid": 41682,
+              "parseNS": 9986542,
+              "commandNS": 12708
+            },
+            {
+              "pid": 41682,
+              "parseNS": 9872875,
+              "commandNS": 10667
+            },
+            {
+              "pid": 41682,
+              "parseNS": 9494667,
+              "commandNS": 18041
+            },
+            {
+              "pid": 41682,
+              "parseNS": 9821084,
+              "commandNS": 9750
+            }
+          ]
+        },
+        {
+          "wallNS": 213329250,
+          "runnerNS": 212829250,
+          "setupNS": 109084,
+          "spawnCallNS": 276083,
+          "spawnToEntryNS": 5948333,
+          "outerParseNS": 2553250,
+          "exitCleanupNS": 750166,
+          "startupAndParsingNS": 19442250,
+          "iterations": [
+            {
+              "pid": 41749,
+              "parseNS": 10940667,
+              "commandNS": 24291
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10485458,
+              "commandNS": 16625
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10299375,
+              "commandNS": 10917
+            },
+            {
+              "pid": 41749,
+              "parseNS": 9818292,
+              "commandNS": 15375
+            },
+            {
+              "pid": 41749,
+              "parseNS": 9819125,
+              "commandNS": 11458
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10135417,
+              "commandNS": 9791
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10003125,
+              "commandNS": 9875
+            },
+            {
+              "pid": 41749,
+              "parseNS": 9415250,
+              "commandNS": 8791
+            },
+            {
+              "pid": 41749,
+              "parseNS": 9459041,
+              "commandNS": 9792
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10053917,
+              "commandNS": 13250
+            },
+            {
+              "pid": 41749,
+              "parseNS": 9429584,
+              "commandNS": 14958
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10039417,
+              "commandNS": 12542
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10249458,
+              "commandNS": 12875
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10067208,
+              "commandNS": 10583
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10408042,
+              "commandNS": 16792
+            },
+            {
+              "pid": 41749,
+              "parseNS": 9862750,
+              "commandNS": 10208
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10020166,
+              "commandNS": 18834
+            },
+            {
+              "pid": 41749,
+              "parseNS": 11439000,
+              "commandNS": 12083
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10165625,
+              "commandNS": 18000
+            },
+            {
+              "pid": 41749,
+              "parseNS": 10420208,
+              "commandNS": 16292
+            }
+          ]
+        },
+        {
+          "wallNS": 219706958,
+          "runnerNS": 219229625,
+          "setupNS": 154208,
+          "spawnCallNS": 425042,
+          "spawnToEntryNS": 6695875,
+          "outerParseNS": 2826334,
+          "exitCleanupNS": 11376667,
+          "startupAndParsingNS": 20926542,
+          "iterations": [
+            {
+              "pid": 41825,
+              "parseNS": 11404333,
+              "commandNS": 23875
+            },
+            {
+              "pid": 41825,
+              "parseNS": 10341750,
+              "commandNS": 22042
+            },
+            {
+              "pid": 41825,
+              "parseNS": 10398458,
+              "commandNS": 16375
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9648416,
+              "commandNS": 10542
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9596750,
+              "commandNS": 17458
+            },
+            {
+              "pid": 41825,
+              "parseNS": 10013583,
+              "commandNS": 15167
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9561500,
+              "commandNS": 13709
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9878000,
+              "commandNS": 17334
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9814125,
+              "commandNS": 15916
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9736250,
+              "commandNS": 14542
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9942250,
+              "commandNS": 12750
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9746250,
+              "commandNS": 16959
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9940708,
+              "commandNS": 14375
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9983083,
+              "commandNS": 13708
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9510250,
+              "commandNS": 17375
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9391666,
+              "commandNS": 12042
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9849791,
+              "commandNS": 9250
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9071375,
+              "commandNS": 15500
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9760625,
+              "commandNS": 17667
+            },
+            {
+              "pid": 41825,
+              "parseNS": 9550375,
+              "commandNS": 15250
+            }
+          ]
+        },
+        {
+          "wallNS": 227000542,
+          "runnerNS": 226547833,
+          "setupNS": 112083,
+          "spawnCallNS": 262750,
+          "spawnToEntryNS": 5930042,
+          "outerParseNS": 2736125,
+          "exitCleanupNS": 12693125,
+          "startupAndParsingNS": 20095750,
+          "iterations": [
+            {
+              "pid": 41876,
+              "parseNS": 11429583,
+              "commandNS": 26958
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10529458,
+              "commandNS": 17125
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10179083,
+              "commandNS": 15125
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10196459,
+              "commandNS": 14583
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10617625,
+              "commandNS": 15750
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10085375,
+              "commandNS": 15125
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10801000,
+              "commandNS": 19416
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10439750,
+              "commandNS": 18250
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10519542,
+              "commandNS": 16916
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10402541,
+              "commandNS": 13292
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10009959,
+              "commandNS": 15833
+            },
+            {
+              "pid": 41876,
+              "parseNS": 9911959,
+              "commandNS": 13958
+            },
+            {
+              "pid": 41876,
+              "parseNS": 9780500,
+              "commandNS": 17416
+            },
+            {
+              "pid": 41876,
+              "parseNS": 9326792,
+              "commandNS": 16083
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10066083,
+              "commandNS": 16500
+            },
+            {
+              "pid": 41876,
+              "parseNS": 10286583,
+              "commandNS": 16959
+            },
+            {
+              "pid": 41876,
+              "parseNS": 9724042,
+              "commandNS": 11958
+            },
+            {
+              "pid": 41876,
+              "parseNS": 9960250,
+              "commandNS": 12334
+            },
+            {
+              "pid": 41876,
+              "parseNS": 9960709,
+              "commandNS": 16500
+            },
+            {
+              "pid": 41876,
+              "parseNS": 9708625,
+              "commandNS": 14292
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,7 @@
+## Purpose
+
+Expose the existing CLI through a generated MCP stdio facade while preserving command validation, bounded output and isolated execution semantics.
+
 ## ADDED Requirements
 
 ### Requirement: Metadata catalog
