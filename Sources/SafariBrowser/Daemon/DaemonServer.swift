@@ -624,9 +624,9 @@ enum DaemonServer {
 
         /// Read-only fixture seam for the final handoff after a valid shutdown
         /// plan was captured. It invokes the same guarded completion as the RPC.
-        func capturedShutdownCompletionForTesting() -> @Sendable () async -> Void {
+        func capturedShutdownCompletionForTesting() -> @Sendable () async -> DaemonLog.ShutdownHandoff {
             let context = ShutdownContext(generation: shutdownGeneration, hook: shutdownHook)
-            return { _ = await self.completeShutdown(context) }
+            return { await self.completeShutdown(context) }
         }
 
         private func completeShutdown(_ context: ShutdownContext) async -> DaemonLog.ShutdownHandoff {
@@ -896,6 +896,13 @@ enum DaemonServer {
                     // Keep only fixed metadata across a potentially blocking
                     // writer, not an additional local copy of the response frame.
                     Self.emitCandidateLog(work, outcome: candidate.outcome, selection: candidate.selection)
+                    if candidate.hasHandoff, let writer = work.log.writer {
+                        // Stop cancels this task, but must not erase a handoff
+                        // that the transport still completes. Only fixed metadata
+                        // crosses this wait; the original operation owns logging.
+                        let outcome = await work.handoff.wait()
+                        writer(DaemonLog.formatShutdownHandoff(timestamp: Date(), requestToken: work.id, outcome: outcome))
+                    }
                 }
                 await self.finishOperation(work.id)
             }
@@ -1132,6 +1139,38 @@ enum DaemonServer {
             var closesConnection = false
         }
 
+        /// One selected shutdown plan has one producer and one observer.
+        /// Deliberately ignores Task cancellation: normal stop cancels the
+        /// operation before the transport reports its final guarded handoff.
+        /// This stores no response payload and creates no additional task.
+        private final class HandoffObservation: @unchecked Sendable {
+            private let lock = NSLock()
+            private var outcome: DaemonLog.ShutdownHandoff?
+            private var waiter: CheckedContinuation<DaemonLog.ShutdownHandoff, Never>?
+
+            func complete(_ value: DaemonLog.ShutdownHandoff) {
+                let pending = lock.withLock { () -> CheckedContinuation<DaemonLog.ShutdownHandoff, Never>? in
+                    guard outcome == nil else { return nil }
+                    outcome = value
+                    defer { waiter = nil }
+                    return waiter
+                }
+                pending?.resume(returning: value)
+            }
+
+            func wait() async -> DaemonLog.ShutdownHandoff {
+                await withCheckedContinuation { continuation in
+                    let ready = lock.withLock { () -> DaemonLog.ShutdownHandoff? in
+                        if let outcome { return outcome }
+                        precondition(waiter == nil, "handoff observation has one consumer")
+                        waiter = continuation
+                        return nil
+                    }
+                    if let ready { continuation.resume(returning: ready) }
+                }
+            }
+        }
+
         private final class RequestWork: Sendable {
             let id = UUID()
             let connectionID: UUID
@@ -1139,6 +1178,7 @@ enum DaemonServer {
             let log: LogSnapshot
             let result = DaemonRequestCompletion<Reply>()
             let replyFinished = DaemonRequestCompletion<Bool>()
+            let handoff = HandoffObservation()
             init(connectionID: UUID, request: ParsedRequest, log: LogSnapshot) {
                 self.connectionID = connectionID
                 self.request = request
@@ -1197,11 +1237,9 @@ enum DaemonServer {
                     // be delivered. The plan has independent generation checks.
                     await instance.connectionObservation.beforeShutdownHandoff()
                     let outcome = await performShutdown(plan, instance: instance)
-                    // Handoff/stop already returned. This writer cannot hold up
-                    // its generation guard, ACK budget, or instance teardown.
-                    if let writer = work.log.writer {
-                        writer(DaemonLog.formatShutdownHandoff(timestamp: Date(), requestToken: work.id, outcome: outcome))
-                    }
+                    // Transport ownership ends independently of the logger.
+                    // The tracked original operation writes this fixed outcome.
+                    work.handoff.complete(outcome)
                     return nil
                 }
                 if !sent || reply.closesConnection { return nil }
@@ -1226,10 +1264,10 @@ enum DaemonServer {
 
         private static func executeAndOffer(
             _ work: RequestWork, handler: MethodHandler?, instance: Instance, shutdown: ShutdownContext
-        ) async -> (outcome: DaemonLog.ResponseOutcome, selection: DaemonLog.CandidateSelection) {
+        ) async -> (outcome: DaemonLog.ResponseOutcome, selection: DaemonLog.CandidateSelection, hasHandoff: Bool) {
             let reply = await executeRequest(work, handler: handler, instance: instance, shutdown: shutdown)
             let selected = work.result.complete(reply)
-            return (reply.outcome, selected ? .selected : .notSelected)
+            return (reply.outcome, selected ? .selected : .notSelected, selected && reply.shutdown != nil)
         }
 
         private static func executeRequest(

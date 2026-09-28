@@ -284,8 +284,12 @@ final class DaemonLogRedactionTests: XCTestCase {
         let body = #"{"method":"applescript.execute","params":{"source":"tell application \"Safari\" to return name"},"requestId":99}"#
         _ = try sendRawRequestSync(path: socketPath, body: body)
 
-        // Allow the async writer task to drain.
-        try await Task.sleep(for: .milliseconds(100))
+        // The candidate is produced after reply selection. Wait for evidence,
+        // not a fixed scheduling delay, before checking both records.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await capture.snapshot().count < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         let captured = await capture.snapshot()
         XCTAssertEqual(captured.count, 2, "one prepared payload plus one original candidate")
         let payloads = captured.filter { line in

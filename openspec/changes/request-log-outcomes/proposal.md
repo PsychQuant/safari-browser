@@ -24,4 +24,8 @@
 
 ## Impact
 
-Sources/SafariBrowser/Daemon/DaemonLog.swift、DaemonServer.swift；日誌 formatter／outcome／generation／connection 測試；CLAUDE.md、CHANGELOG.md 與 persistent-daemon 規格。不變更 wire 回覆、handler 副作用或 fallback 政策。
+Sources/SafariBrowser/Daemon/DaemonLog.swift、DaemonServer.swift、DaemonServeLoop.swift、DaemonLogFile.swift；日誌 formatter／outcome／generation／connection 測試；CLAUDE.md、CHANGELOG.md 與 persistent-daemon 規格。不變更 wire 回覆、handler 副作用或 fallback 政策。
+
+## R1 evidence-driven refinement
+
+六方靜態審查後，實際補測取得 2 tests／3 assertions RED：正式 ServeLoop 的 file sink 只留下 prepared 行；blocked handoff writer 讓原 transport 未完成。不能只以 best-effort 文件弱化交付。handoff 改由原 operation 等待固定結果後記錄，transport 不呼叫 writer；Run 釋放自己的 file sink 擁有權，但 admission 捕捉的 writer 繼續持有同一 append-only sink，到最後使用者退休才關閉。這處理的是已重現的事件遺失／回收缺口，不主張未證實的 FileHandle fd 漏洞。

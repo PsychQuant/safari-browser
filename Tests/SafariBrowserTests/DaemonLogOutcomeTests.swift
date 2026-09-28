@@ -226,40 +226,55 @@ final class DaemonLogOutcomeTests: XCTestCase {
     }
 
     func testBlockedHandoffWriterRunsAfterStopAndKeepsOldLogger() async throws {
-        let directory = try makeDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let entered = expectation(description: "handoff writer blocked after stop")
-        let release = DispatchSemaphore(value: 0), old = Lines(), replacement = Lines(), server = DaemonServer.Instance()
-        defer { release.signal() }
-        let path = DaemonClient.socketPath(dir: directory.path, name: "owned")
-        do {
-            await server.setLogWriter { line in
-                _ = old.append(line)
-                if line.contains("request_shutdown_handoff") {
-                    entered.fulfill()
-                    _ = release.wait(timeout: .now() + 5)
+        for useNoStopHook in [false, true] {
+            let directory = try makeDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let entered = expectation(description: "handoff writer blocked after stop")
+            let release = DispatchSemaphore(value: 0), old = Lines(), replacement = Lines(), finishes = Lines()
+            let finished = expectation(description: "original transport finishes while handoff writer remains blocked")
+            let server = DaemonServer.Instance(connectionObservation: .init(didFinish: {
+                if finishes.append("finished") { finished.fulfill() }
+            }))
+            defer { release.signal() }
+            let path = DaemonClient.socketPath(dir: directory.path, name: "owned")
+            do {
+                await server.setLogWriter { line in
+                    _ = old.append(line)
+                    if line.contains("request_shutdown_handoff") {
+                        entered.fulfill()
+                        _ = release.wait(timeout: .now() + 5)
+                    }
                 }
-            }
-            try await server.start(socketPath: path)
-            _ = try await DaemonClient.sendRequest(name: "owned", method: "daemon.shutdown",
-                params: Data("{}".utf8), requestId: 7, timeout: 1, socketDir: directory.path)
-            await fulfillment(of: [entered], timeout: 1)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: path))
-            let started = ContinuousClock.now
-            await server.stop()
-            XCTAssertLessThan(started.duration(to: .now), .seconds(1))
-            await server.setLogWriter { line in _ = replacement.append(line) }
-            try await server.start(socketPath: path)
-            _ = try await DaemonClient.sendRequest(name: "owned", method: "daemon.status",
-                params: Data("{}".utf8), requestId: 7, timeout: 1, socketDir: directory.path)
-            release.signal()
-            try await waitUntil { old.values.count == 3 && replacement.values.count == 2 }
-            let oldToken = try XCTUnwrap(rows(old).first?["requestToken"] as? String)
-            let newTokens = try rows(replacement).compactMap { $0["requestToken"] as? String }
-            XCTAssertEqual(Set(newTokens).count, 1)
-            XCTAssertFalse(newTokens.contains(oldToken), "reused client requestId must not merge different operations")
-            await server.stop()
-        } catch { release.signal(); await server.stop(); throw error }
+                if useNoStopHook { await server.setShutdownHook {} }
+                try await server.start(socketPath: path)
+                _ = try await DaemonClient.sendRequest(name: "owned", method: "daemon.shutdown",
+                    params: Data("{}".utf8), requestId: 7, timeout: 1, socketDir: directory.path)
+                await fulfillment(of: [entered], timeout: 1)
+                await fulfillment(of: [finished], timeout: 0.3)
+                XCTAssertEqual(FileManager.default.fileExists(atPath: path), useNoStopHook)
+                let connections = await server.trackedConnectionCount
+                XCTAssertEqual(connections, 0, "even a custom hook must not retain the transport behind its logger")
+                let unfinished = await server.activeOperationCount
+                XCTAssertEqual(unfinished, 1, "the blocked handoff writer belongs to the original tracked operation")
+                let started = ContinuousClock.now
+                await server.stop()
+                XCTAssertLessThan(started.duration(to: .now), .seconds(1))
+                await server.setLogWriter { line in _ = replacement.append(line) }
+                try await server.start(socketPath: path)
+                _ = try await DaemonClient.sendRequest(name: "owned", method: "daemon.status",
+                    params: Data("{}".utf8), requestId: 7, timeout: 1, socketDir: directory.path)
+                release.signal()
+                try await waitUntil {
+                    let pending = await server.activeOperationCount
+                    return old.values.count == 3 && replacement.values.count == 2 && pending == 0
+                }
+                let oldToken = try XCTUnwrap(rows(old).first?["requestToken"] as? String)
+                let newTokens = try rows(replacement).compactMap { $0["requestToken"] as? String }
+                XCTAssertEqual(Set(newTokens).count, 1)
+                XCTAssertFalse(newTokens.contains(oldToken), "reused client requestId must not merge different operations")
+                await server.stop()
+            } catch { release.signal(); await server.stop(); throw error }
+        }
     }
 
     func testLateHandlerUsesCapturedLoggerAndReportsItsActualOffer() async throws {
@@ -384,5 +399,35 @@ final class DaemonLogOutcomeTests: XCTestCase {
             XCTAssertEqual(log.values.count, cases.count * 2)
             await server.stop()
         } catch { await server.stop(); throw error }
+    }
+    func testCancelledOperationWaitsForActualHandoffBeforeLoggingIt() async throws {
+        let directory = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let server = DaemonServer.Instance(), log = Lines(), gate = Gate()
+        let stopped = expectation(description: "hook stopped instance but has not returned")
+        do {
+            await server.setLogWriter { line in _ = log.append(line) }
+            await server.setShutdownHook {
+                await server.stop()
+                stopped.fulfill()
+                await gate.wait()
+            }
+            try await server.start(socketPath: DaemonClient.socketPath(dir: directory.path, name: "owned"))
+            let ack = try await DaemonClient.sendRequest(name: "owned", method: "daemon.shutdown",
+                params: Data("{}".utf8), requestId: 7, timeout: 1, socketDir: directory.path)
+            XCTAssertEqual(ack, Data("{}".utf8))
+            await fulfillment(of: [stopped], timeout: 1)
+            try await waitUntil { log.values.count >= 2 }
+            XCTAssertEqual(log.values.count, 2, "task cancellation must not fabricate a final handoff")
+            let pending = await server.activeOperationCount
+            XCTAssertEqual(pending, 1, "the original operation is still awaiting its real handoff")
+            await gate.release()
+            try await waitUntil { await server.activeOperationCount == 0 }
+            let handoff = try XCTUnwrap(rows(log).last)
+            XCTAssertEqual(log.values.count, 3)
+            XCTAssertEqual(handoff["event"] as? String, "request_shutdown_handoff")
+            XCTAssertEqual(handoff["outcome"] as? String, "hook_returned")
+            await server.stop()
+        } catch { await gate.release(); await server.stop(); throw error }
     }
 }
