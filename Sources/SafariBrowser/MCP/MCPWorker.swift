@@ -8,29 +8,7 @@ enum MCPWorkerContext {
     static let directKey = "SAFARI_BROWSER_MCP_DIRECT"
 
     static func imageIdentifier(header data: Data) throws -> String {
-        let invalid = ValidationError("MCP image identity unavailable; restart the server with a supported executable")
-        let headerSize = MemoryLayout<mach_header_64>.size
-        guard data.count >= headerSize else { throw invalid }
-        let header = data.withUnsafeBytes { $0.loadUnaligned(as: mach_header_64.self) }
-        guard header.magic == MH_MAGIC_64,
-              UInt64(header.sizeofcmds) <= UInt64(data.count - headerSize),
-              header.ncmds <= header.sizeofcmds / 8 else { throw invalid }
-        let end = headerSize + Int(header.sizeofcmds)
-        var offset = headerSize
-        var identifier: String?
-        for _ in 0..<header.ncmds {
-            guard offset <= end - 8 else { throw invalid }
-            let command = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: load_command.self) }
-            guard command.cmdsize >= 8, command.cmdsize % 8 == 0,
-                  Int(command.cmdsize) <= end - offset else { throw invalid }
-            if command.cmd == LC_UUID {
-                guard command.cmdsize == MemoryLayout<uuid_command>.size, identifier == nil else { throw invalid }
-                identifier = data[(offset + 8)..<(offset + 24)].map { String(format: "%02x", $0) }.joined()
-            }
-            offset += Int(command.cmdsize)
-        }
-        guard offset == end, let identifier else { throw invalid }
-        return identifier
+        try MCPExecutableIdentity.imageIdentifier(header: data)
     }
 
     static func currentImageIdentifier() throws -> String {
