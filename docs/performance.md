@@ -245,3 +245,51 @@ python3 scripts/benchmark-performance.py --binary /path/to/release/safari-browse
 These R2 measurements predate the one-shot supervision and retained ownership
 work for issue #209. They do not certify that later implementation or predict
 its isolated-mode startup cost; the final runtime requires a new comparison.
+
+## R3 supervised one-shot comparison (2026-09-28)
+
+Runtime commit `a12ba03b053c9c9e291c1482dc90bf4923332e6b` adds lifetime
+supervision and retained cleanup ownership to the one-shot path as well.
+This changes the isolated baseline; the R2 numbers above describe their own
+older binaries. The new release binary SHA-256 is
+`7797668ff99fe7113fdb86d19f67de325fe591e28770dabe9736f357206f40d8`.
+The same fixed `wait 0` comparison uses 60 samples, three warmups, three-second
+deadlines and alternating AB/BA warm calls. All non-live rows succeeded 60/60;
+live Safari rows were skipped.
+
+| Trace | Mode | Cold p50 / p95 ms | Interleaved warm p50 / p95 ms |
+|---|---|---:|---:|
+| off | isolated | 59.11 / 63.12 | 29.40 / 31.85 |
+| off | persistent | 50.72 / 59.36 | 1.89 / 6.77 |
+| on | isolated | 61.36 / 65.52 | 30.50 / 33.29 |
+| on | persistent | 52.68 / 61.50 | 2.39 / 14.01 |
+
+Trace-on warm samples observed 60 isolated CLI worker PIDs versus one persistent
+worker PID, with 60 distinct request IDs per mode. Both warm quantiles improved
+without a lower success rate in this cohort. The trace-on persistent p95 is much
+higher than its p50; the result does not establish every-call or GUI speedup.
+Timing-on/off subtraction also includes changing system load and is not a pure
+instrumentation-cost estimate.
+
+The same report separately retains the other fixed scenarios (trace off):
+
+| Scenario | p50 / p95 ms |
+|---|---:|
+| Fresh CLI help | 11.96 / 13.86 |
+| Fresh CLI wait 0 | 12.27 / 14.12 |
+| Fresh CLI exec wait batch | 46.92 / 52.07 |
+| Cold daemon host + status | 29.79 / 32.66 |
+| Warm daemon + fresh CLI status | 12.93 / 15.90 |
+
+Those daemon/status and CLI workloads are separate baselines, not interchangeable
+with the warm MCP wait request. [All R3 scenario samples and warmups](benchmarks/mcp-worker-release-r3-2026-09-28.json)
+include both timing settings, sample statuses, per-sample trace identities and
+summary durations. Per-span trace arrays are omitted; the original report digest
+is recorded. The earlier startup diagnostic and all adverse debug cohorts remain
+available above.
+
+After three successful calls, a separate read-only process-tree snapshot found
+zero resident children for isolated mode and two for persistent mode. Host plus
+child RSS sums were 17,040 KiB versus 38,000 KiB. These are single `ps` snapshots
+that count shared pages, not unique memory or a population estimate. Idle cleanup
+is separately tested; the extra resident helpers are the cost of process reuse.

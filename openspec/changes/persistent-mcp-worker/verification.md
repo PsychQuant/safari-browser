@@ -153,3 +153,13 @@ R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Ga
 - late-member測試走真正MCPProcessRunner：自停且忽略TERM的helper在第一次KILL後仍被保留，新自有member加入該group，再確認runner重複KILL並於釋放leader前清除member。Fixture member有獨立spawn reservation作失敗清理，不向ps／reply PID發訊號。
 - 8項有效變異：late-group重複KILL、保留pending、lost-owner終止態、跨engine guard、active cleanup截止、retained cleanup截止、shutdown取消、image capture契約；全部具名行為失敗，還原後161項MCP XCTest通過。這是本階段驗證，不代替4.4的完整test-all、最終release量測與六方審查。
 - README／CLAUDE／CHANGELOG已同步受監督one-shot、跨engine pending、環境快照及兩模式image error欄位差異；4.3完成，整體13/15。
+
+## R3 完整回歸與最終 release（待六方審查）
+
+- Runtime `a12ba03`：完整`make test-all`通過，1568 XCTest／38 Swift Testing／66 smoke，MCP persistent／isolated各14項，benchmark52與CLI trace7通過。簽章49 PASS／2身分SKIP，GUI harness SKIP。
+- 第一輪full suite在daemon臨時harness的raw swiftc遇到SDK搜尋失敗，並非斷言失敗；指定Xcode工具鏈與SDKROOT後，daemon案例通過並重跑整個test-all得到exit0。中間一次續跑誤用了不存在的make target，已改回正式test-all；不將該命令錯誤列為產品缺陷。
+- Release build通過；既有MCPCommandProcess captured-pid與MCPStdio字串constructor兩項編譯warning仍有揭露，本輪沒有修改這兩個runtime檔案。
+- Final release SHA256 `7797668ff99fe7113fdb86d19f67de325fe591e28770dabe9736f357206f40d8`，同build／60 samples／3 warmups／3秒deadline／ABBA交錯。off warm isolated29.400/31.851ms vs persistent1.885/6.770；on30.498/33.294 vs2.386/14.009；全部60/60成功。trace-on觀察60 vs1 actual worker PIDs、兩模式各60 request IDs。
+- cold off isolated59.113/63.115ms vs persistent50.725/59.361；新one-shot多了supervision，不能拿R2舊baseline宣稱同一runtime成本。所有scenario（含CLI／daemon）的wall samples／warmups及trace identity已保存，未跑live Safari。
+- 另測三次成功呼叫後的process tree：isolated0個resident child、persistent2個；RSS加總17040 vs38000KiB，包含共享頁，僅為單次snapshot。不是unique memory或全場景效能推論。
+- 實作、測試與量測證據現已備妥；4.4的獨立審查及3.3歸檔／PR尚未完成，不能標verified。
