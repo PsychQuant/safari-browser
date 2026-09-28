@@ -268,4 +268,65 @@ final class DaemonEstablishedConnectionTests: XCTestCase {
         XCTAssertNotNil(lifecycle["result"])
         await server.stop()
     }
+
+    func testRetiredTransportDiagnosticCannotBorrowReplacementLoggerOrBudget() async throws {
+        let socketPath = path(), finishes = Counter()
+        let oldLog = DaemonDiagnosticBudgetTests.Sink(), newLog = DaemonDiagnosticBudgetTests.Sink()
+        let stoppedBeforeLog = expectation(description: "old transport retired before diagnostic write")
+        let oldDiagnostic = expectation(description: "diagnostic keeps its original logger")
+        let release = DispatchSemaphore(value: 0)
+        let instant = ContinuousClock.now
+        let server = DaemonServer.Instance(requestLineLimit: 128, diagnosticClock: { instant },
+            connectionObservation: .init(didFinish: {
+                finishes.increment()
+                if finishes.value == 1 {
+                    stoppedBeforeLog.fulfill()
+                    _ = release.wait(timeout: .now() + 5)
+                }
+            }))
+        defer { release.signal(); unlink(socketPath); Task { await server.stop() } }
+        await server.setLogWriter { line in
+            oldLog.append(line)
+            if line.contains("request_too_long") { oldDiagnostic.fulfill() }
+        }
+        try await server.start(socketPath: socketPath)
+        let fd = try connect(socketPath)
+        defer { close(fd) }
+        let excess = Data(repeating: 32, count: 129)
+        XCTAssertEqual(excess.withUnsafeBytes { Darwin.write(fd, $0.baseAddress!, $0.count) }, excess.count)
+        await fulfillment(of: [stoppedBeforeLog], timeout: 1)
+        await server.stop()
+        await server.setLogWriter { newLog.append($0) }
+        try await server.start(socketPath: socketPath)
+        release.signal()
+        await fulfillment(of: [oldDiagnostic], timeout: 1)
+        for _ in 0..<7 {
+            await server.recordDiagnostic(.init(kind: .acceptError, errno: EINTR, disposition: .retry))
+        }
+        XCTAssertEqual(oldLog.objects.filter { $0["event"] as? String == "request_too_long" }.count, 1)
+        XCTAssertFalse(newLog.objects.contains { $0["event"] as? String == "request_too_long" })
+        XCTAssertEqual(newLog.objects.filter { $0["event"] as? String == "accept_error" }.count, 7)
+        await server.stop()
+    }
+
+    func testMalformedFrameLogKeepsByteCountWithoutRetainingPayload() async throws {
+        let socketPath = path(), server = DaemonServer.Instance()
+        let log = DaemonDiagnosticBudgetTests.Sink()
+        let frame = #"{"method":"fixture.private","params":{"source":"私有-prefix-199"}"#
+        defer { unlink(socketPath); Task { await server.stop() } }
+        try await server.start(socketPath: socketPath)
+        let fd = try connect(socketPath)
+        defer { close(fd) }
+        for full in [false, true] {
+            await server.setLogWriter({ log.append($0) }, logFull: full)
+            try TestUnixSocket.writeLine(fd: fd, line: frame)
+            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try TestUnixSocket.readLine(fd: fd).utf8)) as? [String: Any])
+            XCTAssertEqual((reply["error"] as? [String: Any])?["code"] as? String, "parseError")
+            let entry = try XCTUnwrap(log.objects.last)
+            XCTAssertEqual((entry["params"] as? [String: String])?["_log"], "<redacted \(frame.utf8.count) bytes; malformed params>")
+            XCTAssertEqual(entry["error"] as? String, "parseError")
+            XCTAssertFalse(log.all.joined().contains("私有-prefix-199"))
+        }
+        await server.stop()
+    }
 }

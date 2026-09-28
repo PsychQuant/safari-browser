@@ -208,15 +208,15 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 
 ### Accepted connection lifecycle（#199）
 
-每條已接納連線由唯一 Connection ID 與 fd owner 管理；nonblocking read/write 和 revoke／shutdown／close 在同一短鎖內執行單次 syscall。EAGAIN 在鎖外等原生 DispatchSource 就緒，避免固定輪詢延遲。通知 source 使用私有 CLOEXEC fd 副本，不做 stream I/O；副本僅在 cancel handler 關閉，避免取消中的 callback 遇到 fd 重用。停止會立即撤銷原始 socket，並取消／喚醒 readiness 等待。
+每條已接納連線由唯一 Connection ID 與 fd owner 管理；nonblocking read/write 和 revoke／shutdown／close 在同一短鎖內執行單次 syscall。EAGAIN 在鎖外等原生 DispatchSource 就緒，避免固定輪詢延遲。通知 source 使用私有 CLOEXEC fd 副本，不做 stream I/O；副本僅在 cancel handler 關閉，避免取消中的 callback 遇到 fd 重用。每個等待中的 I/O 因此多用一個 fd；dup 資源不足會明確失敗，transport 關閉並記錄固定原因。停止會立即撤銷原始 socket，並取消／喚醒 readiness 等待。
 
-完整 request 讀取／解析後，Instance 在同一 actor turn 驗證連線與世代、更新 activity、選取 handler 並接納工作。停止後收到的資料、解析完但尚未接納的 request、buffered 第二筆都不能啟動新 handler。正常完成的 transport 立即從 registry 退休；舊完成只能移除自己的 UUID，不能影響新 Run。
+完整 request 讀取／解析後，Instance 在同一 actor turn 驗證連線與世代、更新 activity、選取 handler 並接納工作。停止後收到的資料、解析完但尚未接納的 request、buffered 第二筆都不能啟動新 handler。正常完成的 transport 立即從 registry 退休；舊完成只能移除自己的 UUID，不能影響新 Run。stop 先撤銷並移除 active registry，已在進行的有界 JSON 解析仍可離開後才完成 task；active count 為零不代表已 join 所有 task。
 
-transport 與 handler 工作分開：停止可完成 transport、釋放 reader／frame，已開始的不合作 handler 仍如實追蹤到返回。取消不是副作用回滾，也不會自動重播；晚到結果不存入已取消的完成物件、不寫入新連線。每筆 request 捕捉當時的 logger／redaction 設定，舊工作不借用新 Run 的 logger。
+transport 與 handler 工作分開：停止可完成 transport、釋放 reader／frame，已開始的不合作 handler 仍如實追蹤到返回。取消不是副作用回滾，也不會自動重播；晚到結果不存入已取消的完成物件、不寫入新連線。每筆 request 捕捉當時的 logger／redaction 設定；transport 診斷在所屬連線退休的同一 actor turn 準備 emission，晚到寫入不借用新 Run 的 logger 或 budget。
 
 正常結果與 cancelled 回覆共用單次完成仲裁，只有 transport 寫出一個 frame。shutdown 先嘗試自己的 ACK（總預算 250 ms），再讓所有 in-flight cancelled 回覆共用另一個 250 ms 絕對期限；不逐 client／partial write 重設，耗盡仍繼續停止。已開始的正常 frame 不插入取消 JSON；完整 cancelled 仍是 domain error，部分／缺少回覆仍是結果未知且不重播。一般 RPC 不新增執行期限，單 Run host 的五秒退出 watchdog 保留。
 
-測試 fixture 量到原生通知版 warm RPC 中位數約 0.140 ms（基準約 0.124 ms；各 40 次），移除了初版固定等待的約 6.83 ms 中位數。36 次 2 MiB request 的 RSS 樣本約 45,360–45,536 KiB，連線與未完成 operation 每次回到零；這是本機觀察，不推論 Foundation Data capacity 或整體行程記憶體上限。shutdown 日誌的預備／最終結果語意另由 #205 追蹤。
+測試 fixture 量到原生通知版 warm RPC 中位數約 0.140 ms（基準約 0.124 ms；各 40 次），移除了初版固定等待的約 6.83 ms 中位數。36 次 2 MiB request 的 RSS 樣本約 45,360–45,536 KiB，連線與未完成 operation 每次回到零；這是本機觀察，不推論 Foundation Data capacity 或整體行程記憶體上限。無效 JSON／非 object frame 的 log 只保留安全 byte-count marker，即使 LOG_FULL 也不保存原始壞 frame；有效請求的 full-log 語意不變。shutdown 日誌的預備／最終結果語意另由 #205 追蹤。
 
 ### Listener termination（#198）
 

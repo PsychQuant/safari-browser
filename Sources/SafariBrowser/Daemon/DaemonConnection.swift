@@ -30,6 +30,7 @@ final class DaemonConnection: @unchecked Sendable {
             let result = Darwin.write(fd, buffer, count)
             return IOResult(count: result, errno: result < 0 ? errno : 0)
         }
+        var duplicate: @Sendable (Int32) -> Int32 = { fcntl($0, F_DUPFD_CLOEXEC, 0) }
         /// Nil uses native readiness. A custom wait is only a deterministic
         /// syscall/clock fixture adapter and preserves the existing retry seam.
         var wait: (@Sendable (Duration) async throws -> Void)? = nil
@@ -79,7 +80,7 @@ final class DaemonConnection: @unchecked Sendable {
         let registration = try lock.withLock {
             guard let fd else { throw Failure.revoked }
             if let deadline, environment.now() >= deadline { throw Failure.deadlineExceeded }
-            let duplicate = fcntl(fd, F_DUPFD_CLOEXEC, 0)
+            let duplicate = environment.duplicate(fd)
             guard duplicate >= 0 else { throw Failure.system(operation: operation, errno: errno) }
             let source: any DispatchSourceProtocol
             if operation == .read {

@@ -832,8 +832,10 @@ enum DaemonServer {
                 let code: Int32
                 if case DaemonConnection.Failure.system(_, let value) = error { code = value }
                 else { code = EIO }
-                Task.detached { await self.recordDiagnostic(.init(kind: .setupFailed, errno: code,
-                                                                  disposition: .closed, count: 1)) }
+                if let emission = prepareDiagnostic(.init(kind: .setupFailed, errno: code,
+                                                           disposition: .closed, count: 1)) {
+                    Task.detached { emission.write() }
+                }
                 return
             }
             let shutdown = ShutdownContext(generation: shutdownGeneration, hook: shutdownHook)
@@ -842,24 +844,27 @@ enum DaemonServer {
             let observation = connectionObservation
             record.task = Task.detached(priority: .userInitiated) {
                 let diagnostic = await Self.serveConnection(connection: connection, instance: self)
-                await self.finishConnection(connection.id)
+                let emission = await self.finishConnection(connection.id, diagnostic: diagnostic)
                 observation.didFinish()
-                // Logging is a separate best-effort activity after transport
-                // ownership and its registry entry have ended.
-                if let diagnostic {
-                    Task.detached { await self.recordDiagnostic(diagnostic) }
-                }
+                // The owning generation admitted this emission before retiring
+                // the connection. Late writing cannot borrow a new logger/budget.
+                if let emission { Task.detached { emission.write() } }
             }
         }
 
-        private func finishConnection(_ id: UUID) {
-            guard let record = connections.removeValue(forKey: id) else { return }
+        private func finishConnection(
+            _ id: UUID, diagnostic: DaemonDiagnosticBudget.Event?
+        ) -> DiagnosticEmission? {
+            guard let record = connections.removeValue(forKey: id) else { return nil }
+            let emission = record.shutdown.generation == shutdownGeneration
+                ? diagnostic.flatMap { prepareDiagnostic($0) } : nil
             record.connection.revoke()
             if let work = record.request {
                 work.result.cancel()
                 work.replyFinished.cancel()
                 operations[work.id]?.cancel()
             }
+            return emission
         }
 
         private func beginRequest(_ request: ParsedRequest, connectionID: UUID) -> RequestWork? {
@@ -1052,17 +1057,23 @@ enum DaemonServer {
             let rejection: Rejection?
             struct Rejection: Sendable { let code: ErrorCode; let message: String }
 
+            private static func malformedLogParams(_ byteCount: Int) -> Data {
+                // Preserve the default diagnostic byte count without retaining
+                // a whole malformed frame, including in full-log mode.
+                Data("{\"_log\":\"<redacted \(byteCount) bytes; malformed params>\"}".utf8)
+            }
+
             static func decode(_ line: Data) -> Self {
                 let started = Date()
                 let parsed: Any
                 do { parsed = try JSONSerialization.jsonObject(with: line) }
                 catch {
-                    return Self(method: "<parse-error>", params: Data("{}".utf8),
+                    return Self(method: "<parse-error>", params: malformedLogParams(line.count),
                                 requestIdJSON: Data("null".utf8), started: started,
                                 rejection: .init(code: .parseError, message: "invalid JSON: \(error)"))
                 }
                 guard let object = parsed as? [String: Any] else {
-                    return Self(method: "<parse-error>", params: Data("{}".utf8),
+                    return Self(method: "<parse-error>", params: malformedLogParams(line.count),
                                 requestIdJSON: Data("null".utf8), started: started,
                                 rejection: .init(code: .parseError, message: "request must be JSON object"))
                 }
@@ -1307,8 +1318,8 @@ enum DaemonServer {
 
         /// Section 6: encode a `requestId` value (which may be Int, String,
         /// or NSNull) into its JSON snippet so it can cross actor
-        /// boundaries as Sendable `Data`. Used by `markInFlight` to store
-        /// the encoded form before handler dispatch.
+        /// boundaries as Sendable `Data`. Parsed requests and cancellation
+        /// snapshots retain this form instead of carrying JSON `Any`.
         static func encodeRequestId(_ requestId: Any?) -> Data {
             let value: Any = requestId ?? NSNull()
             return (try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]))

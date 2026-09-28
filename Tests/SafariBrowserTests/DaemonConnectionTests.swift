@@ -134,6 +134,26 @@ final class DaemonConnectionTests: XCTestCase {
         // Permit lazy runtime bookkeeping, but not one leaked fd per monitor.
         XCTAssertLessThanOrEqual(after, before + 2)
     }
+
+    func testReadinessDuplicateFailureIsExplicitAndDoesNotStealOriginalOwnership() async throws {
+        let pair = try makePair()
+        defer { close(pair.peer) }
+        let registrations = Counter(), closures = Counter()
+        let connection = try DaemonConnection(adopting: pair.adopted, environment: .init(
+            duplicate: { _ in errno = EMFILE; return -1 },
+            readinessRegistered: { registrations.increment() }, readinessClosed: { closures.increment() }))
+        defer { connection.revoke() }
+        do {
+            _ = try await connection.readChunk()
+            XCTFail("monitor resource failure must be explicit")
+        } catch { XCTAssertEqual(error as? DaemonConnection.Failure, .system(operation: .read, errno: EMFILE)) }
+        XCTAssertFalse(connection.isRevoked)
+        XCTAssertEqual(registrations.count, 0)
+        XCTAssertEqual(closures.count, 0)
+        connection.revoke()
+        var byte: UInt8 = 0
+        XCTAssertEqual(Darwin.read(pair.peer, &byte, 1), 0)
+    }
     private struct Pair { let adopted: Int32; let peer: Int32 }
     private func makePair() throws -> Pair {
         var fds: [Int32] = [-1, -1]
