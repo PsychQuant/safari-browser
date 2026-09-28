@@ -3581,7 +3581,7 @@ enum SafariBridge {
             process.waitUntilExit()
             return (output, errors)
         }
-        watchdog.cancel()
+        await MCPInvocationContext.finishAuxiliary(watchdog)
 
         let rawErrors = String(decoding: errorData, as: UTF8.self)
         let errors = importOwnTiming
@@ -3730,21 +3730,21 @@ enum SafariBridge {
                 Data("⏳ Waiting for System Events...\n".utf8)
             )
         }
-        defer { waitingMessage.cancel() }
+        try await MCPInvocationContext.finishingAuxiliary(waitingMessage) {
+            do {
+                try await probeSystemEvents()
+                return
+            } catch {
+                FileHandle.standardError.write(
+                    Data("⚠️  System Events not responding, attempting restart...\n".utf8)
+                )
+            }
 
-        do {
-            try await probeSystemEvents()
-            return
-        } catch {
-            FileHandle.standardError.write(
-                Data("⚠️  System Events not responding, attempting restart...\n".utf8)
-            )
+            // #20 F6: restartSystemEvents now throws, so the underlying error is
+            // propagated directly. No redundant third probe.
+            try await restartSystemEvents()
+            FileHandle.standardError.write(Data("✓ System Events recovered\n".utf8))
         }
-
-        // #20 F6: restartSystemEvents now throws, so the underlying error is
-        // propagated directly. No redundant third probe.
-        try await restartSystemEvents()
-        FileHandle.standardError.write(Data("✓ System Events recovered\n".utf8))
     }
 
     // MARK: - File Dialog Navigation

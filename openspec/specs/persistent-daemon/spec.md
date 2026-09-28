@@ -59,6 +59,30 @@ code:
 
 The daemon SHALL listen on a Unix domain socket at the path `${TMPDIR:-/tmp}/safari-browser-<NAME>.sock`, where `<NAME>` is the namespace identifier. The wire format SHALL be newline-delimited JSON, one JSON object per line in each direction. Requests SHALL have the shape `{"method": string, "params": object, "requestId": number}`. Successful responses SHALL have `{"requestId": number, "result": object}`. Error responses SHALL have `{"requestId": number, "error": {"code": string, "message": string, "data": object}}`.
 
+The server SHALL limit each complete encoded request line to 128 MiB (134,217,728 bytes), excluding its terminating LF and including all JSON envelope fields. It SHALL enforce the limit while reading, before parsing or dispatching the offending frame, and SHALL close that connection on excess without parsing a prefix to recover requestId or sending a new error envelope. This is a per-frame wire limit, not a process-memory ceiling. Previously completed frames on the same connection remain completed; the offending frame and later frames SHALL NOT be dispatched. Clients SHALL retain the existing post-send outcome-unknown and no-replay handling.
+
+The server SHALL preserve coalesced request lines and accept a final in-limit JSON request terminated by true EOF for compatibility. EINTR SHALL retry the same unfinished frame; other read errors SHALL end the connection without treating a partial frame as EOF.
+
+#### Scenario: Exact limit and excess requests
+
+- **WHEN** an encoded request has exactly 134,217,728 bytes before LF
+- **THEN** it is eligible for the normal JSON parsing and dispatch path
+- **WHEN** the unfinished line contains one additional non-LF byte
+- **THEN** the server closes the connection before parsing or dispatching that frame, without waiting for LF or EOF
+
+#### Scenario: A rejected frame does not authorize skipping or replay
+
+- **WHEN** a connection supplies a valid frame, an oversized frame, and another valid frame
+- **THEN** only the first frame may be dispatched, the connection ends at the oversized frame, and the later frame is not processed
+- **AND** a client that has transmitted request bytes keeps the outcome-unknown/no-replay classification after the connection closes
+
+#### Scenario: EOF is distinct from a read error
+
+- **WHEN** the peer half-closes after an in-limit final JSON object without LF
+- **THEN** the server processes that final frame at most once
+- **WHEN** reading an unfinished frame fails with an error other than EINTR
+- **THEN** the server closes the connection without dispatching the incomplete frame
+
 #### Scenario: Client can inspect the protocol with nc
 
 - **WHEN** a developer runs `nc -U ${TMPDIR:-/tmp}/safari-browser-default.sock` and types a valid JSON request followed by a newline
@@ -418,3 +442,350 @@ source: persistent-daemon
 updated: 2026-04-25
 code:
 -->
+
+---
+### Requirement: Bounded daemon diagnostic events
+
+Each Instance logging session SHALL share one diagnostic token bucket with capacity 8 and refill rate 2 tokens per second of monotonic elapsed time. Every admitted diagnostic line, including suppression summaries, SHALL consume one token at admission. The bound SHALL apply to admission, not to downstream writer or disk flush timing. Ordinary events SHALL leave at least one token reserved for terminal evidence; terminal events and summaries containing terminal evidence SHALL consume that reserved token when needed. No event SHALL bypass the bucket. Incident recovery, quiet gaps, and stop/start SHALL NOT reset the bucket. An explicit writer replacement SHALL begin a new logging session.
+
+#### Scenario: Alternating failures cannot replenish the burst
+
+- **WHEN** 100 ordinary diagnostic candidates alternate between failures and recovery at one clock instant
+- **THEN** only the first 7 lines are emitted and 93 candidates are retained in suppression accounting
+- **AND** a following terminal candidate consumes the reserved token and carries the pending suppression summary
+
+#### Scenario: Monotonic refill and clock regression
+
+- **WHEN** ordinary events exhaust their available burst and 500 ms elapses
+- **THEN** one further ordinary line can be emitted while preserving the terminal reserve
+- **WHEN** the injected clock moves backwards
+- **THEN** no additional credit is granted
+
+---
+### Requirement: Bounded and private suppression summaries
+
+Suppression SHALL retain a saturating total and counters for a fixed set of seven event kinds: accept_error, accept_wait_error, accept_recovered, connection_setup_failed, connection_setup_recovered, request_too_long, and request_read_failed. It SHALL also retain saturating counts for the five fixed dispositions retry, backoff, stop, closed, and recovered, so an intervening backoff does not disappear when later recovery evidence replaces it. It SHALL retain the first suppressed candidate and the latest suppressed recovery and terminal evidence. Evidence SHALL contain only fixed event and disposition values plus integer errno and count. Suppressed counts SHALL count eligible log candidates, not underlying syscall failures. No payload, URL, requestId, source, or request prefix SHALL enter diagnostic records, including when full request logging is enabled.
+
+#### Scenario: Summary without new clients
+
+- **WHEN** suppressed candidates remain while logging stays enabled and the writer is available
+- **THEN** a single periodic flusher attempts an aggregate diagnostics_suppressed line every 500 ms until credit allows emission
+- **AND** the aggregate consumes the same bucket and carries the withheld counts and retained evidence
+
+#### Scenario: Aggregate alongside a later event
+
+- **WHEN** a new candidate is admitted after suppression
+- **THEN** its single JSON line includes the pending suppressed object and the pending state is cleared
+- **AND** concurrent preparation cannot emit the same withheld counters twice
+
+---
+### Requirement: Diagnostic logging preserves daemon lifecycle behavior
+
+Diagnostic state preparation SHALL run on the Instance actor, and writer invocation SHALL run outside that actor. Stop SHALL NOT wait for refill, flusher completion, or a diagnostic writer. Stop and writer disablement SHALL invalidate stale timers and discard unsent pending summaries; the daemon SHALL NOT claim durable delivery for those summaries. Already prepared emissions SHALL retain their original writer and SHALL NOT be redirected to a replacement writer. At most one flusher task SHALL remain owned by an Instance at a time, including while its writer is blocked; restarting or replacing a writer SHALL NOT create another flusher before the existing one completes.
+
+A failed scheduling source SHALL end that flush attempt without self-rescheduling in the same logging generation. A later diagnostic candidate or replacement logging session SHALL permit a fresh attempt.
+
+#### Scenario: Failed scheduler does not spin
+
+- **WHEN** the scheduling source throws while a summary remains pending
+- **THEN** that attempt ends without an automatic retry loop, the pending state remains bounded, and RPC behavior is unchanged
+
+#### Scenario: Stop while a writer is blocked
+
+- **WHEN** an admitted diagnostic writer is blocked
+- **THEN** Instance.stop completes its existing cancellation and socket cleanup without awaiting that writer
+- **AND** no stale timer delivers old suppressed state to a subsequently installed writer
+
+#### Scenario: Logger disabled with pending suppression
+
+- **WHEN** the writer is disabled before a summary is admitted
+- **THEN** no later timer emission is prepared for that pending summary and no suppression state leaks into a new logging session
+
+---
+### Requirement: Private request rejection diagnostics
+
+Oversized request lines and non-EINTR read failures SHALL produce eligible fixed diagnostic candidates using the shared bucket. The server SHALL close the rejected client connection and release its request buffer before diagnostic writer invocation. Diagnostics SHALL NOT parse the rejected frame or alter dispatch, client responses, or post-send no-replay classification. Normal EOF SHALL NOT be reported as a read failure.
+
+#### Scenario: Rejection under diagnostic backpressure
+
+- **WHEN** a client exceeds the request line limit while the diagnostic writer is blocked or its budget is exhausted
+- **THEN** the client connection closes without dispatch or replay and the diagnostic candidate contains no request prefix
+- **AND** another valid client retains the existing RPC result behavior
+
+---
+### Requirement: Permanent listener failure terminates its owning run
+
+An accept or poll error classified as permanently invalid by the existing accept disposition policy SHALL end that listener generation without retry or automatic replacement. The listener owner SHALL close its listener and wake-read descriptors before failure delivery. Notification SHALL carry only a typed operation (accept or poll) and integer errno. A blocked diagnostic writer SHALL NOT delay failure delivery. Wake, cancellation, and recoverable errors SHALL NOT be reported as permanent listener failure.
+
+#### Scenario: Permanent accept or poll error
+
+- **WHEN** a running listener receives an injected EBADF from accept or EINVAL from poll
+- **THEN** it stops using that listener, closes its descriptors, and notifies the owning generation with the matching operation and errno
+- **AND** it does not restart the listener or replay any request
+
+#### Scenario: Normal cancellation while a callback is delayed
+
+- **WHEN** a listener generation has been stopped and a previous failure callback is delivered later
+- **THEN** the callback cannot stop or clean resources of a newer generation
+
+---
+### Requirement: Daemon run cleanup is generation owned
+
+The outer Server SHALL bind startup, shutdown hooks, listener notifications, watchdog decisions, resource handles, and stop waiters to a Run identity. Connections SHALL capture their shutdown generation and hook when admitted; a shutdown request suspended across stop/start SHALL NOT obtain the replacement run's hook, in-flight snapshot, or process watchdog. Each new run SHALL begin a fresh idle interval. Concurrent starts SHALL share the same startup operation. A new start during teardown SHALL wait for that teardown before binding paths. Concurrent stops SHALL share one cleanup operation. Startup failures and listener failures SHALL clean the owning run without waiting for its accept loop or diagnostic writer. PID cleanup SHALL remove only an entry whose captured device/inode still matches; replaced or unconfirmed entries SHALL be retained.
+
+#### Scenario: Failure before startup completes
+
+- **WHEN** a listener fails before the startup operation returns
+- **THEN** startup does not later restore running state, the owning pid and socket are cleaned, and the failure remains observable
+
+#### Scenario: Concurrent stop and restart
+
+- **WHEN** two stop callers and a subsequent start overlap
+- **THEN** both stop callers await the same old cleanup, and the new run binds its paths only after that cleanup finishes
+- **AND** delayed old listener, shutdown, or watchdog callbacks cannot stop the new run
+
+#### Scenario: Shutdown resumes after a replacement run starts
+
+- **WHEN** an accepted shutdown request is paused in logging while its run stops and a replacement run starts
+- **THEN** the old transport is revoked and the resumed request cannot invoke a shutdown hook or process watchdog for the replacement run
+- **AND** a missing or partial reply remains an outcome-unknown result without replay; a complete cancelled envelope retains its domain-error meaning
+- **AND** a hook-free embedded instance applies the same generation guard before fallback stop
+
+#### Scenario: PID entry replaced before old cleanup
+
+- **WHEN** the recorded pid entry is replaced after its identity was captured
+- **THEN** cleanup retains the replacement rather than unlinking by path alone
+
+---
+### Requirement: Stop completion preserves a typed reason
+
+Stop completion SHALL distinguish requested stop, idle timeout, startup failure, and permanent listener failure. Every waiter registered to a run SHALL receive that run's first accepted stop reason after cleanup. A later run SHALL NOT change an earlier waiter's result. The daemon __serve command SHALL exit nonzero with a fixed operation/errno diagnostic after permanent listener failure; ordinary stop and idle timeout SHALL keep normal exit behavior.
+
+#### Scenario: Multiple stop waiters
+
+- **WHEN** multiple callers wait for a run that ends with a listener failure
+- **THEN** all receive the same typed listener failure after its cleanup
+
+#### Scenario: Normal and failure process outcomes
+
+- **WHEN** __serve completes after a requested or idle stop
+- **THEN** it completes normally
+- **WHEN** __serve completes after permanent listener failure
+- **THEN** it reports only the listener operation and errno and exits nonzero
+
+---
+### Requirement: Accepted connection revocation prevents new dispatch
+
+Each accepted connection SHALL have a unique identity and owning daemon generation. Stop SHALL revoke each owned connection and cancel its transport task. Reading, parsing, and buffered-frame completion SHALL NOT independently authorize handler work: the Instance SHALL check active connection identity, generation, and cancellation in the same actor turn that admits the handler task. A revoked request SHALL NOT update a replacement generation's activity or in-flight records. A revoked connection SHALL NOT admit another handler, including a complete frame received after stop or a buffered second frame. Cancellation SHALL NOT be classified as a successful EOF-terminated request.
+
+#### Scenario: Input arrives after stop
+
+- **WHEN** a connection passes its read-loop check, is stopped, and then receives a complete fixture.sideEffect request
+- **THEN** the handler invocation count remains zero
+- **AND** the transport closes without replaying that request
+
+#### Scenario: Waiting peer sends no data
+
+- **WHEN** an accepted client is waiting for its first request and the Instance stops
+- **THEN** revocation closes the transport without requiring the peer to send data
+- **AND** a controlled local fixture observes transport completion within two seconds
+
+#### Scenario: Buffered request after revocation
+
+- **WHEN** two request frames arrive together and stop revokes the connection while the first handler is active
+- **THEN** the second handler is not admitted
+- **AND** side effects already started by the first handler are not represented as undone
+
+---
+### Requirement: Connection descriptor access and closure have one owner
+
+A connection owner SHALL configure its socket for nonblocking I/O, close-on-exec, and SIGPIPE suppression. The owner SHALL serialize each stream-I/O descriptor access and shutdown/close against revocation with one short lock; it SHALL NOT wait for I/O while holding that lock or publish a raw descriptor for use after suspension. Revocation and final close SHALL be idempotent. Would-block retries SHALL await native readiness asynchronously outside the lock and respond to cancellation; interrupted retries SHALL yield without busy spinning. Reuse of a retired descriptor number SHALL NOT permit an old read, write, cancellation response, or completion callback to affect a replacement connection.
+
+Native readiness notifications SHALL use a privately owned close-on-exec duplicate that performs no stream I/O and is never published in request snapshots. The duplicate SHALL close only in the dispatch source cancellation handler. Revocation SHALL cancel and wake pending readiness waits, and completed/cancelled sources SHALL retire their duplicate descriptors without one-per-wait accumulation.
+
+#### Scenario: Readiness notification completes or is cancelled
+
+- **WHEN** a read/write wait is completed by peer input, peer EOF, deadline, task cancellation, or owner revocation
+- **THEN** exactly one outcome completes the wait
+- **AND** its native monitor is cancelled and its private descriptor is closed in the cancellation handler
+
+#### Scenario: Descriptor number is reused
+
+- **WHEN** a revoked connection closes its descriptor and a new owned fixture receives that same descriptor number
+- **THEN** resuming the old connection's read/write or completion path leaves the replacement descriptor and contents untouched
+
+#### Scenario: Slow reader and writer
+
+- **WHEN** a peer stops providing request data or consuming response bytes
+- **THEN** the daemon releases its lock while awaiting readiness
+- **AND** stop revokes the owner and allows its transport task to finish without waiting for the peer
+
+---
+### Requirement: Completed transport and request work retires by identity
+
+Completed transport tasks SHALL be removed from the Instance registry while the daemon remains running. A transport waiting for a handler SHALL use single-completion cancellation arbitration so transport cancellation does not wait for a noncooperative handler. Its reader and frame ownership SHALL end when the transport task ends. Already admitted handler work SHALL retain separate unfinished-work tracking until it actually returns; completed operation handles SHALL then retire by connection and request identity. Late results after cancellation SHALL be discarded rather than retained or written. A prior generation's completion SHALL NOT remove a replacement generation's records. Verification SHALL distinguish logical byte ownership from measured process memory and SHALL NOT infer Foundation buffer capacity from Data.count.
+
+#### Scenario: Repeated connection completion
+
+- **WHEN** three clients connect and disconnect normally without stopping the daemon
+- **THEN** all three transport tasks retire and the active transport registry returns to zero
+
+#### Scenario: Handler ignores cancellation
+
+- **WHEN** a handler has started and deliberately waits on a fixture gate while its connection is stopped
+- **THEN** the transport finishes and closes its socket before that gate opens
+- **AND** the handler remains identified as unfinished until it returns
+- **AND** its late result produces no reply and cannot retire a new connection
+
+#### Scenario: Large request churn
+
+- **WHEN** owned large-request connections repeatedly complete and close
+- **THEN** completed transport/operation counts return to baseline and ownership-release observations are recorded
+- **AND** a process-footprint measurement is reported as observed evidence, without claiming a fixed whole-process memory bound
+
+---
+### Requirement: Shutdown replies preserve framing and bounded progress
+
+Each request SHALL claim at most one response frame across normal completion and shutdown cancellation. Once a frame write begins, another result SHALL NOT be interleaved into it. The shutdown caller's acknowledgement SHALL be attempted before the connection-revocation plan, with a total write budget of 250 milliseconds. In-flight cancellation replies SHALL share a separate 250-millisecond absolute deadline across all clients; the deadline SHALL NOT reset per client or partial write. A failed or expired reply attempt SHALL NOT prevent revocation and stop. Cancellation snapshots SHALL refer to connection/request identities through their owners rather than delayed writes to raw descriptor numbers. Existing cancelled envelopes SHALL remain domain errors, and interrupted post-send replies SHALL retain the client's outcome-unknown/no-replay behavior. Normal requests SHALL retain their existing execution-time policy and framing limits.
+
+#### Scenario: Normal result races cancellation
+
+- **WHEN** normal handler completion and shutdown cancellation compete for one request's response
+- **THEN** only one response frame is claimed
+- **AND** cancellation never appends JSON inside a partially written normal frame
+
+#### Scenario: Shutdown client does not consume the acknowledgement
+
+- **WHEN** the shutdown caller or another in-flight client does not read response data
+- **THEN** acknowledgement/cancellation attempts consume only their respective shared deadlines
+- **AND** the daemon continues revocation without waiting indefinitely for those clients
+
+#### Scenario: Existing request framing remains compatible
+
+- **WHEN** clients send exact-limit lines, coalesced lines, valid EOF-terminated final lines, or over-limit frames
+- **THEN** the existing 128 MiB request-line policy and parser/dispatch boundaries remain intact
+- **AND** connection revocation cannot convert a partial cancelled frame into a new handler invocation
+
+---
+### Requirement: Daemon advertises an optional request line limit
+The daemon SHALL include protocol.maxRequestLineBytes in its existing v2 handshake, as a canonical positive decimal ASCII string equal to the active instance request-line reader limit. The value SHALL count the complete encoded JSON line excluding its LF delimiter. This field SHALL describe a transport limit, not caller authorization, and SHALL NOT add a handshake round trip.
+
+#### Scenario: Configured server limit
+- **WHEN** an instance with a 1024-byte reader limit accepts a connection
+- **THEN** its handshake SHALL declare maxRequestLineBytes equal to "1024"
+- **AND** the version-only legacy decoder SHALL still decode the same version
+
+#### Scenario: Production default
+- **WHEN** the daemon uses its default request-line limit
+- **THEN** it SHALL advertise "134217728" bytes
+
+---
+### Requirement: Client validates request limit advertisements
+The client SHALL decode the version and optional limit from one typed handshake interpretation. An absent limit SHALL represent a legacy peer. A present limit SHALL be a string matching [1-9][0-9]* whose value fits the platform Int range. Null, booleans, JSON numbers, empty strings, signs, whitespace, leading zeros, fractions, exponents, non-ASCII digits and overflow SHALL invalidate the handshake. Unknown additional fields SHALL remain ignorable.
+
+#### Scenario: Invalid limit is rejected before transmission
+- **WHEN** the handshake includes maxRequestLineBytes as null, true, 1024, 1.5, "0", "-1", "01", "1.0", "1e3" or an out-of-range decimal string
+- **THEN** the client SHALL send zero request bytes on that connection and report the existing invalid-handshake protocol error
+
+#### Scenario: Large integer precision is preserved
+- **WHEN** maxRequestLineBytes is "9007199254740993"
+- **THEN** the decoded limit SHALL equal exactly 9007199254740993 without floating-point rounding
+
+---
+### Requirement: Client rejects known oversize requests before transmission
+After successful handshake and version validation, the client SHALL compare the full serialized request envelope byte count excluding LF with the advertised limit before writing any bytes for that RPC. A greater count SHALL produce a dedicated local request-too-large error containing only counts and fixed guidance to reduce the request. The error SHALL state that no request bytes were sent for that RPC, SHALL NOT claim earlier command steps did not execute, and SHALL NOT authorize stateless fallback.
+
+#### Scenario: Exact boundary is accepted
+- **WHEN** the encoded method, params and requestId envelope contains exactly 1024 bytes and the peer limit is 1024
+- **THEN** the client SHALL send the request plus LF and the server SHALL dispatch its handler once
+
+#### Scenario: Encoded overhead exceeds the boundary
+- **WHEN** JSON escaping, UTF-8 bytes or envelope overhead makes the serialized line greater than the declared limit
+- **THEN** the peer SHALL receive zero request bytes, its handler SHALL not execute and the router SHALL not invoke stateless fallback
+- **AND** the diagnostic SHALL NOT include request source, URL, path or requestId
+
+---
+### Requirement: Legacy request and post-send semantics remain compatible
+A client SHALL preserve existing request behavior when the peer omits the optional limit and SHALL NOT infer a limit from matching version metadata. The server SHALL independently enforce its reader limit. A failure after partial or complete request transmission SHALL preserve requestOutcomeUnknown and SHALL NOT authorize replay.
+
+#### Scenario: Legacy peer omits the limit
+- **WHEN** a valid same-version handshake omits maxRequestLineBytes
+- **THEN** the client SHALL transmit a request that exceeds a limit known only to a newer server implementation
+- **AND** no new local request-limit rejection SHALL occur
+
+#### Scenario: Legacy or inaccurate peer rejects a transmitted request
+- **WHEN** a peer without an accurate limit declaration rejects the request after the client sends request bytes
+- **THEN** the client SHALL report an unknown request outcome and the router SHALL not replay the request through stateless execution
+
+---
+### Requirement: Request payload logs identify prepared responses
+Request payload log records SHALL retain the existing ts, method, requestId, durationMs, params, result and error fields and existing redaction/truncation behavior. They SHALL additionally identify event as request_response_prepared, requestToken as the server-generated request-work UUID, and peerReceipt as unconfirmed. A result field SHALL describe the existing redacted or truncated preview of a prepared result value, not a complete wire envelope, not business success, completed shutdown, transmitted bytes or peer receipt. Consumers SHALL filter payload records by event and correlate related records by requestToken, not by client-controlled requestId alone.
+
+#### Scenario: Existing payload content remains private
+- **WHEN** an admitted request prepares a response with logging enabled
+- **THEN** its payload record SHALL have the prepared event and UUID token while preserving the configured source redaction, result truncation and malformed-frame marker
+- **AND** peerReceipt SHALL be unconfirmed in both normal and logFull modes
+
+#### Scenario: Reused client identifiers do not merge operations
+- **WHEN** two admitted operations use requestId 7
+- **THEN** their requestToken values SHALL differ and each operation's related events SHALL use its own token
+
+---
+### Requirement: Operation candidate logs reflect reply arbitration
+After the original operation offers its Reply to the single-completion arbiter, it SHALL emit a request_response_candidate record using the actual offer result. This record SHALL contain only ts, event, requestToken, peerReceipt=unconfirmed, outcome from result/parse_error/method_not_found/handler_error/cancelled, and selection from selected/not_selected/not_offered. An operation whose initial cancellation check observes cancellation SHALL cancel its pending gate before recording cancelled/not_offered. This event SHALL describe the original operation's candidate, not an exhaustive trace of other cancellation producers or a guarantee that a selected frame was written. A losing candidate SHALL NOT be reported as selected or replayed.
+
+#### Scenario: Shutdown revoked during prepared logging
+- **WHEN** shutdown prepared logging is blocked and the instance stops and restarts before the writer returns
+- **THEN** the old operation SHALL report cancelled/not_selected after its existing generation guard rejects the plan
+- **AND** its prepared result SHALL remain explicitly labelled as prepared while the actual post-send client outcome remains unknown
+
+#### Scenario: Late handler result loses arbitration
+- **WHEN** a noncooperative admitted handler returns a result after its transport was cancelled
+- **THEN** its candidate record SHALL report result/not_selected and SHALL NOT claim the side effect was undone or a peer received that result
+
+---
+### Requirement: Shutdown handoff logs report the final guarded handoff
+A shutdown with an authorized plan SHALL emit request_shutdown_handoff only after its final guarded handoff returns. Its outcome SHALL be rejected when its generation is no longer authorized, hook_returned when the captured hook returns, or instance_stopped when the instance's own stop path runs. The record SHALL contain only ts, event, requestToken, outcome and peerReceipt=unconfirmed. It SHALL NOT claim that an arbitrary hook stopped all operations or that an ACK reached its peer. Existing post-logging and final generation guards SHALL remain effective.
+
+#### Scenario: Normal shutdown completes its own stop path
+- **WHEN** a current shutdown has no external hook and reaches its final guarded handoff
+- **THEN** the instance SHALL stop before recording instance_stopped
+- **AND** its ACK attempt SHALL retain the existing bounded-write and no-replay semantics
+
+#### Scenario: A prepared plan loses authority before handoff
+- **WHEN** the old shutdown has prepared its plan but a replacement instance starts before the final handoff
+- **THEN** the old event SHALL report rejected without invoking a replacement hook or stopping the replacement instance
+
+---
+### Requirement: Outcome logging preserves lifecycle and logger ownership
+Every new request event SHALL use the writer captured when its work was admitted. Candidate writers SHALL run in the original operation outside the Instance actor after arbitration; handoff writers SHALL run in that same tracked operation after a fixed outcome is reported by the transport. Transport completion SHALL NOT wait for a handoff writer. A selected shutdown plan SHALL report its handoff outcome even when its original operation task has been cancelled; unrelated request-result cancellation semantics SHALL remain unchanged. Stop SHALL NOT wait for these writers. New events SHALL NOT allocate independent logger tasks or an unbounded queue. A request SHALL emit at most one prepared record and one original-candidate record, plus at most one handoff record for a shutdown plan. Event persistence SHALL remain best-effort: missing records SHALL NOT imply success or non-execution, and physical line order across requests SHALL NOT establish lifecycle ordering. Disabled logging SHALL remain silent.
+
+#### Scenario: Replacement logger cannot receive old events
+- **WHEN** an admitted request completes after logger replacement and stop/start
+- **THEN** all of its emitted records SHALL use its captured writer and token while the replacement logger receives only newly admitted work
+
+#### Scenario: Candidate writer blocks after selection
+- **WHEN** the candidate-event writer blocks after the reply arbiter accepts a response
+- **THEN** the transport SHALL still be able to complete its response and stop SHALL return without awaiting the blocked writer
+
+#### Scenario: Handoff writer blocks after stop
+- **WHEN** the handoff-event writer blocks after the instance stop path has returned
+- **THEN** the instance SHALL already be stopped and a replacement instance SHALL remain independently usable
+
+---
+### Requirement: Captured file log writers retain their owned append sink
+A Run SHALL release its own file-sink ownership during teardown without closing a sink still owned by captured request or diagnostic writers and without awaiting those writers. The final owner SHALL close the descriptor. File sinks SHALL append through O_APPEND and use close-on-exec descriptors, preserving existing contents across late old-run and new-run writes without reopening the current pathname for old events. Files newly created by this sink SHALL use mode 0600 subject to the process umask. Existing files, including files pre-created by the CLI spawner, SHALL retain their permissions. This ownership SHALL prevent deterministic teardown-induced loss of late records while retaining best-effort behavior for I/O errors and process termination; it SHALL NOT guarantee durable storage or peer receipt.
+
+#### Scenario: Normal production file logger records the handoff
+- **WHEN** an in-process production Server using a writable owned log file completes daemon.shutdown and the process remains alive
+- **THEN** the captured writer SHALL remain usable for its candidate and hook_returned records after Run teardown returns
+- **AND** the socket and PID cleanup SHALL not wait for those writes
+
+#### Scenario: An old writer appends after a replacement Run
+- **WHEN** a captured old writer is delayed across stop/start while the replacement Run writes to the same log path
+- **THEN** releasing the old writer SHALL append its old-token records without overwriting the new-token records
+- **AND** releasing the final captured writer SHALL close the old sink
+
+#### Scenario: Rotation preserves the old sink identity
+- **WHEN** the old log path is renamed and replaced while an old writer remains captured
+- **THEN** its late records SHALL target its original descriptor rather than the replacement path

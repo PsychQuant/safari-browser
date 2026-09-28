@@ -114,7 +114,7 @@ UploadCommand 在仍持有 scoped TargetDocument 時建立 constraint，傳給 p
 
 ### 可辨識的 pending 選取
 
-NativeUploadSelectionProbe 的字串結果新增 PENDING；只有支援且完整可讀的原生檢視，至少成功查詢一個 selected-rows／selected-children 集合，而且所有此類集合均為空時才回傳。必須完成原本的前景／windowID／唯一面板及 deadline 重驗。ColumnView 沒有任何可查詢選取集合、已選群組缺少可信葉節點、讀取失敗、錯檔、歧義及超界仍為 UNAVAILABLE；不將不確定性重新命名為 pending。Worker callback 的 request／clipboard／deadline 前後檢查保留，無效 context 不得回 pending。
+NativeUploadSelectionProbe 的字串結果新增 PENDING；完整觀察指既有有界結構與必要選取屬性，不展開未選取 rows 或網頁內容。只有支援且完整可讀的原生檢視，至少成功查詢一個 selected-rows／selected-children 集合，而且所有此類集合均為空時才回傳。必須完成原本的前景／windowID／唯一面板及 deadline 重驗。ColumnView 沒有任何可查詢選取集合、已選群組缺少可信葉節點、讀取失敗、錯檔、歧義及超界仍為 UNAVAILABLE；不將不確定性重新命名為 pending。Worker callback 的 request／clipboard／deadline 前後檢查保留，無效 context 不得回 pending。
 
 ### 貼上後立即觀察與有界重查
 
@@ -125,3 +125,7 @@ NativeUploadSelectionProbe 的字串結果新增 PENDING；只有支援且完整
 ### 同 fixture 的等待證據
 
 先用真實 selection provider 邊界的空集合／故障矩陣及真正產生的 AppleScript 控制流程 adapter 做行為 RED/GREEN。adapter 僅替換外部 UI 讀取、時鐘與等待，不替換 production 分支；記錄每次等待、觀察、guard 與確認計數，涵蓋立即 MATCH／已交付、延遲 PENDING、永遠 PENDING、UNAVAILABLE、取消／前景／owner／clipboard 變化及截止前後。基準比較同一 fixture 的等待成本與成功率，立即就緒不得付固定100 ms或新增選取 traversal。實際 Safari 三種檢視／特殊檔名／大檔與延遲就緒仍屬3.1；無 GUI 證據不宣稱原生加速或完成驗收。
+
+### 內部 worker 的 pacing 所有權
+
+整合 #184 的共用 CLI 邊界時，NativeUploadWorkerCommand 必須以明確型別列為內部 worker；外層 upload 才擁有一次 pacing。不能因為 helper 另起程序而在 child 與 parent 各等一次，也不能改成所有 hidden command 都豁免。以 malformed request 在任何剪貼簿或 UI 前拒絕的正式 worker 路徑驗證：有效 pacing 下 child sleep 計數為0，無效 pacing 也不得蓋過 worker 自己的 request 診斷。公開 upload 與其餘命令沿用現有共用邊界。

@@ -38,6 +38,8 @@
 - [x] 2.17 貼上後立即觀察與有界重查：以實際產生的 AppleScript adapter 先 RED，再移除固定100 ms；驗立即就緒零等待、PENDING 有界重查、UNAVAILABLE 立即停止、取消／owner／前景／clipboard／deadline 拒絕，且確認前第二次 selection 及公告授權保留。
 - [x] 2.18 同 fixture 的等待證據：記錄 adapter 前後觀察數、等待成本與成功率，證明立即 MATCH 不新增 AX traversal；執行相關回歸與規格驗證。原生三種檢視、特殊路徑、大檔及延遲就緒效能／成功率與3.1共用，未完成 GUI 時不得勾選3.1或宣稱原生收益。
 
+- [x] 2.19 內部 worker 的 pacing 所有權：在正式 CLIExecution 邊界明確豁免 NativeUploadWorkerCommand，保持 parent upload 一次等待；malformed request 的原生 worker 測試先 RED（多等一次／診斷被覆蓋）再 GREEN，且不接觸剪貼簿或 UI。
+
 ## 3. 實際驗證與交付
 
 - [ ] 3.1 執行完整 make test-all 及自有 GUI 特殊路徑、不同起始資料夾、大檔、焦點／錯誤／逾時案例；核對實際檔名／內容、自有面板清理及剪貼簿還原，並記錄同 fixture System Events／直接 AX 查詢結果與等待差異。

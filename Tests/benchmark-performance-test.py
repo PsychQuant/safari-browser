@@ -47,6 +47,83 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(bench.summarize([])['p95Nanoseconds'], None)
 
 
+class WorkerModeTests(unittest.TestCase):
+    def test_identity_counts_successful_valid_worker_traces_only(self):
+        samples = [dict(status='ok', trace=trace(processID=31)),
+                   dict(status='ok', trace=trace(processID=31, requestID='11234567-89ab-4cde-8fab-0123456789ab')),
+                   dict(status='error', trace=trace(processID=99)), dict(status='ok', trace=None),
+                   dict(status='ok', trace=trace(processID=True))]
+        self.assertEqual(bench.worker_identity(samples), {'source': 'command-trace', 'observedSamples': 2,
+            'uniqueProcessCount': 1, 'uniqueRequestCount': 2})
+        self.assertEqual(bench.worker_identity([dict(status='ok', trace=None)]),
+            {'source': 'command-trace', 'observedSamples': 0, 'uniqueProcessCount': None, 'uniqueRequestCount': None})
+
+    def test_modes_are_explicit_in_launch_and_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory, 'fake'); binary.write_text(FAKE); binary.chmod(0o700)
+            log = Path(directory, 'events')
+            with mock.patch.dict(os.environ, {'BENCH_TEST_LOG': str(log)}):
+                for mode in ('isolated', 'persistent'):
+                    row = bench.service_scenario(str(binary), 'mcp', False, False, 1, 0, 2, worker_mode=mode)
+                    self.assertEqual(row['name'], 'mcp.' + mode + '.warm-host-wait')
+                    self.assertEqual(row.get('workerMode'), mode)
+                    self.assertEqual(row.get('workerIdentity', {}).get('observedSamples'), 0)
+            events = [json.loads(line) for line in log.read_text().splitlines()]
+            hosts = [row for row in events if row['args'][0] == 'mcp']
+            self.assertEqual(len(hosts), 2)
+            for row, mode in zip(hosts, ('isolated', 'persistent')):
+                index = row['args'].index('--worker-mode')
+                self.assertEqual(row['args'][index + 1], mode)
+
+    def test_invalid_mode_never_launches_a_service(self):
+        with mock.patch.object(bench.subprocess, 'Popen') as launch:
+            with self.assertRaises(ValueError):
+                bench.Service('/private/not-executed', {}, 'mcp', 2, worker_mode='invalid')
+            launch.assert_not_called()
+        with self.assertRaises(ValueError):
+            bench.benchmark('/private/not-read', samples=1, warmups=0, timeout=2, mcp_worker_mode='invalid')
+
+    def test_interleaved_driver_alternates_order_and_does_not_retry_failed_mode(self):
+        for fail in (False, True):
+            calls, closed = [], []
+            class FakeService:
+                def __init__(self, binary, env, kind, timeout, worker_mode='isolated'):
+                    self.mode = worker_mode
+                    self.setup_nanoseconds = 1
+                    self.process = object()
+                def call_wait(self, deadline):
+                    calls.append(self.mode)
+                    if fail and self.mode == 'persistent':
+                        return bench.failure('owned-test-failure')
+                    return dict(status='ok', wallNanoseconds=100, trace=None)
+                def close(self):
+                    closed.append(self.mode)
+                    return True
+            with mock.patch.object(bench, 'Service', FakeService), mock.patch.object(bench, 'observe_exit', return_value=None):
+                rows = bench.interleaved_mcp_scenarios('fixture', False, 3, 1, 2)
+            self.assertEqual([row['workerMode'] for row in rows], ['isolated', 'persistent'])
+            self.assertTrue(all(row['sampleOrder'] == 'alternating-AB-BA' for row in rows))
+            self.assertTrue(all(len(row['warmups']) == 1 and len(row['samples']) == 3 for row in rows))
+            if fail:
+                self.assertEqual(calls, ['isolated', 'persistent', 'isolated', 'isolated', 'isolated'])
+                self.assertEqual(rows[1]['statistics']['successful'], 0)
+                self.assertTrue(all(s['reason'] == 'service_unavailable' for s in rows[1]['samples']))
+            else:
+                self.assertEqual(calls, ['isolated', 'persistent', 'persistent', 'isolated', 'isolated', 'persistent', 'persistent', 'isolated'])
+                self.assertTrue(all(row['statistics']['successful'] == 3 for row in rows))
+            self.assertEqual(sorted(closed), ['isolated', 'persistent'])
+
+    def test_requested_mode_selects_only_that_comparison(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory, 'fake'); binary.write_text(FAKE); binary.chmod(0o700)
+            with mock.patch.dict(os.environ, {'BENCH_TEST_LOG': str(Path(directory, 'events'))}):
+                report = bench.benchmark(str(binary), samples=1, warmups=0, timeout=2, timing='off', mcp_worker_mode='persistent')
+            rows = [row for row in report['scenarios'] if row['name'].startswith('mcp.')]
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(row.get('workerMode') == 'persistent' for row in rows))
+            self.assertEqual(report['measurement'].get('mcpWorkerModes'), ['persistent'])
+
+
 class TraceTests(unittest.TestCase):
     def test_whitelist_removes_unknown_private_fields(self):
         value = trace(url='https://secret', path='/Users/private')
@@ -701,16 +778,18 @@ class LifecycleTests(unittest.TestCase):
             finally:
                 os.environ.clear()
                 os.environ.update(old)
-            self.assertEqual(len(report['scenarios']), 11)
+            self.assertEqual(len(report['scenarios']), 13)
             regular = [r for r in report['scenarios'] if not r['name'].startswith('live.')]
-            self.assertEqual(len(regular), 7)
+            self.assertEqual(len(regular), 9)
             self.assertTrue(all(r['statistics']['successful'] == 2 for r in regular), report)
             self.assertTrue(all(r['statistics']['skipped'] == 2 for r in report['scenarios'] if r['name'].startswith('live.')))
             events = [json.loads(line) for line in log.read_text().splitlines()]
             daemons = [e for e in events if e['args'][:2] == ['daemon','__serve']]
             hosts = [e for e in events if e['args'][:1] == ['mcp']]
             self.assertEqual(len(daemons), 4)  # three cold (including warmup), one warm host
-            self.assertEqual(len(hosts), 4)
+            self.assertEqual(len(hosts), 8)
+            self.assertEqual(sorted(e['args'][e['args'].index('--worker-mode') + 1] for e in hosts),
+                             ['isolated'] * 4 + ['persistent'] * 4)
             self.assertEqual(len({e['name'] for e in daemons}), 4)
             status_calls = [e for e in events if e['args'][:2] == ['daemon', 'status']]
             host_names = {e['name']: e['tmp'] for e in daemons}
@@ -760,8 +839,8 @@ class ProtocolFailureTests(unittest.TestCase):
                 started_hosts = []
                 # Host launch and protocol handshake are fixture setup. The
                 # production scenario still applies its own request deadline.
-                def ready_service(executable, environment, kind, timeout):
-                    service = actual_service(executable, environment, kind, 30)
+                def ready_service(executable, environment, kind, timeout, worker_mode="isolated"):
+                    service = actual_service(executable, environment, kind, 30, worker_mode=worker_mode)
                     started_hosts.append(service)
                     methods = rpc.read_text().splitlines()
                     self.assertEqual(methods.count('initialize'), 1)
@@ -785,7 +864,7 @@ class ProtocolFailureTests(unittest.TestCase):
                 event = json.loads(events.read_text().splitlines()[0])
                 with self.assertRaises(ProcessLookupError): os.kill(event['pid'], 0)
                 self.assertFalse(Path(event['tmp']).exists())
-                self.assertEqual(event['args'], ['mcp', '--timeout', '30'])
+                self.assertEqual(event['args'], ['mcp', '--timeout', '30', '--worker-mode', 'isolated'])
 
 
 class LiveTests(unittest.TestCase):
@@ -964,10 +1043,27 @@ class CommandLineTests(unittest.TestCase):
                 capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(result.stdout)
-            self.assertEqual(len(report['scenarios']), 22)
+            self.assertEqual(len(report['scenarios']), 26)
             self.assertEqual({r['timing'] for r in report['scenarios']}, {'on', 'off'})
             self.assertTrue(all(s['trace'] is None for r in report['scenarios'] if r['timing'] == 'off' for s in r['samples']))
             self.assertNotIn(directory, result.stdout.decode())
+
+    def test_cli_interleaved_order_is_reported_and_single_mode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory, 'fake'); binary.write_text(FAKE); binary.chmod(0o700)
+            env = dict(os.environ, BENCH_TEST_LOG=str(Path(directory, 'events')))
+            command = [sys.executable, str(ROOT / 'scripts/benchmark-performance.py'), '--binary', str(binary),
+                       '--samples', '2', '--warmups', '1', '--timing', 'off', '--mcp-warm-order', 'interleaved']
+            result = subprocess.run(command, env=env, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report['measurement']['mcpWarmOrder'], 'interleaved')
+            rows = [r for r in report['scenarios'] if r['name'].startswith('mcp.') and '.warm-' in r['name']]
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(r['sampleOrder'] == 'alternating-AB-BA' and r['statistics']['successful'] == 2 for r in rows))
+            rejected = subprocess.run(command + ['--mcp-worker-mode', 'isolated'], env=env, capture_output=True, timeout=3)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertNotIn(directory, rejected.stderr.decode())
 
     def test_cli_rejects_zero_samples_and_never_leaks_bad_binary_path(self):
         with tempfile.TemporaryDirectory() as directory:

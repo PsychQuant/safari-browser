@@ -36,6 +36,10 @@ final class BoundedAXWorker: @unchecked Sendable {
     private let queue = DispatchQueue(label: "safari-browser.ax-inspection", qos: .userInitiated)
     private var inFlight = false
 
+    /// A caller timeout does not clear this signal. Reuse is allowed only
+    /// after the underlying observation/action has actually left its slot.
+    var isQuiescent: Bool { lock.withLock { !inFlight } }
+
     func run<Value: Sendable>(
         budget: TimeInterval, fallback: Value,
         operation: @escaping @Sendable (DispatchTime) -> Value

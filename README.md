@@ -72,7 +72,12 @@ reports capabilities and versions. Legacy clients send `initialize`, then
 `nextCursor`; pass it as the next request's `cursor`. Only the tools capability
 is advertised. [MCP versioning](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
 
-Each call uses an isolated worker that parses and runs the existing CLI command.
+By default, `--worker-mode persistent` lazily starts one supervisor and one
+reusable CLI worker. Each call parses a fresh command and receives separate
+stdin/stdout/stderr, trace and dialog-probe state. Healthy sequential calls reuse
+the actual worker process. `--worker-mode isolated` explicitly selects a fresh
+worker for every call, with its own lifetime supervisor. Idle persistent workers exit after 30 seconds;
+`--worker-idle-timeout` accepts a finite value from 0.001 to 86400 seconds.
 Within MCP, command subprocesses use POSIX spawn to inherit that worker’s process
 group from creation. Ordinary CLI subprocesses keep the existing Foundation
 launcher. This prevents nested `exec` and external commands from escaping MCP
@@ -84,6 +89,11 @@ stream. Results preserve separate `stdout` and `stderr` objects containing
 and `failure`. Text content presents diagnostics before stdout. A nonzero exit,
 failed capture or transport limit produces `isError: true`. The output schema
 describes this common capture envelope; command-specific JSON remains in stdout.
+`capture_complete` describes capture, not command success. An isolated worker's
+executable-identity rejection is a fully captured CLI error (exit 64, `isError:
+true`); a persistent pre-dispatch identity rejection also sets `failure` and
+`capture_complete: false`. Both require restarting the server, never replaying
+the failed request automatically.
 
 There is one active tool call per server. Other calls receive a busy error
 stating that they were not executed; ping, discovery and cancellation remain
@@ -93,23 +103,47 @@ written; reaching that queue limit closes the transport. Input processing and
 EOF cleanup do not wait for the client to drain stdout. Limits are 2 MiB per
 captured output stream, 4 MiB for stdin and 8 MiB per RPC frame. Oversized or incomplete command capture is a tool error, never a successful
 silent truncation. Closing stdin means shutting down the transport: EOF cancels
-the active worker and discards pending replies. Keep stdin open until you receive
+active and idle workers and discards pending replies. Keep stdin open until you receive
 the matching complete response. A missing or interrupted reply leaves the outcome
 unknown, regardless of the server process’s exit status, and must not trigger an
 automatic retry. Cancellation stops its process group and suppresses the active call’s response. Cancellation that arrives after
 a call has completed and submitted its final response has no effect, including
 when that response is still queued for delivery. Cancellation cannot undo earlier
 effects or an explicitly started persistent daemon. Calls are never retried automatically.
+After a crash, only a later distinct call can create a new worker, after cleanup
+is confirmed. Unconfirmed cleanup prevents additional workers from starting.
+Calls near the OS argument/environment size limit, or whose private encoding
+exceeds the transport cap, select supervised one-shot execution before dispatch.
+They preserve kernel admission and the same invocation deadline; this is not a
+retry of a failure. Cancellation can race command startup during the bounded
+grace period; it does not guarantee that an admitted command never starts.
+The one-shot supervisor retains pending TERM from process creation and rejects
+CLI startup when cancellation is observed before its final spawn check. The
+check and kernel spawn are not atomic; cancellation arriving between them may
+still allow brief execution. A CLI born after that TERM may only receive the
+later KILL. Already-running CLI children receive TERM normally, preserving their
+cleanup grace and the independent lease monitor. Pending checks remain on the
+bootstrap's initial main thread because Darwin exposes thread-specific pending signals.
+A persistent timeout may retain `exit_code: null` if no correlated completion
+arrives. Isolated mode reports the actual signal status when its record is
+available, otherwise null. Both outcomes remain incomplete errors and must not
+be replayed automatically. The same one-shot owner is retained across calls: a cleanup
+failure blocks both another one-shot and a new persistent pair. Userspace cleanup
+returns within its configured budget while retaining an unconfirmed reservation;
+lost ownership stops further signaling and requires restarting the server.
 
 Restart the server after updating its executable: workers check the loaded
-Mach-O build UUID before running a command, including nested CLI calls. This
+Mach-O build UUID before running a command, including nested CLI calls. The host
+and a warm persistent worker also inspect the executable at the launch path
+before dispatch. A missing, malformed or changed image invalidates the runner
+until the server is restarted. This
 check is build consistency, not additional code-signing trust. MCP does not grant
 Accessibility, Automation, Screen Recording or Full Disk Access; the existing
 installation and permission requirements still apply. Tool metadata does not
 establish user authorization for a browser action.
 
-`make test-mcp` checks real stdio, every public help route and representative CLI
-parity without operating Safari UI or querying personal databases. It does not
+`make test-mcp` checks both persistent and isolated modes, real stdio, every public
+help route and representative CLI parity without operating Safari UI or querying personal databases. It does not
 claim live GUI side-effect coverage for all tools.
 
 ## Install
@@ -1028,12 +1062,104 @@ safari-browser wait --for-url <pattern>  # wait for URL match
 safari-browser wait --js <expr>          # wait for JS truthy
 safari-browser wait --timeout <ms>       # custom timeout (default 30s)
 
+# Randomized pacing between steps (#182): one duration drawn from a Cauchy
+# distribution doubly truncated to [--min, --max] ms. --median is the median
+# of the truncated distribution. Defaults: 2000..60000 ms, median 3000, scale 800.
+# Out-of-range draws are discarded, never clamped, so no delay piles up on a bound.
+safari-browser wait --jitter cauchy
+safari-browser wait --jitter cauchy --min 1500 --max 20000 --median 4000
+# --max is the only cap (--timeout does not apply). --scale may be at most
+# 100 × (--max − --min). --seed is for tests only: each wait is its own process,
+# so the same seed gives the same delay every call — never use it to pace a script.
+# Without --scale, the scale is 0.8 × the distance from --median to the nearer
+# bound (800 for the defaults), so short intervals no longer inherit an unsuitable fixed scale.
+# An explicit --scale that makes the median unreachable is an error that prints
+# the achievable range. When the middle half of all delays spans less than
+# 5% of the median or one nanosecond, a "nearly fixed" warning is printed.
+# Numerical representability checks still apply. A --max over one hour
+# (3600000 ms) requires --allow-long-wait: the heavy tail makes a long draw
+# a matter of time.
+# The underlying Cauchy location can lie outside the configured bounds; the
+# solver checks the full attainable truncated-median range.
+# Bounds are parsed as Double milliseconds. Sleep quantizes to the nearest
+# interior integer nanosecond; at least two such durations must exist.
+# Large millisecond offsets remain limited by Double precision.
+# This clock quantization is separate from the continuous distribution, and
+# OS scheduling can make actual elapsed time longer than the requested sleep.
+# Seeds are reproducible within the same supported numerical environment.
+# Target flags (--url, --window, ...) are accepted but ignored in this mode.
+
 # Multi-window targeting (#23): wait polls the targeted document, not
 # the front window, so you can wait for a Plaud redirect while some
 # other window has focus.
 safari-browser wait --for-url "/dashboard" --url plaud
 safari-browser wait --js "window.loaded" --document 2
 ```
+
+### Automatic command pacing
+
+Automatic spacing is **off by default**. Enable it in the calling environment
+to add one bounded Cauchy delay after each ordinary command, including each
+executed `exec` step:
+
+```bash
+export SAFARI_BROWSER_PACING=cauchy
+safari-browser exec --script steps.json
+
+# Disable for just this invocation, including any exec children.
+SAFARI_BROWSER_PACING=off safari-browser documents
+
+# Change the bounds and truncated median (milliseconds).
+SAFARI_BROWSER_PACING_MIN_MS=1500 SAFARI_BROWSER_PACING_MAX_MS=20000 \
+  SAFARI_BROWSER_PACING_MEDIAN_MS=4000 safari-browser exec --script steps.json
+
+# Disable for later invocations.
+unset SAFARI_BROWSER_PACING
+```
+
+| Environment variable | Default / meaning |
+|---|---|
+| `SAFARI_BROWSER_PACING` | Unset, empty, or `off`: disabled; `cauchy`: enabled. Other values are errors. |
+| `SAFARI_BROWSER_PACING_MIN_MS` | 2000 ms |
+| `SAFARI_BROWSER_PACING_MAX_MS` | 60000 ms; at most 3600000 ms (one hour) |
+| `SAFARI_BROWSER_PACING_MEDIAN_MS` | 3000 ms, strictly between the bounds |
+| `SAFARI_BROWSER_PACING_SCALE_MS` | 0.8 times the distance from the median to the nearer bound |
+
+The parameters use the same distribution, representability checks, and
+nearly-fixed warning as `wait --jitter`. There is no global seed or
+`allow-long-wait` setting. When pacing is disabled, its numeric parameters are
+ignored, so a single `off` override also disables inherited invalid settings.
+Enabled settings and the draw are checked before the operation executes.
+
+Successful commands and runtime failures both wait once; after a completed
+wait, their output and exit status remain unchanged. Help, root and command-group usage, parser
+errors, explicit `wait`, daemon management commands, and long-lived hosts do
+not gain an extra wait. Hidden MCP wrappers pace their eligible inner command
+once. An `exec` container does not add another wait after its batch, and
+conditionally skipped steps do not wait.
+
+Command completion and command-duration traces include the wait; MCP responses
+and buffered output can therefore arrive after it. Tab switching and new-tab
+actions are ordinary paced operations.
+
+With pacing enabled, `exec` chooses its existing subprocess-per-step path
+before sending any batch RPC. Each child still has ordinary daemon routing,
+but this mode pays per-step process/connection overhead instead of using the
+single `exec.runScript` optimization. `off` restores the original batch path.
+No transmitted batch is retried to change its pacing mode.
+
+MCP hosts inherit pacing from their launch environment; restart a host to
+change it. The existing tool timeout includes all pacing waits and is not
+extended automatically. Budget command execution **plus the configured maximum
+delay**, and for an `exec` batch include every eligible step. For example,
+`SAFARI_BROWSER_PACING=cauchy safari-browser mcp --timeout=90` leaves room for
+one default maximum delay plus command execution; longer batches need their
+own budget. A timeout or cancellation during pacing can happen after effects
+already occurred; it does not undo or replay the operation. Existing OS signal
+handling is unchanged.
+
+This is per-caller spacing, not a shared rate limiter for concurrent processes,
+and it does not guarantee avoidance of remote anti-bot measures.
 
 ### Storage
 
@@ -1088,6 +1214,14 @@ SAFARI_BROWSER_NAME=beta  safari-browser daemon start
 
 **Phase 1 command coverage** (routed through daemon when enabled):
 `snapshot`, `click`, `fill`, `type`, `press`, `js`, `documents`, `get url`, `get title`, `wait`, `storage`.
+
+The daemon's `--socket-dir` (or inherited `TMPDIR`) must resolve to an existing
+directory. Regular files, FIFOs, and symlinks to non-directories are rejected
+before daemon launch or dispatch, even with `--allow-unsafe-socket-dir`; that
+flag only relaxes the world-writable check. The existing `stat` lookup follows
+symlinks, so a link to a directory uses the target's permissions and a dangling
+link remains missing/not statable. These preflight checks do not lock the path
+against replacement afterward.
 
 **NOT covered** (fall through to stateless path even with daemon on):
 `screenshot`, `pdf`, `upload --native`, `upload --allow-hid`.

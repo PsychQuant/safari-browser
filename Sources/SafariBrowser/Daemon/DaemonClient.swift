@@ -21,10 +21,13 @@ enum DaemonClient {
         case remoteError(code: String, message: String)
         case requestOutcomeUnknown(String)
         case invalidTimeout
+        case requestTooLarge(encodedBytes: Int, limit: Int)
 
         var description: String {
             switch self {
             case .requestOutcomeUnknown(let r): return "daemon request outcome unknown: \(r); operation may have executed; not retrying"
+            case .requestTooLarge(let bytes, let limit):
+                return "daemon request too large: encoded JSON line is \(bytes) bytes; peer limit is \(limit) bytes (excluding LF); no request bytes sent for this RPC; reduce the request size"
             case .invalidTimeout: return "daemon invalid timeout: expected finite seconds in 0.001...86400"
             case .connectFailed(let r): return "daemon connect failed: \(r)"
             case .ioError(let r):       return "daemon io error: \(r)"
@@ -81,7 +84,7 @@ enum DaemonClient {
         /// when the error should propagate (Safari domain errors).
         var fallbackReason: String? {
             switch self {
-            case .requestOutcomeUnknown, .invalidTimeout: return nil
+            case .requestOutcomeUnknown, .invalidTimeout, .requestTooLarge: return nil
             case .connectFailed(let r):  return "connect: \(r)"
             case .ioError(let r):        return "io: \(r)"
             case .protocolError(let r):  return "protocol: \(r)"
@@ -144,6 +147,18 @@ enum DaemonClient {
     /// The deadline covers connection, handshake, the request frame, and the
     /// entire response. Once any request bytes are sent, unverified outcomes
     /// must never authorize replay of a potentially mutating operation.
+    /// #174: limit the normally small handshake independently of large replies.
+    /// Exceeding this limit happens before the request is written,
+    /// so the stateless path stays available.
+    static let maxHandshakeLineBytes = 64 * 1024
+
+    /// #174: upper bound for one reply line. The stateless `osascript` path
+    /// has no output limit, so this is deliberately far above real outputs
+    /// (`get source`, `snapshot`, and `js --large` reads 256 KiB chunks). A
+    /// reply over it fails as outcome-unknown — the request was already sent —
+    /// and is never replayed.
+    static let maxResponseLineBytes = 128 * 1024 * 1024
+
     static func sendRequest(
         name: String,
         method: String,
@@ -151,7 +166,8 @@ enum DaemonClient {
         requestId: Int,
         timeout: TimeInterval = defaultTimeoutSeconds,
         socketDir: String? = nil,
-        diagnosticsWriter: (@Sendable (String) -> Void)? = nil
+        diagnosticsWriter: (@Sendable (String) -> Void)? = nil,
+        responseLineLimit: Int = maxResponseLineBytes
     ) async throws -> Data {
         return try await PerformanceTrace.spanAsync(.daemonRequest) {
             guard timeout.isFinite, (0.001...86400).contains(timeout) else {
@@ -169,7 +185,8 @@ enum DaemonClient {
                         let reply = try PerformanceTrace.$context.withValue(timingContext) {
                             try exchange(path: path, method: method, params: params,
                                          requestId: requestId, deadline: deadline,
-                                         diagnosticsWriter: diagnosticsWriter)
+                                         diagnosticsWriter: diagnosticsWriter,
+                                         responseLineLimit: responseLineLimit)
                         }
                         continuation.resume(returning: reply)
                     } catch {
@@ -183,15 +200,17 @@ enum DaemonClient {
 
     private static func exchange(
         path: String, method: String, params: Data, requestId: Int,
-        deadline: Deadline, diagnosticsWriter: (@Sendable (String) -> Void)?
+        deadline: Deadline, diagnosticsWriter: (@Sendable (String) -> Void)?,
+        responseLineLimit: Int
     ) throws -> Data {
         let fd = try connectUnixSocket(path: path, deadline: deadline)
         defer { close(fd) }
         var reader = LineReader()
-        let handshake = try reader.readLine(fd: fd, deadline: deadline)
-        guard let version = DaemonProtocol.decodeHandshakeVersion(handshake) else {
+        let handshake = try reader.readLine(fd: fd, deadline: deadline, maxBytes: maxHandshakeLineBytes)
+        guard let metadata = DaemonProtocol.decodeHandshake(handshake) else {
             throw Error.protocolError("invalid handshake")
         }
+        let version = metadata.version
         guard DaemonProtocol.versionsMatch(server: version, client: DaemonProtocol.currentVersion) else {
             throw Error.remoteError(code: "versionMismatch", message: "daemon \(version.description), client \(DaemonProtocol.currentVersion.description)")
         }
@@ -199,13 +218,16 @@ enum DaemonClient {
         var payload = try JSONSerialization.data(withJSONObject: [
             "method": method, "params": paramsValue, "requestId": requestId
         ])
+        if let limit = metadata.maxRequestLineBytes, payload.count > limit {
+            throw Error.requestTooLarge(encodedBytes: payload.count, limit: limit)
+        }
         payload.append(10)
         try writeFrame(fd: fd, payload: payload, deadline: deadline)
 
         // Partial-write failures are already classified by writeFrame. A lost
         // or invalid response cannot authorize repeating the operation either.
         do {
-            let response = try reader.readLine(fd: fd, deadline: deadline)
+            let response = try reader.readLine(fd: fd, deadline: deadline, maxBytes: responseLineLimit)
             guard let object = try JSONSerialization.jsonObject(with: response) as? [String: Any],
                   let responseID = object["requestId"] as? NSNumber,
                   CFGetTypeID(responseID) != CFBooleanGetTypeID(),
@@ -264,7 +286,7 @@ enum DaemonClient {
 
     // MARK: - Nonblocking POSIX transport
 
-    private struct Deadline: Sendable {
+    struct Deadline: Sendable {
         let end: UInt64
 
         init(timeout: TimeInterval) {
@@ -364,19 +386,42 @@ enum DaemonClient {
         }
     }
 
-    private struct LineReader {
+    /// Newline-framed reader shared by the handshake and the reply.
+    /// #174: every line has an explicit byte limit, enforced while reading —
+    /// a peer that never sends a newline is stopped at the limit instead of
+    /// growing the buffer until the deadline — and the newline search only
+    /// scans bytes it has not scanned before (it used to rescan the whole
+    /// buffer after every 8 KiB read, quadratic in the reply size).
+    struct LineReader {
         var pending = Data()
+        /// Bytes at the front of `pending` already known to hold no newline.
+        private var scanned = 0
 
-        mutating func readLine(fd: Int32, deadline: Deadline) throws -> Data {
+        init() {}
+
+        mutating func readLine(fd: Int32, deadline: Deadline, maxBytes: Int) throws -> Data {
             var buffer = [UInt8](repeating: 0, count: 8192)
             while true {
                 _ = try deadline.remainingMilliseconds()
-                if let newline = pending.firstIndex(of: 10) {
+                let unscanned = pending.index(pending.startIndex, offsetBy: scanned)
+                if let newline = pending[unscanned...].firstIndex(of: 10) {
+                    let length = pending.distance(from: pending.startIndex, to: newline)
+                    guard length <= maxBytes else {
+                        throw Error.ioError("line of \(length) bytes exceeds the \(maxBytes)-byte limit")
+                    }
                     let line = Data(pending[..<newline])
                     pending.removeSubrange(...newline)
+                    pending = Data(pending)
+                    scanned = 0
                     return line
                 }
-                let count = Darwin.read(fd, &buffer, buffer.count)
+                scanned = pending.count
+                guard pending.count <= maxBytes else {
+                    throw Error.ioError("no newline within the \(maxBytes)-byte line limit")
+                }
+                // Never read past the first byte beyond the limit, so a line
+                // without a newline is rejected holding at most maxBytes + 1.
+                let count = Darwin.read(fd, &buffer, Swift.min(buffer.count, maxBytes + 1 - pending.count))
                 if count > 0 { pending.append(contentsOf: buffer.prefix(count)); continue }
                 if count == 0 { throw Error.ioError("EOF before complete response frame") }
                 if errno == EINTR { continue }

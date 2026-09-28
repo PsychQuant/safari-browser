@@ -41,6 +41,20 @@ The script is idempotent — re-running is a no-op once specs are clean. Real co
 
 See `#41` for the bloat incident that motivated this.
 
+## MCP worker lifecycle
+
+`mcp` 預設 `--worker-mode persistent`；`--worker-mode isolated` 保留每次新程序的明示路徑。`--worker-idle-timeout` 預設 30 秒，有限值 0.001...86400。CLI business logic 由 `CLIExecution` 共用；persistent 每筆重新 parse，建立新的 gate／trace，`MCPRequestStdio` 封閉並 join 全部輸出後才宣告 complete。
+
+`MCPPersistentRunner` 的唯一 I/O owner 持有 supervisor reservation 與 FD。取消只提交 intent；任何未知／部分結果都不得重播。只有 locally spawned 且尚未 reap 的 supervisor PID 可用來 signal group，不能用 reply 中的 worker PID。Pending cleanup 保留 owner 並拒絕新 pair；lost ownership 永久停止 signal。`waitid` 的 stopped event 不是 exit；group 尚有 live member 時繼續清理，最後 signal 必須先於 reap。
+
+Supervisor 以唯一 host writer 的 lifetime pipe EOF 處理 host 死亡；actual worker 即使 SIGSTOP 也不需配合。Explicit daemon start 的 service 仍可 setsid 脫離。Warm executable probe 每筆重讀原 launch path，不使用 mtime cache；UUID 是 build consistency，不是 code-signing 認證。近 ARG_MAX 邊界只允許在任何 private request byte 前選擇受監督的一次性 runner；預選同樣保留原 kernel 接納與absolute deadline。
+
+`MCPProcessRunner` 也有可持續存活的serial owner，重用`MCPChildReservation`，所有reap都是非阻塞。Pending保留原reservation；`MCPPersistentRunner`長期持有同一個one-shot runner，選任一engine前先確認舊owner已退休，不能每次重新建runner來掩蓋未完成清理。Shutdown會取消active call，清理截止後回報failure；lost ownership永久停止訊號。Bootstrap透過私有管線取得parent原始environment，避免Foundation新增欄位縮小ARG_MAX接納邊界。
+
+兩種supervisor在spawn actual CLI前忽略TERM，讓lease monitor及CLI grace仍存活；`MCPWorkerSpawn`必須為actual CLI恢復TERM預設。`SAFARI_BROWSER_MCP_DIRECT`是私有context，值2保留給one-shot supervisor；沒有inherited channels的一般CLI會拒絕，不能當使用者設定。背景pending cleanup沒有總放棄期限，每次嘗試仍有界；KILL後的核心停頓不保證在host死亡後仍有userspace清理者。
+
+`MCPSession.shutdown` 必須包含 idle runner cleanup，且清理未確認需由 terminalFailure 回報。`make test-mcp` 兩模式都跑；nested-process 測試在兩種模式都須檢查 host → supervisor → worker → nested CLI，PGID 屬於 supervisor。不得對僅由 ps／reply 找到、沒有 reservation 的 PID 盲目補送 kill。
+
 ## Plugin
 
 Claude Code plugin 位於另一個 repo：
@@ -205,6 +219,64 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 5. 15 秒 timeout
 
 這五種會 fallback 到 stateless 並在 stderr 印一行 `[daemon fallback: <reason>]`。**Domain errors**（例如 `ambiguousWindowMatch`）**不 fallback** — 因為 stateless path 會產生一樣的 ambiguity，fallback 沒意義。
+
+### Accepted connection lifecycle（#199）
+
+每條已接納連線由唯一 Connection ID 與 fd owner 管理；nonblocking read/write 和 revoke／shutdown／close 在同一短鎖內執行單次 syscall。EAGAIN 在鎖外等原生 DispatchSource 就緒，避免固定輪詢延遲。通知 source 使用私有 CLOEXEC fd 副本，不做 stream I/O；副本僅在 cancel handler 關閉，避免取消中的 callback 遇到 fd 重用。每個等待中的 I/O 因此多用一個 fd；dup 資源不足會明確失敗，transport 關閉並記錄固定原因。停止會立即撤銷原始 socket，並取消／喚醒 readiness 等待。
+
+完整 request 讀取／解析後，Instance 在同一 actor turn 驗證連線與世代、更新 activity、選取 handler 並接納工作。停止後收到的資料、解析完但尚未接納的 request、buffered 第二筆都不能啟動新 handler。正常完成的 transport 立即從 registry 退休；舊完成只能移除自己的 UUID，不能影響新 Run。stop 先撤銷並移除 active registry，已在進行的有界 JSON 解析仍可離開後才完成 task；active count 為零不代表已 join 所有 task。
+
+transport 與 handler 工作分開：停止可完成 transport、釋放 reader／frame，已開始的不合作 handler 仍如實追蹤到返回。取消不是副作用回滾，也不會自動重播；晚到結果不存入已取消的完成物件、不寫入新連線。每筆 request 捕捉當時的 logger／redaction 設定；transport 診斷在所屬連線退休的同一 actor turn 準備 emission，晚到寫入不借用新 Run 的 logger 或 budget。
+
+正常結果與 cancelled 回覆共用單次完成仲裁，只有 transport 寫出一個 frame。shutdown 先嘗試自己的 ACK（總預算 250 ms），再讓所有 in-flight cancelled 回覆共用另一個 250 ms 絕對期限；不逐 client／partial write 重設，耗盡仍繼續停止。已開始的正常 frame 不插入取消 JSON；完整 cancelled 仍是 domain error，部分／缺少回覆仍是結果未知且不重播。ACK 代表已接納停止要求，不是停止完成或 peer 收到的證明；真正 revoke 前的短暫窗口仍可接納新 request，snapshot 外的請求也可能只得到 EOF／結果未知。一般 RPC 不新增執行期限，單 Run host 的五秒退出 watchdog 保留。
+
+測試 fixture 量到原生通知版 warm RPC 中位數約 0.140 ms（基準約 0.124 ms；各 40 次），移除了初版固定等待的約 6.83 ms 中位數。36 次 2 MiB request 的 RSS 樣本約 45,360–45,536 KiB，連線與未完成 operation 每次回到零；這是本機觀察，不推論 Foundation Data capacity 或整體行程記憶體上限。無效 JSON／非 object frame 的 log 只保留安全 byte-count marker，即使 LOG_FULL 也不保存原始壞 frame；有效請求的 full-log 語意不變。shutdown 與一般 request 的日誌階段見下方 #205 契約。
+
+### Listener termination（#198）
+
+永久 accept／poll 錯誤會結束所屬 daemon Run，清理自有 PID 與 socket，完成停止等待者；不再只結束 listener 而等 idle timeout。原因只含固定 operation 與 errno，`daemon __serve` 對永久 listener 失效回傳非零退出碼；一般 shutdown 與 idle timeout 仍正常退出。listener／wake-read 由迴圈先關閉，terminal 診斷寫入不阻擋通知，且維持 #197 的 best-effort 額度。terminal 診斷也可能因 log handle 已關閉而遺失；typed StopReason／CLI 錯誤仍傳達原因，不承諾落盤。
+
+每次啟動各有 Run ID；並行 start 共用啟動工作，並行 stop 共用清理，新 start 等舊清理完成。啟動取消／失敗同樣走清理；舊 listener callback、shutdown hook 與 watchdog 不能停止新 Run。連線接納時即捕捉 shutdown 世代／hook，請求即使卡在日誌後才恢復，也必須重驗權限，不得取得新 Run 的 hook；新 Run 重新計算 idle 起點。多個 waiter 各自取得註冊 Run 的第一個停止原因，清理完成後才恢復。stop 不等待 accept loop 或診斷 writer；啟動中的 stop 會等本次啟動工作離開，避免晚到 bind，沒有任意系統負載下的硬牆鐘保證。
+
+PID 身分以 close-on-exec 描述元保留原 inode，清理比對建立時的 device/inode，保留已替換或無法確認的 entry；寫入／dup 失敗時，仍能確認身分的自有 entry 會清理。外層不重複 unlink 內層已清理的 socket。身分檢查與 unlink 不是原子交易，不宣稱能防止任意同 UID 惡意檔案競態。沒有自動重建 listener 或重播 RPC；停止前已建立連線的讀取取消與回收仍由 #199 處理。
+
+### Diagnostic event budget（#197）
+
+accept、連線初始化與 request 拒絕的診斷事件共用 logging-session 額度：最多 8 筆突發、每秒補 2 筆；一般事件保留最後 1 筆給終止原因，所以初始一般事件最多連續 7 筆。成功、incident 重設、安靜間隔或同 writer 的 stop/start 不會額外重設額度；明確更換 writer 才開始新 logging session。此額度限制紀錄放行時間，不是底層 writer／檔案 flush 的物理速率。既有每請求日誌不受此額度控制。
+
+被抑制的是候選日誌紀錄，並非底層 syscall 失敗總數。`suppressed` 包含 total、固定七種 byEvent 與五種 byDisposition 計數、first、lastRecovery、lastTerminal；只有固定事件／處置名稱及整數 errno／count，logFull 也不加入 source、URL、requestId 或前綴。摘要不保留逐 incident 首筆或完整 errno 分布；byDisposition 可保留曾發生 backoff 的類別訊號。下一筆可送事件會合併摘要；沒有新流量時，單一 500 ms flusher 依相同額度送出 diagnostics_suppressed 行。
+
+writer 在 actor 外執行；request 拒絕先關閉 fd 並釋放 reader，再處理診斷。stop 不等額度、timer 或 writer，未送摘要會捨棄；日誌維持 best-effort，沒有終止前一定落盤的保證；timestamp 在呼叫 writer 前產生，不是放行時間，也不保證檔案中各行的先後順序。更換 logger 會使舊 timer 失效，已準備的紀錄只持有原 writer；舊 writer 卡住時不再新增另一個 flusher；新 session 的 timer 摘要也會等它結束，但新的放行事件仍可攜帶摘要。排程來源失敗不會在同世代自動忙轉重試，後續候選事件仍可再嘗試。
+
+### Request log outcomes（#205）
+
+同一檔案還可能包含 #197 的診斷事件；只有以下三種 request 事件帶 requestToken，消費端不可假設每筆 event 都是 request。
+
+請求日誌依 `event` 區分，並用 daemon 產生的 `requestToken`（RequestWork UUID）關聯；不同操作即使重用同一 requestId，也有不同 token。三種事件都標記 `peerReceipt: "unconfirmed"`，不宣稱 peer 已收到，也不保證先前副作用已完成或被撤銷。
+
+- `request_response_prepared` 保留 ts／method／requestId／durationMs／params／result／error。result 只是預備結果值經遮蔽／截斷後的預覽，不是完整 wire envelope；例如 shutdown 的 `{}` 還需通過 logging 後的世代守衛。既有 redaction、truncation、malformed marker 與 logFull 行為保留。
+- `request_response_candidate` 只含時間、event、token、unconfirmed、固定 outcome（result／parse_error／method_not_found／handler_error／cancelled）與 selection（selected／not_selected／not_offered）。它在原 operation 的 complete/cancel gate 之後寫，僅報告該 operation 候選；不提供所有取消來源或 transport 的完整追蹤；同一 token 沒有 selected 行，不能推論沒有其他取消來源選中回覆。selected 是 gate 接受，不代表已送出；operation 起點的取消檢查已取消時是 cancelled/not_offered（較晚的既有 handler 前檢查仍可產生 handler_error），晚到 result 可是 result/not_selected。
+- `request_shutdown_handoff` 只含時間、event、token、unconfirmed 與固定 outcome（rejected／hook_returned／instance_stopped），transport 在最後交接返回後交付固定 outcome，由原 operation task 寫出；transport 不等待此 writer。hook_returned 只證明捕捉的 hook 已返回，不假定任意 hook 都停止全部工作。
+
+新增事件沿用 admission 的 writer，actor 外執行；不增加獨立 logging task／queue。候選事件不能延後 reply 仲裁，handoff 事件不能延後 stop 或 transport 退休；原 operation 若仍卡在 writer，會維持未完成追蹤。每 request 最多一筆 prepared、一筆原 operation candidate；有 shutdown plan 才最多再一筆 handoff。candidate metadata 不保留額外的 response frame 複本。
+
+**消費端遷移**：原本「每行都是 request payload／每 request 一行」的假設不再成立；讀 payload 時以 `event == "request_response_prepared"` 篩選，再以 requestToken 關聯。歷史無 event 的行視為未分類候選，不補推傳送成功。不能用不同 request 的實體行序判定狀態先後。原 operation 使用不受 Task 取消抹除的固定 handoff observation；只在自己選中的 shutdown plan 上等待，沒有 plan／未選中／nil writer 不等待。
+
+正式檔案 writer 由 Run 專屬的 `DaemonLogFile` owner 持有，captured writer 共用同一 owner。Run teardown 釋放自身與 underlying logger 的 reference，最後使用者退休才關閉 descriptor，不會 eager-close 仍在用的舊 sink，也不等待 writer。以 O_APPEND／O_CLOEXEC 開啟，DaemonLogFile 自行建立的新檔 mode 0600（受 umask 影響），既有檔案權限保留；舊、新 Run 同路徑的獨立 writer 只追加，不靠舊 offset 覆寫新紀錄；rename 後舊 writer 仍指向原 inode。`daemon start` 的 stdout/stderr 啟動器目前會先以既有 mode 0644 建檔（受 umask 影響），sink 不會將這類已存在檔案改成 0600；目錄權限契約維持原狀。日誌維持 best-effort，I/O 失敗或行程退出仍可使事件缺失；缺少後續事件代表未觀察或未落盤，不能推論成功或沒有執行。`__serve` 在停止 waiter 返回後即可退出，因此 candidate／handoff 可能與行程退出競速而缺席；三行齊全的檔案驗收是在持續存活的 in-process ServeLoop，不承諾 CLI 退出前完成寫入。nil writer 完全靜默。
+
+### Request size limits（#194）
+
+伺服端每筆 request 的完整 JSON 行上限為 128 MiB（134,217,728 bytes，不含結尾 LF），包含 method、params 與 requestId；大型 source／exec 共用此限制。超量時在讀取中關閉該連線，不解析、不呼叫 handler，也不掃描前綴取 requestId。客戶端沿用送出後結果未知／不重播的分類；其他連線仍可繼續服務。
+
+#202：新 daemon 在既有 v2 握手的 `protocol.maxRequestLineBytes` 宣告實際 reader 上限，wire 值為 ASCII 十進位正整數字串（預設 `"134217728"`，形式 `[1-9][0-9]*`、值須落在 Int 範圍）。使用字串避免 JSON 數值解析把大數小數捨入成整數；JSON number、null、布林、空字串、前導零、符號、空白、小數、指數與溢位都是無效握手。新 client 在版本驗證後，先編碼完整 method／params／requestId，再於加 LF 和傳送前比較 bytes；等於上限可送，超量回報 `requestTooLarge`，只含長度、上限和縮小請求指引，本筆 RPC 零送出且不自動 fallback。這不代表同一命令先前的 RPC 未執行，也不避免 JSON 編碼的記憶體配置。舊 daemon 缺欄位時保留原傳送流程，不由版本猜測上限；舊 client 可忽略新欄位。宣告只是傳輸 metadata，並非 caller 授權。server 仍獨立限制輸入；legacy／失準宣告或其他送出後失敗仍是結果未知、不重播。無效握手沿用既有送出前 protocolError 分類。typed version 同時拒絕以數字 0／1 冒充 JSON boolean 的 dirty 欄位；正式 server 一律輸出 true／false，舊版有效握手不受影響。
+
+分段讀取每次最多 8 KiB，只掃新增資料並保存多行剩餘資料。沒有 LF 的行最多累積上限加 1 byte 即拒絕；恰好上限加 LF 可接受。真 EOF 保留舊有最後一行可無 LF 的行為，但 EINTR 會重試，其他讀取錯誤直接結束連線，不把部分資料當作完整請求。這是刻意的輸入相容界線，超過上限的合法 JSON 也會拒絕；不是全行程記憶體上限；即使只有一條連線，buffer、複本、JSON 解析與字串轉換仍有額外配置，多條連線會疊加。已接納連線的取消／回收另見 #199。
+
+### Reply size limits（#174）
+
+These limits count the complete wire line, including timing and all envelope fields, before the line-ending LF—not total process memory. JSON parsing, Foundation bridging, and re-encoding the returned result can allocate additional memory. The timing lower-bound precheck only avoids the Collector's own encoding pass when its bound already exceeds 64 KiB; rejected timing fields are not removed from the result envelope. Server-side request-line limits are tracked separately in #194.
+
+Client 每讀一行都有上限：握手 64 KiB、回覆 128 MiB（`DaemonClient.maxHandshakeLineBytes` / `maxResponseLineBytes`）。超過時在讀取當下丟錯，不等換行或 deadline。stateless `osascript` 路徑沒有輸出上限，所以 128 MiB 刻意遠高於實際輸出；回覆超量時請求已送出，歸類為 outcome-unknown、**不重播**；握手超量發生在送出請求之前，照 pre-send 規則可回退 stateless。沒有換行的行在拒絕時最多只多緩衝 1 byte（每次 read 以剩餘額度為上限）。遠端 timing metadata 先以 `PerformanceTrace.jsonSizeLowerBound` 估下界（字串位元組與跳脫、整數與布林的文字長度；浮點數只算 1 byte），下界超過 64 KiB 就不重新編碼；否則照舊編碼後以實際長度檢查。下界只證明「一定超標」，不證明「一定沒超標」。
 
 ### Idle timeout
 

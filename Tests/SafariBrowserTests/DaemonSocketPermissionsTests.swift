@@ -128,6 +128,60 @@ final class DaemonSocketPermissionsTests: XCTestCase {
 
     // MARK: - composeSocketPath
 
+    func testResolverRejectsNonDirectoriesRegardlessOfPermissionsOrOverride() {
+        for mode: UInt16 in [0o644, 0o666] {
+            for allowUnsafe in [false, true] {
+                for explicit in [false, true] {
+                    let result = DaemonPaths.resolveSocketDir(socketDir: explicit ? "/owned/file" : nil,
+                        env: ["TMPDIR": "/owned/file"], allowUnsafe: allowUnsafe,
+                        statF: { _ in DaemonPaths.Stat(mode: mode, isDirectory: false) })
+                    guard case .rejected(let reason, let message) = result else {
+                        XCTFail("A non-directory was accepted: \(result)"); continue
+                    }
+                    XCTAssertEqual(reason.rawValue, "parentNotDirectory")
+                    XCTAssertTrue(message.contains("not a directory"))
+                    XCTAssertFalse(message.contains("--allow-unsafe-socket-dir"))
+                }
+            }
+        }
+    }
+
+    func testResolverUsesRealFileTypesAndPreservesSymlinkFollowing() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(chmod(root.path, 0o700), 0)
+        let file = root.appendingPathComponent("file"), fifo = root.appendingPathComponent("fifo")
+        try Data("owned".utf8).write(to: file)
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+        let directoryLink = root.appendingPathComponent("directory-link")
+        let fileLink = root.appendingPathComponent("file-link")
+        let dangling = root.appendingPathComponent("dangling")
+        try FileManager.default.createSymbolicLink(at: directoryLink, withDestinationURL: root)
+        try FileManager.default.createSymbolicLink(at: fileLink, withDestinationURL: file)
+        try FileManager.default.createSymbolicLink(at: dangling, withDestinationURL: root.appendingPathComponent("absent"))
+        for unsafe in [false, true] {
+            for path in [root.path, directoryLink.path] {
+                XCTAssertEqual(DaemonPaths.resolveSocketDir(socketDir: path, env: [:], allowUnsafe: unsafe), .ok(path))
+            }
+            for path in [file.path, fileLink.path, fifo.path] {
+                let result = DaemonPaths.resolveSocketDir(socketDir: path, env: [:], allowUnsafe: unsafe)
+                guard case .rejected(let reason, let message) = result else { XCTFail("Accepted \(path)"); continue }
+                XCTAssertEqual(reason.rawValue, "parentNotDirectory")
+                XCTAssertTrue(message.contains("not a directory"))
+            }
+            let result = DaemonPaths.resolveSocketDir(socketDir: dangling.path, env: [:], allowUnsafe: unsafe)
+            guard case .rejected(let reason, _) = result else { return XCTFail("Accepted dangling symlink") }
+            XCTAssertEqual(reason, .parentMissing)
+        }
+        XCTAssertEqual(chmod(root.path, 0o777), 0)
+        defer { _ = chmod(root.path, 0o700) }
+        let result = DaemonPaths.resolveSocketDir(socketDir: directoryLink.path, env: [:], allowUnsafe: false)
+        guard case .rejected(let reason, _) = result else { return XCTFail("Symlink hid target permissions") }
+        XCTAssertEqual(reason, .parentWorldWritable)
+        XCTAssertEqual(DaemonPaths.resolveSocketDir(socketDir: directoryLink.path, env: [:], allowUnsafe: true), .ok(directoryLink.path))
+    }
+
     func testComposeSocketPath_simpleCase() {
         let p = DaemonPaths.composeSocketPath(
             dir: "/private/tmp", prefix: "safari-browser-", name: "default", suffix: ".sock"

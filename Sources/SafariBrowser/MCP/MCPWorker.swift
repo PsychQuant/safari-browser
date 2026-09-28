@@ -8,29 +8,7 @@ enum MCPWorkerContext {
     static let directKey = "SAFARI_BROWSER_MCP_DIRECT"
 
     static func imageIdentifier(header data: Data) throws -> String {
-        let invalid = ValidationError("MCP image identity unavailable; restart the server with a supported executable")
-        let headerSize = MemoryLayout<mach_header_64>.size
-        guard data.count >= headerSize else { throw invalid }
-        let header = data.withUnsafeBytes { $0.loadUnaligned(as: mach_header_64.self) }
-        guard header.magic == MH_MAGIC_64,
-              UInt64(header.sizeofcmds) <= UInt64(data.count - headerSize),
-              header.ncmds <= header.sizeofcmds / 8 else { throw invalid }
-        let end = headerSize + Int(header.sizeofcmds)
-        var offset = headerSize
-        var identifier: String?
-        for _ in 0..<header.ncmds {
-            guard offset <= end - 8 else { throw invalid }
-            let command = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: load_command.self) }
-            guard command.cmdsize >= 8, command.cmdsize % 8 == 0,
-                  Int(command.cmdsize) <= end - offset else { throw invalid }
-            if command.cmd == LC_UUID {
-                guard command.cmdsize == MemoryLayout<uuid_command>.size, identifier == nil else { throw invalid }
-                identifier = data[(offset + 8)..<(offset + 24)].map { String(format: "%02x", $0) }.joined()
-            }
-            offset += Int(command.cmdsize)
-        }
-        guard offset == end, let identifier else { throw invalid }
-        return identifier
+        try MCPExecutableIdentity.imageIdentifier(header: data)
     }
 
     static func currentImageIdentifier() throws -> String {
@@ -59,10 +37,14 @@ enum MCPWorkerContext {
         return ["__mcp-exec"] + arguments
     }
 
+    static var imageChangedError: ValidationError {
+        ValidationError("MCP executable changed; restart the MCP server before calling tools. The command was not executed.")
+    }
+
     static func validate(environment: [String: String], currentImage: () throws -> String) throws {
         guard let expected = environment[imageKey] else { return }
         guard !expected.isEmpty, try currentImage() == expected else {
-            throw ValidationError("MCP executable changed; restart the MCP server before calling tools. The command was not executed.")
+            throw imageChangedError
         }
     }
 }
@@ -72,22 +54,22 @@ struct MCPWorkerCommand: AsyncParsableCommand {
     @Argument(parsing: .captureForPassthrough) var arguments: [String] = []
 
     mutating func run() async throws {
-        let environment = ProcessInfo.processInfo.environment
+        try await run(environment: ProcessInfo.processInfo.environment)
+    }
+
+    mutating func run(environment: [String: String],
+                      sleep: (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }) async throws {
         guard environment[MCPWorkerContext.imageKey] != nil, environment[MCPWorkerContext.directKey] == "1" else {
             throw ValidationError("This command is an internal MCP worker")
         }
         // The normal main entry point has already checked the loaded image.
-        var command = try SafariBrowser.parseAsRoot(arguments)
+        let command = try SafariBrowser.parseAsRoot(arguments)
         // The public catalog excludes hidden commands. Internal daemon start
         // also uses this guard to launch its hidden service, which detaches itself.
         guard !(command is MCPWorkerCommand),
               type(of: command).configuration.commandName != "mcp" else {
             throw ValidationError("Recursive or hidden MCP dispatch is not allowed")
         }
-        if var asynchronous = command as? AsyncParsableCommand {
-            try await asynchronous.run()
-        } else {
-            try command.run()
-        }
+        try await CLIExecution.runParsed(command, environment: environment, sleep: sleep)
     }
 }

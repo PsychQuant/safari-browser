@@ -1,0 +1,93 @@
+diff --git a/Sources/SafariBrowser/MCP/MCPProcessRunner.swift b/Sources/SafariBrowser/MCP/MCPProcessRunner.swift
+index 17dc92e..c99513e 100644
+--- a/Sources/SafariBrowser/MCP/MCPProcessRunner.swift
++++ b/Sources/SafariBrowser/MCP/MCPProcessRunner.swift
+@@ -36,6 +36,8 @@ struct MCPProcessRunner: MCPCommandRunning {
+     }
+ 
+     private func execute(arguments: [String], input: Data, expectedImage: String, cancellation: MCPCancellation) -> MCPCommandResult {
++        let entry172 = DispatchTime.now().uptimeNanoseconds
++        let measured172 = environment["SAFARI_BROWSER_MCP_MEASURE_172"] == "1"
+         var result = MCPCommandResult()
+         guard timeout.isFinite, timeout >= 0.001, timeout <= 86400, outputLimit > 0, inputLimit >= 0 else {
+             result.failure = "Invalid worker limits."
+@@ -130,11 +132,13 @@ struct MCPProcessRunner: MCPCommandRunning {
+             return result
+         }
+         var pid: pid_t = 0
++        let spawnStart172 = DispatchTime.now().uptimeNanoseconds
+         let spawnError = argvPointers.withUnsafeBufferPointer { argvBuffer in
+             envPointers.withUnsafeBufferPointer { envBuffer in
+                 posix_spawn(&pid, executable.path, &actions, &attributes, argvBuffer.baseAddress!, envBuffer.baseAddress!)
+             }
+         }
++        let spawned172 = DispatchTime.now().uptimeNanoseconds
+         guard spawnError == 0 else {
+             result.failure = "Worker launch failed: \(String(cString: strerror(spawnError)))."
+             return result
+@@ -260,6 +264,14 @@ struct MCPProcessRunner: MCPCommandRunning {
+                 result.failure = result.failure ?? "Worker terminated by signal \(signal); earlier side effects may already have occurred."
+             }
+         } else { result.failure = result.failure ?? "Worker could not be reaped." }
++        let finished172 = DispatchTime.now().uptimeNanoseconds
++        if measured172 {
++            let metadata172: [String: Any] = ["entry": entry172, "spawnStart": spawnStart172,
++                "spawned": spawned172, "finished": finished172, "pid": pid]
++            if let data172 = try? JSONSerialization.data(withJSONObject: metadata172) {
++                FileHandle.standardError.write(Data("[measure172-parent] ".utf8) + data172 + Data([10]))
++            }
++        }
+         return result
+     }
+ }
+diff --git a/Sources/SafariBrowser/MCP/MCPWorker.swift b/Sources/SafariBrowser/MCP/MCPWorker.swift
+index 0bdac03..58e3205 100644
+--- a/Sources/SafariBrowser/MCP/MCPWorker.swift
++++ b/Sources/SafariBrowser/MCP/MCPWorker.swift
+@@ -77,7 +77,16 @@ struct MCPWorkerCommand: AsyncParsableCommand {
+             throw ValidationError("This command is an internal MCP worker")
+         }
+         // The normal main entry point has already checked the loaded image.
++        let measured172 = environment["SAFARI_BROWSER_MCP_MEASURE_172"] == "1"
++        let repeat172 = environment["SAFARI_BROWSER_MCP_REPEAT_172"] == "1"
++        // Diagnostic experiment accepts only the harmless fixed wait fixture.
++        guard !repeat172 || (measured172 && (arguments == ["wait", "0"] || arguments == ["wait", "--", "0"])) else {
++            throw ValidationError("Invalid measurement fixture")
++        }
++        for iteration172 in 0..<(repeat172 ? 20 : 1) {
++        let parseStart172 = DispatchTime.now().uptimeNanoseconds
+         var command = try SafariBrowser.parseAsRoot(arguments)
++        let parsed172 = DispatchTime.now().uptimeNanoseconds
+         // The public catalog excludes hidden commands. Internal daemon start
+         // also uses this guard to launch its hidden service, which detaches itself.
+         guard !(command is MCPWorkerCommand),
+@@ -89,5 +98,13 @@ struct MCPWorkerCommand: AsyncParsableCommand {
+         } else {
+             try command.run()
+         }
++        let done172 = DispatchTime.now().uptimeNanoseconds
++        if measured172 {
++            let metadata172: [String: Any] = ["iteration": iteration172, "parseStart": parseStart172,
++                "parsed": parsed172, "done": done172, "pid": ProcessInfo.processInfo.processIdentifier]
++            let data172 = try JSONSerialization.data(withJSONObject: metadata172)
++            FileHandle.standardError.write(Data("[measure172-child] ".utf8) + data172 + Data([10]))
++        }
++        }
+     }
+ }
+diff --git a/Sources/SafariBrowser/SafariBrowser.swift b/Sources/SafariBrowser/SafariBrowser.swift
+index bc9d86f..a50474b 100644
+--- a/Sources/SafariBrowser/SafariBrowser.swift
++++ b/Sources/SafariBrowser/SafariBrowser.swift
+@@ -65,6 +65,11 @@ struct SafariBrowser: AsyncParsableCommand {
+     /// bash, does not word-split an unquoted parameter) or a user-quoted
+     /// `cmd "--url report"`. Everything else is byte-identical to the default.
+     static func main() async {
++        let entry172 = DispatchTime.now().uptimeNanoseconds
++        if ProcessInfo.processInfo.environment["SAFARI_BROWSER_MCP_MEASURE_172"] == "1",
++           ProcessInfo.processInfo.environment[MCPWorkerContext.directKey] == "1" {
++            FileHandle.standardError.write(Data("[measure172-child-entry] \(entry172)\n".utf8))
++        }
+         let timing = PerformanceTrace.isEnabled(ProcessInfo.processInfo.environment)
+             ? PerformanceTrace.Collector() : nil
+         let commandSpan = timing?.begin(.command)
