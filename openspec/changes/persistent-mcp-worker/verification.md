@@ -165,3 +165,5 @@ R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Ga
 - 實作、測試與量測證據現已備妥；4.4的獨立審查及3.3歸檔／PR尚未完成，不能標verified。
 
 - 最後的caller契約核對另抓到R3重構將較晚inherited deadline直接採用、可能放寬configured timeout。原0.15秒設定配未來30秒deadline卻讓1秒fixture正常完成，兩項具名RED；改為兩者取min後約0.156秒timeout，23項相關測試GREEN。此為內部呼叫參數邊界修正；將重新建置、回歸及量測最終runtime，a12ba03資料保留為前一cohort。
+
+- 最終全套在late-member測試遇到一次kernel觀察時序差異：runner已完成group清理後，單次waitid尚未給出exit；診斷當下proc_pidinfo沒有資料、getpgid為-1，50ms後同一reservation的waitid回報exited。測試改為在任何fixture清理訊號前，有界0.3秒等待真exit事件，並核對最終SIGKILL狀態。五次獨立重跑GREEN，移除repeat-KILL仍能抓到真正存活的late member；還原後ownership family通過。沒有改產品retirement或忽略失敗。

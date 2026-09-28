@@ -56,7 +56,19 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
         // Member has its own local spawn reservation. Cleanup never uses a PID
         // obtained from ps or a worker reply, even if the assertion is RED.
         let member = state.member
-        let memberExited = (try? member?.observe()) == .exited
+        // Darwin can remove the process from group/proc snapshots before the
+        // parent's WEXITED observation becomes available. Observe boundedly,
+        // before sending any fixture cleanup signal, rather than assuming both
+        // kernel views become visible in the same scheduler turn.
+        var memberExited = false
+        var observationFailure: String?
+        let observationDeadline = ProcessInfo.processInfo.systemUptime + 0.3
+        while let member, ProcessInfo.processInfo.systemUptime < observationDeadline {
+            do {
+                if try member.observe() == .exited { memberExited = true; break }
+            } catch { observationFailure = String(describing: error); break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
         let memberCleanup = member?.retire()
         let cleanup = await runner.shutdown()
         XCTAssertNil(state.failure)
@@ -64,8 +76,12 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(result.stdout, Data("started\n".utf8))
         XCTAssertTrue(result.failure?.contains("timed out") == true)
         XCTAssertFalse(result.failure?.contains("pending") == true)
+        XCTAssertNil(observationFailure)
         XCTAssertTrue(memberExited, "A late member survived the one-shot runner's retirement")
-        if let memberCleanup { guard case .reaped = memberCleanup else { return XCTFail("Owned fixture member was not reaped") } }
+        if let memberCleanup {
+            guard case .reaped(let status) = memberCleanup else { return XCTFail("Owned fixture member was not reaped") }
+            XCTAssertEqual(status & 0x7f, SIGKILL, "The late member must have been terminated, not completed naturally")
+        }
         XCTAssertNil(cleanup)
     }
 
