@@ -1075,6 +1075,71 @@ safari-browser wait --for-url "/dashboard" --url plaud
 safari-browser wait --js "window.loaded" --document 2
 ```
 
+### Automatic command pacing
+
+Automatic spacing is **off by default**. Enable it in the calling environment
+to add one bounded Cauchy delay after each ordinary command, including each
+executed `exec` step:
+
+```bash
+export SAFARI_BROWSER_PACING=cauchy
+safari-browser exec --script steps.json
+
+# Disable for just this invocation, including any exec children.
+SAFARI_BROWSER_PACING=off safari-browser documents
+
+# Change the bounds and truncated median (milliseconds).
+SAFARI_BROWSER_PACING_MIN_MS=1500 SAFARI_BROWSER_PACING_MAX_MS=20000 \
+  SAFARI_BROWSER_PACING_MEDIAN_MS=4000 safari-browser exec --script steps.json
+
+# Disable for later invocations.
+unset SAFARI_BROWSER_PACING
+```
+
+| Environment variable | Default / meaning |
+|---|---|
+| `SAFARI_BROWSER_PACING` | Unset, empty, or `off`: disabled; `cauchy`: enabled. Other values are errors. |
+| `SAFARI_BROWSER_PACING_MIN_MS` | 2000 ms |
+| `SAFARI_BROWSER_PACING_MAX_MS` | 60000 ms; at most 3600000 ms (one hour) |
+| `SAFARI_BROWSER_PACING_MEDIAN_MS` | 3000 ms, strictly between the bounds |
+| `SAFARI_BROWSER_PACING_SCALE_MS` | 0.8 times the distance from the median to the nearer bound |
+
+The parameters use the same distribution, representability checks, and
+nearly-fixed warning as `wait --jitter`. There is no global seed or
+`allow-long-wait` setting. When pacing is disabled, its numeric parameters are
+ignored, so a single `off` override also disables inherited invalid settings.
+Enabled settings and the draw are checked before the operation executes.
+
+Successful commands and runtime failures both wait once; after a completed
+wait, their output and exit status remain unchanged. Help, root and command-group usage, parser
+errors, explicit `wait`, daemon management commands, and long-lived hosts do
+not gain an extra wait. Hidden MCP wrappers pace their eligible inner command
+once. An `exec` container does not add another wait after its batch, and
+conditionally skipped steps do not wait.
+
+Command completion and command-duration traces include the wait; MCP responses
+and buffered output can therefore arrive after it. Tab switching and new-tab
+actions are ordinary paced operations.
+
+With pacing enabled, `exec` chooses its existing subprocess-per-step path
+before sending any batch RPC. Each child still has ordinary daemon routing,
+but this mode pays per-step process/connection overhead instead of using the
+single `exec.runScript` optimization. `off` restores the original batch path.
+No transmitted batch is retried to change its pacing mode.
+
+MCP hosts inherit pacing from their launch environment; restart a host to
+change it. The existing tool timeout includes all pacing waits and is not
+extended automatically. Budget command execution **plus the configured maximum
+delay**, and for an `exec` batch include every eligible step. For example,
+`SAFARI_BROWSER_PACING=cauchy safari-browser mcp --timeout=90` leaves room for
+one default maximum delay plus command execution; longer batches need their
+own budget. A timeout or cancellation during pacing can happen after effects
+already occurred; it does not undo or replay the operation. Existing OS signal
+handling is unchanged.
+
+This is per-caller spacing, not a shared rate limiter for concurrent processes,
+and it does not guarantee avoidance of remote anti-bot measures.
+
 ### Storage
 
 ```bash
