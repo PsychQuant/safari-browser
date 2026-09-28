@@ -1117,6 +1117,10 @@ not gain an extra wait. Hidden MCP wrappers pace their eligible inner command
 once. An `exec` container does not add another wait after its batch, and
 conditionally skipped steps do not wait.
 
+Command completion and command-duration traces include the wait; MCP responses
+and buffered output can therefore arrive after it. Tab switching and new-tab
+actions are ordinary paced operations.
+
 With pacing enabled, `exec` chooses its existing subprocess-per-step path
 before sending any batch RPC. Each child still has ordinary daemon routing,
 but this mode pays per-step process/connection overhead instead of using the

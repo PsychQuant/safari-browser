@@ -22,7 +22,7 @@
 
 在 `CLIExecution` 提供共用「執行已解析command」helper，一般execute與`MCPWorkerCommand`的inner command都使用它。helper負責sync/async command一致性與pacing；不得遞迴呼叫會轉成exit code的完整execute，避免診斷印兩次或吞掉原始error。
 
-分類：普通public leaf會等待；`ExecCommand`只建立／傳遞政策而不在整批後等待；`WaitCommand`、所有daemon管理leaf、MCP host、root/help、非leaf命令群組與hidden wrapper不等。ArgumentParser解析／validate錯誤發生在helper之前；內建HelpCommand由保留commandName `help`識別並排除，兩者都不解析pacing。hidden wrapper不等，但其inner普通command會等一次。TaskLocal只保存本次命令的政策，作用域結束即還原，不讓persistent呼叫互相污染。
+分類：普通public leaf會等待；`ExecCommand`只建立／傳遞政策而不在整批後等待；`WaitCommand`、所有daemon管理leaf、MCP host、root/help、非leaf命令群組與hidden wrapper不等。內部角色以明確型別辨認，不以`shouldDisplay`代替；`TabSwitchCommand`雖因預設子命令而在help中隱藏，仍須驗設定並等待。ArgumentParser解析／validate錯誤發生在helper之前；內建HelpCommand由保留commandName `help`識別並排除，兩者都不解析pacing。hidden wrapper不等，但其inner普通command會等一次。TaskLocal只保存本次命令的政策，作用域結束即還原，不讓persistent呼叫互相污染。
 
 ### paced exec預選逐步分派
 

@@ -92,6 +92,36 @@ final class CommandPacingBoundaryTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    func testHiddenDefaultTabActionsArePacedAndValidatedBeforeEffects() async throws {
+        for arguments in [["tab", "2"], ["tab", "new"], ["tab", "switch", "3"]] {
+            XCTAssertTrue(try SafariBrowser.parseAsRoot(arguments) is TabSwitchCommand)
+        }
+        // No profile is supplied. The real TabSwitchCommand rejects this
+        // number in run() before any Safari bridge call, so no operation stub
+        // or browser interaction is needed to verify the hidden default leaf.
+        for arguments in [["tab", "notanumber"], ["tab", "switch", "notanumber"]] {
+            let command = try SafariBrowser.parseAsRoot(arguments)
+            var sleeps = 0
+            do {
+                try await CLIExecution.runParsed(command, environment: ["SAFARI_BROWSER_PACING": "owned-invalid-mode"],
+                    sleep: { _ in sleeps += 1 })
+                XCTFail("Invalid policy must reject before tab's runtime validation")
+            } catch {
+                XCTAssertTrue(SafariBrowser.message(for: error).contains("SAFARI_BROWSER_PACING"))
+                XCTAssertFalse(SafariBrowser.message(for: error).contains("Expected a tab number"))
+            }
+            XCTAssertEqual(sleeps, 0)
+            do {
+                try await CLIExecution.runParsed(command, environment: enabled, sleep: { _ in sleeps += 1 })
+                XCTFail("The original tab runtime error must propagate")
+            } catch {
+                XCTAssertTrue(SafariBrowser.message(for: error).contains("Expected a tab number or 'new'"))
+            }
+            XCTAssertEqual(sleeps, 1)
+            XCTAssertNil(CommandPacing.currentEnabled)
+        }
+    }
+
     func testOneShotWrapperUsesSuppliedEnvironmentAndSleepsExactlyOnce() async throws {
         var wrapper = MCPWorkerCommand()
         wrapper.arguments = ["history", "--limit", "0"]

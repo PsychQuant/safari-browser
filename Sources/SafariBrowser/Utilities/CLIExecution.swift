@@ -71,7 +71,10 @@ enum CLIExecution {
         let configuration = type(of: command).configuration
         // ArgumentParser returns its internal HelpCommand from parseAsRoot;
         // its reserved public name identifies it without a private type cast.
-        let exempt = !configuration.shouldDisplay || configuration.commandName == "help"
+        // Visibility is not an execution role: tab's public default action is
+        // hidden from help. Exempt only the actual internal hosts/wrapper.
+        let exempt = configuration.commandName == "help"
+            || command is MCPWorkerCommand || command is MCPSupervisorCommand || command is MCPPersistentWorkerCommand
             || !configuration.subcommands.isEmpty
             || command is SafariBrowser || command is WaitCommand || command is MCPCommand
             || command is DaemonCommand || command is DaemonStartCommand || command is DaemonStopCommand

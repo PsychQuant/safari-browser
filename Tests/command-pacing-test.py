@@ -78,6 +78,23 @@ class OwnedBatchDaemon:
 
 
 class CommandPacingTests(unittest.TestCase):
+    def test_hidden_default_tab_runtime_failure_is_paced(self):
+        # Without --profile, this runtime-invalid number is rejected before
+        # any Safari call. It exercises the real hidden default leaf safely.
+        with tempfile.TemporaryDirectory(prefix='sb-pace-', dir='/tmp') as directory:
+            for arguments in [['tab', 'notanumber'], ['tab', 'switch', 'notanumber']]:
+                with self.subTest(arguments=arguments):
+                    invalid = subprocess.run([BIN] + arguments, env=environment(directory, 'owned-invalid-mode'),
+                                             capture_output=True, timeout=5)
+                    self.assertEqual(invalid.returncode, 64)
+                    self.assertIn(b'SAFARI_BROWSER_PACING', invalid.stderr)
+                    self.assertNotIn(b'Expected a tab number', invalid.stderr)
+                    start = time.monotonic()
+                    result = subprocess.run([BIN] + arguments, env=environment(directory), capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 64)
+                    self.assertIn(b"Expected a tab number or 'new'", result.stderr)
+                    self.assertGreaterEqual(time.monotonic() - start, .07)
+
     def test_paced_exec_selects_steps_before_any_batch_rpc(self):
         with tempfile.TemporaryDirectory(prefix='sb-pace-', dir='/tmp') as directory:
             missing = str(Path(directory, 'owned-does-not-exist.js'))

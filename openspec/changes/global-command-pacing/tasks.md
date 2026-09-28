@@ -5,7 +5,7 @@
 
 ## 2. 共用命令邊界與單次等待
 
-- [x] 2.1 為Explicit exemptions and wrapper ownership及Consistent callers and documented scope建立行為RED及受保護分支的Regression測試：普通sync／async command、Exec容器、Wait、daemon管理、host、hidden wrapper／inner、help／parse error以及persistent政策作用域還原。
+- [x] 2.1 為Explicit exemptions and wrapper ownership及Consistent callers and documented scope建立行為RED及受保護分支的Regression測試：普通sync／async command、hidden預設TabSwitch操作、Exec容器、Wait、daemon管理、host、hidden wrapper／inner、help／parse error以及persistent政策作用域還原。
 - [x] 2.2 在CLIExecution加入共用已解析命令執行helper，接上一般execute與MCPWorkerCommand的inner路徑；保留image／遞迴驗證、diagnostic與trace作用域，實現共用命令邊界與單次等待；以2.1分類、次數與作用域測試轉GREEN驗收。
 - [x] 2.3 針對「錯誤與取消保留執行結果」與Cancellation never replays an operation完成RED/GREEN與變異：operation前取消零副作用、成功後sleep取消的固定非零診斷、原runtime error優先、取消不延長MCPdeadline且不重跑operation。
 
