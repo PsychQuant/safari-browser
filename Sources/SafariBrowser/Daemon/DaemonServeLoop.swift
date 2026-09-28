@@ -84,6 +84,8 @@ enum DaemonServeLoop {
             try await Task.sleep(for: .seconds(10))
         }
         var didInstallShutdownHook: @Sendable (@escaping @Sendable () async -> Void) -> Void = { _ in }
+        var afterLogWriteAttempt: @Sendable (String) -> Void = { _ in }
+        var didCloseLog: @Sendable () -> Void = {}
     }
 
     /// All mutable Run state stays on this actor. Startup and teardown tasks
@@ -102,7 +104,7 @@ enum DaemonServeLoop {
             let lifecycle: LifecycleEnvironment
             var phase: Phase = .starting
             var pidIdentity: DaemonPaths.EntryIdentity?
-            var logHandle: FileHandle?
+            var logFile: DaemonLogFile?
             var startupTask: Task<Void, Error>?
             var teardownTask: Task<Void, Never>?
             var watchdogTask: Task<Void, Never>?
@@ -214,18 +216,14 @@ enum DaemonServeLoop {
 
             let logFull = DaemonLog.isFullLoggingEnabled(env: env)
             DaemonLog.emitFullLogWarningIfNeeded(env: env, writer: stderrWriter)
-            if let logPath {
-                if !FileManager.default.fileExists(atPath: logPath) {
-                    FileManager.default.createFile(atPath: logPath, contents: nil, attributes: [.posixPermissions: 0o600])
-                }
-                if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath)) {
-                    _ = try? handle.seekToEnd()
-                    run.logHandle = handle
-                    await underlying.setLogWriter({ entry in
-                        try? handle.write(contentsOf: Data(entry.utf8))
-                    }, logFull: logFull)
-                    try requireStarting(id)
-                }
+            if let logPath, let file = DaemonLogFile(path: logPath, onClose: run.lifecycle.didCloseLog) {
+                run.logFile = file
+                let observe = run.lifecycle.afterLogWriteAttempt
+                await underlying.setLogWriter({ entry in
+                    file.write(entry)
+                    observe(entry)
+                }, logFull: logFull)
+                try requireStarting(id)
             }
             await DaemonDispatch.registerPhase1Handlers(on: underlying, cache: cache)
             try requireStarting(id)
@@ -290,8 +288,10 @@ enum DaemonServeLoop {
             await underlying.setLogWriter(nil)
             run.pidIdentity?.removeIfMatches(at: run.pidPath)
             run.pidIdentity = nil
-            try? run.logHandle?.close()
-            run.logHandle = nil
+            // Captured request/diagnostic writers keep this old Run's append
+            // sink alive until they retire. Stop releases only its own owner;
+            // it never waits for a blocked writer or closes its live descriptor.
+            run.logFile = nil
             run.watchdogTask = nil
             run.startupTask = nil
             run.phase = .stopped

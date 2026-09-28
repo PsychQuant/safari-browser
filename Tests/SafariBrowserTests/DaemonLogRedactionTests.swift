@@ -219,6 +219,7 @@ final class DaemonLogRedactionTests: XCTestCase {
     func testFormatEntry_includesRequestMetadata() {
         let line = DaemonLog.formatEntry(
             timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            requestToken: UUID(uuidString: "00000000-0000-0000-0000-000000000205")!,
             method: "applescript.execute",
             requestId: 42,
             durationMs: 123,
@@ -237,6 +238,7 @@ final class DaemonLogRedactionTests: XCTestCase {
     func testFormatEntry_errorReplacesResult() {
         let line = DaemonLog.formatEntry(
             timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+            requestToken: UUID(uuidString: "00000000-0000-0000-0000-000000000205")!,
             method: "applescript.execute",
             requestId: 7,
             durationMs: 5,
@@ -282,12 +284,21 @@ final class DaemonLogRedactionTests: XCTestCase {
         let body = #"{"method":"applescript.execute","params":{"source":"tell application \"Safari\" to return name"},"requestId":99}"#
         _ = try sendRawRequestSync(path: socketPath, body: body)
 
-        // Allow the async writer task to drain.
-        try await Task.sleep(for: .milliseconds(100))
+        // The candidate is produced after reply selection. Wait for evidence,
+        // not a fixed scheduling delay, before checking both records.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await capture.snapshot().count < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
         let captured = await capture.snapshot()
-        XCTAssertEqual(captured.count, 1, "expected one log entry")
-        let line = captured[0]
-        XCTAssertFalse(line.contains("tell application"),
+        XCTAssertEqual(captured.count, 2, "one prepared payload plus one original candidate")
+        let payloads = captured.filter { line in
+            let object = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any]
+            return object?["event"] as? String == "request_response_prepared"
+        }
+        XCTAssertEqual(payloads.count, 1)
+        let line = try XCTUnwrap(payloads.first)
+        XCTAssertFalse(captured.joined().contains("tell application"),
                        "raw source must NOT appear in captured log: \(line)")
         XCTAssertTrue(line.contains("<redacted"),
                       "redaction marker must appear: \(line)")

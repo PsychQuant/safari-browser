@@ -334,6 +334,8 @@ enum DaemonServer {
     struct ConnectionObservation: Sendable {
         var beforeRead: @Sendable () -> Void = {}
         var beforeDispatch: @Sendable () async -> Void = {}
+        var beforeOperation: @Sendable () async -> Void = {}
+        var beforeShutdownHandoff: @Sendable () async -> Void = {}
         var didFinish: @Sendable () -> Void = {}
     }
 
@@ -367,7 +369,8 @@ enum DaemonServer {
         private var operations: [UUID: Task<Void, Never>] = [:]
 
         /// Section 3 of `daemon-security-hardening` — optional log writer
-        /// fed one redacted/truncated JSON-line per request. When `nil`
+        /// fed a prepared payload record and bounded outcome metadata for
+        /// each admitted request. When `nil`
         /// (default) the daemon emits no log; production wiring sets this
         /// at start-up via `setLogWriter(_:)`. The `logFull` flag flips
         /// off redaction entirely for `SAFARI_BROWSER_DAEMON_LOG_FULL=1`
@@ -444,8 +447,9 @@ enum DaemonServer {
             handlers[method] = handler
         }
 
-        /// Install a log writer that receives one redacted JSON-line per
-        /// dispatched request. Pass `nil` to disable. The `logFull` flag
+        /// Install a writer for prepared payload and outcome JSON-lines.
+        /// Consumers distinguish records by event and correlate requestToken.
+        /// Pass `nil` to disable. The `logFull` flag
         /// disables redaction for `SAFARI_BROWSER_DAEMON_LOG_FULL=1`
         /// local-debugging sessions; default is `false` so no contributor
         /// can accidentally turn on raw logging without setting the env.
@@ -620,17 +624,19 @@ enum DaemonServer {
 
         /// Read-only fixture seam for the final handoff after a valid shutdown
         /// plan was captured. It invokes the same guarded completion as the RPC.
-        func capturedShutdownCompletionForTesting() -> @Sendable () async -> Void {
+        func capturedShutdownCompletionForTesting() -> @Sendable () async -> DaemonLog.ShutdownHandoff {
             let context = ShutdownContext(generation: shutdownGeneration, hook: shutdownHook)
             return { await self.completeShutdown(context) }
         }
 
-        private func completeShutdown(_ context: ShutdownContext) async {
-            guard context.generation == shutdownGeneration else { return }
+        private func completeShutdown(_ context: ShutdownContext) async -> DaemonLog.ShutdownHandoff {
+            guard context.generation == shutdownGeneration else { return .rejected }
             if let hook = context.hook {
                 await hook()
+                return .hookReturned
             } else {
                 cleanListener(cancelAcceptTask: true)
+                return .instanceStopped
             }
         }
 
@@ -880,12 +886,23 @@ enum DaemonServer {
             let handler = handlers[request.method]
             let shutdown = record.shutdown
             operations[work.id] = Task.detached(priority: .userInitiated) {
+                await self.connectionObservation.beforeOperation()
                 if Task.isCancelled {
                     work.result.cancel()
+                    Self.emitCandidateLog(work, outcome: .cancelled, selection: .notOffered)
                 } else {
-                    let reply = await Self.executeRequest(work, handler: handler,
-                                                          instance: self, shutdown: shutdown)
-                    work.result.complete(reply)
+                    let candidate = await Self.executeAndOffer(work, handler: handler,
+                                                               instance: self, shutdown: shutdown)
+                    // Keep only fixed metadata across a potentially blocking
+                    // writer, not an additional local copy of the response frame.
+                    Self.emitCandidateLog(work, outcome: candidate.outcome, selection: candidate.selection)
+                    if candidate.hasHandoff, let writer = work.log.writer {
+                        // Stop cancels this task, but must not erase a handoff
+                        // that the transport still completes. Only fixed metadata
+                        // crosses this wait; the original operation owns logging.
+                        let outcome = await work.handoff.wait()
+                        writer(DaemonLog.formatShutdownHandoff(timestamp: Date(), requestToken: work.id, outcome: outcome))
+                    }
                 }
                 await self.finishOperation(work.id)
             }
@@ -1116,9 +1133,42 @@ enum DaemonServer {
 
         private struct Reply: Sendable {
             let bytes: Data
+            let outcome: DaemonLog.ResponseOutcome
             var deadline: ContinuousClock.Instant? = nil
             var shutdown: ShutdownPlan? = nil
             var closesConnection = false
+        }
+
+        /// One selected shutdown plan has one producer and one observer.
+        /// Deliberately ignores Task cancellation: normal stop cancels the
+        /// operation before the transport reports its final guarded handoff.
+        /// This stores no response payload and creates no additional task.
+        private final class HandoffObservation: @unchecked Sendable {
+            private let lock = NSLock()
+            private var outcome: DaemonLog.ShutdownHandoff?
+            private var waiter: CheckedContinuation<DaemonLog.ShutdownHandoff, Never>?
+
+            func complete(_ value: DaemonLog.ShutdownHandoff) {
+                let pending = lock.withLock { () -> CheckedContinuation<DaemonLog.ShutdownHandoff, Never>? in
+                    guard outcome == nil else { return nil }
+                    outcome = value
+                    defer { waiter = nil }
+                    return waiter
+                }
+                pending?.resume(returning: value)
+            }
+
+            func wait() async -> DaemonLog.ShutdownHandoff {
+                await withCheckedContinuation { continuation in
+                    let ready = lock.withLock { () -> DaemonLog.ShutdownHandoff? in
+                        if let outcome { return outcome }
+                        precondition(waiter == nil, "handoff observation has one consumer")
+                        waiter = continuation
+                        return nil
+                    }
+                    if let ready { continuation.resume(returning: ready) }
+                }
+            }
         }
 
         private final class RequestWork: Sendable {
@@ -1128,6 +1178,7 @@ enum DaemonServer {
             let log: LogSnapshot
             let result = DaemonRequestCompletion<Reply>()
             let replyFinished = DaemonRequestCompletion<Bool>()
+            let handoff = HandoffObservation()
             init(connectionID: UUID, request: ParsedRequest, log: LogSnapshot) {
                 self.connectionID = connectionID
                 self.request = request
@@ -1184,7 +1235,11 @@ enum DaemonServer {
                 if let plan = reply.shutdown {
                     // An authorized shutdown continues even if its ACK could not
                     // be delivered. The plan has independent generation checks.
-                    await performShutdown(plan, instance: instance)
+                    await instance.connectionObservation.beforeShutdownHandoff()
+                    let outcome = await performShutdown(plan, instance: instance)
+                    // Transport ownership ends independently of the logger.
+                    // The tracked original operation writes this fixed outcome.
+                    work.handoff.complete(outcome)
                     return nil
                 }
                 if !sent || reply.closesConnection { return nil }
@@ -1204,7 +1259,15 @@ enum DaemonServer {
 
         private static func cancelledReply(_ work: RequestWork) -> Reply {
             Reply(bytes: encodeErrorRaw(requestIdJSON: work.request.requestIdJSON, code: .cancelled,
-                                        message: "daemon run stopped before request completion"), closesConnection: true)
+                                        message: "daemon run stopped before request completion"), outcome: .cancelled, closesConnection: true)
+        }
+
+        private static func executeAndOffer(
+            _ work: RequestWork, handler: MethodHandler?, instance: Instance, shutdown: ShutdownContext
+        ) async -> (outcome: DaemonLog.ResponseOutcome, selection: DaemonLog.CandidateSelection, hasHandoff: Bool) {
+            let reply = await executeRequest(work, handler: handler, instance: instance, shutdown: shutdown)
+            let selected = work.result.complete(reply)
+            return (reply.outcome, selected ? .selected : .notSelected, selected && reply.shutdown != nil)
         }
 
         private static func executeRequest(
@@ -1214,18 +1277,18 @@ enum DaemonServer {
             let requestId = try? JSONSerialization.jsonObject(with: request.requestIdJSON, options: [.fragmentsAllowed])
             if let rejection = request.rejection {
                 emitLog(work, result: nil, error: "parseError")
-                return Reply(bytes: encodeError(requestId: requestId, code: rejection.code, message: rejection.message))
+                return Reply(bytes: encodeError(requestId: requestId, code: rejection.code, message: rejection.message), outcome: .parseError)
             }
             if let lifecycle = LifecycleMethod(rawValue: request.method) {
                 switch lifecycle {
                 case .status:
                     guard let data = await instance.statusResponse(for: work) else { return cancelledReply(work) }
                     emitLog(work, result: data, error: nil)
-                    return Reply(bytes: encodeResult(requestId: requestId, resultData: data))
+                    return Reply(bytes: encodeResult(requestId: requestId, resultData: data), outcome: .result)
                 case .shutdown:
                     emitLog(work, result: Data("{}".utf8), error: nil)
                     guard let candidates = await instance.prepareShutdown(shutdown) else { return cancelledReply(work) }
-                    return Reply(bytes: encodeResult(requestId: requestId, resultData: Data("{}".utf8)),
+                    return Reply(bytes: encodeResult(requestId: requestId, resultData: Data("{}".utf8)), outcome: .result,
                                  deadline: ContinuousClock.now.advanced(by: .milliseconds(250)),
                                  shutdown: ShutdownPlan(context: shutdown, candidates: candidates, caller: work.connectionID))
                 }
@@ -1233,7 +1296,7 @@ enum DaemonServer {
             guard let handler else {
                 emitLog(work, result: nil, error: "methodNotFound")
                 return Reply(bytes: encodeError(requestId: requestId, code: .methodNotFound,
-                                                message: "no handler: \(request.method)"))
+                                                message: "no handler: \(request.method)"), outcome: .methodNotFound)
             }
             let context = DaemonRequestContext()
             do {
@@ -1245,24 +1308,24 @@ enum DaemonServer {
                 }
                 let response = encodeResult(requestId: requestId, resultData: result, diagnostics: context.diagnostics)
                 emitLog(work, result: result, error: nil)
-                return Reply(bytes: response)
+                return Reply(bytes: response, outcome: .result)
             } catch {
                 let response = encodeError(requestId: requestId, code: .handlerError, message: "\(error)",
                                            diagnostics: context.diagnostics, timing: context.errorTiming)
                 emitLog(work, result: nil, error: "\(error)")
-                return Reply(bytes: response)
+                return Reply(bytes: response, outcome: .handlerError)
             }
         }
 
-        private static func performShutdown(_ plan: ShutdownPlan, instance: Instance) async {
-            guard await instance.ownsShutdown(plan.context) else { return }
+        private static func performShutdown(_ plan: ShutdownPlan, instance: Instance) async -> DaemonLog.ShutdownHandoff {
+            guard await instance.ownsShutdown(plan.context) else { return .rejected }
             let deadline = ContinuousClock.now.advanced(by: .milliseconds(250))
             for slot in plan.candidates where slot.connectionID != plan.caller {
                 guard ContinuousClock.now < deadline else { break }
                 guard let work = await instance.cancellationTarget(slot, context: plan.context) else { continue }
                 let frame = encodeErrorRaw(requestIdJSON: slot.requestIdJSON, code: .cancelled,
                                            message: "cancelled by daemon shutdown")
-                let reply = Reply(bytes: frame, deadline: deadline, closesConnection: true)
+                let reply = Reply(bytes: frame, outcome: .cancelled, deadline: deadline, closesConnection: true)
                 guard await instance.offerCancellation(reply, to: work, context: plan.context) else { continue }
                 let timer = Task.detached {
                     do { try await ContinuousClock().sleep(until: deadline) } catch { return }
@@ -1272,7 +1335,14 @@ enum DaemonServer {
                 _ = await work.replyFinished.wait()
                 timer.cancel()
             }
-            await instance.completeShutdown(plan.context)
+            return await instance.completeShutdown(plan.context)
+        }
+
+        private static func emitCandidateLog(
+            _ work: RequestWork, outcome: DaemonLog.ResponseOutcome, selection: DaemonLog.CandidateSelection
+        ) {
+            work.log.writer?(DaemonLog.formatResponseCandidate(timestamp: Date(), requestToken: work.id,
+                                                              outcome: outcome, selection: selection))
         }
 
         /// The writer and privacy mode belong to the admitted request. A late
@@ -1286,7 +1356,7 @@ enum DaemonServer {
             let resultLog = result.flatMap {
                 String(data: DaemonLog.truncateResult(resultJSON: $0, logFull: work.log.full), encoding: .utf8)
             }
-            writer(DaemonLog.formatEntry(timestamp: request.started, method: request.method, requestId: requestId,
+            writer(DaemonLog.formatEntry(timestamp: request.started, requestToken: work.id, method: request.method, requestId: requestId,
                                         durationMs: Int(Date().timeIntervalSince(request.started) * 1000),
                                         paramsLog: params, resultLog: resultLog, errorLog: error))
         }
