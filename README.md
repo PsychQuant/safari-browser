@@ -642,8 +642,10 @@ a changed window or forced refresh after that allowance is spent returns
 original error when no fresh evidence remains. Other commands retain their
 existing refresh behavior. The daemon's in-process `exec` JS dispatcher currently
 bypasses this subcommand wrapper and retains its original refresh policy.
-Policy-skipped checks do not add an incomplete-inspection warning; debug mode
-labels them `skipped: invocation limit`. The underlying state remains `unprobed`.
+Checks skipped because the single-probe allowance was spent do not add an
+incomplete-inspection warning; debug mode labels them `skipped: invocation limit`.
+The underlying state remains `unprobed`. Time-budget exhaustion and genuinely
+incomplete probes retain their existing warning behavior.
 `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1` prints per-probe costs; the e2e harness
 asserts their per-command sum stays within 200 ms.
 

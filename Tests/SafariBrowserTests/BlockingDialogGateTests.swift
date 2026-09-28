@@ -387,6 +387,49 @@ final class BlockingDialogGateTests: XCTestCase {
         }
     }
 
+    func testPolicySkipLeavesLaterRealProbeWarningsAvailable() async {
+        let outcomes: [BlockingDialogState] = [.unprobed, .accessibilityDenied, .present(sample)]
+        for outcome in outcomes {
+            var clock: TimeInterval = 100
+            var observed: BlockingDialogState = .clear
+            let calls = Counter()
+            let (gate, stderr) = makeGate(probe: { _ in calls.increment(); return observed }, now: { clock })
+            await BlockingDialogGate.withSingleProbe {
+                XCTAssertEqual(gate.check(.id(1)), .clear)
+                clock += 2.1
+                XCTAssertEqual(gate.check(.id(1)), .unprobed)
+            }
+            XCTAssertTrue(stderr.lines.isEmpty)
+            observed = outcome
+            XCTAssertEqual(gate.check(.id(2)), outcome)
+            XCTAssertEqual(calls.value, 2)
+            XCTAssertEqual(stderr.lines.count, 1, "a skipped check must not consume the later real-warning flag")
+            guard let warning = stderr.lines.first else { continue }
+            switch outcome {
+            case .unprobed: XCTAssertTrue(warning.contains("could not inspect"))
+            case .accessibilityDenied: XCTAssertTrue(warning.contains("Accessibility"))
+            case .present: XCTAssertTrue(warning.contains("BLOCKING DIALOG"))
+            case .clear: XCTFail("unreachable fixture")
+            }
+        }
+    }
+
+    func testTimeBudgetExhaustionStillWarnsAndIsNotInvocationLimit() {
+        var clock: TimeInterval = 100
+        let calls = Counter()
+        let (gate, stderr) = makeGate(probe: { _ in
+            calls.increment()
+            clock += 0.1
+            return .clear
+        }, environment: [BlockingDialogGate.debugVariable: "1"], now: { clock })
+        XCTAssertEqual(gate.check(.id(1)), .clear)
+        XCTAssertEqual(gate.check(.id(2)), .clear)
+        XCTAssertEqual(gate.check(.id(3)), .unprobed)
+        XCTAssertEqual(calls.value, 2)
+        XCTAssertEqual(stderr.lines.filter { $0.contains("could not inspect") }.count, 1)
+        XCTAssertFalse(stderr.lines.contains { $0.contains("invocation limit") })
+    }
+
     func testSingleProbeForceRefreshInvalidatesCachedClearWithoutAnotherProbe() async {
         let calls = Counter()
         let (gate, _) = makeGate(probe: { _ in calls.increment(); return .clear })
