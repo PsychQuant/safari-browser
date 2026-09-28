@@ -46,7 +46,7 @@ final class DaemonRequestLimitCodecTests: XCTestCase {
     }
 
     func testMalformedVersionDoesNotBecomeValidWithLimit() {
-        for replacement in ["\"dirty\":1", "\"dirty\":null", "\"dirty\":\"false\""] {
+        for replacement in ["\"dirty\":0", "\"dirty\":1", "\"dirty\":null", "\"dirty\":\"false\""] {
             let invalid = String(decoding: header("\"1024\""), as: UTF8.self)
                 .replacingOccurrences(of: "\"dirty\":false", with: replacement)
             XCTAssertNil(DaemonProtocol.decodeHandshake(Data(invalid.utf8)))

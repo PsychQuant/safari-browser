@@ -30,7 +30,7 @@ DaemonClient.exchange 在既有握手、版本檢查後，照原方式編碼 met
 - API：DaemonProtocol.Handshake 含 version 與可選 maxRequestLineBytes；decodeHandshake 回傳有效物件或 nil。encodeHandshake 支援可選上限。舊 version-only decoder 不修改。
 - Client：版本相符後先編碼，再比較；超量零寫入、handler 次數零、router fallback 次數零。邊界相等正常送出並執行一次。
 - 驗收：codec scalar 表格、新舊 client／server handshake、精確邊界、escaping／Unicode／envelope overhead、自有 peer 實際收到 bytes、實際 server handler 與 router fallback counters，以及 legacy／誤報上限 peer 的送出後 unknown 分類。
-- 變更範圍：DaemonProtocol／DaemonClient／DaemonServer、對應測試、CLAUDE.md／CHANGELOG.md 與 persistent-daemon 規格。完整非 GUI 測試及六方審查後才能標 verified；本題不需要 Safari 前景操作。
+- 變更範圍：DaemonProtocol／DaemonClient／DaemonServer、對應 Swift 測試及 Tests/daemon-peer-disconnect-test.py 的空 exec fixture、CLAUDE.md／CHANGELOG.md 與 persistent-daemon 規格。完整非 GUI 測試及六方審查後才能標 verified；本題不需要 Safari 前景操作。
 
 ## Risks / Trade-offs
 

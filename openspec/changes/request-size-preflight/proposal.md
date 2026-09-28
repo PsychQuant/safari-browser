@@ -24,7 +24,7 @@
 
 ## Impact
 
-DaemonProtocol.swift、DaemonClient.swift、DaemonServer.swift；protocol／preflight／request bounds 測試；CLAUDE.md、CHANGELOG.md 與 persistent-daemon delta spec。
+DaemonProtocol.swift、DaemonClient.swift、DaemonServer.swift；protocol／preflight／request bounds 與 Tests/daemon-peer-disconnect-test.py 的 exec CLI 測試；CLAUDE.md、CHANGELOG.md 與 persistent-daemon delta spec。
 
 ## Evidence-driven revision
 

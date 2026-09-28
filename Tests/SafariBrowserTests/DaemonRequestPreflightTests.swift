@@ -126,7 +126,7 @@ final class DaemonRequestPreflightTests: XCTestCase {
     }
 
     func testMalformedAdvertisementsSendNoRequestBytes() async throws {
-        for scalar in ["null", "true", "false", "1024", "\"01\"", "1.5", "0", "-1", "9223372036854775808", "{}", "[]"] {
+        for scalar in ["null", "true", "false", "1024", "\"01\"", "\" 1\"", "\"١\"", "\"9223372036854775808\"", "1.5", "0", "-1", "9223372036854775808", "{}", "[]"] {
             let peer = try Peer(limitJSON: scalar)
             defer { peer.stop() }
             do {
@@ -147,6 +147,7 @@ final class DaemonRequestPreflightTests: XCTestCase {
         // changes do not affect these examples' encoded size.
         let cases = [
             (#"{}"#, #"{"method":"fixture.request","params":{},"requestId":7}"#),
+            (#"{ "value" : "\u53f0\u7063\n\"\\" }"#, #"{"method":"fixture.request","params":{"value":"台灣\n\"\\"},"requestId":7}"#),
             (#"{"value":"台灣\n\"\\"}"#, #"{"method":"fixture.request","params":{"value":"台灣\n\"\\"},"requestId":7}"#)
         ]
         for (paramsText, frameText) in cases {

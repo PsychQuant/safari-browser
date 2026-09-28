@@ -61,7 +61,7 @@ final class DaemonRequestBoundsTests: XCTestCase {
     }
 
     private func start(
-        limit: Int = DaemonServer.maxRequestLineBytes,
+        limit: Int? = nil,
         diagnosticClock: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
         diagnosticSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(500)) }
     ) async throws -> (DaemonServer.Instance, String, String) {
@@ -70,7 +70,12 @@ final class DaemonRequestBoundsTests: XCTestCase {
         directories.append(directory)
         let name = "owned"
         let path = DaemonClient.socketPath(dir: directory.path, name: name)
-        let server = DaemonServer.Instance(requestLineLimit: limit, diagnosticClock: diagnosticClock, diagnosticSleep: diagnosticSleep)
+        let server: DaemonServer.Instance
+        if let limit {
+            server = DaemonServer.Instance(requestLineLimit: limit, diagnosticClock: diagnosticClock, diagnosticSleep: diagnosticSleep)
+        } else {
+            server = DaemonServer.Instance(diagnosticClock: diagnosticClock, diagnosticSleep: diagnosticSleep)
+        }
         servers.append(server)
         try await server.start(socketPath: path)
         return (server, name, directory.path)
@@ -100,14 +105,14 @@ final class DaemonRequestBoundsTests: XCTestCase {
     }
 
     func testHandshakeAdvertisesActualReaderLimit() async throws {
-        for limit in [1024, DaemonServer.maxRequestLineBytes] {
+        for (limit, expected) in [(Int?(1024), "1024"), (nil, "134217728")] {
             let (_, name, directory) = try await start(limit: limit)
             let fd = try connect(name: name, directory: directory, consumeHandshake: false)
             defer { close(fd) }
             let data = try line(fd)
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
             let proto = try XCTUnwrap(object["protocol"] as? [String: Any])
-            XCTAssertEqual(proto["maxRequestLineBytes"] as? String, String(limit))
+            XCTAssertEqual(proto["maxRequestLineBytes"] as? String, expected)
             XCTAssertEqual(DaemonProtocol.decodeHandshakeVersion(data), DaemonProtocol.currentVersion)
         }
     }
@@ -324,6 +329,19 @@ final class DaemonRequestBoundsTests: XCTestCase {
             requestId: 7, timeout: 2, socketDir: directory)
         XCTAssertEqual(reply, Data("true".utf8))
         XCTAssertEqual(counter.value, 1)
+        // Adding one ASCII byte must cross the exact boundary; the actual
+        // encoded-byte diagnostic pins the independently constructed fixture.
+        let excess = try JSONSerialization.data(withJSONObject: ["source": source + "x"])
+        do {
+            _ = try await DaemonClient.sendRequest(name: name, method: "owned", params: excess,
+                requestId: 7, timeout: 2, socketDir: directory)
+            XCTFail("1025 bytes must exceed the advertised limit")
+        } catch let error as DaemonClient.Error {
+            guard case .requestTooLarge(let bytes, let limit) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(bytes, 1025)
+            XCTAssertEqual(limit, 1024)
+        }
+        XCTAssertEqual(counter.value, 1, "only the exactly-at-limit request dispatches")
     }
 
     func testCoalescedOversizedFrameDoesNotDispatchOrSkipToFollowingFrame() async throws {
