@@ -142,3 +142,5 @@ R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Ga
 - 精確kernel接納測試先抓到Foundation額外環境欄位導致的新邊界退化；改傳parent原始環境快照後，0及8192-byte padding的接受／拒絕相鄰邊界均通過。Python系統shim本身會再exec並改變邊界，已改用真正CLI的raw posix_spawn作獨立對照，未把shim失敗當產品缺陷。
 - environment-snapshot及post-allocation-deadline兩項有效變異都造成具名行為失敗並還原。還原後focused與MCP family 152 XCTest通過；public MCP persistent／isolated各14項通過。這不是全repository test-all，也不是新release benchmark。
 - 修正原runner的si_code判讀；但仍需4.3的stateful pending owner、late member重複清理及有界回收，不能宣稱#209完成。#172維持needs-fix、尚無新六方PASS。
+
+- 新監督架構下，actual worker 的SIGSTOP不再等於host直接child的SIGSTOP；另補自有不合作supervisor自行停止的測試，直接覆蓋host的leader判讀。退回si_pid-only變異會再次在期限前失敗；還原後MCPProcessRunner family 11項通過。這避免架構改變後原斷言失去對si_code修法的辨識力。

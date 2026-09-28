@@ -19,6 +19,20 @@ final class MCPProcessRunnerTests: XCTestCase, @unchecked Sendable {
                                     "A stopped event must not prematurely retire a live worker")
     }
 
+    func testStoppedSupervisorRetainsTheLeaderUntilTimeout() async {
+        // Deliberately non-cooperative helper fixture: it stops itself before
+        // interpreting bootstrap input. The host owns this direct-child leader.
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        let runner = MCPProcessRunner(executable: python, workerPrefix: ["-c"], supervisorExecutable: python, timeout: 1)
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = await runner.run(arguments: ["import os,signal; print('stopped-supervisor',flush=True); os.kill(os.getpid(),signal.SIGSTOP)"],
+                                      input: Data(), expectedImage: "fixture")
+        XCTAssertEqual(result.stdout, Data("stopped-supervisor\n".utf8))
+        XCTAssertTrue(result.failure?.contains("timed out") == true)
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - started, 0.8,
+                                    "A stopped group leader must remain reserved until timeout")
+    }
+
     func testSeparateStreamsStdinArgumentsAndContext() async {
         let script = "import os,sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); print(repr(sys.argv[1:]),file=sys.stderr); print(os.environ['SAFARI_BROWSER_MCP_DIRECT']+os.environ['SAFARI_BROWSER_MCP_IMAGE_ID'],file=sys.stderr); sys.exit(7)"
         let result = await fixture().run(arguments: [script, "--literal", "a b'\"$()"], input: Data([0, 10, 255]), expectedImage: "IMAGE")
