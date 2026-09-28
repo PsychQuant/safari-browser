@@ -602,9 +602,74 @@ def service_scenario(binary, kind, cold, timing, samples, warmups, timeout, work
                 report['workerIdentity'] = worker_identity(report['samples'])
 
 
-def benchmark(binary, *, samples, warmups, timeout, timing='both', live=False, mcp_worker_mode='both'):
+def interleaved_mcp_scenarios(binary, timing, samples, warmups, timeout):
+    """Compare two warm hosts with alternating pair order; never retry a failed mode."""
+    modes = ('isolated', 'persistent')
+    services, startup_errors = {}, {}
+    warmup_results = {mode: [] for mode in modes}
+    results = {mode: [] for mode in modes}
+    setup = {}
+    cleanup_failed = set()
+    with tempfile.TemporaryDirectory(prefix='sb-paired-', dir='/tmp') as directory:
+        try:
+            for mode in modes:
+                private = Path(directory, mode)
+                private.mkdir()
+                try:
+                    service = Service(binary, isolated_environment(str(private), timing), 'mcp', timeout, worker_mode=mode)
+                    services[mode] = service
+                    setup[mode] = service.setup_nanoseconds
+                except (OSError, ValueError, TimeoutError, TypeError) as error:
+                    services[mode] = None
+                    startup_errors[mode] = 'service_start_failed'
+                    if isinstance(error, ServiceCleanupError):
+                        cleanup_failed.add(mode)
+            for iteration in range(warmups + samples):
+                order = modes if iteration % 2 == 0 else tuple(reversed(modes))
+                for mode in order:
+                    service = services[mode]
+                    if service is None:
+                        result = failure(startup_errors.get(mode, 'service_unavailable'))
+                    else:
+                        try:
+                            if observe_exit(service.process) is not None:
+                                result = failure('service_unavailable')
+                            else:
+                                result = service.call_wait(time.monotonic() + timeout)
+                        except TimeoutError:
+                            result = failure('service_call_timeout', 'timeout')
+                        except (OSError, ValueError, TypeError):
+                            result = failure('service_observation_failed')
+                        if result['status'] != 'ok':
+                            if not service.close():
+                                cleanup_failed.add(mode)
+                                mark_cleanup_failed(result)
+                            services[mode] = None
+                    (warmup_results if iteration < warmups else results)[mode].append(result)
+        finally:
+            for mode, service in services.items():
+                if service is not None and not service.close():
+                    cleanup_failed.add(mode)
+    reports = []
+    for mode in modes:
+        row = {'name': f'mcp.{mode}.warm-host-wait', 'workerMode': mode,
+               'sampleOrder': 'alternating-AB-BA', 'timing': 'on' if timing else 'off',
+               'sampleCount': samples, 'warmupCount': warmups, 'warmups': warmup_results[mode],
+               'samples': results[mode], 'statistics': summarize(results[mode])}
+        if mode in setup:
+            row['serviceSetupNanoseconds'] = setup[mode]
+        if mode in cleanup_failed:
+            mark_cleanup_failed(row)
+        row['workerIdentity'] = worker_identity(row['samples'])
+        reports.append(row)
+    return reports
+
+
+def benchmark(binary, *, samples, warmups, timeout, timing='both', live=False, mcp_worker_mode='both', mcp_warm_order='sequential'):
     if mcp_worker_mode not in ('both', 'isolated', 'persistent'):
         raise ValueError('worker_mode')
+    if mcp_warm_order not in ('sequential', 'interleaved') or (mcp_warm_order == 'interleaved' and mcp_worker_mode != 'both'):
+        raise ValueError('worker_order')
     worker_modes = ['isolated', 'persistent'] if mcp_worker_mode == 'both' else [mcp_worker_mode]
     digest = hashlib.sha256()
     with open(binary, 'rb') as executable:
@@ -622,7 +687,7 @@ def benchmark(binary, *, samples, warmups, timeout, timing='both', live=False, m
             'quantiles': 'nearest-rank-successful-samples', 'spanDurations': 'inclusive-do-not-sum',
             'coldHostWall': 'startup-readiness-and-one-request-excludes-cleanup',
             'warmHostWall': 'one-request-excludes-host-startup',
-            'mcpWorkerModes': worker_modes, 'workerIdentitySource': 'successful-measured-command-traces'}, 'scenarios': []}
+            'mcpWorkerModes': worker_modes, 'mcpWarmOrder': mcp_warm_order, 'workerIdentitySource': 'successful-measured-command-traces'}, 'scenarios': []}
     for enabled in ([False, True] if timing == 'both' else [timing == 'on']):
         with tempfile.TemporaryDirectory(prefix='sb-bench-', dir='/tmp') as directory:
             env = isolated_environment(directory, enabled)
@@ -636,9 +701,11 @@ def benchmark(binary, *, samples, warmups, timeout, timing='both', live=False, m
         for cold in (True, False):
             report['scenarios'].append(service_scenario(binary, 'daemon', cold, enabled, samples, warmups, timeout))
         for worker_mode in worker_modes:
-            for cold in (True, False):
+            for cold in ((True,) if mcp_warm_order == 'interleaved' else (True, False)):
                 report['scenarios'].append(service_scenario(binary, 'mcp', cold, enabled, samples, warmups, timeout,
                                                             worker_mode=worker_mode))
+        if mcp_warm_order == 'interleaved':
+            report['scenarios'].extend(interleaved_mcp_scenarios(binary, enabled, samples, warmups, timeout))
         if live:
             report['scenarios'].extend(live_scenarios(binary, enabled, samples, warmups, timeout))
         else:
@@ -858,14 +925,18 @@ def main(argv=None):
     parser.add_argument('--timing', choices=('on', 'off', 'both'), default='both', help='Trace on/off comparison; default both.')
     parser.add_argument('--mcp-worker-mode', choices=('both', 'isolated', 'persistent'), default='both',
                         help='Compare both MCP worker modes by default, or explicitly select one.')
+    parser.add_argument('--mcp-warm-order', choices=('sequential', 'interleaved'), default='sequential',
+                        help='Alternate warm calls between both MCP modes to reduce order bias.')
     parser.add_argument('--live', action='store_true', help='Opt in to an owned localhost Safari fixture; requires an explicitly clear GUI session.')
     args = parser.parse_args(argv)
     if not (1 <= args.samples <= 1000 and 0 <= args.warmups <= 100 and math.isfinite(args.timeout) and .01 <= args.timeout <= 120):
         parser.error('bounds')
+    if args.mcp_warm_order == 'interleaved' and args.mcp_worker_mode != 'both':
+        parser.error('worker_order')
     try:
         binary = str(Path(args.binary).resolve(strict=True))
         report = benchmark(binary, samples=args.samples, warmups=args.warmups, timeout=args.timeout,
-                           timing=args.timing, live=args.live, mcp_worker_mode=args.mcp_worker_mode)
+                           timing=args.timing, live=args.live, mcp_worker_mode=args.mcp_worker_mode, mcp_warm_order=args.mcp_warm_order)
     except (OSError, ValueError, subprocess.SubprocessError):
         sys.stderr.write('Benchmark could not complete; executable or environment unavailable.\n')
         return 2

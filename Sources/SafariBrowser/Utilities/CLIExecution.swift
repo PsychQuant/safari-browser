@@ -79,6 +79,6 @@ enum CLIExecution {
 
     private static func writeDiagnostic(_ stream: Stream, _ bytes: Data) {
         let handle = stream == .stdout ? FileHandle.standardOutput : FileHandle.standardError
-        handle.write(bytes)
+        try? handle.write(contentsOf: bytes)
     }
 }

@@ -76,6 +76,9 @@ final class MCPRequestStdio {
         defer { capturing = false }
         // Remains poisoned until every producer has actually left its boundary.
         poisoned = true
+        // Idle descriptors still point to null. Discard any idle-period libc
+        // output before rebinding; this does not authorize unknown live writers.
+        guard fflush(nil) == 0 else { throw MCPRequestStdioError.setup }
         let (inputRead, inputWrite) = try MCPWorkerFD.pipePair()
         let (outputRead, outputWrite) = try MCPWorkerFD.pipePair()
         let (errorRead, errorWrite) = try MCPWorkerFD.pipePair()

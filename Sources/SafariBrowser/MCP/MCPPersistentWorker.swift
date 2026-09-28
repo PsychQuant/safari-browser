@@ -24,7 +24,7 @@ enum MCPPersistentWorkerLoop {
                         let end = min(start + MCPWorkerWire.maxOutputChunkBytes, diagnostic.bytes.count)
                         try send(.output(id: id, stream: .stderr, bytes: diagnostic.bytes.subdata(in: start..<end)))
                     }
-                    try send(.complete(id: id, exitCode: diagnostic.exitCode & 0xff, reusable: false))
+                    try send(.retire(id: id, reason: .image, exitCode: diagnostic.exitCode & 0xff))
                     return
                 }
                 let outcome: MCPRequestStdio.Outcome

@@ -198,6 +198,27 @@ final class MCPPersistentRunnerFailureTests: XCTestCase, @unchecked Sendable {
         let cleanup = await runner.shutdown(); XCTAssertNil(cleanup)
     }
 
+    func testPrivateEncodingExpansionKeepsPublicInputAdmission() async throws {
+        let count = 470_000
+        try XCTSkipIf(sysconf(_SC_ARG_MAX) / 2 < count + 16_384, "This OS routes this argv before private encoding")
+        let (runner, image) = try fixtureRunner()
+        let arguments = ["large", String(repeating: "\u{0001}", count: count)]
+        let input = Data(repeating: 97, count: 4 * 1024 * 1024)
+        // The public UTF-8 JSON input fits 8 MiB. Private base64 expansion does not.
+        let publicInput = try JSONSerialization.data(withJSONObject: ["arguments": arguments, "stdin": String(decoding: input, as: UTF8.self)])
+        XCTAssertLessThan(publicInput.count, 8 * 1024 * 1024)
+        let expected = await MCPProcessRunner(executable: try Self.fixture.get(), timeout: 3)
+            .run(arguments: arguments, input: input, expectedImage: image)
+        XCTAssertNil(expected.failure)
+        XCTAssertEqual(expected.stdout, Data("isolated\n".utf8))
+        let actual = await runner.run(arguments: arguments, input: input, expectedImage: image)
+        XCTAssertEqual(actual.exitCode, expected.exitCode)
+        XCTAssertEqual(actual.stdout, expected.stdout)
+        XCTAssertEqual(actual.stderr, expected.stderr)
+        XCTAssertNil(actual.failure)
+        let cleanup = await runner.shutdown(); XCTAssertNil(cleanup)
+    }
+
     func testLargeArgPreselectionKeepsOriginalKernelAdmissionAndCanBeCancelled() async throws {
         let directory = try directory()
         defer { try? FileManager.default.removeItem(at: directory) }

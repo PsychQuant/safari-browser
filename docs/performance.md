@@ -156,8 +156,10 @@ about 22 ms higher at p50: an additional supervisor is not free.
 
 A reverse-order warm-only check (persistent first, then isolated; same build,
 20 samples and three warmups) exposed variability: persistent p50/p95 was
-22.17/86.15 ms versus isolated 36.95/54.77 ms. **That cohort's persistent p95
-regressed**, so it is retained rather than discarded as a favorable-result filter.
+22.17/86.15 ms versus isolated 36.95/54.77 ms. **That cohort's persistent tail distribution regressed**: eight of twenty
+samples exceeded the isolated median, and the means were approximately
+39.8 ms (persistent) versus 40.5 ms (isolated). It is retained rather than
+discarded as a favorable-result filter.
 
 An alternating AB/BA check then kept both hosts open, warmed each three times,
 and measured 60 sequential calls per mode, alternating which mode ran first in
@@ -192,3 +194,54 @@ mode per iteration for 60 iterations, reversing the order on alternate iteration
 each call receives its own `monotonic() + 3` deadline. Close both owned services
 and reject failed cleanup. The existing benchmark helpers provide the same
 bounded protocol, validation, redaction and ownership checks for this procedure.
+
+
+The original startup decomposition is also preserved as
+[per-sample diagnostic intervals](benchmarks/mcp-startup-diagnostic-2026-09-28.json)
+and the [temporary instrumentation patch](benchmarks/mcp-startup-diagnostic.patch).
+Those diagnostic intervals include instrumentation overhead; the spawn syscall
+is nested within spawn-to-entry. The same-process repeat was restricted to
+`wait 0` and was not a delivered isolation implementation.
+
+For a directly executable alternating warm comparison, add
+`--mcp-warm-order interleaved --mcp-worker-mode both` to the benchmark command.
+The driver keeps both owned hosts open, alternates AB/BA order across warmups
+and measured pairs, and never retries a failed mode. Cold/CLI/daemon rows keep
+their existing independent scenarios. Tests cover pair order, warmup separation,
+mode selection and failure cleanup.
+
+
+## R2 release comparison (2026-09-28)
+
+After the review fixes, the checked-in interleaved driver measured an optimized
+release build with the same fixed `wait 0`, 60 samples, three warmups and
+three-second deadlines. Final binary SHA-256:
+`300d5a25419145b81d5a38da232a0c0ce5042bb8e51ddd5f1517b4126de27945`.
+All rows succeeded 60/60 on arm64 / Darwin 26B5091g; no live Safari work ran.
+
+| Trace | Mode | Cold p50 / p95 ms | Interleaved warm p50 / p95 ms |
+|---|---|---:|---:|
+| off | isolated | 46.01 / 78.52 | 17.70 / 50.97 |
+| off | persistent | 56.69 / 89.64 | 2.52 / 7.77 |
+| on | isolated | 38.96 / 50.18 | 10.71 / 21.51 |
+| on | persistent | 46.73 / 52.17 | 1.74 / 2.65 |
+
+Trace-on observed 60 isolated worker PIDs versus one persistent PID, with 60
+independent request IDs in each mode. This release comparison supports lower
+warm p50/p95 without success-rate loss; it still does not prove every-call,
+GUI or population-wide speedup. Cold p50 retains the additional helper cost.
+Different timing-on/off cohorts remain sensitive to changing system load, so
+their subtraction is not a pure estimate of tracing overhead.
+
+[Both R2 release cohorts and wall samples](benchmarks/mcp-worker-release-r2-2026-09-28.json)
+are retained, including an earlier build before the deadline-origin refinement.
+Earlier debug cohorts, including the adverse tail distribution, remain above.
+Reproduction command:
+
+```sh
+python3 scripts/benchmark-performance.py --binary /path/to/release/safari-browser --samples 60 --warmups 3 --timeout 3 --timing both --mcp-worker-mode both --mcp-warm-order interleaved
+```
+
+The original isolated runner's stopped-event and late-group cleanup limitations
+are separately tracked in issue #209; they are not claimed fixed by the new
+persistent owner or by these latency measurements.

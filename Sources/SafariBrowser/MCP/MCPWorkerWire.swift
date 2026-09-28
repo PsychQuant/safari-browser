@@ -9,7 +9,7 @@ enum MCPWorkerWire {
     static let maxArgumentCount = 65536
 
     enum Stream: String, Codable, Sendable { case stdout, stderr }
-    enum RetirementReason: String, Codable, Sendable { case descendants, io, scope }
+    enum RetirementReason: String, Codable, Sendable { case descendants, io, scope, image }
     enum ClientMessage: Sendable, Equatable {
         case request(id: UUID, arguments: [String], input: Data)
         case shutdown
@@ -22,12 +22,13 @@ enum MCPWorkerWire {
     }
     enum WireError: Error, Equatable, Sendable, LocalizedError {
         case invalidFrame
+        case clientFrameTooLarge
         var errorDescription: String? { "Invalid private worker frame." }
     }
 
     /// Returned data excludes the LF delimiter; encoded newlines within strings are escaped.
     static func encodeClient(_ message: ClientMessage) throws -> Data {
-        try encode(ClientEnvelope(message: message), limit: maxClientFrameBytes)
+        try encode(ClientEnvelope(message: message), limit: maxClientFrameBytes, reportClientExpansion: true)
     }
     static func decodeClient(_ data: Data) throws -> ClientMessage {
         try decode(ClientEnvelope.self, data: data, limit: maxClientFrameBytes).message
@@ -39,14 +40,16 @@ enum MCPWorkerWire {
         try decode(ServerEnvelope.self, data: data, limit: maxServerFrameBytes).message
     }
 
-    private static func encode<T: Encodable>(_ value: T, limit: Int) throws -> Data {
+    private static func encode<T: Encodable>(_ value: T, limit: Int, reportClientExpansion: Bool = false) throws -> Data {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let data = try encoder.encode(value)
+            if reportClientExpansion, data.count > limit { throw WireError.clientFrameTooLarge }
             try validateFrame(data, limit: limit)
             return data
-        } catch { throw WireError.invalidFrame }
+        } catch WireError.clientFrameTooLarge { throw WireError.clientFrameTooLarge }
+        catch { throw WireError.invalidFrame }
     }
     private static func decode<T: Decodable>(_ type: T.Type, data: Data, limit: Int) throws -> T {
         do {

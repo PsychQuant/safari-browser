@@ -79,6 +79,13 @@ final class MCPRequestStdioTests: XCTestCase {
         XCTAssertFalse(messages.dropFirst(completion + 1).contains { if case .output(let id, _, _) = $0 { return id == first }; return false })
         XCTAssertEqual(messages.last, .complete(id: second, exitCode: 0, reusable: true))
     }
+    func testIdleBufferedStdoutIsDiscardedBeforeNextRequest() throws {
+        let messages = try run("idle-buffer")
+        XCTAssertEqual(bytes(messages, id: first, stream: .stdout), Data("first\n".utf8))
+        XCTAssertEqual(bytes(messages, id: second, stream: .stdout), Data("second\n".utf8))
+        XCTAssertEqual(messages.last, .complete(id: second, exitCode: 0, reusable: true))
+    }
+
     func testCStdinUnreadBufferDoesNotReachNextRequest() throws {
         for mode in ["c-stdin", "c-eof"] {
             let messages = try run(mode)

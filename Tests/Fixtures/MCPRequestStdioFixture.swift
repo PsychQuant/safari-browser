@@ -47,6 +47,18 @@ import Darwin
                 return 0
             }
             try wire.send(.complete(id: second, exitCode: two.exitCode, reusable: two.streamsComplete))
+        } else if mode == "idle-buffer" {
+            let one = try await scope.capture(input: Data(), output: { try wire.send(.output(id: first, stream: $0, bytes: $1)) }) {
+                print("first")
+                return 0
+            }
+            try wire.send(.complete(id: first, exitCode: one.exitCode, reusable: one.streamsComplete))
+            print("idle-buffer-must-not-enter-next-request")
+            let two = try await scope.capture(input: Data(), output: { try wire.send(.output(id: second, stream: $0, bytes: $1)) }) {
+                print("second")
+                return 0
+            }
+            try wire.send(.complete(id: second, exitCode: two.exitCode, reusable: two.streamsComplete))
         } else if mode == "c-stdin" || mode == "c-eof" {
             let initial = mode == "c-eof" ? Data() : Data(repeating: 97, count: 100)
             for (id, bytes) in [(first, initial), (second, Data([98]))] {

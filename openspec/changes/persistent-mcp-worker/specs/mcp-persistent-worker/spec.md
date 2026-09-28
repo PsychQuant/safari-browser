@@ -90,6 +90,18 @@ The loaded worker image SHALL match the host catalog image. Before each persiste
 - **WHEN** the estimated argv/environment reservation exceeds half of the system ARG_MAX
 - **THEN** the cached pair SHALL retire and the original runner SHALL execute or reject that call exactly once
 
+#### Scenario: Worker-only invalidation remains sticky after path restoration
+- **WHEN** the host observes image A, the worker rejects replacement image B, and the path is restored to A
+- **THEN** the worker SHALL report a typed image invalidation and the host SHALL reject subsequent dispatch until restart
+
+#### Scenario: Private encoding grows beyond the transport cap
+- **WHEN** a public request fits the existing input limits but private base64 and JSON expansion exceeds 8 MiB
+- **THEN** the host SHALL select the original runner before sending any private request bytes, preserving kernel admission
+
+#### Scenario: Preselected execution keeps the invocation deadline
+- **WHEN** image inspection or cached-pair retirement consumes part of the invocation's time budget before isolated dispatch
+- **THEN** the original runner SHALL use the same absolute deadline and SHALL reject execution if it has already expired
+
 ### Requirement: Persistent worker benefits and regressions are measured
 Verification SHALL compare isolated and persistent modes from the same build under the same fixed fixture, sample count and deadline, reporting cold/warm p50, p95, success rates and actual worker PID reuse. It SHALL separate spawn syscall, loader/entry, parsing, execution and exit/cleanup evidence rather than calling all overhead spawn time. Warm p50 and p95 SHALL improve without reducing the successful-call rate before performance acceptance. Cold-start and resident-process costs SHALL be disclosed. Existing full catalog/help, CLI validation, stdin, cancellation, EOF, process-group, backpressure, explicit-daemon and binary-replacement regressions SHALL remain covered; adapter evidence SHALL NOT be presented as new Safari GUI acceptance.
 

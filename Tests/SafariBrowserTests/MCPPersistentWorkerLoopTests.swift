@@ -70,7 +70,7 @@ final class MCPPersistentWorkerLoopTests: XCTestCase, @unchecked Sendable {
                 state.executed(); return .init(exitCode: 0, streamsComplete: true)
             }, validateImage: { throw Failure() }, onlyOwnedProcesses: { true }, axIsQuiescent: { true })
         XCTAssertEqual(state.count, 0); XCTAssertEqual(state.remaining, 1)
-        XCTAssertEqual(state.frames.last, .complete(id: first, exitCode: 64, reusable: false))
+        XCTAssertEqual(state.frames.last, .retire(id: first, reason: .image, exitCode: 64))
         let errors = state.frames.compactMap { frame -> Data? in
             if case .output(_, .stderr, let bytes) = frame { return bytes }; return nil
         }.reduce(Data(), +)

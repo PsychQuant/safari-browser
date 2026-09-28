@@ -80,6 +80,9 @@ final class MCPPersistentWorkerTests: XCTestCase {
                 case .complete(let id, let code, let reusable):
                     XCTAssertEqual(id, token)
                     return (code, reusable, output, errors)
+                case .retire(let id, .image, let code):
+                    XCTAssertEqual(id, token)
+                    return (try XCTUnwrap(code), false, output, errors)
                 default: XCTFail("Unexpected worker reply: \(frame)"); throw MCPWorkerLaunchError.status
                 }
             }

@@ -8,6 +8,7 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
         var supervisorArguments = ["__mcp-supervise"]
         var retire: @Sendable (MCPChildReservation) -> MCPChildReservation.Retirement = { $0.retire(timeout: 0) }
         var didLaunch: @Sendable (pid_t) -> Void = { _ in }
+        var beforeRequestSend: @Sendable () throws -> Void = {}
     }
     private struct Configuration: Sendable {
         let executable: URL
@@ -99,7 +100,7 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
         }
         func stop() -> Request? { lock.withLock { stopped = true; return active } }
     }
-    private enum Step: Sendable { case result(MCPCommandResult), isolated }
+    private enum Step: Sendable { case result(MCPCommandResult), isolated(deadline: TimeInterval) }
     private let config: Configuration
     private let admission = Admission()
     private let state: State
@@ -129,21 +130,22 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
         }
         let request = Request()
         if let failure = admission.begin(request) { return MCPCommandResult(failure: failure) }
+        let deadline = ProcessInfo.processInfo.systemUptime + config.timeout
         // The caller cannot observe completion until admission has been released.
         defer { admission.finish(request) }
         return await withTaskCancellationHandler {
             let step: Step = await withCheckedContinuation { continuation in
                 state.queue.async { [state] in
-                    continuation.resume(returning: state.execute(arguments, input: input, image: expectedImage, request: request))
+                    continuation.resume(returning: state.execute(arguments, input: input, image: expectedImage, request: request, deadline: deadline))
                 }
             }
             switch step {
             case .result(let value): return value
-            case .isolated:
+            case .isolated(let deadline):
                 let config = config
                 let task = Task {
                     await MCPProcessRunner(executable: config.executable, environment: config.environment,
-                                           timeout: config.timeout, outputLimit: config.outputLimit, inputLimit: config.inputLimit)
+                                           timeout: config.timeout, outputLimit: config.outputLimit, inputLimit: config.inputLimit, invocationDeadline: deadline)
                         .run(arguments: arguments, input: input, expectedImage: expectedImage)
                 }
                 request.attach(task)
@@ -170,6 +172,7 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
         var complete = false
         var reusable = false
         var frameSize = 0
+        var sendPrepared = false
     }
     private final class Generation {
         let pair: MCPWorkerPair
@@ -214,7 +217,7 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
                 queue.asyncAfter(deadline: .now() + 1) { self.dispose() }
             }
         }
-        func execute(_ arguments: [String], input: Data, image: String, request: Request) -> Step {
+        func execute(_ arguments: [String], input: Data, image: String, request: Request, deadline: TimeInterval) -> Step {
             let invocation = Invocation()
             if request.isCancelled {
                 invocation.result.cancelled = true
@@ -227,7 +230,6 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
                     return .result(MCPCommandResult(failure: failure + " Command was not executed."))
                 }
             }
-            let deadline = ProcessInfo.processInfo.systemUptime + config.timeout
             do {
                 try check(request, deadline: deadline, sent: 0)
                 if catalogImage == nil { catalogImage = image }
@@ -247,9 +249,18 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
                 if config.needsKernelAdmission(arguments: arguments, image: image) {
                     if let failure = retire(collecting: nil) { throw Failure.message(failure + " Command was not executed.") }
                     try check(request, deadline: deadline, sent: 0)
-                    return .isolated // Selected before any private bytes, never a retry.
+                    return .isolated(deadline: deadline) // Same invocation budget; selected before any bytes, never a retry.
                 }
-                let frame = try MCPWorkerWire.encodeClient(.request(id: invocation.id, arguments: arguments, input: input)) + Data([10])
+                let frame: Data
+                do {
+                    frame = try MCPWorkerWire.encodeClient(.request(id: invocation.id, arguments: arguments, input: input)) + Data([10])
+                } catch MCPWorkerWire.WireError.clientFrameTooLarge {
+                    // Private base64/JSON expansion must not narrow the public
+                    // input contract. Select once before sending any bytes.
+                    if let failure = retire(collecting: nil) { throw Failure.message(failure + " Command was not executed.") }
+                    try check(request, deadline: deadline, sent: 0)
+                    return .isolated(deadline: deadline)
+                }
                 invocation.frameSize = frame.count
                 if generation == nil {
                     let pair = try MCPWorkerPair.launch(executable: config.executable,
@@ -285,6 +296,10 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
                     }
                     if current.workerPID != nil, !current.diagnosticsOpen, invocation.sent < frame.count {
                         guard current.buffer.isEmpty else { throw MCPWorkerWire.WireError.invalidFrame }
+                        if !invocation.sendPrepared {
+                            try config.lifecycle.beforeRequestSend()
+                            invocation.sendPrepared = true
+                        }
                         try check(request, deadline: deadline, sent: invocation.sent)
                         let count = frame.withUnsafeBytes { bytes in
                             Darwin.write(current.pair.control, bytes.baseAddress!.advanced(by: invocation.sent), min(16384, frame.count - invocation.sent))
@@ -374,6 +389,10 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
                         case .retire(let id, let reason, let code):
                             guard id == invocation.id else { throw MCPWorkerWire.WireError.invalidFrame }
                             invocation.result.exitCode = code
+                            if reason == .image {
+                                invalidatedImage = true
+                                throw Failure.message("MCP executable changed; restart the MCP server before calling tools. The command was not executed.")
+                            }
                             throw Failure.message("Worker retired (\(reason.rawValue)); output is incomplete and earlier side effects may already have occurred.")
                         case .hello: throw MCPWorkerWire.WireError.invalidFrame
                         }

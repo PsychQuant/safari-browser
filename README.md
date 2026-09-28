@@ -107,8 +107,10 @@ when that response is still queued for delivery. Cancellation cannot undo earlie
 effects or an explicitly started persistent daemon. Calls are never retried automatically.
 After a crash, only a later distinct call can create a new worker, after cleanup
 is confirmed. Unconfirmed cleanup prevents additional workers from starting.
-Calls near the OS argument/environment size limit select the original isolated
-runner before dispatch, preserving kernel admission rather than retrying a failure.
+Calls near the OS argument/environment size limit, or whose private encoding
+exceeds the transport cap, select the original isolated runner before dispatch.
+They preserve kernel admission and the same invocation deadline; this is not a
+retry of a failure.
 
 Restart the server after updating its executable: workers check the loaded
 Mach-O build UUID before running a command, including nested CLI calls. The host

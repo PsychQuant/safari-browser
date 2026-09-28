@@ -11,7 +11,7 @@ actor MCPSession {
     static let maximumFrameBytes = 8 * 1024 * 1024
     static let pageSize = 50
     static let serverInfo: JSONValue = .object(["name": .string("safari-browser"), "version": .string("1")])
-    static let instructions = "Tools run the existing CLI in isolated workers. String values follow CLI syntax; semantic validation remains in the CLI. Cancellation stops owned processes but cannot undo prior effects or explicitly started persistent daemons. Failed or incomplete calls are never retried automatically. Restart this server after updating its executable."
+    static let instructions = "Tools run the existing CLI with isolated per-call state. Default persistent mode reuses healthy workers; explicit isolated mode starts a worker per call. String values follow CLI syntax; semantic validation remains in the CLI. Cancellation stops owned processes but cannot undo prior effects or explicitly started persistent daemons. Failed or incomplete calls are never retried automatically. Restart this server after updating its executable."
 
     private let catalog: MCPToolCatalog
     private let runner: any MCPCommandRunning

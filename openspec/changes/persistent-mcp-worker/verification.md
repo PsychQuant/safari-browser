@@ -105,3 +105,22 @@
 - 尖峰多在 command trace 外；這包含 IPC、排程、image／stream／退出處理，不能據此認定單一原因。接受範圍是固定 wait0 的同 build／交錯比較之 warm p50與p95改善、成功率未減少，不宣稱每一輪／每次GUI呼叫或固定倍數。
 - 三次成功呼叫後的 readonly process-tree／RSS snapshot：isolated無resident child，persistent兩個；host+children RSS總和22,688 vs43,760 KiB。含共享頁、不是unique memory或母體估計。Idle退出另有實際測試。
 - `docs/performance.md` 與 `docs/benchmarks/mcp-worker-2026-09-28.json` 保留三個 cohorts 全部 wall samples、分位數、identity counts、冷啟動與resident成本。尚待3.3獨立審查／交付，未宣告verified。
+
+
+## R1 findings and R2 repairs
+
+R1 六份報告均已收齊：五份 Claude CODE PASS（DA 附條件）、Codex CODE FAIL。Coordinator 對已重現的契約缺陷維持 aggregate FAIL，master comment 見 issue #172 的 5868165624。不以多數票消除缺陷。
+
+- Worker-only image invalidation：actual host probe A → pre-send 置換 B → worker 拒絕 → 恢復 A → host 原本重新派送，RED。現用 typed retire(image) 設定 host sticky invalidation；不解析 stderr。
+- Legacy timeout：1.2 秒 invocation 加上受控 0.6 秒 cached retirement，原本約1.93秒，RED；現從 admission 建立 absolute deadline，沿用至 isolated runner，spawn 前及 loop 都重驗。已過期 deadline 的自有檔案 marker 原本仍出現，修正後不執行。
+- Private frame expansion：公開 JSON 約7MiB、stdin4MiB、470k控制字元argv，原 kernel runner接受但private base64/JSON超過8MiB被拒，RED。現在以獨立的 clientFrameTooLarge 錯誤在零 byte 前選原 runner，沿用相同deadline，沒有執行後 fallback。
+- Idle C stdout buffer：自有fixture在兩個capture之間寫buffer，原本下一筆多出40bytes，RED；現在在新pipes綁定前flush至null。這不是未知live writer已join的宣稱。
+- Closed diagnostic streams：actual舊binaryhelp/validation/trace保留0/64/0，新版原本三者SIGABRT；改回best-effort Swift寫入後，7項CLI測試PASS。
+- Updated initialize instructions，清楚區分 per-call state isolation 與 persistent process reuse。
+- 4項R2變異（worker-image sticky、inherited deadline、encoded-frame route、idle flush）被攔截並還原；full make test-all exit0：1555 XCTest／38 Swift Testing／66 smoke、兩模式各12 MCP，簽章49PASS/2SKIP、GUI harness SKIP。
+- 交錯benchmark已成為可執行CLI選項，52項benchmark tests PASS。R2 final release SHA300d5a…在60樣本AB/BA下，off isolated17.70/50.97ms vs persistent2.52/7.77；on10.71/21.51 vs1.74/2.65，全部60/60成功。資料／兩個release cohorts／舊debug反例均保留，不宣稱普遍加速。
+- 原始啟動分段的逐筆interval與暫時instrumentation patch已提交，補足R1reviewer可見性。原isolated cleanup限制獨立追蹤#209，沒有誤稱已修。
+
+R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Gaps／Localization 均無發現，21 項皆為補充 Example 的 Suggestion，沒有阻擋項目。具體反例及測試資料見本節與對應測試。
+
+尚需以新的固定提交完成R2獨立審查及最終交付；仍未verified。

@@ -42,7 +42,7 @@ runner 實測補充：waitid 的 si_pid 非零不是退出證據；只接受 CLD
 
 MCPWorkerWire.swift 使用 JSON-lines；stdin 以 canonical base64 放在 request，CLI 輸出以帶 id 的 output chunks 回傳，絕不拿原始 stdout 當控制 frame。parent request 最大 8 MiB；server frame 最大 64 KiB；stdin 最大 4 MiB；單 output chunk 最大 8192 bytes。每筆用 parent 產生的 UUID，輸出及完成訊息須完全對應，未知／過期 id 不得套到下一筆。
 
-固定型別：ClientMessage.request(id: UUID, arguments: [String], input: Data)、shutdown；ServerMessage.hello(image: String, workerPID: Int32, supervisorPID: Int32)、output(id: UUID, stream: stdout|stderr, bytes: Data)、complete(id: UUID, exitCode: Int32, reusable: Bool)、retire(id: UUID, reason: descendants|io|scope, exitCode: Int32?)。protocol version 固定文字 "1"，PID／exit code 在 JSON 內用 canonical decimal string，避免 Foundation numeric coercion。codec 用單次 typed 解讀、closed keys／enums，拒絕 NUL argv、非法 base64、數值型別／範圍及長度；錯誤不回顯 request。
+固定型別：ClientMessage.request(id: UUID, arguments: [String], input: Data)、shutdown；ServerMessage.hello(image: String, workerPID: Int32, supervisorPID: Int32)、output(id: UUID, stream: stdout|stderr, bytes: Data)、complete(id: UUID, exitCode: Int32, reusable: Bool)、retire(id: UUID, reason: descendants|io|scope|image, exitCode: Int32?)。protocol version 固定文字 "1"，PID／exit code 在 JSON 內用 canonical decimal string，避免 Foundation numeric coercion。codec 用單次 typed 解讀、closed keys／enums，拒絕 NUL argv、非法 base64、數值型別／範圍及長度；錯誤不回顯 request。
 
 API：encodeClient/decodeClient、encodeServer/decodeServer；輸入／輸出 Data 均不含 LF，framing 層負責 LF。MCPWorkerWire.TerminationRecord 提供固定 record encode/decode；reported PID 僅供關聯／診斷，不作 host 發 signal 的授權。
 
@@ -54,7 +54,7 @@ worker 每筆都以 SafariBrowser.parseAsRoot 建立新的 command struct；抽�
 
 control FD 3 與 CLI 0/1/2 分開。worker idle stdio 指向 /dev/null；每筆建立 private stdin/stdout/stderr pipes，dup2 後關閉多餘 ends。stdin feeder 在背景提供有界 input，結束即 EOF；兩個 relay 同時讀 stdout/stderr，每次最多 8192 bytes，透過序列化 control writer 傳送 token-tagged chunks。命令結束／error formatting／trace emission 後 fflush，將 stdio 還原到 idle null、完成 feeder 與 relay，才送 complete。setup 或收尾失敗不接受下一筆，retire frame 後由 host 清理 group；不以不完整輸出冒充成功。
 
-stdio owner 在 process lifetime 只能建立一次；以獨立 relay-owned descriptor 避免 timeout 後從外部 close 尚在使用的 fd。seal 以 dispatch completion 與預設 1 秒 deadline 仲裁，不阻塞 Swift cooperative executor；任一路徑失敗永久停用同一 owner。除了 FD 置換，也清除 libc stdin 的未讀緩衝與 EOF 狀態，避免留下上一筆 input。
+stdio owner 在 process lifetime 只能建立一次；以獨立 relay-owned descriptor 避免 timeout 後從外部 close 尚在使用的 fd。seal 以 dispatch completion 與預設 1 秒 deadline 仲裁，不阻塞 Swift cooperative executor；任一路徑失敗永久停用同一 owner。在綁定新 pipes 前，先把 idle 期間的 libc output flush 到 null；這不代表未知 live writer 已被安全 join。除了 FD 置換，也清除 libc stdin 的未讀緩衝與 EOF 狀態，避免留下上一筆 input。
 
 每筆新的 MCPInvocationContext 包含新的 BlockingDialogGate 與 PerformanceTrace collector；shared gate 在這個 context 下解析，不能借用 processGate 的先前快取／warning budget。SafariBridge 的 subprocess watchdog 與 System Events waiting-message task 在 persistent context 下 cancel 後等待真正結束，避免晚到 stderr 跨越 stdio boundary。既有 GCD pipe readers 已在返回前 join。
 
@@ -64,9 +64,9 @@ BoundedAXWorker 增加只讀 quiescence 查詢；若 command 返回時仍有 AX 
 
 MCPExecutableIdentity.swift 將既有 thin Mach-O UUID parsing 共用化，新增有界 file probe（含 FAT32/FAT64 與當前 loaded architecture 選擇）。MCPWorkerContext.imageIdentifier 的既有 API／拒絕條件保留；readImage(at:architecture:) 只讀有界 header/load commands，不執行檔案，不把 UUID 當 code-signing 認證。拒絕截斷、溢位、重複／含糊 slice、未知格式，支援原始 launch path 的 symlink retarget 觀察。
 
-host 在每次 dispatch 前檢查磁碟 image 與 catalog loaded image；worker 在執行前再驗 loaded／disk 身分。失效即退休並回報既有 executable-changed／not-executed 指引，要求 restart MCP host；不把舊 catalog 轉派到新引擎。檢查與後續檔案替換不是原子交易，但執行的 loaded worker image 永遠與 catalog 相同。
+host 在每次 dispatch 前檢查磁碟 image 與 catalog loaded image；worker 在執行前再驗 loaded／disk 身分。worker-only 失效以 typed retire(image) 回報；host 收到即設定 sticky invalidation。失效即退休並回報既有 executable-changed／not-executed 指引，要求 restart MCP host；不把舊 catalog 轉派到新引擎。檢查與後續檔案替換不是原子交易，但執行的 loaded worker image 永遠與 catalog 相同。
 
-常駐內部 framing 不能無意擴大或縮小原 OS argv/environment 的極限。以 argv／environment UTF-8 bytes、NUL 與 pointer storage 的保守估計決定路徑：接近 ARG_MAX（估計超過其一半）的 request，在任何私有 request byte 送出前退休 cached pair，交由原 MCPProcessRunner 執行一次，保留 kernel 接納與錯誤。此為預先選路，不是錯誤後 fallback；不把全部常用指令留在 one-shot 路徑。顯式 isolated 模式也沿用原 runner。
+常駐內部 framing 不能無意擴大或縮小原 OS argv/environment 的極限。以 argv／environment UTF-8 bytes、NUL 與 pointer storage 的保守估計決定路徑：接近 ARG_MAX（估計超過其一半）的 request，在任何私有 request byte 送出前退休 cached pair，交由原 MCPProcessRunner 執行一次，保留 kernel 接納與錯誤。私有 base64／JSON 編碼膨脹超過 frame cap 時，也只在零 byte 送出前選原 runner，以免收窄合法的 public input。兩種預先選路均沿用 admission 時的 absolute deadline，原 runner 在 spawn 前與執行迴圈重驗，不重新取得完整 timeout。此為預先選路，不是錯誤後 fallback；不把全部常用指令留在 one-shot 路徑。顯式 isolated 模式也沿用原 runner。
 
 ### 效能與完整驗收
 

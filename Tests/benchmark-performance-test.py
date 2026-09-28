@@ -83,6 +83,36 @@ class WorkerModeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bench.benchmark('/private/not-read', samples=1, warmups=0, timeout=2, mcp_worker_mode='invalid')
 
+    def test_interleaved_driver_alternates_order_and_does_not_retry_failed_mode(self):
+        for fail in (False, True):
+            calls, closed = [], []
+            class FakeService:
+                def __init__(self, binary, env, kind, timeout, worker_mode='isolated'):
+                    self.mode = worker_mode
+                    self.setup_nanoseconds = 1
+                    self.process = object()
+                def call_wait(self, deadline):
+                    calls.append(self.mode)
+                    if fail and self.mode == 'persistent':
+                        return bench.failure('owned-test-failure')
+                    return dict(status='ok', wallNanoseconds=100, trace=None)
+                def close(self):
+                    closed.append(self.mode)
+                    return True
+            with mock.patch.object(bench, 'Service', FakeService), mock.patch.object(bench, 'observe_exit', return_value=None):
+                rows = bench.interleaved_mcp_scenarios('fixture', False, 3, 1, 2)
+            self.assertEqual([row['workerMode'] for row in rows], ['isolated', 'persistent'])
+            self.assertTrue(all(row['sampleOrder'] == 'alternating-AB-BA' for row in rows))
+            self.assertTrue(all(len(row['warmups']) == 1 and len(row['samples']) == 3 for row in rows))
+            if fail:
+                self.assertEqual(calls, ['isolated', 'persistent', 'isolated', 'isolated', 'isolated'])
+                self.assertEqual(rows[1]['statistics']['successful'], 0)
+                self.assertTrue(all(s['reason'] == 'service_unavailable' for s in rows[1]['samples']))
+            else:
+                self.assertEqual(calls, ['isolated', 'persistent', 'persistent', 'isolated', 'isolated', 'persistent', 'persistent', 'isolated'])
+                self.assertTrue(all(row['statistics']['successful'] == 3 for row in rows))
+            self.assertEqual(sorted(closed), ['isolated', 'persistent'])
+
     def test_requested_mode_selects_only_that_comparison(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory, 'fake'); binary.write_text(FAKE); binary.chmod(0o700)
@@ -1017,6 +1047,23 @@ class CommandLineTests(unittest.TestCase):
             self.assertEqual({r['timing'] for r in report['scenarios']}, {'on', 'off'})
             self.assertTrue(all(s['trace'] is None for r in report['scenarios'] if r['timing'] == 'off' for s in r['samples']))
             self.assertNotIn(directory, result.stdout.decode())
+
+    def test_cli_interleaved_order_is_reported_and_single_mode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory, 'fake'); binary.write_text(FAKE); binary.chmod(0o700)
+            env = dict(os.environ, BENCH_TEST_LOG=str(Path(directory, 'events')))
+            command = [sys.executable, str(ROOT / 'scripts/benchmark-performance.py'), '--binary', str(binary),
+                       '--samples', '2', '--warmups', '1', '--timing', 'off', '--mcp-warm-order', 'interleaved']
+            result = subprocess.run(command, env=env, capture_output=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(result.stdout)
+            self.assertEqual(report['measurement']['mcpWarmOrder'], 'interleaved')
+            rows = [r for r in report['scenarios'] if r['name'].startswith('mcp.') and '.warm-' in r['name']]
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(r['sampleOrder'] == 'alternating-AB-BA' and r['statistics']['successful'] == 2 for r in rows))
+            rejected = subprocess.run(command + ['--mcp-worker-mode', 'isolated'], env=env, capture_output=True, timeout=3)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertNotIn(directory, rejected.stderr.decode())
 
     def test_cli_rejects_zero_samples_and_never_leaks_bad_binary_path(self):
         with tempfile.TemporaryDirectory() as directory:

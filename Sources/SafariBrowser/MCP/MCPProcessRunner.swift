@@ -26,6 +26,9 @@ struct MCPProcessRunner: MCPCommandRunning {
     var timeout: TimeInterval = 300
     var outputLimit: Int = 2 * 1024 * 1024
     var inputLimit: Int = 4 * 1024 * 1024
+    /// Internal inherited budget for preselected execution. Ordinary isolated
+    /// calls retain their existing timeout origin when this is nil.
+    var invocationDeadline: TimeInterval? = nil
 
     func run(arguments: [String], input: Data, expectedImage: String) async -> MCPCommandResult {
         let cancellation = MCPCancellation()
@@ -42,7 +45,8 @@ struct MCPProcessRunner: MCPCommandRunning {
 
     private func execute(arguments: [String], input: Data, expectedImage: String, cancellation: MCPCancellation) -> MCPCommandResult {
         var result = MCPCommandResult()
-        guard timeout.isFinite, timeout >= 0.001, timeout <= 86400, outputLimit > 0, inputLimit >= 0 else {
+        guard timeout.isFinite, timeout >= 0.001, timeout <= 86400, outputLimit > 0, inputLimit >= 0,
+              invocationDeadline?.isFinite != false else {
             result.failure = "Invalid worker limits."
             return result
         }
@@ -62,6 +66,11 @@ struct MCPProcessRunner: MCPCommandRunning {
         if cancellation.isCancelled {
             result.cancelled = true
             result.failure = "Command cancelled before execution."
+            return result
+        }
+
+        if let invocationDeadline, ProcessInfo.processInfo.systemUptime >= invocationDeadline {
+            result.failure = "Command timed out before execution; command was not executed."
             return result
         }
 
@@ -134,6 +143,11 @@ struct MCPProcessRunner: MCPCommandRunning {
             result.failure = "Worker argument allocation failed."
             return result
         }
+        // Preparation and allocation do not reset an inherited deadline.
+        if let invocationDeadline, ProcessInfo.processInfo.systemUptime >= invocationDeadline {
+            result.failure = "Command timed out before execution; command was not executed."
+            return result
+        }
         var pid: pid_t = 0
         let spawnError = argvPointers.withUnsafeBufferPointer { argvBuffer in
             envPointers.withUnsafeBufferPointer { envBuffer in
@@ -149,6 +163,7 @@ struct MCPProcessRunner: MCPCommandRunning {
         }
         for index in [0, 3, 5] { closeDescriptor(index) }
         let start = ProcessInfo.processInfo.systemUptime
+        let deadline = min(start + timeout, invocationDeadline ?? .infinity)
         var stoppedAt: TimeInterval?
         var killed = false
         var killedAt: TimeInterval?
@@ -172,7 +187,7 @@ struct MCPProcessRunner: MCPCommandRunning {
                 result.cancelled = true
                 stop("Command cancelled; earlier side effects may already have occurred.")
             }
-            if now - start >= timeout { stop("Command timed out; earlier side effects may already have occurred.") }
+            if now >= deadline { stop("Command timed out; earlier side effects may already have occurred.") }
             if let stoppedAt, now - stoppedAt >= 0.15, !killed {
                 kill(-pid, SIGKILL)
                 killed = true

@@ -194,6 +194,13 @@ final class MCPWorkerWireTests: XCTestCase {
             XCTAssertThrowsError(try Wire.encodeServer(.retire(id: id, reason: .io, exitCode: code)))
         }
     }
+    func testTypedImageInvalidationIsNotAnOrdinaryCompletion() throws {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let frame = Data(#"{"kind":"retire","version":"1","id":"00000000-0000-0000-0000-000000000001","reason":"image","exitCode":"64"}"#.utf8)
+        XCTAssertEqual(try MCPWorkerWire.decodeServer(frame), .retire(id: id, reason: .image, exitCode: 64))
+        XCTAssertEqual(try MCPWorkerWire.decodeServer(MCPWorkerWire.encodeServer(.retire(id: id, reason: .image, exitCode: 64))), .retire(id: id, reason: .image, exitCode: 64))
+    }
+
     func testTerminationLiteralAndValidStatuses() throws {
         let fixture = Data([0x31, 0x4d, 0x42, 0x53, 0x78, 0x56, 0x34, 0x12, 0, 0xff, 0, 0])
         let expected = Wire.TerminationRecord(workerPID: 0x12345678, rawWaitStatus: 0xff00)
