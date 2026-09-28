@@ -201,3 +201,9 @@ R3六份報告已全文讀取，固定HEAD49ca317；master：https://github.com/
 - 最終凍結版TERM fixture又對R3保留binary重跑，三路徑皆RED且每路徑都有worker＋普通後代存活；補充log記錄test／fixture／binary SHA，已解除舊RED版本不一致的疑慮。
 - 已取消後仍可能在startup race開始CLI的Low，以及大argv時序測試的更強路由斷言，另追蹤#211。當前有界／unknown／不重播契約不改成零副作用保證。
 - GUI／簽章身分SKIP、受控插樁、kernel pending、來源provenance邊界均保留。後續spec歸檔與PR不改產品runtime。
+
+## 交付
+
+- 2026-09-29同步並歸檔，新增7項persistent-worker requirements、更新2項facade requirements；逐項比對delta與正式spec內文一致，prune-spec-traces為no-op。保留.openspec.yaml及所有歷史artifact。
+- 共同PR：https://github.com/PsychQuant/safari-browser/pull/212 。已附R4完整驗證、benchmark、限制與#211 follow-up。18/18 tasks完成；issue依IDD保留OPEN，合併狀態以PR為準。
+- 529325d之後只有README／spec同步／archive／交付紀錄，Sources／Tests／Makefile／scripts／package設定與verified snapshot一致。
