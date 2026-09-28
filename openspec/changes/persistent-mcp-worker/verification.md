@@ -1,6 +1,6 @@
 # 元件實作證據（2026-09-28）
 
-目前完成 tasks 1.1、1.2、1.3、2.1、2.2、2.3、2.4、2.5、3.1（9/11）；其餘未完成。這份紀錄不是完整 #172 驗收，目前開發分支的 public MCP 已預設 persistent；仍待同 build 效能驗收與最終獨立審查。
+目前完成 tasks 1.1、1.2、1.3、2.1、2.2、2.3、2.4、2.5、3.1、3.2（10/11）；其餘未完成。這份紀錄不是完整 #172 驗收，目前開發分支的 public MCP 已預設 persistent；仍待同 build 效能驗收與最終獨立審查。
 
 ## 私有 wire codec（1.2）
 
@@ -93,3 +93,15 @@
 - README／CLAUDE／CHANGELOG 已同步模式、生命週期、版本失效與 no-replay 語意；尚未宣稱固定加速倍數。
 
 - 還原後 `make test-all` exit0：1,549 XCTest／38 Swift Testing／66 smoke，persistent 與 isolated 各 12 個 MCP end-to-end；簽章 49 PASS／2 SKIP，GUI harness SKIP。Task 3.1 的回歸與關鍵變異條件已完成；3.2／3.3 仍未完成。
+
+
+## 同 build 效能驗收（3.2）
+
+- Benchmark 明示 `--mcp-worker-mode both|isolated|persistent`（預設 both）；mode-specific cold/warm labels，identity 只由成功 measured command traces 計算。Trace-off 未觀察就回 null，不以 host PID 假裝 worker PID。
+- 新增模式／identity tests 先有 3 項行為 RED，補上實作；完整 50 tests PASS（保留原 46 項）。一個既有 test factory 需轉傳新參數，原 no-replay／單 host 斷言保留。4 個 mode forwarding／unique PID／successful-only／mode selection 變異被攔截並還原，還原後 4 項 focused PASS。
+- Runtime source c70f25a，同一 debug binary SHA256 `aebf3434841cb2fe4aec321445ae445d7482e15d780272769b663af5ea58612c`；arm64、Darwin 26B5091g。20 samples／3 warmups／3 秒截止，timing both，所有 18 個非 GUI 場景 20/20 成功；GUI rows 全 SKIP。
+- 初次 trace-off warm isolated p50/p95=34.98/55.62 ms，persistent=18.12/20.24 ms；cold=260.49/273.09 與 282.39/296.95 ms，cold 代價如實保留。
+- 反向順序 warm20 中 persistent p95 86.15 ms 高於 isolated54.77 ms，未刪掉此 cohort。追加兩 host 常駐、AB/BA 交錯 warm60 同條件比較：trace-off isolated55.50/194.43 vs persistent20.13/101.59 ms；trace-on42.70/95.97 vs20.82/62.12 ms。各自60/60成功，trace-on為60個isolatedPID vs1個persistentPID，60個requestID各自獨立。
+- 尖峰多在 command trace 外；這包含 IPC、排程、image／stream／退出處理，不能據此認定單一原因。接受範圍是固定 wait0 的同 build／交錯比較之 warm p50與p95改善、成功率未減少，不宣稱每一輪／每次GUI呼叫或固定倍數。
+- 三次成功呼叫後的 readonly process-tree／RSS snapshot：isolated無resident child，persistent兩個；host+children RSS總和22,688 vs43,760 KiB。含共享頁、不是unique memory或母體估計。Idle退出另有實際測試。
+- `docs/performance.md` 與 `docs/benchmarks/mcp-worker-2026-09-28.json` 保留三個 cohorts 全部 wall samples、分位數、identity counts、冷啟動與resident成本。尚待3.3獨立審查／交付，未宣告verified。

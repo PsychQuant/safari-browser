@@ -309,7 +309,9 @@ class ServiceCleanupError(OSError):
 
 class Service:
     """An owned foreground daemon or MCP host. No daemon start/stop discovery."""
-    def __init__(self, binary, env, kind, timeout):
+    def __init__(self, binary, env, kind, timeout, worker_mode="isolated"):
+        if kind == 'mcp' and worker_mode not in ('isolated', 'persistent'):
+            raise ValueError('worker_mode')
         self.kind, self.timeout = kind, timeout
         self.process = None
         self.pending = bytearray()
@@ -319,7 +321,7 @@ class Service:
         self.started = time.monotonic_ns()
         try:
             require_waitid()
-            args = ['mcp', '--timeout', str(timeout)] if kind == 'mcp' else ['daemon', '__serve', '--name', env['SAFARI_BROWSER_NAME'], '--socket-dir', env['TMPDIR']]
+            args = ['mcp', '--timeout', str(timeout), '--worker-mode', worker_mode] if kind == 'mcp' else ['daemon', '__serve', '--name', env['SAFARI_BROWSER_NAME'], '--socket-dir', env['TMPDIR']]
             self.process = subprocess.Popen([binary, *args], env=env, stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE if kind == 'mcp' else subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, start_new_session=True)
@@ -486,6 +488,18 @@ def scenario_report(name, timing, samples, warmups, measure, setup=None):
     return report
 
 
+def worker_identity(samples):
+    """Only measured successful command traces establish actual worker identity."""
+    observations = []
+    for sample in samples:
+        value = sanitize_trace(sample.get('trace')) if sample.get('status') == 'ok' else None
+        if value is not None and 'processID' in value:
+            observations.append(value)
+    return {'source': 'command-trace', 'observedSamples': len(observations),
+            'uniqueProcessCount': len({value['processID'] for value in observations}) if observations else None,
+            'uniqueRequestCount': len({value['requestID'] for value in observations}) if observations else None}
+
+
 def failure(reason, status='error'):
     return {'status': status, 'reason': reason, 'wallNanoseconds': None, 'trace': None}
 
@@ -502,11 +516,15 @@ def valid_daemon_status(output, name, process_id):
     return re.fullmatch(pattern, output) is not None
 
 
-def service_scenario(binary, kind, cold, timing, samples, warmups, timeout):
+def service_scenario(binary, kind, cold, timing, samples, warmups, timeout, worker_mode="isolated"):
     operation = 'status' if kind == 'daemon' else 'wait'
     name = f'{kind}.cold-host-{operation}-including-startup' if cold else f'{kind}.warm-host-fresh-worker'
     if kind == 'daemon':
         name = name.replace('worker', 'cli-status')
+    else:
+        if worker_mode not in ('isolated', 'persistent'):
+            raise ValueError('worker_mode')
+        name = f'mcp.{worker_mode}.' + ('cold-host-wait-including-startup' if cold else 'warm-host-wait')
     service = None
     with tempfile.TemporaryDirectory(prefix='sb-bench-', dir='/tmp') as directory:
         env = isolated_environment(directory, timing)
@@ -520,7 +538,7 @@ def service_scenario(binary, kind, cold, timing, samples, warmups, timeout):
                 if cold:
                     owned_directory = tempfile.TemporaryDirectory(prefix='sb-bench-', dir='/tmp')
                     current_env = isolated_environment(owned_directory.name, timing)
-                    service = Service(binary, current_env, kind, timeout)
+                    service = Service(binary, current_env, kind, timeout, worker_mode=worker_mode)
                 if service is None or observe_exit(service.process) is not None:
                     result = failure('service_unavailable')
                     return result
@@ -566,7 +584,7 @@ def service_scenario(binary, kind, cold, timing, samples, warmups, timeout):
         try:
             if not cold:
                 try:
-                    service = Service(binary, env, kind, timeout)
+                    service = Service(binary, env, kind, timeout, worker_mode=worker_mode)
                 except (OSError, ValueError, TimeoutError, TypeError) as error:
                     report = scenario_report(name, timing, samples, warmups, lambda: failure('service_start_failed'))
                     if isinstance(error, ServiceCleanupError):
@@ -579,9 +597,15 @@ def service_scenario(binary, kind, cold, timing, samples, warmups, timeout):
             if service is not None:
                 if not service.close() and report is not None:
                     mark_cleanup_failed(report)
+            if kind == 'mcp' and report is not None:
+                report['workerMode'] = worker_mode
+                report['workerIdentity'] = worker_identity(report['samples'])
 
 
-def benchmark(binary, *, samples, warmups, timeout, timing='both', live=False):
+def benchmark(binary, *, samples, warmups, timeout, timing='both', live=False, mcp_worker_mode='both'):
+    if mcp_worker_mode not in ('both', 'isolated', 'persistent'):
+        raise ValueError('worker_mode')
+    worker_modes = ['isolated', 'persistent'] if mcp_worker_mode == 'both' else [mcp_worker_mode]
     digest = hashlib.sha256()
     with open(binary, 'rb') as executable:
         for block in iter(lambda: executable.read(1024 * 1024), b''):
@@ -597,7 +621,8 @@ def benchmark(binary, *, samples, warmups, timeout, timing='both', live=False):
         'measurement': {'clock': 'monotonic', 'wallIncludesLoader': True, 'osCachesCleared': False,
             'quantiles': 'nearest-rank-successful-samples', 'spanDurations': 'inclusive-do-not-sum',
             'coldHostWall': 'startup-readiness-and-one-request-excludes-cleanup',
-            'warmHostWall': 'one-request-excludes-host-startup'}, 'scenarios': []}
+            'warmHostWall': 'one-request-excludes-host-startup',
+            'mcpWorkerModes': worker_modes, 'workerIdentitySource': 'successful-measured-command-traces'}, 'scenarios': []}
     for enabled in ([False, True] if timing == 'both' else [timing == 'on']):
         with tempfile.TemporaryDirectory(prefix='sb-bench-', dir='/tmp') as directory:
             env = isolated_environment(directory, enabled)
@@ -608,9 +633,12 @@ def benchmark(binary, *, samples, warmups, timeout, timing='both', live=False):
                                ('exec.fresh-process-wait-batch', ['exec', '--script', str(script)])]:
                 report['scenarios'].append(scenario_report(name, enabled, samples, warmups,
                     lambda args=args: run_process([binary, *args], env, timeout)))
-        for kind in ('daemon', 'mcp'):
+        for cold in (True, False):
+            report['scenarios'].append(service_scenario(binary, 'daemon', cold, enabled, samples, warmups, timeout))
+        for worker_mode in worker_modes:
             for cold in (True, False):
-                report['scenarios'].append(service_scenario(binary, kind, cold, enabled, samples, warmups, timeout))
+                report['scenarios'].append(service_scenario(binary, 'mcp', cold, enabled, samples, warmups, timeout,
+                                                            worker_mode=worker_mode))
         if live:
             report['scenarios'].extend(live_scenarios(binary, enabled, samples, warmups, timeout))
         else:
@@ -828,6 +856,8 @@ def main(argv=None):
     parser.add_argument('--warmups', type=int, default=1, help='Unmeasured warmups per scenario, 0–100.')
     parser.add_argument('--timeout', type=float, default=10, help='Per-sample wall deadline in seconds, 0.01–120.')
     parser.add_argument('--timing', choices=('on', 'off', 'both'), default='both', help='Trace on/off comparison; default both.')
+    parser.add_argument('--mcp-worker-mode', choices=('both', 'isolated', 'persistent'), default='both',
+                        help='Compare both MCP worker modes by default, or explicitly select one.')
     parser.add_argument('--live', action='store_true', help='Opt in to an owned localhost Safari fixture; requires an explicitly clear GUI session.')
     args = parser.parse_args(argv)
     if not (1 <= args.samples <= 1000 and 0 <= args.warmups <= 100 and math.isfinite(args.timeout) and .01 <= args.timeout <= 120):
@@ -835,7 +865,7 @@ def main(argv=None):
     try:
         binary = str(Path(args.binary).resolve(strict=True))
         report = benchmark(binary, samples=args.samples, warmups=args.warmups, timeout=args.timeout,
-                           timing=args.timing, live=args.live)
+                           timing=args.timing, live=args.live, mcp_worker_mode=args.mcp_worker_mode)
     except (OSError, ValueError, subprocess.SubprocessError):
         sys.stderr.write('Benchmark could not complete; executable or environment unavailable.\n')
         return 2

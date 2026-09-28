@@ -15,5 +15,5 @@
 ## 3. 回歸、量測與交付
 
 - [x] 3.1 完成 #110 與新 lifecycle 的完整回歸：actual MCP 的取消、busy/ping、EOF、unread stdout、nested children、explicit daemon detach；以 ownership、frame/correlation、no-replay、idle generation、quiescence 的關鍵變異證明測試能辨識失效，還原後 make test-all 通過。
-- [ ] 3.2 完成 Persistent worker benefits and regressions are measured：更新 benchmark 的 mode 與 scenario 命名，在同 build／同固定 fixture 比較 cold/warm p50/p95、成功率、PID 重用與 trace overhead；warm p50/p95 未改善就繼續調整，文件保留原始範圍及 cold 成本，不以診斷迴圈代替交付。
+- [x] 3.2 完成 Persistent worker benefits and regressions are measured：更新 benchmark 的 mode 與 scenario 命名，在同 build／同固定 fixture 比較 cold/warm p50/p95、成功率、PID 重用與 trace overhead；warm p50/p95 未改善就繼續調整，文件保留原始範圍及 cold 成本，不以診斷迴圈代替交付。
 - [ ] 3.3 更新 README／CLAUDE.md／CHANGELOG.md 與診斷／task 狀態，六方確認、spectra analyze／validate、規格同步歸檔；各提交引用 #172，PR 附實際證據與限制，verified 後 issue 保留 OPEN。

@@ -75,7 +75,9 @@ python3 scripts/benchmark-performance.py --binary .build/debug/safari-browser --
 ```
 
 Fixed scenarios cover help startup, zero-duration wait, exec wait batch, private
-daemon status, and MCP wait workers. Each service owns a short private temporary
+daemon status, and MCP wait workers in both explicitly selected `isolated` and
+`persistent` modes. Use `--mcp-worker-mode isolated|persistent|both` to choose the
+comparison; the default is `both`. Each service owns a short private temporary
 socket directory and namespace. It never stops an existing user daemon. The
 benchmark reserves its child leader identity with non-reaping observation until
 its process group is cleaned up; normal exit status is retained. Capture is
@@ -106,7 +108,14 @@ stop subsequent warm samples without restarting the service or retrying the read
 The JSON report identifies executable digest, OS build and architecture, timing
 mode, warmups, measured samples, failures and skips. Fresh process means a new CLI
 process, not flushed OS caches. Cold host measurements include host setup; warm
-host measurements retain the service but still launch the documented CLI/worker.
+host measurements retain the service. Daemon status still launches a fresh CLI;
+MCP isolated mode creates a fresh worker, while persistent mode reuses healthy
+workers. MCP scenario names now include the mode (`mcp.isolated.*` and
+`mcp.persistent.*`) instead of the former mode-ambiguous `mcp.*` names.
+Each MCP row includes `workerMode` and `workerIdentity`: successful measured
+command traces supply the observed sample count, unique worker PID count and
+unique request-ID count. Trace-off rows have no identity observation; a host PID
+or scenario label is never substituted for actual worker evidence.
 Host readiness is polled, so cold-host wall time also includes readiness-detection
 latency (up to one polling interval under normal scheduling), not only startup.
 Daemon status rows measure transport/lifecycle, not compilation or Safari work.
@@ -121,3 +130,65 @@ observations, not stable population percentiles. Compare identical fixtures,
 versions, timing modes and warmup conditions, and retain timing-on/off results to
 expose instrumentation overhead. There is no fixed speed threshold in CI and no
 speedup is established merely by adding this measurement feature.
+
+
+## Persistent MCP measurement (#172, 2026-09-28)
+
+The same debug build (`c70f25a`, SHA-256
+`aebf3434841cb2fe4aec321445ae445d7482e15d780272769b663af5ea58612c`)
+was measured on arm64 / Darwin build 26B5091g. The fixed input was `wait 0`,
+with three warmups, a three-second per-call deadline and no live Safari work.
+All 18 non-GUI scenarios in the primary run succeeded 20/20, including both
+trace modes. Cold host samples include startup/readiness and one request;
+cleanup is excluded from the reported wall quantiles.
+
+| Trace | Mode | Cold p50 / p95 ms | Warm p50 / p95 ms | Success per row |
+|---|---|---:|---:|---:|
+| off | isolated | 260.49 / 273.09 | 34.98 / 55.62 | 20/20 |
+| off | persistent | 282.39 / 296.95 | 18.12 / 20.24 | 20/20 |
+| on | isolated | 297.38 / 371.92 | 48.57 / 95.67 | 20/20 |
+| on | persistent | 297.24 / 384.70 | 21.41 / 28.47 | 20/20 |
+
+Trace-on warm samples observed 20 distinct worker PIDs in isolated mode and
+one worker PID with 20 distinct request IDs in persistent mode. Trace-off
+samples do not claim PID observations. The cold trace-off persistent cost was
+about 22 ms higher at p50: an additional supervisor is not free.
+
+A reverse-order warm-only check (persistent first, then isolated; same build,
+20 samples and three warmups) exposed variability: persistent p50/p95 was
+22.17/86.15 ms versus isolated 36.95/54.77 ms. **That cohort's persistent p95
+regressed**, so it is retained rather than discarded as a favorable-result filter.
+
+An alternating AB/BA check then kept both hosts open, warmed each three times,
+and measured 60 sequential calls per mode, alternating which mode ran first in
+each pair. Both modes succeeded 60/60 in each timing setting:
+
+| Trace | Isolated warm p50 / p95 ms | Persistent warm p50 / p95 ms |
+|---|---:|---:|
+| off | 55.50 / 194.43 | 20.13 / 101.59 |
+| on | 42.70 / 95.97 | 20.82 / 62.12 |
+
+Trace-on identity evidence was 60 distinct isolated worker PIDs versus one
+persistent PID and 60 independent request IDs. Large outliers in both modes
+mostly lay outside the command trace. That interval includes IPC, scheduling,
+image checks and stream/exit handling; these data do not identify one cause.
+The measurements support lower warm p50/p95 for this controlled comparison,
+with no success-rate loss. They do not establish a universal per-call or GUI
+speedup, nor isolate trace overhead from changing system load.
+
+After three successful trace-off calls, a separate read-only process-tree/RSS
+snapshot observed no resident child in isolated mode and two resident children
+(supervisor plus worker) in persistent mode. Host+children RSS sums were
+22,688 KiB and 43,760 KiB respectively; the persistent children contributed
+24,128 KiB. These are single `ps` snapshots, not unique-memory accounting or
+population estimates. The children are retired after the configured idle interval.
+
+[Recorded quantiles, identity counts and raw wall samples](benchmarks/mcp-worker-2026-09-28.json)
+include every cohort above. To repeat the primary comparison, use the command in
+this section with `--samples 20 --warmups 3 --timeout 3 --timing both
+--mcp-worker-mode both`. For the alternating check, create one `Service` per
+mode, call each three times to warm up, then call `Service.call_wait` once per
+mode per iteration for 60 iterations, reversing the order on alternate iterations;
+each call receives its own `monotonic() + 3` deadline. Close both owned services
+and reject failed cleanup. The existing benchmark helpers provide the same
+bounded protocol, validation, redaction and ownership checks for this procedure.
