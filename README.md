@@ -1194,6 +1194,14 @@ SAFARI_BROWSER_NAME=beta  safari-browser daemon start
 **Phase 1 command coverage** (routed through daemon when enabled):
 `snapshot`, `click`, `fill`, `type`, `press`, `js`, `documents`, `get url`, `get title`, `wait`, `storage`.
 
+The daemon's `--socket-dir` (or inherited `TMPDIR`) must resolve to an existing
+directory. Regular files, FIFOs, and symlinks to non-directories are rejected
+before daemon launch or dispatch, even with `--allow-unsafe-socket-dir`; that
+flag only relaxes the world-writable check. The existing `stat` lookup follows
+symlinks, so a link to a directory uses the target's permissions and a dangling
+link remains missing/not statable. These preflight checks do not lock the path
+against replacement afterward.
+
 **NOT covered** (fall through to stateless path even with daemon on):
 `screenshot`, `pdf`, `upload --native`, `upload --allow-hid`.
 

@@ -95,6 +95,7 @@ enum DaemonPaths {
         case tmpdirUnset
         case parentWorldWritable
         case parentMissing
+        case parentNotDirectory
     }
 
     /// Resolve the directory the daemon's socket / pid / log files should
@@ -140,6 +141,15 @@ enum DaemonPaths {
             return .rejected(
                 reason: .parentMissing,
                 message: "socket directory does not exist or is not statable: \(normalized)"
+            )
+        }
+
+        // stat follows symlinks: require the observed target to be a directory.
+        // The unsafe override only relaxes permissions, never the file type.
+        guard s.isDirectory else {
+            return .rejected(
+                reason: .parentNotDirectory,
+                message: "socket path parent is not a directory: \(normalized)"
             )
         }
 
