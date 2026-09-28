@@ -120,6 +120,28 @@ final class BlockingDialogGate: @unchecked Sendable {
         }
     }
 
+    /// A JS invocation includes target resolution and multiple protocol calls.
+    /// Its single probe allowance must survive cache expiry, without extending
+    /// the lifetime of the evidence itself. Task-local ownership also separates
+    /// nested and concurrent invocations in a persistent process.
+    private final class ProbeAllowance: @unchecked Sendable {
+        private let lock = NSLock()
+        private var available = true
+
+        func claim() -> Bool {
+            lock.withLock {
+                guard available else { return false }
+                available = false
+                return true
+            }
+        }
+    }
+    @TaskLocal private static var invocationAllowance: ProbeAllowance?
+
+    static func withSingleProbe<T>(_ operation: () async throws -> T) async rethrows -> T {
+        try await $invocationAllowance.withValue(ProbeAllowance(), operation: operation)
+    }
+
     private static let processGate = BlockingDialogGate()
     static var shared: BlockingDialogGate {
         DaemonRequestContext.current?.gate ?? MCPInvocationContext.current?.gate ?? processGate
@@ -198,7 +220,8 @@ final class BlockingDialogGate: @unchecked Sendable {
             latestProbe[key] = generation
             cache.removeValue(forKey: key)
             let available = max(0, Self.commandBudget - budgetCommitted)
-            let reserved = available >= 0.001 ? min(Self.singleProbeBudget, available) : 0
+            let mayProbe = available >= 0.001 && (Self.invocationAllowance?.claim() ?? true)
+            let reserved = mayProbe ? min(Self.singleProbeBudget, available) : 0
             budgetCommitted += reserved
             return (nil, generation, reserved, budgetEpoch)
         }

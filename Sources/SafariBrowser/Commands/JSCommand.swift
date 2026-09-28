@@ -28,6 +28,12 @@ struct JSCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        try await BlockingDialogGate.withSingleProbe {
+            try await runCommand()
+        }
+    }
+
+    private func runCommand() async throws {
         let jsCode: String
         if let file {
             let path = (file as NSString).expandingTildeInPath

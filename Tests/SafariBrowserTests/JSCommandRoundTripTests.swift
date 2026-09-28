@@ -32,6 +32,8 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         /// Seconds each enumeration takes — the issue's machine took 3–4 s,
         /// which is what let the dialog gate's 2 s cache expire mid-command.
         var enumerationDelay: TimeInterval = 0
+        var javaScriptDelay: TimeInterval = 0
+        var failWithTimeout = false
 
         init(tabCounts: [Int] = [96, 2, 6, 1, 4], failJSContaining: String? = nil) {
             self.tabCounts = tabCounts
@@ -83,11 +85,13 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                 return "\(idBase + n)"
             }
             if script.contains("do JavaScript") {
+                if javaScriptDelay > 0 { Thread.sleep(forTimeInterval: javaScriptDelay) }
                 if tripGuard, script.contains("index of current tab of _w") {
                     throw SafariBrowserError.appleScriptFailed(
                         "execution error: SB_TARGET_CHANGED: the anchored tab is no longer current (9001)")
                 }
                 if let marker = failJSContaining, script.contains(marker) {
+                    if failWithTimeout { throw SafariBrowserError.processTimedOut(command: "owned-js-fixture", seconds: 30) }
                     throw SafariBrowserError.appleScriptFailed(
                         "execution error: Safari got an error: Can’t get tab. Invalid index. (-1719)")
                 }
@@ -282,6 +286,41 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             }
         }
         XCTAssertEqual(probes.count, 1, "\(probes.count) real probes — the probe cache expired between per-step resolutions")
+    }
+
+    func testDialogProbeRunsOnceEvenWhenJavaScriptOutlivesCacheTTL() async throws {
+        let fake = FakeSafari()
+        fake.javaScriptDelay = 0.55
+        let probes = ProbeCounter()
+        let context = DaemonRequestContext(probe: { _ in probes.hit(); return .clear }, environment: [:])
+        let command = try JSCommand.parse(["--window", "1", "--tab-in-window", "53", "location.host"])
+        try await DaemonRequestContext.$current.withValue(context) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                try await command.run()
+            }
+        }
+        XCTAssertEqual(probes.count, 1, "a slow JavaScript command must not start another full probe after the TTL")
+    }
+
+    func testTimedOutJavaScriptKeepsOriginalFailureWithoutASecondProbe() async throws {
+        let fake = FakeSafari(failJSContaining: "window.__sb")
+        fake.failWithTimeout = true
+        let probes = ProbeCounter()
+        let context = DaemonRequestContext(probe: { _ in probes.hit(); return .clear }, environment: [:])
+        let command = try JSCommand.parse(["location.host"])
+        do {
+            try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                    try await command.run()
+                }
+            }
+            XCTFail("the timed-out operation must remain a failure")
+        } catch SafariBrowserError.processTimedOut(let command, let seconds) {
+            XCTAssertEqual(command, "owned-js-fixture")
+            XCTAssertEqual(seconds, 30)
+        }
+        XCTAssertEqual(probes.count, 1)
+        XCTAssertEqual(context.gate.state(for: .id(101)), .unprobed)
     }
 
     final class ProbeCounter: @unchecked Sendable {

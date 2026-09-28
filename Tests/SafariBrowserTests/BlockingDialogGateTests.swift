@@ -348,6 +348,55 @@ final class BlockingDialogGateTests: XCTestCase {
         XCTAssertEqual(stderr.lines.filter { $0.contains("BLOCKING DIALOG") }.count, 1)
     }
 
+    func testSingleProbeScopeDoesNotExtendEvidenceOrBorrowAnotherWindow() async throws {
+        var clock: TimeInterval = 100
+        let calls = Counter()
+        let (gate, _) = makeGate(probe: { _ in calls.increment(); return .present(self.sample) }, now: { clock })
+        try await BlockingDialogGate.withSingleProbe {
+            XCTAssertEqual(gate.check(.id(1)), .present(sample))
+            XCTAssertEqual(gate.check(.id(1)), .present(sample))
+            XCTAssertEqual(gate.check(.id(2)), .unprobed)
+            clock += 2.1
+            XCTAssertEqual(gate.state(for: .id(1)), .unprobed)
+            XCTAssertEqual(gate.check(.id(1)), .unprobed)
+            try gate.throwIfBlocked(.id(1))
+            XCTAssertEqual(gate.check(.id(1), forceRefresh: true), .unprobed)
+            XCTAssertEqual(calls.value, 1)
+        }
+    }
+
+    func testSingleProbeForceRefreshInvalidatesCachedClearWithoutAnotherProbe() async {
+        let calls = Counter()
+        let (gate, _) = makeGate(probe: { _ in calls.increment(); return .clear })
+        await BlockingDialogGate.withSingleProbe {
+            XCTAssertEqual(gate.check(.id(1)), .clear)
+            XCTAssertEqual(gate.check(.id(1), forceRefresh: true), .unprobed)
+            XCTAssertEqual(gate.state(for: .id(1)), .unprobed)
+            XCTAssertEqual(calls.value, 1)
+        }
+    }
+
+    func testSingleProbeAllowanceIsRestoredAfterFailureAndFreshForNextCommand() async {
+        enum FixtureError: Error { case stopped }
+        let calls = Counter()
+        let (gate, _) = makeGate(probe: { _ in calls.increment(); return .clear })
+        do {
+            try await BlockingDialogGate.withSingleProbe {
+                XCTAssertEqual(gate.check(.id(1)), .clear)
+                throw FixtureError.stopped
+            }
+            XCTFail("fixture must throw")
+        } catch FixtureError.stopped {} catch { XCTFail("unexpected error: \(error)") }
+        // Existing non-JS refresh policy is restored, even after a thrown command.
+        XCTAssertEqual(gate.check(.id(1), forceRefresh: true), .clear)
+        gate.beginCommand()
+        await BlockingDialogGate.withSingleProbe {
+            XCTAssertEqual(gate.check(.id(1)), .clear)
+            XCTAssertEqual(gate.check(.id(2)), .unprobed)
+        }
+        XCTAssertEqual(calls.value, 3)
+    }
+
     func testEveryUnicodeLineSeparatorAndAllNewlineMessage() {
         for separator in ["\n", "\r", "\u{000B}", "\u{000C}", "\u{0085}", "\u{2028}", "\u{2029}"] {
             XCTAssertEqual(BlockingDialogWarning.oneLine("a" + separator + "b"), "a b")
