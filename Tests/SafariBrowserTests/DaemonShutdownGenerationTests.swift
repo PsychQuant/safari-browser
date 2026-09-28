@@ -48,7 +48,8 @@ final class DaemonShutdownGenerationTests: XCTestCase {
         let release = DispatchSemaphore(value: 0)
         defer { release.signal(); unlink(path) }
         if useHook { await server.setShutdownHook { oldHook.increment(); await server.stop() } }
-        await server.setLogWriter { _ in
+        await server.setLogWriter { line in
+            guard line.contains("request_response_prepared") else { return }
             entered.fulfill()
             _ = release.wait(timeout: .now() + 5)
         }

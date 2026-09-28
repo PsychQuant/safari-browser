@@ -323,7 +323,7 @@ final class DaemonEstablishedConnectionTests: XCTestCase {
                 try TestUnixSocket.writeLine(fd: fd, line: frame)
                 let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try TestUnixSocket.readLine(fd: fd).utf8)) as? [String: Any])
                 XCTAssertEqual((reply["error"] as? [String: Any])?["code"] as? String, "parseError")
-                let entry = try XCTUnwrap(log.objects.last)
+                let entry = try XCTUnwrap(log.objects.last { $0["event"] as? String == "request_response_prepared" })
                 XCTAssertEqual((entry["params"] as? [String: String])?["_log"], "<redacted \(frame.utf8.count) bytes; malformed params>")
                 XCTAssertEqual(entry["error"] as? String, "parseError")
                 XCTAssertFalse(log.all.joined().contains("私有"))
