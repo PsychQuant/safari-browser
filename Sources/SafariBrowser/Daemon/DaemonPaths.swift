@@ -7,6 +7,82 @@ import Darwin
 /// change live in one place and can be tested as pure functions.
 enum DaemonPaths {
 
+    /// device/inode 比對本身不保留 inode；使用時須仍持有來源 fd。
+    fileprivate struct EntryMetadata: Sendable, Equatable {
+        let device: dev_t
+        let inode: ino_t
+
+        init(
+            fd: Int32,
+            statF: (Int32, UnsafeMutablePointer<Darwin.stat>) -> Int32 = { Darwin.fstat($0, $1) }
+        ) throws {
+            var info = Darwin.stat()
+            guard statF(fd, &info) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            device = info.st_dev
+            inode = info.st_ino
+        }
+
+        func removeIfMatches(at path: String) -> Bool {
+            var info = Darwin.stat()
+            return path.withCString { pointer in
+                guard Darwin.lstat(pointer, &info) == 0,
+                      (info.st_mode & S_IFMT) != S_IFLNK,
+                      info.st_dev == device,
+                      info.st_ino == inode else { return false }
+                return Darwin.unlink(pointer) == 0
+            }
+        }
+    }
+
+    /// 從自有 fd 捕捉檔案身分，讓延遲清理不會刪除已觀察到的替換項目。
+    struct EntryIdentity: Sendable, Equatable {
+        private let metadata: EntryMetadata
+        private let descriptor: OwnedDescriptor
+
+        /// 各份 identity 共享同一個描述元；最後引用釋放才關閉，
+        /// 使原項目遭 unlink 後，inode 仍無法被回收並配給替換檔案。
+        private final class OwnedDescriptor: Sendable {
+            let fd: Int32
+
+            init(duplicating fd: Int32, duplicateF: (Int32) -> Int32) throws {
+                let duplicate = duplicateF(fd)
+                guard duplicate >= 0 else {
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                self.fd = duplicate
+            }
+
+            deinit { Darwin.close(fd) }
+        }
+
+        init(fd: Int32) throws {
+            try self.init(fd: fd, metadata: EntryMetadata(fd: fd))
+        }
+
+        fileprivate init(
+            fd: Int32,
+            metadata: EntryMetadata,
+            duplicateF: (Int32) -> Int32 = { Darwin.fcntl($0, F_DUPFD_CLOEXEC, 0) }
+        ) throws {
+            self.metadata = metadata
+            descriptor = try OwnedDescriptor(duplicating: fd, duplicateF: duplicateF)
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.metadata == rhs.metadata
+        }
+
+        /// 僅在路徑仍指向相同 device/inode 時移除，成功移除才回傳 true。
+        /// 不存在、遭替換、符號連結或無法確認的項目一律保留。
+        /// lstat 與 unlink 不是原子操作；不保證能抵禦任意同 UID 惡意競態。
+        @discardableResult
+        func removeIfMatches(at path: String) -> Bool {
+            withExtendedLifetime(descriptor) { metadata.removeIfMatches(at: path) }
+        }
+    }
+
     /// Resolution outcome for a socket directory. Either an absolute path
     /// the daemon should use, or a structured rejection that the CLI maps
     /// to `invalidSocketDir` on stderr.
@@ -19,6 +95,7 @@ enum DaemonPaths {
         case tmpdirUnset
         case parentWorldWritable
         case parentMissing
+        case parentNotDirectory
     }
 
     /// Resolve the directory the daemon's socket / pid / log files should
@@ -64,6 +141,15 @@ enum DaemonPaths {
             return .rejected(
                 reason: .parentMissing,
                 message: "socket directory does not exist or is not statable: \(normalized)"
+            )
+        }
+
+        // stat follows symlinks: require the observed target to be a directory.
+        // The unsafe override only relaxes permissions, never the file type.
+        guard s.isDirectory else {
+            return .rejected(
+                reason: .parentNotDirectory,
+                message: "socket path parent is not a directory: \(normalized)"
             )
         }
 
@@ -278,7 +364,15 @@ enum DaemonPaths {
     /// guarantees the inode is owner-readable only — even though the
     /// JSON content is non-secret, keeping the mode tight matches the
     /// established socket / pid file permissions contract.
-    static func writePidFile(record: PidRecord, at path: String) throws {
+    /// 回傳從建立的 fd 捕捉之身分，供所屬 Run 在停止時條件式清理。
+    @discardableResult
+    static func writePidFile(
+        record: PidRecord,
+        at path: String,
+        writeF: (Int32, UnsafeRawPointer, Int) -> Int = { Darwin.write($0, $1, $2) },
+        statF: (Int32, UnsafeMutablePointer<Darwin.stat>) -> Int32 = { Darwin.fstat($0, $1) },
+        duplicateF: (Int32) -> Int32 = { Darwin.fcntl($0, F_DUPFD_CLOEXEC, 0) }
+    ) throws -> EntryIdentity {
         let payload: Data
         do {
             payload = try JSONEncoder().encode(record)
@@ -292,15 +386,25 @@ enum DaemonPaths {
             throw PidWriteError.openFailed(errno: errno, path: path)
         }
         defer { Darwin.close(fd) }
-
-        var bytes = Array(payload)
-        bytes.append(0x0A) // trailing newline so `cat` looks tidy
-        let written = bytes.withUnsafeBufferPointer { buf -> Int in
-            guard let base = buf.baseAddress else { return -1 }
-            return Darwin.write(fd, base, buf.count)
-        }
-        if written != bytes.count {
-            throw PidWriteError.writeFailed(errno: errno, written: written, expected: bytes.count)
+        // fstat 無法確認身分時保留 entry；原 fd 仍由 defer 關閉。
+        let metadata = try EntryMetadata(fd: fd, statF: statF)
+        do {
+            let identity = try EntryIdentity(fd: fd, metadata: metadata, duplicateF: duplicateF)
+            var bytes = Array(payload)
+            bytes.append(0x0A) // trailing newline so `cat` looks tidy
+            let written = bytes.withUnsafeBufferPointer { buf -> Int in
+                guard let base = buf.baseAddress else { return -1 }
+                return writeF(fd, base, buf.count)
+            }
+            if written != bytes.count {
+                throw PidWriteError.writeFailed(errno: errno, written: written, expected: bytes.count)
+            }
+            return identity
+        } catch {
+            // 即使 dup 失敗，原 fd 仍保留已確認的 inode，可安全比對已觀察到的替換。
+            // 先捕捉錯誤再清理，避免 lstat/unlink 改寫原始 errno。
+            _ = metadata.removeIfMatches(at: path)
+            throw error
         }
     }
 }

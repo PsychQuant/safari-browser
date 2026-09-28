@@ -11,9 +11,8 @@ import Darwin
 /// `DaemonServer.Instance.isIdle(now:)` and triggers `stop()` when the
 /// configured timeout elapses.
 ///
-/// The actor `Server` owns an atomic `startedAt` timestamp, a request counter,
-/// and a `shutdownContinuation` so the outer `run()` caller can await a
-/// single point that signals "daemon has drained and released its socket".
+/// The actor `Server` scopes startup, resource cleanup and stop waiters to a
+/// single Run. Existing connection read cancellation is a separate concern.
 enum DaemonServeLoop {
 
     enum LoopError: Swift.Error, CustomStringConvertible {
@@ -55,31 +54,81 @@ enum DaemonServeLoop {
         }
     }
 
-    /// In-process daemon serve loop. Own lifecycle via `start(...)` / `stop()`.
-    /// The idle watchdog task automatically triggers `stop()` when
-    /// `DaemonServer.Instance.isIdle(now:)` becomes true.
+    enum StopReason: Sendable, Equatable {
+        case requested
+        case idleTimeout
+        case startupFailed
+        case listenerFailed(DaemonServer.ListenerFailure)
+
+        /// The process host uses the same typed completion as in-process
+        /// callers; only a permanently failed listener changes its exit status.
+        func throwIfListenerFailed() throws {
+            if case .listenerFailed(let failure) = self { throw failure }
+        }
+    }
+
+    enum LifecycleEvent: Sendable {
+        case joinedStartup, waitingForTeardown, joinedStop, registeredStopWaiter, handledListenerFailure
+        case beganStop(StopReason)
+    }
+
+    /// Scheduling seams for lifecycle interleavings. Production defaults do
+    /// not delay startup/teardown and poll idle state every ten seconds.
+    struct LifecycleEnvironment: Sendable {
+        var beforeListenerStart: @Sendable () async throws -> Void = {}
+        var afterListenerStart: @Sendable () async throws -> Void = {}
+        var beforeTeardown: @Sendable () async -> Void = {}
+        var observe: @Sendable (LifecycleEvent) -> Void = { _ in }
+        var now: @Sendable () -> Date = { Date() }
+        var watchdogSleep: @Sendable () async throws -> Void = {
+            try await Task.sleep(for: .seconds(10))
+        }
+        var didInstallShutdownHook: @Sendable (@escaping @Sendable () async -> Void) -> Void = { _ in }
+        var afterLogWriteAttempt: @Sendable (String) -> Void = { _ in }
+        var didCloseLog: @Sendable () -> Void = {}
+    }
+
+    /// All mutable Run state stays on this actor. Startup and teardown tasks
+    /// retain only the run ID across calls; a newer run cannot bind until the
+    /// previous teardown has released its resources and completed its waiters.
     actor Server {
         private let underlying: DaemonServer.Instance
         private let cache = PreCompiledScripts.CompileCache()
-        private var socketPath: String?
-        private var pidPath: String?
-        private var logPath: String?
-        private var logFileHandle: FileHandle?
+
+        private final class Run {
+            enum Phase { case starting, running, stopping, stopped }
+            let id = UUID()
+            let socketPath: String
+            let pidPath: String
+            let startedAt = Date()
+            let lifecycle: LifecycleEnvironment
+            var phase: Phase = .starting
+            var pidIdentity: DaemonPaths.EntryIdentity?
+            var logFile: DaemonLogFile?
+            var startupTask: Task<Void, Error>?
+            var teardownTask: Task<Void, Never>?
+            var watchdogTask: Task<Void, Never>?
+            var reason: StopReason?
+            var waiters: [CheckedContinuation<StopReason, Never>] = []
+
+            init(socketPath: String, pidPath: String, lifecycle: LifecycleEnvironment) {
+                self.socketPath = socketPath
+                self.pidPath = pidPath
+                self.lifecycle = lifecycle
+            }
+        }
+
+        private var current: Run?
+        private var lastReason: StopReason = .requested
         private var startedAt: Date?
-        private var requestCount: Int = 0
-        private var watchdogTask: Task<Void, Never>?
-        private var isRunning = false
 
         init(shutdownWatchdog: (@Sendable () -> Void)? = nil) {
             underlying = DaemonServer.Instance(shutdownWatchdog: shutdownWatchdog)
         }
 
-        /// Idempotent start. If already running, returns without error.
-        /// Writes `pidPath`, binds `socketPath`, registers built-in methods,
-        /// kicks off the idle watchdog. Optionally opens the redacted log
-        /// at `logPath`; if `logPath` is nil, no log is written. The
-        /// `env` dict is consulted for `SAFARI_BROWSER_DAEMON_LOG_FULL=1`
-        /// so callers can drive the redaction toggle from CI / shell.
+        /// Concurrent starts join the same operation. A start during teardown
+        /// waits before creating a new run. Cancelling a starting caller asks
+        /// that same run to stop, including when other callers joined it.
         func start(
             socketPath: String,
             pidPath: String,
@@ -88,118 +137,183 @@ enum DaemonServeLoop {
             env: [String: String] = ProcessInfo.processInfo.environment,
             stderrWriter: @escaping @Sendable (String) -> Void = { msg in
                 FileHandle.standardError.write(Data(msg.utf8))
-            }
+            },
+            acceptEnvironment: DaemonServer.AcceptEnvironment = .init(),
+            lifecycle: LifecycleEnvironment = .init()
         ) async throws {
-            if isRunning { return }
+            try Task.checkCancellation()
+            while let old = current, old.phase == .stopping {
+                old.lifecycle.observe(.waitingForTeardown)
+                await old.teardownTask?.value
+                try Task.checkCancellation()
+            }
+            if let run = current {
+                if run.phase == .running { return }
+                run.lifecycle.observe(.joinedStartup)
+                try await awaitStartup(runID: run.id)
+                return
+            }
+            let run = Run(socketPath: socketPath, pidPath: pidPath, lifecycle: lifecycle)
+            current = run
+            startedAt = run.startedAt
+            let id = run.id
+            run.startupTask = Task {
+                try await self.startRun(id: id, idleTimeout: idleTimeout, logPath: logPath,
+                                        env: env, stderrWriter: stderrWriter, acceptEnvironment: acceptEnvironment)
+            }
+            try await awaitStartup(runID: id)
+        }
 
-            // Write pid file before binding socket so a racing observer never
-            // sees a socket without a corresponding pid. The format is now
-            // a JSON `PidRecord` carrying `(pid, binary path, boot time)`
-            // so the 3-check liveness probe in `isDaemonAlive` can rule
-            // out recycled-pid false positives (security-hardening Section
-            // 4). `open(2)` with `O_CREAT|O_WRONLY|O_EXCL` + mode 0o600
-            // still applies. `unlink` first so a stale pid file from a
-            // crashed prior run doesn't fail O_EXCL — `isDaemonAlive`
-            // already gated this path so any pre-existing file is
-            // known-stale.
-            unlink(pidPath)
+        private func awaitStartup(runID: UUID) async throws {
+            guard let run = current, run.id == runID, let task = run.startupTask else {
+                throw CancellationError()
+            }
+            do {
+                try await withTaskCancellationHandler {
+                    try await task.value
+                    try Task.checkCancellation()
+                } onCancel: {
+                    Task { await self.stop(runID: runID, reason: .requested) }
+                }
+                guard current === run, run.phase == .running else {
+                    throw CancellationError()
+                }
+            } catch {
+                let reason: StopReason = error is CancellationError ? .requested : .startupFailed
+                await stop(runID: runID, reason: reason)
+                try run.reason?.throwIfListenerFailed()
+                throw error
+            }
+        }
+
+        private func requireStarting(_ id: UUID) throws {
+            try Task.checkCancellation()
+            guard let run = current, run.id == id, run.phase == .starting else {
+                throw CancellationError()
+            }
+        }
+
+        /// This task never waits for teardown: teardown waits for this task
+        /// before stopping the shared underlying instance, preventing late bind.
+        private func startRun(
+            id: UUID, idleTimeout: TimeInterval, logPath: String?, env: [String: String],
+            stderrWriter: @escaping @Sendable (String) -> Void,
+            acceptEnvironment: DaemonServer.AcceptEnvironment
+        ) async throws {
+            try requireStarting(id)
+            guard let run = current else { throw CancellationError() }
+            // The process-level liveness gate still decides whether an old
+            // entry is stale. The identity below scopes this run's later cleanup.
+            unlink(run.pidPath)
             guard let record = DaemonPaths.currentPidRecord() else {
                 throw LoopError.pidWriteFailed("could not capture self pid record")
             }
             do {
-                try DaemonPaths.writePidFile(record: record, at: pidPath)
+                run.pidIdentity = try DaemonPaths.writePidFile(record: record, at: run.pidPath)
             } catch {
                 throw LoopError.pidWriteFailed("\(error)")
             }
 
-            self.socketPath = socketPath
-            self.pidPath = pidPath
-            self.startedAt = Date()
-
-            // Section 3: open the redacted log file (append-mode) and
-            // install the writer on the underlying instance. When
-            // `SAFARI_BROWSER_DAEMON_LOG_FULL=1`, emit a single stderr
-            // warning so the operator knows raw payloads are landing in
-            // the log. The warning is inert when the env var is unset.
             let logFull = DaemonLog.isFullLoggingEnabled(env: env)
             DaemonLog.emitFullLogWarningIfNeeded(env: env, writer: stderrWriter)
-            if let logPath = logPath {
-                self.logPath = logPath
-                if !FileManager.default.fileExists(atPath: logPath) {
-                    FileManager.default.createFile(atPath: logPath, contents: nil, attributes: [.posixPermissions: 0o600])
-                }
-                if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath)) {
-                    _ = try? handle.seekToEnd()
-                    self.logFileHandle = handle
-                    let writer: @Sendable (String) -> Void = { entry in
-                        try? handle.write(contentsOf: Data(entry.utf8))
-                    }
-                    await underlying.setLogWriter(writer, logFull: logFull)
-                }
+            if let logPath, let file = DaemonLogFile(path: logPath, onClose: run.lifecycle.didCloseLog) {
+                run.logFile = file
+                let observe = run.lifecycle.afterLogWriteAttempt
+                await underlying.setLogWriter({ entry in
+                    file.write(entry)
+                    observe(entry)
+                }, logFull: logFull)
+                try requireStarting(id)
             }
-
-            // Built-in methods — Phase 1 production handlers (task 7.1).
-            // Lifecycle commands (`daemon.status`, `daemon.shutdown`) no
-            // longer go through `register(_:)`; Section 6 of the
-            // security-hardening change routes them via the bypass path
-            // in `DaemonServer` so a long-running AppleScript request
-            // cannot block them. We install the shutdown hook here so
-            // that path can call back into Server.stop() for the pid +
-            // log file cleanup the wrapper actor owns.
             await DaemonDispatch.registerPhase1Handlers(on: underlying, cache: cache)
-            let myself = self
-            await underlying.setShutdownHook { [myself] in
-                await myself.stop()
-            }
-
+            try requireStarting(id)
+            let hook: @Sendable () async -> Void = { await self.stop(runID: id, reason: .requested) }
+            await underlying.setShutdownHook(hook)
+            try requireStarting(id)
+            run.lifecycle.didInstallShutdownHook(hook)
             await underlying.configureIdleTimeout(idleTimeout)
+            try requireStarting(id)
             await underlying.recordStartTimestamp()
-            try await underlying.start(socketPath: socketPath)
-
-            isRunning = true
-            let watchRef = self
-            self.watchdogTask = Task.detached(priority: .utility) {
-                await Self.watchdogLoop(server: watchRef)
+            try requireStarting(id)
+            try await run.lifecycle.beforeListenerStart()
+            try requireStarting(id)
+            let observe = run.lifecycle.observe
+            try await underlying.start(socketPath: run.socketPath, environment: acceptEnvironment) { failure in
+                await self.stop(runID: id, reason: .listenerFailed(failure))
+                observe(.handledListenerFailure)
+            }
+            try requireStarting(id)
+            try await run.lifecycle.afterListenerStart()
+            try requireStarting(id)
+            run.phase = .running
+            let sleep = run.lifecycle.watchdogSleep
+            run.watchdogTask = Task.detached(priority: .utility) {
+                while !Task.isCancelled {
+                    do { try await sleep() } catch { return }
+                    guard !Task.isCancelled else { return }
+                    if await self.checkIdleAndStop(runID: id) { return }
+                }
             }
         }
 
-        /// Idempotent stop. Cancels watchdog, stops the underlying server,
-        /// removes pid + socket files, and signals any `waitUntilStopped`
-        /// awaiter so the hosting `__serve` process can exit cleanly.
+        /// First accepted reason wins. Every stop caller joins one teardown;
+        /// no caller waits for the accept loop or a diagnostic writer.
         func stop() async {
-            guard isRunning else { return }
-            isRunning = false
-            watchdogTask?.cancel()
-            watchdogTask = nil
+            guard let id = current?.id else { return }
+            await stop(runID: id, reason: .requested)
+        }
+
+        private func stop(runID: UUID, reason: StopReason) async {
+            guard let run = current, run.id == runID else { return }
+            if run.phase != .stopping {
+                run.phase = .stopping
+                run.reason = reason
+                run.startupTask?.cancel()
+                run.watchdogTask?.cancel()
+                run.teardownTask = Task { await self.teardown(runID: runID) }
+                run.lifecycle.observe(.beganStop(reason))
+            } else {
+                run.lifecycle.observe(.joinedStop)
+            }
+            await run.teardownTask?.value
+        }
+
+        private func teardown(runID: UUID) async {
+            guard let run = current, run.id == runID else { return }
+            _ = await run.startupTask?.result
+            await run.lifecycle.beforeTeardown()
+            // current cannot change while this run is stopping: starts await
+            // this task. Only the inner instance owns socket removal.
             await underlying.stop()
-            if let p = pidPath { unlink(p) }
-            if let s = socketPath { unlink(s) }
-            try? logFileHandle?.close()
-            logFileHandle = nil
-            logPath = nil
-            pidPath = nil
-            socketPath = nil
-            if let cont = stopContinuation {
-                stopContinuation = nil
-                cont.resume()
+            await underlying.setLogWriter(nil)
+            run.pidIdentity?.removeIfMatches(at: run.pidPath)
+            run.pidIdentity = nil
+            // Captured request/diagnostic writers keep this old Run's append
+            // sink alive until they retire. Stop releases only its own owner;
+            // it never waits for a blocked writer or closes its live descriptor.
+            run.logFile = nil
+            run.watchdogTask = nil
+            run.startupTask = nil
+            run.phase = .stopped
+            let reason = run.reason ?? .requested
+            lastReason = reason
+            current = nil
+            let waiters = run.waiters
+            run.waiters.removeAll()
+            waiters.forEach { $0.resume(returning: reason) }
+        }
+
+        /// Each waiter belongs to the run observed on entry and resumes only
+        /// after its cleanup, even if another run starts before it is scheduled.
+        @discardableResult
+        func waitUntilStopped() async -> StopReason {
+            guard let run = current else { return lastReason }
+            return await withCheckedContinuation {
+                run.waiters.append($0)
+                run.lifecycle.observe(.registeredStopWaiter)
             }
         }
 
-        /// Block until `stop()` is called (or is already called). Used by
-        /// the hosting `daemon __serve` process to stay alive until either
-        /// the idle watchdog or an explicit `daemon.shutdown` method fires.
-        func waitUntilStopped() async {
-            if !isRunning { return }
-            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                stopContinuation = cont
-            }
-        }
-
-        private var stopContinuation: CheckedContinuation<Void, Never>?
-
-        /// Status snapshot, serialized as JSON bytes for the `daemon.status`
-        /// method handler. Includes exactly the fields the spec mandates
-        /// (pid, uptime, request count, pre-compiled count, last activity).
         func statusPayload() async throws -> Data {
             let uptime = startedAt.map { Date().timeIntervalSince($0) } ?? 0
             let preCount = await cache.cacheCount
@@ -215,29 +329,12 @@ enum DaemonServeLoop {
             return try JSONSerialization.data(withJSONObject: status, options: [])
         }
 
-        fileprivate func bumpRequestCount() {
-            requestCount += 1
-        }
-
-        fileprivate func isActive() -> Bool { isRunning }
-
-        // MARK: - Watchdog
-
-        private static func watchdogLoop(server: Server) async {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(10))
-                let active = await server.isActive()
-                if !active { return }
-                let idle = await server.shouldIdleShutdown()
-                if idle {
-                    await server.stop()
-                    return
-                }
-            }
-        }
-
-        fileprivate func shouldIdleShutdown() async -> Bool {
-            await underlying.isIdle(now: Date())
+        private func checkIdleAndStop(runID: UUID) async -> Bool {
+            guard let run = current, run.id == runID, run.phase == .running else { return true }
+            let idle = await underlying.isIdle(now: run.lifecycle.now())
+            guard current === run, run.phase == .running, !Task.isCancelled else { return true }
+            if idle { await stop(runID: runID, reason: .idleTimeout) }
+            return idle
         }
     }
 }

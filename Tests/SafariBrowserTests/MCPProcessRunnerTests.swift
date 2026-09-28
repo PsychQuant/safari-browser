@@ -5,7 +5,137 @@ import Darwin
 
 final class MCPProcessRunnerTests: XCTestCase, @unchecked Sendable {
     private func fixture(timeout: TimeInterval = 3, limit: Int = 2 * 1024 * 1024) -> MCPProcessRunner {
-        MCPProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/python3"), workerPrefix: ["-c"], timeout: timeout, outputLimit: limit)
+        MCPProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/python3"), workerPrefix: ["-c"], supervisorExecutable: Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser"), timeout: timeout, outputLimit: limit)
+    }
+
+    func testStoppedWorkerWaitsForTimeoutInsteadOfBeingMistakenForExit() async {
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = await fixture(timeout: 1).run(
+            arguments: ["import os,signal; print('stopped-fixture',flush=True); os.kill(os.getpid(),signal.SIGSTOP)"],
+            input: Data(), expectedImage: "test")
+        XCTAssertEqual(result.stdout, Data("stopped-fixture\n".utf8))
+        XCTAssertTrue(result.failure?.contains("timed out") == true)
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - started, 0.8,
+                                    "A stopped event must not prematurely retire a live worker")
+    }
+
+    func testStoppedSupervisorRetainsTheLeaderUntilTimeout() async {
+        // Deliberately non-cooperative helper fixture: it stops itself before
+        // interpreting bootstrap input. The host owns this direct-child leader.
+        let python = URL(fileURLWithPath: "/usr/bin/python3")
+        let runner = MCPProcessRunner(executable: python, workerPrefix: ["-c"], supervisorExecutable: python, timeout: 1)
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = await runner.run(arguments: ["import os,signal; print('stopped-supervisor',flush=True); os.kill(os.getpid(),signal.SIGSTOP)"],
+                                      input: Data(), expectedImage: "fixture")
+        XCTAssertEqual(result.stdout, Data("stopped-supervisor\n".utf8))
+        XCTAssertTrue(result.failure?.contains("timed out") == true)
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - started, 0.8,
+                                    "A stopped group leader must remain reserved until timeout")
+    }
+
+    func testShutdownCancelsActiveExecutionAndRejectsLaterCalls() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let started = directory.appendingPathComponent("started")
+        let runner = fixture(timeout: 3)
+        let active = Task { await runner.run(arguments: ["import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch(); time.sleep(30)", started.path], input: Data(), expectedImage: "fixture") }
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: started.path) { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: started.path))
+        let start = ProcessInfo.processInfo.systemUptime
+        let cleanup = await runner.shutdown()
+        XCTAssertNil(cleanup)
+        let result = await active.value
+        XCTAssertTrue(result.cancelled)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 1)
+        let later = await runner.run(arguments: ["print('unexpected')"], input: Data(), expectedImage: "fixture")
+        XCTAssertTrue(later.failure?.contains("not executed") == true)
+        XCTAssertEqual(later.stdout, Data())
+    }
+
+    func testConcurrentExecutionIsRejectedBeforeItsEffect() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let started = directory.appendingPathComponent("started"), release = directory.appendingPathComponent("release"), effect = directory.appendingPathComponent("effect")
+        let runner = fixture(timeout: 3)
+        let active = Task { await runner.run(arguments: ["import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch();\nwhile not pathlib.Path(sys.argv[2]).exists(): time.sleep(.005)", started.path, release.path], input: Data(), expectedImage: "fixture") }
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: started.path) { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: started.path))
+        let result = await runner.run(arguments: ["import pathlib,sys; pathlib.Path(sys.argv[1]).touch()", effect.path], input: Data(), expectedImage: "fixture")
+        FileManager.default.createFile(atPath: release.path, contents: nil)
+        let first = await active.value
+        XCTAssertNil(first.failure)
+        XCTAssertTrue(result.failure?.contains("not executed") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: effect.path))
+    }
+
+    func testPendingCleanupPreventsAnotherEffectUntilTheSameOwnerRetires() async throws {
+        final class Gate: @unchecked Sendable {
+            let lock = NSLock()
+            private var blocked = true
+            func unblock() { lock.withLock { blocked = false } }
+            var isBlocked: Bool { lock.withLock { blocked } }
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let effect = directory.appendingPathComponent("effect")
+        let gate = Gate()
+        var lifecycle = MCPProcessRunner.Lifecycle()
+        lifecycle.retire = { gate.isBlocked ? .pending : $0.retire(timeout: 0) }
+        let runner = MCPProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/python3"), workerPrefix: ["-c"],
+            supervisorExecutable: Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser"),
+            timeout: 2, cleanupTimeout: 0.05, lifecycle: lifecycle)
+        let started = ProcessInfo.processInfo.systemUptime
+        let first = await runner.run(arguments: ["print('first')"], input: Data(), expectedImage: "fixture")
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.8, "Unconfirmed retirement must return within its userspace budget")
+        XCTAssertEqual(first.stdout, Data("first\n".utf8))
+        XCTAssertTrue(first.failure?.contains("pending") == true)
+        let rejected = await runner.run(arguments: ["import pathlib,sys; pathlib.Path(sys.argv[1]).touch()", effect.path], input: Data(), expectedImage: "fixture")
+        XCTAssertTrue(rejected.failure?.contains("not executed") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: effect.path))
+        gate.unblock()
+        let recovered = await runner.run(arguments: ["print('recovered')"], input: Data(), expectedImage: "fixture")
+        XCTAssertNil(recovered.failure)
+        XCTAssertEqual(recovered.stdout, Data("recovered\n".utf8))
+        let cleanup = await runner.shutdown(); XCTAssertNil(cleanup)
+    }
+
+    func testInheritedDeadlineCannotExtendConfiguredTimeout() async {
+        let runner = MCPProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/python3"), workerPrefix: ["-c"],
+            supervisorExecutable: Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser"),
+            timeout: 0.15, invocationDeadline: ProcessInfo.processInfo.systemUptime + 30)
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = await runner.run(arguments: ["import time; time.sleep(1)"], input: Data(), expectedImage: "fixture")
+        XCTAssertTrue(result.failure?.contains("timed out") == true)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.7,
+                          "An inherited budget may shorten, but never extend, the configured timeout")
+    }
+
+    func testTimeoutPreservesActualWorkerTermGraceAndSignalStatus() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("grace")
+        let script = """
+        import os,signal,sys,time,pathlib
+        def finish(sig,frame):
+            pathlib.Path(sys.argv[1]).write_text('received')
+            time.sleep(.1)
+            pathlib.Path(sys.argv[1]).write_text('completed')
+            signal.signal(signal.SIGTERM,signal.SIG_DFL)
+            os.kill(os.getpid(),signal.SIGTERM)
+        signal.signal(signal.SIGTERM,finish)
+        print('ready',flush=True)
+        time.sleep(5)
+        """
+        let result = await fixture(timeout: 0.4).run(arguments: [script, marker.path], input: Data(), expectedImage: "fixture")
+        XCTAssertEqual(result.stdout, Data("ready\n".utf8))
+        XCTAssertTrue(result.failure?.contains("timed out") == true)
+        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "completed",
+                       "The real CLI must retain its TERM grace even though a supervisor leads its group")
+        XCTAssertEqual(result.exitCode, 143, "Report the actual CLI signal status, not a missing helper record")
     }
 
     func testSeparateStreamsStdinArgumentsAndContext() async {

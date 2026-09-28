@@ -76,6 +76,17 @@ class TraceCLITests(unittest.TestCase):
         self.assertEqual(len(roots), 1, 'root must be identifiable without guessing by duration or order')
         self.assertEqual(len({trace['processID'] for trace in traces}), 3)
 
+    def test_closed_diagnostic_streams_keep_cli_exit_status(self):
+        for args, descriptor, timing, expected in [(['--help'], 1, '0', 0),
+                                                  (['--unknown-option'], 2, '0', 64),
+                                                  (['wait', '0'], 2, '1', 0)]:
+            with self.subTest(args=args, descriptor=descriptor):
+                env = {k: v for k, v in os.environ.items() if not k.startswith('SAFARI_BROWSER_')}
+                env['SAFARI_BROWSER_TRACE_TIMING'] = timing
+                result = subprocess.run(['/bin/sh', '-c', f'exec {descriptor}>&-; exec "$@"',
+                    'fixture', str(BINARY), *args], env=env, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, expected)
+
     def test_help_remains_success(self):
         plain = self.invoke(['--help'], None)
         traced = self.invoke(['--help'], '1')

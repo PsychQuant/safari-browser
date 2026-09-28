@@ -22,6 +22,9 @@ struct ExecCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        let pacingEnabled: Bool
+        if let active = CommandPacing.currentEnabled { pacingEnabled = active }
+        else { pacingEnabled = try CommandPacing(environment: ProcessInfo.processInfo.environment).isEnabled }
         try await PerformanceTrace.spanAsync(.execRun) {
             // #51: exec honors --profile transitively — encodeTargetArgs (#60)
             // propagates the parent's --profile into every sub-step's
@@ -44,7 +47,10 @@ struct ExecCommand: AsyncParsableCommand {
             // overhead from the client path. Otherwise (daemon off, or any
             // step uses an unsupported command) fall through to the local
             // interpreter which uses the SubprocessStepDispatcher.
-            if SafariBridge.shouldUseDaemonAuto(),
+            // An older daemon cannot pace in-process steps. Choose the known
+            // per-step CLI boundary before sending any batch; each child can
+            // still use the ordinary daemon router and its compiled cache.
+            if !pacingEnabled, SafariBridge.shouldUseDaemonAuto(),
                let parsed = try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps),
                Self.allStepsSupported(parsed),
                let results = try await runViaDaemon(steps: parsed) {

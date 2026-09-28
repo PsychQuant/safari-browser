@@ -21,19 +21,16 @@ enum DaemonServer {
         }
     }
 
-    /// Sendable carrier for the in-flight pair so the actor's
-    /// `snapshotInFlight()` method can return cleanly across the actor
-    /// boundary. `requestIdJSON` is the already-encoded JSON snippet
-    /// for the requestId field (e.g. `42` or `"abc"`); writing it
-    /// verbatim into the cancelled envelope avoids re-serialization
-    /// and dodges the non-Sendable `Any` problem.
+    /// Stable identities for a cancellation candidate. No descriptor survives
+    /// here across suspension; the owning connection is resolved again later.
     struct InFlightSlot: Sendable {
-        let fd: Int32
+        let connectionID: UUID
+        let requestID: UUID
         let requestIdJSON: Data
     }
 
     /// Error codes surfaced in JSON-lines responses.
-    enum ErrorCode: String {
+    enum ErrorCode: String, Sendable {
         case parseError
         case methodNotFound
         case handlerError
@@ -46,6 +43,302 @@ enum DaemonServer {
         case cancelled
     }
 
+    /// Complete request JSON line, excluding LF. Applies to every method.
+    static let maxRequestLineBytes = 128 * 1024 * 1024
+
+    struct RequestLineReader: Sendable {
+        enum ReadError: Error, Equatable { case lineTooLong, readFailed(Int32) }
+        let maxBytes: Int
+        private(set) var pending = Data()
+        private var scanned = 0
+
+        init(maxBytes: Int = DaemonServer.maxRequestLineBytes) {
+            precondition(maxBytes > 0 && maxBytes < Int.max)
+            self.maxBytes = maxBytes
+        }
+
+        /// Both adapters use this framing core; only their I/O scheduling differs.
+        private mutating func bufferedLine() throws -> Data? {
+            let unscanned = pending.index(pending.startIndex, offsetBy: scanned)
+            if let newline = pending[unscanned...].firstIndex(of: 10) {
+                let length = pending.distance(from: pending.startIndex, to: newline)
+                guard length <= maxBytes else { throw ReadError.lineTooLong }
+                let line = Data(pending[..<newline])
+                pending.removeSubrange(...newline)
+                scanned = 0
+                return line
+            }
+            scanned = pending.count
+            guard pending.count <= maxBytes else { throw ReadError.lineTooLong }
+            return nil
+        }
+
+        private var readAllowance: Int { min(8192, maxBytes + 1 - pending.count) }
+
+        private mutating func finishEOF() -> Data? {
+            guard !pending.isEmpty else { return nil }
+            let line = pending
+            pending = Data()
+            scanned = 0
+            return line
+        }
+
+        mutating func readLine(
+            connection: DaemonConnection,
+            yieldAfterProgress: @Sendable () async -> Void = { await Task.yield() }
+        ) async throws -> Data? {
+            var chunks = 0
+            while true {
+                try Task.checkCancellation()
+                guard !connection.isRevoked else { throw DaemonConnection.Failure.revoked }
+                if let line = try bufferedLine() { return line }
+                let next = try await connection.readChunk(maxBytes: readAllowance)
+                try Task.checkCancellation()
+                guard !connection.isRevoked else { throw DaemonConnection.Failure.revoked }
+                guard let next else { return finishEOF() }
+                pending.append(next)
+                chunks += 1
+                if chunks == 16 {
+                    chunks = 0
+                    await yieldAfterProgress()
+                }
+            }
+        }
+
+        /// Synchronous adapter retained for the existing framing/syscall tests.
+        mutating func readLine(
+            fd: Int32,
+            readOperation: (Int32, UnsafeMutableRawPointer, Int) -> Int = { Darwin.read($0, $1, $2) }
+        ) throws -> Data? {
+            var buffer = [UInt8](repeating: 0, count: 8192)
+            while true {
+                if let line = try bufferedLine() { return line }
+                // Exactly maxBytes may still be followed by LF. Read at most
+                // that one excess byte, never an unbounded unfinished frame.
+                let allowance = readAllowance
+                let count = buffer.withUnsafeMutableBytes { readOperation(fd, $0.baseAddress!, allowance) }
+                if count > 0 {
+                    pending.append(contentsOf: buffer.prefix(count))
+                } else if count == 0 {
+                    return finishEOF()
+                } else {
+                    let code = errno
+                    if code == EINTR { continue }
+                    throw ReadError.readFailed(code)
+                }
+            }
+        }
+    }
+
+    /// A permanent listener failure contains no request or filesystem data.
+    struct ListenerFailure: Error, Sendable, Equatable, CustomStringConvertible {
+        enum Operation: String, Sendable { case accept, poll }
+        let operation: Operation
+        let errno: Int32
+        var description: String { "listener \(operation.rawValue) failed: errno=\(errno)" }
+    }
+
+    // MARK: - Accept-loop recovery (#178)
+
+    /// `accept(2)` as a value, so the loop can be driven by a scripted errno
+    /// sequence in tests. Returns the client fd, or -1 with the errno.
+    typealias AcceptFunction = @Sendable (Int32) -> (fd: Int32, errno: Int32)
+
+    static let systemAccept: AcceptFunction = { listenerFd in
+        var clientAddr = sockaddr_un()
+        var clientLen = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let fd = withUnsafeMutablePointer(to: &clientAddr) { p -> Int32 in
+            p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.accept(listenerFd, sa, &clientLen)
+            }
+        }
+        return (fd, fd < 0 ? errno : 0)
+    }
+
+    /// What the loop's readiness wait saw.
+    enum AcceptWait: Equatable, Sendable {
+        /// The listener is readable: a pending connection, or an error that
+        /// `accept()` will report.
+        case ready
+        /// `stop()` closed the wake pipe's write end.
+        case wake
+        /// `poll()` itself failed with this errno.
+        case failed(Int32)
+        /// Nothing happened within one wait slice.
+        case idle
+    }
+
+    /// The longest single `poll()`. The wake pipe normally ends a wait at
+    /// once; the slice is the fallback that lets a cancelled loop notice even
+    /// if the pipe never wakes it (a write end inherited by a child keeps it
+    /// open after `stop()` closes ours).
+    static let acceptWaitSliceMilliseconds: Int32 = 1000
+
+    /// Blocks until the listener or the wake pipe is readable.
+    typealias WaitFunction = @Sendable (_ listenerFd: Int32, _ wakeFd: Int32) -> AcceptWait
+
+    static let systemWait: WaitFunction = { listenerFd, wakeFd in
+        var fds = [pollfd(fd: listenerFd, events: Int16(POLLIN), revents: 0),
+                   pollfd(fd: wakeFd, events: Int16(POLLIN), revents: 0)]
+        let ready = poll(&fds, 2, DaemonServer.acceptWaitSliceMilliseconds)
+        guard ready >= 0 else { return .failed(errno) }
+        if ready == 0 { return .idle }
+        // A stop request wins over queued connections.
+        return fds[1].revents != 0 ? .wake : .ready
+    }
+
+    /// Everything the accept loop touches besides its own state, injectable
+    /// so tests can script errnos, record backoff delays, and move the clock.
+    struct AcceptEnvironment: Sendable {
+        var accept: AcceptFunction = DaemonServer.systemAccept
+        var wait: WaitFunction = DaemonServer.systemWait
+        var sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        var now: @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now }
+        /// Runs after this generation has released all listener resources.
+        var beforeFailureNotification: @Sendable () async -> Void = {}
+    }
+
+    /// Makes an accepted descriptor safe to serve: no SIGPIPE (#175), and
+    /// blocking I/O — BSD `accept()` copies the listener's O_NONBLOCK onto
+    /// the new socket. Returns 0, or the errno of the step that failed.
+    static func prepareAcceptedClient(_ fd: Int32) -> Int32 {
+        var enable: Int32 = 1
+        guard setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enable, socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            return errno
+        }
+        let flags = fcntl(fd, F_GETFL)
+        guard flags >= 0, fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == 0 else { return errno }
+        return 0
+    }
+
+    /// What the accept loop does after `accept()` fails.
+    enum AcceptDisposition: String, Equatable, Sendable {
+        /// The call was interrupted or one pending connection aborted; the
+        /// listener itself is fine.
+        case retry
+        /// A process or kernel resource is exhausted for now; wait, then retry.
+        case backoff
+        /// The listener is gone or invalid, so retrying can never succeed.
+        case stop
+        var diagnosticDisposition: DaemonDiagnosticBudget.Disposition {
+            switch self {
+            case .retry: return .retry
+            case .backoff: return .backoff
+            case .stop: return .stop
+            }
+        }
+    }
+
+    /// Only an errno that proves the listener unusable ends the loop. Anything
+    /// unlisted backs off (bounded, cancellable): stopping on an errno that
+    /// does not prove it recreated #178's alive-but-deaf daemon (verify R2).
+    static func acceptDisposition(errno code: Int32) -> AcceptDisposition {
+        switch code {
+        case EINTR, ECONNABORTED, EAGAIN, EPROTO:
+            return .retry
+        case EBADF, ENOTSOCK, EINVAL, EOPNOTSUPP, EFAULT:
+            return .stop
+        default:
+            return .backoff
+        }
+    }
+
+    /// 10 ms doubling to a 1 s cap. Clamped before shifting, so any attempt
+    /// count is safe.
+    static func acceptBackoff(attempt: Int) -> Duration {
+        let exponent = min(max(attempt, 0), 7)
+        return min(.milliseconds(10 * (1 << exponent)), .seconds(1))
+    }
+
+    /// Consecutive immediate retries before the loop starts backing off, so a
+    /// storm of retry-class errors cannot spin a core.
+    static let maxImmediateAcceptRetries = 16
+
+    /// First occurrence of a streak, then every 64th — a persistent error is
+    /// visible without flooding the log.
+    static func shouldLogAcceptEvent(occurrence: Int) -> Bool {
+        occurrence == 1 || (occurrence > 0 && occurrence % 64 == 0)
+    }
+
+    /// Bookkeeping for one accept-failure incident: a run of failures with no
+    /// successful accept between them and no quiet gap of `quietGap`. Every
+    /// errno counts toward the same streak — keying it on the exact errno let
+    /// an alternating pair log every failure (verify R1).
+    struct AcceptIncident {
+        /// A failure after this much quiet starts a new incident, so one early
+        /// storm cannot push every later isolated error into backoff unlogged.
+        static let quietGap: Duration = .seconds(5)
+
+        struct Step: Equatable {
+            let disposition: AcceptDisposition
+            let log: Bool
+            /// Set when `disposition == .backoff`.
+            let delay: Duration?
+        }
+
+        private(set) var streak = 0
+        private(set) var lastErrno: Int32 = 0
+        private var immediateRetries = 0
+        private var backoffAttempt = 0
+        private var lastFailure: ContinuousClock.Instant?
+
+        mutating func recordFailure(errno code: Int32, at now: ContinuousClock.Instant) -> Step {
+            if let last = lastFailure, last.duration(to: now) >= Self.quietGap {
+                self = AcceptIncident()
+            }
+            lastFailure = now
+            streak += 1
+            lastErrno = code
+            var disposition = DaemonServer.acceptDisposition(errno: code)
+            if disposition == .retry {
+                immediateRetries += 1
+                if immediateRetries > DaemonServer.maxImmediateAcceptRetries { disposition = .backoff }
+            }
+            var delay: Duration?
+            if disposition == .backoff {
+                delay = DaemonServer.acceptBackoff(attempt: backoffAttempt)
+                backoffAttempt += 1
+            }
+            let log = disposition == .stop || DaemonServer.shouldLogAcceptEvent(occurrence: streak)
+            return Step(disposition: disposition, log: log, delay: delay)
+        }
+
+        /// Ends the incident; returns its length and last errno if there was one.
+        mutating func recordSuccess() -> (streak: Int, errno: Int32)? {
+            defer { self = AcceptIncident() }
+            return streak > 0 ? (streak, lastErrno) : nil
+        }
+    }
+
+    /// Connection-setup failures (#175's SO_NOSIGPIPE branch), counted like
+    /// accept failures: consecutive, and a quiet gap starts a new streak.
+    struct SetupFailureStreak {
+        private(set) var count = 0
+        private var lastFailure: ContinuousClock.Instant?
+
+        mutating func recordFailure(at now: ContinuousClock.Instant) -> (count: Int, log: Bool) {
+            if let last = lastFailure, last.duration(to: now) >= AcceptIncident.quietGap { count = 0 }
+            lastFailure = now
+            count += 1
+            return (count, DaemonServer.shouldLogAcceptEvent(occurrence: count))
+        }
+
+        /// Ends the streak; returns its length if there was one.
+        mutating func recordSuccess() -> Int? {
+            defer { self = SetupFailureStreak() }
+            return count > 0 ? count : nil
+        }
+    }
+
+    /// Internal observations for deterministic connection lifecycle fixtures.
+    struct ConnectionObservation: Sendable {
+        var beforeRead: @Sendable () -> Void = {}
+        var beforeDispatch: @Sendable () async -> Void = {}
+        var beforeOperation: @Sendable () async -> Void = {}
+        var beforeShutdownHandoff: @Sendable () async -> Void = {}
+        var didFinish: @Sendable () -> Void = {}
+    }
+
     /// Running daemon instance. Construct with `init()`, register handlers
     /// with `register(_:handler:)`, start with `start(socketPath:)`, and
     /// stop with `stop()`.
@@ -53,13 +346,31 @@ enum DaemonServer {
         typealias MethodHandler = @Sendable (Data) async throws -> Data
 
         private var handlers: [String: MethodHandler] = [:]
-        private var listenerFd: Int32 = -1
+        /// Write end of the pipe that wakes the accept loop. The loop owns the
+        /// listener and the read end (#178).
+        private var wakeWriteFd: Int32 = -1
         private var acceptTask: Task<Void, Never>?
+        private var listenerGeneration: UUID?
+        private var shutdownGeneration = UUID()
         private var socketPath: String?
-        private var connectionTasks: [Task<Void, Never>] = []
+        private final class ConnectionRecord {
+            let connection: DaemonConnection
+            let shutdown: ShutdownContext
+            var task: Task<Void, Never>?
+            var request: RequestWork?
+            init(connection: DaemonConnection, shutdown: ShutdownContext) {
+                self.connection = connection
+                self.shutdown = shutdown
+            }
+        }
+        private var connections: [UUID: ConnectionRecord] = [:]
+        // These tasks can outlive a revoked transport only while the admitted
+        // handler or logger is genuinely unfinished. Completion removes them.
+        private var operations: [UUID: Task<Void, Never>] = [:]
 
         /// Section 3 of `daemon-security-hardening` — optional log writer
-        /// fed one redacted/truncated JSON-line per request. When `nil`
+        /// fed a prepared payload record and bounded outcome metadata for
+        /// each admitted request. When `nil`
         /// (default) the daemon emits no log; production wiring sets this
         /// at start-up via `setLogWriter(_:)`. The `logFull` flag flips
         /// off redaction entirely for `SAFARI_BROWSER_DAEMON_LOG_FULL=1`
@@ -80,16 +391,6 @@ enum DaemonServer {
         /// the activity signal that matters for the idle watchdog.
         private var requestCount: Int = 0
 
-        /// Section 6 of `daemon-security-hardening`. In-flight request
-        /// tracking lets `daemon.shutdown` send a `cancelled` error to
-        /// every active client connection before the daemon dies, so
-        /// callers don't sit blocked on a forever-pending response.
-        /// Map: client fd → JSON-encoded requestId snippet so the
-        /// cancelled envelope correlates with the request the client
-        /// is awaiting. Storing the requestId as `Data` keeps the
-        /// actor fully Sendable (raw `Any?` would not be).
-        private var inFlightRequestIds: [Int32: Data] = [:]
-
         /// Section 6 of `daemon-security-hardening`. When the lifecycle
         /// snapshot fields below are read by the bypass path, they must
         /// not require the cache actor — otherwise `daemon.status`
@@ -106,14 +407,38 @@ enum DaemonServer {
         /// Wraps `Server.stop()` (or equivalent teardown) so the
         /// outer wrapper actor — which owns the pid file path and the
         /// idle-watchdog task — can clean up properly. The bypass path
-        /// invokes this from a detached Task so the response to the
-        /// shutdown caller lands first.
+        /// invokes this after attempting the shutdown caller's acknowledgement;
+        /// local write completion is not a peer-delivery guarantee.
         private var shutdownHook: (@Sendable () async -> Void)?
 
         private let shutdownWatchdog: (@Sendable () -> Void)?
+        private nonisolated let requestLineLimit: Int
+        private nonisolated let connectionObservation: ConnectionObservation
+        private let connectionEnvironment: DaemonConnection.Environment
+        var trackedConnectionCount: Int { connections.count }
+        var activeOperationCount: Int { operations.count }
+        private let diagnosticClock: @Sendable () -> ContinuousClock.Instant
+        private let diagnosticSleep: @Sendable () async throws -> Void
+        private var diagnosticBudget: DaemonDiagnosticBudget
+        private var diagnosticEnabled = false
+        private var diagnosticGeneration = UUID()
+        private var diagnosticFlushToken: UUID?
+        private var diagnosticFlushTask: Task<Void, Never>?
 
-        init(shutdownWatchdog: (@Sendable () -> Void)? = nil) {
+        init(shutdownWatchdog: (@Sendable () -> Void)? = nil,
+             requestLineLimit: Int = DaemonServer.maxRequestLineBytes,
+             diagnosticClock: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
+             diagnosticSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(500)) },
+             connectionObservation: ConnectionObservation = .init(),
+             connectionEnvironment: DaemonConnection.Environment = .init()) {
+            precondition(requestLineLimit > 0 && requestLineLimit < Int.max)
             self.shutdownWatchdog = shutdownWatchdog
+            self.requestLineLimit = requestLineLimit
+            self.connectionObservation = connectionObservation
+            self.connectionEnvironment = connectionEnvironment
+            self.diagnosticClock = diagnosticClock
+            self.diagnosticSleep = diagnosticSleep
+            self.diagnosticBudget = DaemonDiagnosticBudget(now: diagnosticClock())
         }
 
 
@@ -122,14 +447,82 @@ enum DaemonServer {
             handlers[method] = handler
         }
 
-        /// Install a log writer that receives one redacted JSON-line per
-        /// dispatched request. Pass `nil` to disable. The `logFull` flag
+        /// Install a writer for prepared payload and outcome JSON-lines.
+        /// Consumers distinguish records by event and correlate requestToken.
+        /// Pass `nil` to disable. The `logFull` flag
         /// disables redaction for `SAFARI_BROWSER_DAEMON_LOG_FULL=1`
         /// local-debugging sessions; default is `false` so no contributor
         /// can accidentally turn on raw logging without setting the env.
         func setLogWriter(_ writer: (@Sendable (String) -> Void)?, logFull: Bool = false) {
             self.logWriter = writer
             self.logFull = logFull
+            diagnosticGeneration = UUID()
+            diagnosticFlushTask?.cancel()
+            diagnosticEnabled = writer != nil
+            diagnosticBudget = DaemonDiagnosticBudget(now: diagnosticClock())
+        }
+
+        struct DiagnosticEmission: Sendable {
+            let writer: @Sendable (String) -> Void
+            let value: DaemonDiagnosticBudget.Emission
+            func write() { writer(DaemonLog.formatDiagnostic(timestamp: Date(), emission: value)) }
+        }
+
+        nonisolated func recordDiagnostic(_ event: DaemonDiagnosticBudget.Event) async {
+            guard let emission = await prepareDiagnostic(event) else { return }
+            emission.write()
+        }
+
+        private func prepareDiagnostic(_ event: DaemonDiagnosticBudget.Event) -> DiagnosticEmission? {
+            guard diagnosticEnabled, let writer = logWriter, !Task.isCancelled else { return nil }
+            let value = diagnosticBudget.record(event, at: diagnosticClock())
+            scheduleDiagnosticFlush()
+            return value.map { DiagnosticEmission(writer: writer, value: $0) }
+        }
+
+        private func scheduleDiagnosticFlush() {
+            guard diagnosticEnabled, logWriter != nil, diagnosticBudget.hasPending,
+                  diagnosticFlushTask == nil else { return }
+            let token = UUID(), generation = diagnosticGeneration
+            let sleep = diagnosticSleep
+            diagnosticFlushToken = token
+            diagnosticFlushTask = Task.detached { [weak self] in
+                var schedulingFailed = false
+                do {
+                    while !Task.isCancelled {
+                        try await sleep()
+                        guard !Task.isCancelled, let owner = self else { break }
+                        if let emission = await owner.prepareDiagnosticFlush(token: token, generation: generation) {
+                            emission.write()
+                        }
+                        guard await owner.keepDiagnosticFlush(token: token, generation: generation) else { break }
+                    }
+                } catch { schedulingFailed = true }
+                await self?.finishDiagnosticFlush(token: token, failedGeneration: schedulingFailed ? generation : nil)
+            }
+        }
+
+        private func prepareDiagnosticFlush(token: UUID, generation: UUID) -> DiagnosticEmission? {
+            guard diagnosticFlushToken == token, diagnosticGeneration == generation,
+                  diagnosticEnabled, let writer = logWriter, !Task.isCancelled else { return nil }
+            return diagnosticBudget.drain(at: diagnosticClock()).map { DiagnosticEmission(writer: writer, value: $0) }
+        }
+
+        private func keepDiagnosticFlush(token: UUID, generation: UUID) -> Bool {
+            diagnosticFlushToken == token && diagnosticGeneration == generation
+                && diagnosticEnabled && diagnosticBudget.hasPending && !Task.isCancelled
+        }
+
+        private func finishDiagnosticFlush(token: UUID, failedGeneration: UUID?) {
+            guard diagnosticFlushToken == token else { return }
+            diagnosticFlushTask = nil
+            diagnosticFlushToken = nil
+            // A broken scheduling source must not busy-loop on the same
+            // pending state. A later candidate can attempt scheduling again.
+            if failedGeneration == diagnosticGeneration { return }
+            // A replacement writer can accumulate new state while the old
+            // writer is blocked. Start its worker only after this one ends.
+            scheduleDiagnosticFlush()
         }
 
         fileprivate func currentLogWriter() -> (@Sendable (String) -> Void)? { logWriter }
@@ -200,6 +593,7 @@ enum DaemonServer {
         /// listener bind, not actor allocation.
         func recordStartTimestamp(_ at: Date = Date()) {
             startedAt = at
+            lastActivity = at
         }
 
         /// Install the shutdown hook invoked by the lifecycle bypass on
@@ -210,26 +604,50 @@ enum DaemonServer {
             shutdownHook = hook
         }
 
-        fileprivate func currentShutdownHook() -> (@Sendable () async -> Void)? { shutdownHook }
-
-        /// Mark a client connection as having an in-flight request whose
-        /// requestId is `requestIdJSON` (already JSON-encoded). Called
-        /// from the dispatch path before invoking the handler.
-        func markInFlight(fd: Int32, requestIdJSON: Data) {
-            inFlightRequestIds[fd] = requestIdJSON
+        /// Admission captures a capability, never a lookup of a later run's hook.
+        private struct ShutdownContext: Sendable {
+            let generation: UUID
+            let hook: (@Sendable () async -> Void)?
         }
 
-        /// Clear the in-flight slot for `fd`. Called from the dispatch
-        /// path after handler completes (success or error).
-        func clearInFlight(fd: Int32) {
-            inFlightRequestIds.removeValue(forKey: fd)
+        private func prepareShutdown(_ context: ShutdownContext) -> [InFlightSlot]? {
+            guard !Task.isCancelled, context.generation == shutdownGeneration else { return nil }
+            // The process-level watchdog is scheduled only for a still-current
+            // request, in the same actor turn as the generation check.
+            shutdownWatchdog?()
+            return snapshotInFlight()
         }
 
-        /// Snapshot of in-flight (fd, requestIdJSON) pairs. Consumed by
-        /// `daemon.shutdown` to send a `cancelled` envelope to every
-        /// active client before tearing down the socket.
+        private func ownsShutdown(_ context: ShutdownContext) -> Bool {
+            context.generation == shutdownGeneration
+        }
+
+        /// Read-only fixture seam for the final handoff after a valid shutdown
+        /// plan was captured. It invokes the same guarded completion as the RPC.
+        func capturedShutdownCompletionForTesting() -> @Sendable () async -> DaemonLog.ShutdownHandoff {
+            let context = ShutdownContext(generation: shutdownGeneration, hook: shutdownHook)
+            return { await self.completeShutdown(context) }
+        }
+
+        private func completeShutdown(_ context: ShutdownContext) async -> DaemonLog.ShutdownHandoff {
+            guard context.generation == shutdownGeneration else { return .rejected }
+            if let hook = context.hook {
+                await hook()
+                return .hookReturned
+            } else {
+                cleanListener(cancelAcceptTask: true)
+                return .instanceStopped
+            }
+        }
+
+        /// A snapshot carries identities, never a raw fd for a delayed write.
         func snapshotInFlight() -> [InFlightSlot] {
-            inFlightRequestIds.map { InFlightSlot(fd: $0.key, requestIdJSON: $0.value) }
+            connections.values.compactMap { record in
+                guard record.shutdown.generation == shutdownGeneration,
+                      !record.connection.isRevoked, let work = record.request else { return nil }
+                return InFlightSlot(connectionID: record.connection.id, requestID: work.id,
+                                    requestIdJSON: work.request.requestIdJSON)
+            }
         }
 
         /// Snapshot of the last-activity timestamp as seconds since epoch,
@@ -238,8 +656,17 @@ enum DaemonServer {
 
         /// Bind the Unix socket, start listening, and kick off the accept loop.
         /// Throws `DaemonError` on bind/listen failure.
-        func start(socketPath: String) async throws {
-            guard listenerFd < 0 else { return } // idempotent — already started
+        func start(socketPath: String,
+                   onListenerFailure: (@Sendable (ListenerFailure) async -> Void)? = nil) async throws {
+            try await start(socketPath: socketPath, environment: DaemonServer.AcceptEnvironment(),
+                            onListenerFailure: onListenerFailure)
+        }
+
+        /// `environment` is a test seam: it drives the real loop behind a real
+        /// listener with scripted accept results.
+        func start(socketPath: String, environment: DaemonServer.AcceptEnvironment,
+                   onListenerFailure: (@Sendable (ListenerFailure) async -> Void)? = nil) async throws {
+            guard acceptTask == nil else { return } // idempotent — already started
 
             // Remove any stale socket left from a crashed prior run.
             unlink(socketPath)
@@ -297,303 +724,641 @@ enum DaemonServer {
                 throw DaemonError.bindFailed("listen() failed: errno=\(errno)")
             }
 
-            self.listenerFd = fd
+            // #178: the loop waits in poll() on the listener and a wake pipe,
+            // so accept() must never block — a connection aborted between
+            // poll() and accept() would otherwise park the loop where stop()
+            // cannot reach it. Close-on-exec keeps the write end from leaking
+            // into a child, which would stop its close() from waking the loop.
+            var wake: [Int32] = [-1, -1]
+            let flags = fcntl(fd, F_GETFL)
+            guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0, pipe(&wake) == 0 else {
+                let code = errno
+                close(fd)
+                unlink(socketPath)
+                throw DaemonError.bindFailed("listener setup failed: errno=\(code)")
+            }
+            guard wake.allSatisfy({ fcntl($0, F_SETFD, FD_CLOEXEC) == 0 }) else {
+                let code = errno
+                wake.forEach { close($0) }
+                close(fd)
+                unlink(socketPath)
+                throw DaemonError.bindFailed("wake pipe setup failed: errno=\(code)")
+            }
+
+            diagnosticEnabled = logWriter != nil
+            self.wakeWriteFd = wake[1]
             self.socketPath = socketPath
 
             // Snapshot handlers once per connection accepts; registrations
             // after start() land on future connections via latest snapshot
             // fetched at dispatch time.
             let instance = self
+            let wakeRead = wake[0]
+            let generation = UUID()
+            listenerGeneration = generation
+            shutdownGeneration = generation
             self.acceptTask = Task.detached(priority: .userInitiated) {
-                await Self.acceptLoop(listenerFd: fd, instance: instance)
+                guard let termination = await Self.acceptLoopResult(
+                    listenerFd: fd, wakeFd: wakeRead, instance: instance, environment: environment
+                ), let completion = await instance.finishListenerFailure(termination, generation: generation) else { return }
+                // A synchronous writer can block indefinitely. Its captured,
+                // budgeted emission must not hold up cleanup or notification.
+                if let emission = completion.emission {
+                    Task.detached { emission.write() }
+                }
+                await environment.beforeFailureNotification()
+                await onListenerFailure?(termination.failure)
             }
         }
 
-        /// Stop accepting new connections, close existing connections,
-        /// and remove the socket file.
+        /// Stop accepting new connections, cancel existing connection tasks,
+        /// and remove the socket file. Returns without waiting for the accept
+        /// loop, which closes the listener itself once it observes the wake.
         func stop() async {
-            if listenerFd >= 0 {
-                close(listenerFd)
-                listenerFd = -1
-            }
-            acceptTask?.cancel()
+            cleanListener(cancelAcceptTask: true)
+        }
+
+        private struct ListenerCompletion: Sendable {
+            let emission: DiagnosticEmission?
+        }
+
+        /// This actor turn owns cleanup; no suspension can let a later start
+        /// replace resources between the generation check and their release.
+        private func finishListenerFailure(_ termination: ListenerTermination, generation: UUID) -> ListenerCompletion? {
+            guard listenerGeneration == generation else { return nil }
+            let emission = prepareDiagnostic(termination.event)
+            cleanListener(cancelAcceptTask: false)
+            return ListenerCompletion(emission: emission)
+        }
+
+        private func cleanListener(cancelAcceptTask: Bool) {
+            listenerGeneration = nil
+            shutdownGeneration = UUID()
+            diagnosticEnabled = false
+            diagnosticGeneration = UUID()
+            diagnosticBudget.discardPending()
+            diagnosticFlushTask?.cancel()
+            if cancelAcceptTask { acceptTask?.cancel() }
             acceptTask = nil
-            for task in connectionTasks {
-                task.cancel()
+            // #178: wake the loop rather than close its listener. The loop is
+            // the only caller of accept() and closes the listener after its
+            // last call, so no retry can reach a closed or reused descriptor.
+            // Closing — not writing to — the write end stays safe if the loop
+            // has already exited and closed the read end. Not awaiting the loop
+            // keeps stop() independent of cooperative-pool scheduling (verify
+            // R2 measured shutdown stalls when it waited).
+            if wakeWriteFd >= 0 {
+                close(wakeWriteFd)
+                wakeWriteFd = -1
             }
-            connectionTasks.removeAll()
+            for record in connections.values {
+                record.connection.revoke()
+                record.request?.result.cancel()
+                record.request?.replyFinished.cancel()
+                record.task?.cancel()
+            }
+            connections.removeAll()
+            // Do not discard genuinely unfinished operation tracking or await
+            // a handler that cannot cooperate with cancellation.
+            for task in operations.values { task.cancel() }
             if let path = socketPath {
                 unlink(path)
                 socketPath = nil
             }
         }
 
-        // MARK: - Internal dispatch (actor-isolated)
+        // MARK: - Connection and request ownership (actor-isolated)
 
-        fileprivate func lookupHandler(_ method: String) -> MethodHandler? {
-            handlers[method]
+        fileprivate func admitConnection(_ clientFd: Int32) {
+            guard !Task.isCancelled else { close(clientFd); return }
+            let connection: DaemonConnection
+            do { connection = try DaemonConnection(adopting: clientFd, environment: connectionEnvironment) }
+            catch {
+                // The adopter owns and closes even its failed setup descriptor.
+                let code: Int32
+                if case DaemonConnection.Failure.system(_, let value) = error { code = value }
+                else { code = EIO }
+                if let emission = prepareDiagnostic(.init(kind: .setupFailed, errno: code,
+                                                           disposition: .closed, count: 1)) {
+                    Task.detached { emission.write() }
+                }
+                return
+            }
+            let shutdown = ShutdownContext(generation: shutdownGeneration, hook: shutdownHook)
+            let record = ConnectionRecord(connection: connection, shutdown: shutdown)
+            connections[connection.id] = record
+            let observation = connectionObservation
+            record.task = Task.detached(priority: .userInitiated) {
+                let diagnostic = await Self.serveConnection(connection: connection, instance: self)
+                let emission = await self.finishConnection(connection.id, diagnostic: diagnostic)
+                observation.didFinish()
+                // The owning generation admitted this emission before retiring
+                // the connection. Late writing cannot borrow a new logger/budget.
+                if let emission { Task.detached { emission.write() } }
+            }
         }
 
-        fileprivate func trackConnection(_ task: Task<Void, Never>) {
-            connectionTasks.append(task)
+        private func finishConnection(
+            _ id: UUID, diagnostic: DaemonDiagnosticBudget.Event?
+        ) -> DiagnosticEmission? {
+            guard let record = connections.removeValue(forKey: id) else { return nil }
+            let emission = record.shutdown.generation == shutdownGeneration
+                ? diagnostic.flatMap { prepareDiagnostic($0) } : nil
+            record.connection.revoke()
+            if let work = record.request {
+                work.result.cancel()
+                work.replyFinished.cancel()
+                operations[work.id]?.cancel()
+            }
+            return emission
+        }
+
+        private func beginRequest(_ request: ParsedRequest, connectionID: UUID) -> RequestWork? {
+            guard !Task.isCancelled, let record = connections[connectionID],
+                  record.shutdown.generation == shutdownGeneration,
+                  !record.connection.isRevoked, record.request == nil else { return nil }
+            // The authority check, activity change, handler selection and work
+            // admission are one actor turn. Stop cannot interleave between them.
+            recordActivity()
+            let work = RequestWork(connectionID: connectionID, request: request,
+                                   log: LogSnapshot(writer: logWriter, full: logFull))
+            record.request = work
+            let handler = handlers[request.method]
+            let shutdown = record.shutdown
+            operations[work.id] = Task.detached(priority: .userInitiated) {
+                await self.connectionObservation.beforeOperation()
+                if Task.isCancelled {
+                    work.result.cancel()
+                    Self.emitCandidateLog(work, outcome: .cancelled, selection: .notOffered)
+                } else {
+                    let candidate = await Self.executeAndOffer(work, handler: handler,
+                                                               instance: self, shutdown: shutdown)
+                    // Keep only fixed metadata across a potentially blocking
+                    // writer, not an additional local copy of the response frame.
+                    Self.emitCandidateLog(work, outcome: candidate.outcome, selection: candidate.selection)
+                    if candidate.hasHandoff, let writer = work.log.writer {
+                        // Stop cancels this task, but must not erase a handoff
+                        // that the transport still completes. Only fixed metadata
+                        // crosses this wait; the original operation owns logging.
+                        let outcome = await work.handoff.wait()
+                        writer(DaemonLog.formatShutdownHandoff(timestamp: Date(), requestToken: work.id, outcome: outcome))
+                    }
+                }
+                await self.finishOperation(work.id)
+            }
+            return work
+        }
+
+        private func finishOperation(_ id: UUID) { operations.removeValue(forKey: id) }
+
+        private func finishReply(_ work: RequestWork) {
+            guard let record = connections[work.connectionID], record.request === work else { return }
+            record.request = nil
+        }
+
+        private func isCurrent(_ work: RequestWork) -> Bool {
+            guard let record = connections[work.connectionID] else { return false }
+            return record.shutdown.generation == shutdownGeneration
+                && record.request === work && !record.connection.isRevoked
+        }
+
+        private func cancellationTarget(_ slot: InFlightSlot, context: ShutdownContext) -> RequestWork? {
+            guard context.generation == shutdownGeneration,
+                  let record = connections[slot.connectionID],
+                  let work = record.request, work.id == slot.requestID,
+                  isCurrent(work) else { return nil }
+            return work
+        }
+
+        private func offerCancellation(_ reply: Reply, to work: RequestWork, context: ShutdownContext) -> Bool {
+            guard context.generation == shutdownGeneration, isCurrent(work),
+                  work.result.complete(reply) else { return false }
+            operations[work.id]?.cancel()
+            return true
+        }
+
+        private func statusResponse(for work: RequestWork) -> Data? {
+            guard !Task.isCancelled, isCurrent(work) else { return nil }
+            let payload: [String: Any] = [
+                "pid": Int(getpid()), "uptimeSeconds": currentUptimeSeconds,
+                "requestCount": currentRequestCount, "preCompiledCount": currentPreCompiledCountSnapshot,
+                "lastActivityEpoch": currentLastActivityEpoch,
+            ]
+            return (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
         }
 
         // MARK: - Accept loop
 
-        private static func acceptLoop(listenerFd: Int32, instance: Instance) async {
+        /// Accepts clients until `stop()` wakes it, the task is cancelled, or
+        /// the listener turns out closed or invalid. #178: a failed `accept()`
+        /// used to end the loop whatever the errno, leaving a daemon that was
+        /// alive, owned its socket file, and never accepted again. Failures
+        /// are now classified (`AcceptIncident`): transient ones retry,
+        /// resource exhaustion backs off (cancellable, capped at 1 s), and
+        /// only a closed or invalid listener ends the loop.
+        ///
+        /// The loop owns `listenerFd` and `wakeFd` and closes both on exit;
+        /// `stop()` only cancels the task and closes the wake pipe's write end.
+        /// Cancelling first and then closing the listener from `stop()`
+        /// narrowed, but did not close, the window in which a retry could reach
+        /// a closed or reused descriptor (verify R1).
+        static func acceptLoop(
+            listenerFd: Int32, wakeFd: Int32, instance: Instance,
+            environment env: DaemonServer.AcceptEnvironment = .init()
+        ) async {
+            if let termination = await acceptLoopResult(listenerFd: listenerFd, wakeFd: wakeFd,
+                                                        instance: instance, environment: env) {
+                // Direct loop callers retain synchronous diagnostic observation.
+                await instance.recordDiagnostic(termination.event)
+            }
+        }
+
+        private struct ListenerTermination: Sendable {
+            let failure: ListenerFailure
+            let event: DaemonDiagnosticBudget.Event
+        }
+
+        private static func acceptLoopResult(
+            listenerFd: Int32, wakeFd: Int32, instance: Instance,
+            environment env: DaemonServer.AcceptEnvironment
+        ) async -> ListenerTermination? {
+            defer {
+                close(listenerFd)
+                close(wakeFd)
+            }
+            var incident = DaemonServer.AcceptIncident()
+            var setupFailures = DaemonServer.SetupFailureStreak()
             while !Task.isCancelled {
-                var clientAddr = sockaddr_un()
-                var clientLen = socklen_t(MemoryLayout<sockaddr_un>.size)
-                let clientFd = withUnsafeMutablePointer(to: &clientAddr) { p -> Int32 in
-                    p.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                        accept(listenerFd, sa, &clientLen)
+                let waited = env.wait(listenerFd, wakeFd)
+                guard !Task.isCancelled else { return nil }
+                let (clientFd, code): (Int32, Int32)
+                switch waited {
+                case .wake: return nil
+                case .idle: continue   // re-checks cancellation
+                case .failed(let e): (clientFd, code) = (-1, e)
+                case .ready: (clientFd, code) = env.accept(listenerFd)
+                }
+                guard clientFd >= 0 else {
+                    let step = incident.recordFailure(errno: code, at: env.now())
+                    if step.disposition == .stop {
+                        return ListenerTermination(
+                            failure: ListenerFailure(operation: waited == .ready ? .accept : .poll, errno: code),
+                            event: .init(kind: waited == .ready ? .acceptError : .acceptWaitError,
+                                         errno: code, disposition: .stop, count: incident.streak))
+                    }
+                    if step.log {
+                        await logEvent(instance, waited == .ready ? .acceptError : .acceptWaitError,
+                                       errno: code, disposition: step.disposition.diagnosticDisposition, count: incident.streak)
+                    }
+                    switch step.disposition {
+                    case .stop: return nil // handled above before diagnostic writing
+                    case .retry: continue
+                    case .backoff:
+                        do { try await env.sleep(step.delay ?? .zero) } catch { return nil }   // stop() must not wait it out
+                        continue
                     }
                 }
-                if clientFd < 0 {
-                    // EBADF on stop(), EINTR transient — just exit loop; stop() will have unlinked.
-                    return
+                if let ended = incident.recordSuccess() {
+                    await logEvent(instance, .acceptRecovered, errno: ended.errno,
+                                   disposition: .recovered, count: ended.streak)
                 }
-                // Disable SIGPIPE so a client that closed early doesn't take the
-                // whole daemon process down when we try to write the response.
-                var enable: Int32 = 1
-                guard setsockopt(
-                    clientFd, SOL_SOCKET, SO_NOSIGPIPE,
-                    &enable, socklen_t(MemoryLayout<Int32>.size)
-                ) == 0 else {
-                    // A peer that closed before accept can make this fail.
-                    // Never write a handshake on an unprotected socket.
-                    close(clientFd)
-                    continue
+                await admit(clientFd, instance: instance, at: env.now(), setupFailures: &setupFailures)
+            }
+            return nil
+        }
+
+        /// Serves an accepted client, or closes it if it cannot be made safe.
+        /// A peer that closed before accept can make setup fail: never write a
+        /// handshake on an unprotected socket (#175), and record it (#178) so a
+        /// persistent failure is diagnosable. The next good connection ends
+        /// the setup-failure streak.
+        private static func admit(
+            _ clientFd: Int32, instance: Instance, at now: ContinuousClock.Instant,
+            setupFailures: inout DaemonServer.SetupFailureStreak
+        ) async {
+            let setupErrno = DaemonServer.prepareAcceptedClient(clientFd)
+            guard setupErrno == 0 else {
+                close(clientFd)
+                let step = setupFailures.recordFailure(at: now)
+                if step.log {
+                    await logEvent(instance, .setupFailed, errno: setupErrno,
+                                   disposition: .closed, count: step.count)
                 }
-                let handlerTask = Task.detached(priority: .userInitiated) {
-                    await Self.serveConnection(clientFd: clientFd, instance: instance)
+                return
+            }
+            if let ended = setupFailures.recordSuccess() {
+                await logEvent(instance, .setupRecovered, errno: 0,
+                               disposition: .recovered, count: ended)
+            }
+            // Ownership transfers to the actor, which either closes a revoked
+            // client or creates and tracks its handler without an await gap.
+            await instance.admitConnection(clientFd)
+        }
+
+        /// One redacted-by-construction event line: event name, errno,
+        /// disposition and count only — no paths, no client data.
+        private static func logEvent(
+            _ instance: Instance, _ event: DaemonDiagnosticBudget.Kind, errno code: Int32,
+            disposition: DaemonDiagnosticBudget.Disposition, count: Int
+        ) async {
+            await instance.recordDiagnostic(.init(kind: event, errno: code, disposition: disposition, count: count))
+        }
+
+        // MARK: - Transport / operation separation
+
+        private struct ParsedRequest: Sendable {
+            let method: String
+            let params: Data
+            let requestIdJSON: Data
+            let started: Date
+            let rejection: Rejection?
+            struct Rejection: Sendable { let code: ErrorCode; let message: String }
+
+            private static func malformedLogParams(_ byteCount: Int) -> Data {
+                // Preserve the default diagnostic byte count without retaining
+                // a whole malformed frame, including in full-log mode.
+                Data("{\"_log\":\"<redacted \(byteCount) bytes; malformed params>\"}".utf8)
+            }
+
+            static func decode(_ line: Data) -> Self {
+                let started = Date()
+                let parsed: Any
+                do { parsed = try JSONSerialization.jsonObject(with: line) }
+                catch {
+                    return Self(method: "<parse-error>", params: malformedLogParams(line.count),
+                                requestIdJSON: Data("null".utf8), started: started,
+                                rejection: .init(code: .parseError, message: "invalid JSON: \(error)"))
                 }
-                await instance.trackConnection(handlerTask)
+                guard let object = parsed as? [String: Any] else {
+                    return Self(method: "<parse-error>", params: malformedLogParams(line.count),
+                                requestIdJSON: Data("null".utf8), started: started,
+                                rejection: .init(code: .parseError, message: "request must be JSON object"))
+                }
+                let id = encodeRequestId(object["requestId"])
+                guard let method = object["method"] as? String else {
+                    return Self(method: "<missing>", params: Data("{}".utf8), requestIdJSON: id,
+                                started: started, rejection: .init(code: .parseError, message: "missing 'method'"))
+                }
+                if LifecycleMethod(rawValue: method) != nil {
+                    // Lifecycle parameters have always been ignored, including
+                    // logging. Preserve that shape and privacy boundary.
+                    return Self(method: method, params: Data("{}".utf8), requestIdJSON: id,
+                                started: started, rejection: nil)
+                }
+                let paramsValue = object["params"] ?? [:]
+                guard JSONSerialization.isValidJSONObject(paramsValue) else {
+                    return Self(method: method, params: Data("{}".utf8), requestIdJSON: id,
+                                started: started, rejection: .init(code: .parseError, message: "unserialisable params"))
+                }
+                do {
+                    let params = try JSONSerialization.data(withJSONObject: paramsValue)
+                    return Self(method: method, params: params, requestIdJSON: id, started: started, rejection: nil)
+                } catch {
+                    return Self(method: method, params: Data("{}".utf8), requestIdJSON: id,
+                                started: started, rejection: .init(code: .parseError, message: "unserialisable params"))
+                }
             }
         }
 
-        private static func serveConnection(clientFd: Int32, instance: Instance) async {
-            defer { close(clientFd) }
-            // Send the handshake first line per the `Version handshake refuses
-            // mismatched client` spec. The client reads one line before
-            // sending any request and aborts if the version does not match.
-            if !writeLine(fd: clientFd, line: DaemonProtocol.encodeHandshake()) { return }
-            while !Task.isCancelled {
-                guard let line = readLine(fd: clientFd) else { return }
-                // Section 6 — lifecycle bypass. Peek at the method
-                // before entering the regular dispatch path. Lifecycle
-                // commands (`daemon.status`, `daemon.shutdown`) take a
-                // separate fast path that does NOT touch the cache
-                // actor, so a long-running AppleScript request cannot
-                // block them.
-                let response: Data
-                if let lifecycle = peekLifecycleMethod(line: line) {
-                    response = await dispatchLifecycle(lifecycle: lifecycle, line: line, instance: instance, fd: clientFd)
-                } else {
-                    response = await dispatchLine(line: line, fd: clientFd, instance: instance)
+        private struct LogSnapshot: Sendable {
+            let writer: (@Sendable (String) -> Void)?
+            let full: Bool
+        }
+
+        private struct ShutdownPlan: Sendable {
+            let context: ShutdownContext
+            let candidates: [InFlightSlot]
+            let caller: UUID
+        }
+
+        private struct Reply: Sendable {
+            let bytes: Data
+            let outcome: DaemonLog.ResponseOutcome
+            var deadline: ContinuousClock.Instant? = nil
+            var shutdown: ShutdownPlan? = nil
+            var closesConnection = false
+        }
+
+        /// One selected shutdown plan has one producer and one observer.
+        /// Deliberately ignores Task cancellation: normal stop cancels the
+        /// operation before the transport reports its final guarded handoff.
+        /// This stores no response payload and creates no additional task.
+        private final class HandoffObservation: @unchecked Sendable {
+            private let lock = NSLock()
+            private var outcome: DaemonLog.ShutdownHandoff?
+            private var waiter: CheckedContinuation<DaemonLog.ShutdownHandoff, Never>?
+
+            func complete(_ value: DaemonLog.ShutdownHandoff) {
+                let pending = lock.withLock { () -> CheckedContinuation<DaemonLog.ShutdownHandoff, Never>? in
+                    guard outcome == nil else { return nil }
+                    outcome = value
+                    defer { waiter = nil }
+                    return waiter
                 }
-                if !writeLine(fd: clientFd, line: response) { return }
+                pending?.resume(returning: value)
+            }
+
+            func wait() async -> DaemonLog.ShutdownHandoff {
+                await withCheckedContinuation { continuation in
+                    let ready = lock.withLock { () -> DaemonLog.ShutdownHandoff? in
+                        if let outcome { return outcome }
+                        precondition(waiter == nil, "handoff observation has one consumer")
+                        waiter = continuation
+                        return nil
+                    }
+                    if let ready { continuation.resume(returning: ready) }
+                }
             }
         }
 
-        // MARK: - Section 6: lifecycle bypass
-
-        /// Lifecycle method routing. Recognized values bypass the regular
-        /// handler dispatch and read directly from `Instance`'s snapshot
-        /// fields, never the cache actor.
-        enum LifecycleMethod: String {
-            case status = "daemon.status"
-            case shutdown = "daemon.shutdown"
+        private final class RequestWork: Sendable {
+            let id = UUID()
+            let connectionID: UUID
+            let request: ParsedRequest
+            let log: LogSnapshot
+            let result = DaemonRequestCompletion<Reply>()
+            let replyFinished = DaemonRequestCompletion<Bool>()
+            let handoff = HandoffObservation()
+            init(connectionID: UUID, request: ParsedRequest, log: LogSnapshot) {
+                self.connectionID = connectionID
+                self.request = request
+                self.log = log
+            }
         }
 
-        /// Cheap pre-dispatch parse: extract just the `method` field from
-        /// a JSON-line if it matches a `LifecycleMethod` case. Returns nil
-        /// for non-lifecycle requests so the caller routes through the
-        /// regular dispatch path.
+        private static func serveConnection(
+            connection: DaemonConnection, instance: Instance
+        ) async -> DaemonDiagnosticBudget.Event? {
+            defer { connection.revoke() }
+            guard await writeLine(connection: connection, line: DaemonProtocol.encodeHandshake(maxRequestLineBytes: instance.requestLineLimit)) else { return nil }
+            var reader = RequestLineReader(maxBytes: instance.requestLineLimit)
+            while !Task.isCancelled && !connection.isRevoked {
+                let line: Data
+                do {
+                    instance.connectionObservation.beforeRead()
+                    guard let next = try await reader.readLine(connection: connection) else { return nil }
+                    line = next
+                } catch let failure as RequestLineReader.ReadError {
+                    let cancelled = connection.isRevoked || Task.isCancelled
+                    connection.revoke()
+                    reader = RequestLineReader(maxBytes: instance.requestLineLimit)
+                    guard !cancelled else { return nil }
+                    switch failure {
+                    case .lineTooLong:
+                        return .init(kind: .requestTooLong, errno: EMSGSIZE, disposition: .closed)
+                    case .readFailed(let code):
+                        return .init(kind: .requestReadFailed, errno: code, disposition: .closed)
+                    }
+                } catch let failure as DaemonConnection.Failure {
+                    let cancelled = connection.isRevoked || Task.isCancelled
+                    connection.revoke()
+                    reader = RequestLineReader(maxBytes: instance.requestLineLimit)
+                    guard !cancelled else { return nil }
+                    if case .system(_, let code) = failure {
+                        return .init(kind: .requestReadFailed, errno: code, disposition: .closed)
+                    }
+                    return nil
+                } catch { return nil }
+
+                let parsed = ParsedRequest.decode(line)
+                await instance.connectionObservation.beforeDispatch()
+                guard let work = await instance.beginRequest(parsed, connectionID: connection.id) else { return nil }
+                // Always consume this single-consumer gate, even if cancellation
+                // arrived while beginRequest returned, to release a winning value.
+                guard let reply = await work.result.wait() else {
+                    work.replyFinished.cancel()
+                    return nil
+                }
+                let sent = await writeLine(connection: connection, line: reply.bytes, deadline: reply.deadline)
+                work.replyFinished.complete(sent)
+                await instance.finishReply(work)
+                if let plan = reply.shutdown {
+                    // An authorized shutdown continues even if its ACK could not
+                    // be delivered. The plan has independent generation checks.
+                    await instance.connectionObservation.beforeShutdownHandoff()
+                    let outcome = await performShutdown(plan, instance: instance)
+                    // Transport ownership ends independently of the logger.
+                    // The tracked original operation writes this fixed outcome.
+                    work.handoff.complete(outcome)
+                    return nil
+                }
+                if !sent || reply.closesConnection { return nil }
+            }
+            return nil
+        }
+
+        // MARK: - Lifecycle bypass and response selection
+
+        enum LifecycleMethod: String, Sendable { case status = "daemon.status", shutdown = "daemon.shutdown" }
+
         static func peekLifecycleMethod(line: Data) -> LifecycleMethod? {
-            guard let obj = try? JSONSerialization.jsonObject(with: line, options: []) as? [String: Any],
-                  let method = obj["method"] as? String,
-                  let lifecycle = LifecycleMethod(rawValue: method) else {
-                return nil
-            }
-            return lifecycle
+            guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  let method = object["method"] as? String else { return nil }
+            return LifecycleMethod(rawValue: method)
         }
 
-        /// Dispatch a lifecycle command without touching the cache actor.
-        /// `daemon.status` reads from Instance's snapshot fields and
-        /// returns immediately. `daemon.shutdown` sends a `cancelled`
-        /// envelope to every in-flight client, replies `{}` to its own
-        /// caller, and schedules an asynchronous teardown + 5s
-        /// watchdog so the process exits within the spec deadline even
-        /// if `Server.stop()` stalls.
-        private static func dispatchLifecycle(
-            lifecycle: LifecycleMethod,
-            line: Data,
-            instance: Instance,
-            fd: Int32
-        ) async -> Data {
-            await instance.recordActivity()
-            let started = Date()
-            let obj = (try? JSONSerialization.jsonObject(with: line, options: []) as? [String: Any]) ?? [:]
-            let requestId = obj["requestId"]
+        private static func cancelledReply(_ work: RequestWork) -> Reply {
+            Reply(bytes: encodeErrorRaw(requestIdJSON: work.request.requestIdJSON, code: .cancelled,
+                                        message: "daemon run stopped before request completion"), outcome: .cancelled, closesConnection: true)
+        }
 
-            let response: Data
-            switch lifecycle {
-            case .status:
-                let pid = Int(getpid())
-                let uptime = await instance.currentUptimeSeconds
-                let requestCount = await instance.currentRequestCount
-                let preCount = await instance.currentPreCompiledCountSnapshot
-                let lastActivity = await instance.currentLastActivityEpoch
-                let payload: [String: Any] = [
-                    "pid": pid,
-                    "uptimeSeconds": uptime,
-                    "requestCount": requestCount,
-                    "preCompiledCount": preCount,
-                    "lastActivityEpoch": lastActivity,
-                ]
-                let resultData = (try? JSONSerialization.data(withJSONObject: payload, options: []))
-                    ?? Data("{}".utf8)
-                response = encodeResult(requestId: requestId, resultData: resultData)
-                await emitLog(instance: instance, started: started, method: lifecycle.rawValue, requestId: requestId, paramsData: Data("{}".utf8), resultData: resultData, errorMessage: nil)
-            case .shutdown:
-                // Snapshot in-flight clients BEFORE replying so the
-                // teardown can cancel them deterministically.
-                let inFlight = await instance.snapshotInFlight()
-                response = encodeResult(requestId: requestId, resultData: Data("{}".utf8))
-                await emitLog(instance: instance, started: started, method: lifecycle.rawValue, requestId: requestId, paramsData: Data("{}".utf8), resultData: Data("{}".utf8), errorMessage: nil)
+        private static func executeAndOffer(
+            _ work: RequestWork, handler: MethodHandler?, instance: Instance, shutdown: ShutdownContext
+        ) async -> (outcome: DaemonLog.ResponseOutcome, selection: DaemonLog.CandidateSelection, hasHandoff: Bool) {
+            let reply = await executeRequest(work, handler: handler, instance: instance, shutdown: shutdown)
+            let selected = work.result.complete(reply)
+            return (reply.outcome, selected ? .selected : .notSelected, selected && reply.shutdown != nil)
+        }
 
-                // Async teardown — runs after we return so the shutdown
-                // caller's `{}` reply lands on the wire. Cancellation
-                // envelopes go to each in-flight fd; the daemon then
-                // closes them and stops the listener. 5s watchdog
-                // guarantees the process exits even if graceful path
-                // stalls (e.g., NSAppleScript still running).
-                let hook = await instance.currentShutdownHook()
-                Task.detached {
-                    for slot in inFlight where slot.fd != fd {
-                        let envelope = encodeErrorRaw(
-                            requestIdJSON: slot.requestIdJSON,
-                            code: .cancelled,
-                            message: "cancelled by daemon shutdown"
-                        )
-                        _ = writeLine(fd: slot.fd, line: envelope)
-                    }
-                    if let hook = hook {
-                        await hook()
-                    } else {
-                        await instance.stop()
-                    }
+        private static func executeRequest(
+            _ work: RequestWork, handler: MethodHandler?, instance: Instance, shutdown: ShutdownContext
+        ) async -> Reply {
+            let request = work.request
+            let requestId = try? JSONSerialization.jsonObject(with: request.requestIdJSON, options: [.fragmentsAllowed])
+            if let rejection = request.rejection {
+                emitLog(work, result: nil, error: "parseError")
+                return Reply(bytes: encodeError(requestId: requestId, code: rejection.code, message: rejection.message), outcome: .parseError)
+            }
+            if let lifecycle = LifecycleMethod(rawValue: request.method) {
+                switch lifecycle {
+                case .status:
+                    guard let data = await instance.statusResponse(for: work) else { return cancelledReply(work) }
+                    emitLog(work, result: data, error: nil)
+                    return Reply(bytes: encodeResult(requestId: requestId, resultData: data), outcome: .result)
+                case .shutdown:
+                    emitLog(work, result: Data("{}".utf8), error: nil)
+                    guard let candidates = await instance.prepareShutdown(shutdown) else { return cancelledReply(work) }
+                    return Reply(bytes: encodeResult(requestId: requestId, resultData: Data("{}".utf8)), outcome: .result,
+                                 deadline: ContinuousClock.now.advanced(by: .milliseconds(250)),
+                                 shutdown: ShutdownPlan(context: shutdown, candidates: candidates, caller: work.connectionID))
                 }
-                // The production entry owns process termination. Tests and
-                // other embedded users keep normal teardown without _exit.
-                let watchdog = await instance.shutdownWatchdog
-                watchdog?()
             }
-            return response
-        }
-
-        private static func dispatchLine(line: Data, fd: Int32, instance: Instance) async -> Data {
-            // Record activity at the top of dispatch so an actively-used
-            // daemon never gets idle-killed between consecutive requests.
-            await instance.recordActivity()
-            let started = Date()
-
-            // Parse the incoming request envelope.
-            let parsed: Any
-            do {
-                parsed = try JSONSerialization.jsonObject(with: line, options: [])
-            } catch {
-                let resp = encodeError(requestId: nil, code: .parseError, message: "invalid JSON: \(error)")
-                await emitLog(instance: instance, started: started, method: "<parse-error>", requestId: nil, paramsData: line, resultData: nil, errorMessage: "parseError")
-                return resp
+            guard let handler else {
+                emitLog(work, result: nil, error: "methodNotFound")
+                return Reply(bytes: encodeError(requestId: requestId, code: .methodNotFound,
+                                                message: "no handler: \(request.method)"), outcome: .methodNotFound)
             }
-            guard let obj = parsed as? [String: Any] else {
-                let resp = encodeError(requestId: nil, code: .parseError, message: "request must be JSON object")
-                await emitLog(instance: instance, started: started, method: "<parse-error>", requestId: nil, paramsData: line, resultData: nil, errorMessage: "parseError")
-                return resp
-            }
-            let requestId = obj["requestId"]
-            guard let method = obj["method"] as? String else {
-                let resp = encodeError(requestId: requestId, code: .parseError, message: "missing 'method'")
-                await emitLog(instance: instance, started: started, method: "<missing>", requestId: requestId, paramsData: Data("{}".utf8), resultData: nil, errorMessage: "parseError")
-                return resp
-            }
-            let paramsValue: Any = obj["params"] ?? [:]
-            let paramsData: Data
-            do {
-                paramsData = try JSONSerialization.data(withJSONObject: paramsValue, options: [])
-            } catch {
-                let resp = encodeError(requestId: requestId, code: .parseError, message: "unserialisable params")
-                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: Data("{}".utf8), resultData: nil, errorMessage: "parseError")
-                return resp
-            }
-
-            guard let handler = await instance.lookupHandler(method) else {
-                let resp = encodeError(requestId: requestId, code: .methodNotFound, message: "no handler: \(method)")
-                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: nil, errorMessage: "methodNotFound")
-                return resp
-            }
-
-            // Section 6: register the in-flight request so a concurrent
-            // `daemon.shutdown` can find this connection and emit a
-            // `cancelled` envelope to it. The slot is cleared after the
-            // handler completes (success OR error). Encode requestId
-            // here so the actor never holds a non-Sendable `Any`.
-            let requestIdJSON = encodeRequestId(requestId)
-            await instance.markInFlight(fd: fd, requestIdJSON: requestIdJSON)
             let context = DaemonRequestContext()
             do {
-                let resultData = try await DaemonRequestContext.$current.withValue(context) {
+                let result = try await DaemonRequestContext.$current.withValue(context) {
                     try await PerformanceTrace.$daemonErrorTimingSink.withValue({ context.recordErrorTiming($0) }) {
-                        try await handler(paramsData)
+                        try Task.checkCancellation()
+                        return try await handler(request.params)
                     }
                 }
-                await instance.clearInFlight(fd: fd)
-                let resp = encodeResult(requestId: requestId, resultData: resultData, diagnostics: context.diagnostics)
-                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: resultData, errorMessage: nil)
-                return resp
+                let response = encodeResult(requestId: requestId, resultData: result, diagnostics: context.diagnostics)
+                emitLog(work, result: result, error: nil)
+                return Reply(bytes: response, outcome: .result)
             } catch {
-                await instance.clearInFlight(fd: fd)
-                let resp = encodeError(requestId: requestId, code: .handlerError, message: "\(error)", diagnostics: context.diagnostics, timing: context.errorTiming)
-                await emitLog(instance: instance, started: started, method: method, requestId: requestId, paramsData: paramsData, resultData: nil, errorMessage: "\(error)")
-                return resp
+                let response = encodeError(requestId: requestId, code: .handlerError, message: "\(error)",
+                                           diagnostics: context.diagnostics, timing: context.errorTiming)
+                emitLog(work, result: nil, error: "\(error)")
+                return Reply(bytes: response, outcome: .handlerError)
             }
         }
 
-        /// Emit a single redacted/truncated log entry for the dispatched
-        /// request via the instance's installed `logWriter`. No-op when no
-        /// writer is configured. All payload routing through `DaemonLog`
-        /// honors the `logFull` flag so the contract is centralized.
-        private static func emitLog(
-            instance: Instance,
-            started: Date,
-            method: String,
-            requestId: Any?,
-            paramsData: Data,
-            resultData: Data?,
-            errorMessage: String?
-        ) async {
-            guard let writer = await instance.currentLogWriter() else { return }
-            let logFull = await instance.currentLogFull()
-            let durationMs = Int(Date().timeIntervalSince(started) * 1000)
-            let paramsLog = String(
-                data: DaemonLog.redactParams(method: method, paramsJSON: paramsData, logFull: logFull),
-                encoding: .utf8
-            ) ?? "{}"
-            let resultLog: String? = resultData.flatMap { rd in
-                String(data: DaemonLog.truncateResult(resultJSON: rd, logFull: logFull), encoding: .utf8)
+        private static func performShutdown(_ plan: ShutdownPlan, instance: Instance) async -> DaemonLog.ShutdownHandoff {
+            guard await instance.ownsShutdown(plan.context) else { return .rejected }
+            let deadline = ContinuousClock.now.advanced(by: .milliseconds(250))
+            for slot in plan.candidates where slot.connectionID != plan.caller {
+                guard ContinuousClock.now < deadline else { break }
+                guard let work = await instance.cancellationTarget(slot, context: plan.context) else { continue }
+                let frame = encodeErrorRaw(requestIdJSON: slot.requestIdJSON, code: .cancelled,
+                                           message: "cancelled by daemon shutdown")
+                let reply = Reply(bytes: frame, outcome: .cancelled, deadline: deadline, closesConnection: true)
+                guard await instance.offerCancellation(reply, to: work, context: plan.context) else { continue }
+                let timer = Task.detached {
+                    do { try await ContinuousClock().sleep(until: deadline) } catch { return }
+                    guard !Task.isCancelled else { return }
+                    work.replyFinished.cancel()
+                }
+                _ = await work.replyFinished.wait()
+                timer.cancel()
             }
-            let entry = DaemonLog.formatEntry(
-                timestamp: started,
-                method: method,
-                requestId: requestId,
-                durationMs: durationMs,
-                paramsLog: paramsLog,
-                resultLog: resultLog,
-                errorLog: errorMessage
-            )
-            writer(entry)
+            return await instance.completeShutdown(plan.context)
+        }
+
+        private static func emitCandidateLog(
+            _ work: RequestWork, outcome: DaemonLog.ResponseOutcome, selection: DaemonLog.CandidateSelection
+        ) {
+            work.log.writer?(DaemonLog.formatResponseCandidate(timestamp: Date(), requestToken: work.id,
+                                                              outcome: outcome, selection: selection))
+        }
+
+        /// The writer and privacy mode belong to the admitted request. A late
+        /// operation does not borrow the replacement run's logger.
+        private static func emitLog(_ work: RequestWork, result: Data?, error: String?) {
+            guard let writer = work.log.writer else { return }
+            let request = work.request
+            let requestId = try? JSONSerialization.jsonObject(with: request.requestIdJSON, options: [.fragmentsAllowed])
+            let params = String(data: DaemonLog.redactParams(method: request.method, paramsJSON: request.params,
+                                                            logFull: work.log.full), encoding: .utf8) ?? "{}"
+            let resultLog = result.flatMap {
+                String(data: DaemonLog.truncateResult(resultJSON: $0, logFull: work.log.full), encoding: .utf8)
+            }
+            writer(DaemonLog.formatEntry(timestamp: request.started, requestToken: work.id, method: request.method, requestId: requestId,
+                                        durationMs: Int(Date().timeIntervalSince(request.started) * 1000),
+                                        paramsLog: params, resultLog: resultLog, errorLog: error))
         }
 
         // MARK: - Response encoding
@@ -623,8 +1388,8 @@ enum DaemonServer {
 
         /// Section 6: encode a `requestId` value (which may be Int, String,
         /// or NSNull) into its JSON snippet so it can cross actor
-        /// boundaries as Sendable `Data`. Used by `markInFlight` to store
-        /// the encoded form before handler dispatch.
+        /// boundaries as Sendable `Data`. Parsed requests and cancellation
+        /// snapshots retain this form instead of carrying JSON `Any`.
         static func encodeRequestId(_ requestId: Any?) -> Data {
             let value: Any = requestId ?? NSNull()
             return (try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]))
@@ -649,37 +1414,15 @@ enum DaemonServer {
 
         // MARK: - Line I/O (POSIX)
 
-        private static func readLine(fd: Int32) -> Data? {
-            var bytes: [UInt8] = []
-            var buf = [UInt8](repeating: 0, count: 1)
-            while true {
-                let n = buf.withUnsafeMutableBufferPointer { ptr -> Int in
-                    read(fd, ptr.baseAddress, 1)
-                }
-                if n <= 0 {
-                    if bytes.isEmpty { return nil }
-                    break
-                }
-                if buf[0] == 0x0A { break }
-                bytes.append(buf[0])
-            }
-            return Data(bytes)
+        private static func writeLine(
+            connection: DaemonConnection, line: Data, deadline: ContinuousClock.Instant? = nil
+        ) async -> Bool {
+            var payload = line
+            payload.append(0x0A)
+            do { try await connection.write(payload, deadline: deadline); return true }
+            catch { return false }
         }
 
-        private static func writeLine(fd: Int32, line: Data) -> Bool {
-            var payload = Data(line)
-            payload.append(0x0A)
-            return payload.withUnsafeBytes { rawBuf -> Bool in
-                guard let base = rawBuf.baseAddress else { return false }
-                var written = 0
-                while written < rawBuf.count {
-                    let n = write(fd, base.advanced(by: written), rawBuf.count - written)
-                    if n <= 0 { return false }
-                    written += n
-                }
-                return true
-            }
-        }
     }
 
     enum DaemonError: Error, CustomStringConvertible {

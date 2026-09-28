@@ -4,8 +4,8 @@ import Foundation
 /// satisfy `Requirement: Daemon log redaction` from the persistent-daemon
 /// spec. The functions here are pure: they consume / emit `Data` (or
 /// strings) and never touch the filesystem. Wiring into the actual log
-/// file is the caller's responsibility — typically `DaemonServer.dispatchLine`
-/// pipes redacted strings through an injected writer closure.
+/// file is the caller's responsibility. DaemonServer captures the writer at
+/// admission; prepared payload and fixed outcome events share a request UUID.
 ///
 /// The four-rule contract this module enforces:
 ///
@@ -23,6 +23,53 @@ import Foundation
 ///    for local-debugging sessions; the daemon SHALL emit a single
 ///    stderr warning at startup when that opt-out is active.
 enum DaemonLog {
+    enum ResponseOutcome: String, Sendable, CaseIterable {
+        case result, cancelled
+        case parseError = "parse_error"
+        case methodNotFound = "method_not_found"
+        case handlerError = "handler_error"
+    }
+
+    enum CandidateSelection: String, Sendable, CaseIterable {
+        case selected
+        case notSelected = "not_selected"
+        case notOffered = "not_offered"
+    }
+
+    enum ShutdownHandoff: String, Sendable, CaseIterable {
+        case rejected
+        case hookReturned = "hook_returned"
+        case instanceStopped = "instance_stopped"
+    }
+
+    /// Metadata only: these APIs cannot receive source, results, paths, or
+    /// client-controlled identifiers. A selected candidate is not delivery.
+    static func formatResponseCandidate(
+        timestamp: Date, requestToken: UUID, outcome: ResponseOutcome, selection: CandidateSelection
+    ) -> String {
+        formatOutcome(timestamp: timestamp, requestToken: requestToken,
+            event: "request_response_candidate", outcome: outcome.rawValue, selection: selection.rawValue)
+    }
+
+    static func formatShutdownHandoff(timestamp: Date, requestToken: UUID, outcome: ShutdownHandoff) -> String {
+        formatOutcome(timestamp: timestamp, requestToken: requestToken,
+            event: "request_shutdown_handoff", outcome: outcome.rawValue, selection: nil)
+    }
+
+    private static func formatOutcome(
+        timestamp: Date, requestToken: UUID, event: String, outcome: String, selection: String?
+    ) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var envelope: [String: Any] = [
+            "ts": formatter.string(from: timestamp), "event": event,
+            "requestToken": requestToken.uuidString, "peerReceipt": "unconfirmed", "outcome": outcome,
+        ]
+        if let selection { envelope["selection"] = selection }
+        let data = (try? JSONSerialization.data(withJSONObject: envelope)) ?? Data("{}".utf8)
+        return String(decoding: data, as: UTF8.self) + "\n"
+    }
+
     /// Per-spec truncation cap. Public so tests can assert on the value.
     static let truncationLimit = 256
 
@@ -210,18 +257,49 @@ enum DaemonLog {
 
     // MARK: - Format
 
-    /// Compose a single log entry as a stable JSON-line. Every field
-    /// goes in the same shape so `jq`-driven grep over the daemon log
-    /// stays straightforward.
+    static func formatDiagnostic(timestamp: Date, emission: DaemonDiagnosticBudget.Emission) -> String {
+        func fields(_ event: DaemonDiagnosticBudget.Event) -> [String: Any] {
+            ["event": event.kind.rawValue, "errno": Int(event.errno),
+             "disposition": event.disposition.rawValue, "count": event.count]
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var object: [String: Any] = emission.event.map(fields) ?? [
+            "event": "diagnostics_suppressed", "errno": 0,
+            "disposition": "suppressed", "count": emission.suppressed?.total ?? 0
+        ]
+        object["timestamp"] = formatter.string(from: timestamp)
+        if let summary = emission.suppressed {
+            var value: [String: Any] = [
+                "total": summary.total,
+                "byEvent": Dictionary(uniqueKeysWithValues: summary.byEvent.map { ($0.key.rawValue, $0.value) }),
+                "byDisposition": Dictionary(uniqueKeysWithValues: summary.byDisposition.map { ($0.key.rawValue, $0.value) })
+            ]
+            if let first = summary.first { value["first"] = fields(first) }
+            if let recovery = summary.lastRecovery { value["lastRecovery"] = fields(recovery) }
+            if let terminal = summary.lastTerminal { value["lastTerminal"] = fields(terminal) }
+            object["suppressed"] = value
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else { return "{}\n" }
+        return line + "\n"
+    }
+
+    /// Compose a prepared-response payload record. This preserves existing
+    /// payload fields; consumers filter event and join outcome records by
+    /// requestToken. It does not prove arbitration, transmission, or delivery.
     ///
     /// Schema:
     /// ```
-    /// {"ts":"<ISO8601>","method":"...","requestId":<any>,"durationMs":<int>,
+    /// {"event":"request_response_prepared","requestToken":"<UUID>",
+    ///  "peerReceipt":"unconfirmed","ts":"<ISO8601>","method":"...",
+    ///  "requestId":<any>,"durationMs":<int>,
     ///  "params":<redacted JSON or null>,"result":<truncated JSON or null>,
     ///  "error":"<message or null>"}
     /// ```
     static func formatEntry(
         timestamp: Date,
+        requestToken: UUID,
         method: String,
         requestId: Any?,
         durationMs: Int,
@@ -247,6 +325,9 @@ enum DaemonLog {
 
         let envelope: [String: Any] = [
             "ts": formatter.string(from: timestamp),
+            "event": "request_response_prepared",
+            "requestToken": requestToken.uuidString,
+            "peerReceipt": "unconfirmed",
             "method": method,
             "requestId": requestId ?? NSNull(),
             "durationMs": durationMs,

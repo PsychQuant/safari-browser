@@ -99,22 +99,60 @@ enum DaemonProtocol {
         return server.semver == client.semver && server.commit == client.commit
     }
 
-    /// Handshake envelope the server writes as the first line after
-    /// accepting a connection. The client reads one line and decodes it
-    /// via `decodeHandshakeVersion`.
-    static func encodeHandshake(version: Version = currentVersion) -> Data {
-        let envelope: [String: Any] = [
-            "protocol": [
-                "name": "persistent-daemon",
-                "version": [
-                    "semver": version.semver,
-                    "commit": version.commit,
-                    "dirty": version.dirty,
-                    "vendor": version.vendor.rawValue,
-                ] as [String: Any],
+    /// Transport metadata from a single interpretation of the v2 handshake.
+    /// An absent limit denotes a legacy peer, not a guessed default.
+    struct Handshake: Decodable, Sendable {
+        let version: Version
+        let maxRequestLineBytes: Int?
+
+        private enum CodingKeys: String, CodingKey { case version, maxRequestLineBytes }
+
+        init(from decoder: Decoder) throws {
+            let fields = try decoder.container(keyedBy: CodingKeys.self)
+            version = try fields.decode(Version.self, forKey: .version)
+            if fields.contains(.maxRequestLineBytes) {
+                // Decimal text avoids JSON number decoders rounding a fractional
+                // advertisement into an integer (including values beyond 2^53).
+                let text = try fields.decode(String.self, forKey: .maxRequestLineBytes)
+                guard let first = text.utf8.first, (49...57).contains(first),
+                      text.utf8.allSatisfy({ (48...57).contains($0) }),
+                      let limit = Int(text) else {
+                    throw DecodingError.dataCorruptedError(forKey: .maxRequestLineBytes,
+                        in: fields, debugDescription: "Request line limit must be canonical positive decimal text in Int range")
+                }
+                maxRequestLineBytes = limit
+            } else {
+                maxRequestLineBytes = nil
+            }
+        }
+    }
+
+    private struct HandshakeEnvelope: Decodable {
+        let metadata: Handshake
+        private enum CodingKeys: String, CodingKey { case metadata = "protocol" }
+    }
+
+    static func decodeHandshake(_ line: Data) -> Handshake? {
+        try? JSONDecoder().decode(HandshakeEnvelope.self, from: line).metadata
+    }
+
+    /// Existing v2 envelope with an optional transport limit. Real server
+    /// instances supply their reader limit; nil preserves legacy fixtures.
+    static func encodeHandshake(version: Version = currentVersion, maxRequestLineBytes: Int? = nil) -> Data {
+        var proto: [String: Any] = [
+            "name": "persistent-daemon",
+            "version": [
+                "semver": version.semver,
+                "commit": version.commit,
+                "dirty": version.dirty,
+                "vendor": version.vendor.rawValue,
             ] as [String: Any],
         ]
-        return (try? JSONSerialization.data(withJSONObject: envelope, options: []))
+        if let maxRequestLineBytes {
+            precondition(maxRequestLineBytes > 0)
+            proto["maxRequestLineBytes"] = String(maxRequestLineBytes)
+        }
+        return (try? JSONSerialization.data(withJSONObject: ["protocol": proto], options: []))
             ?? Data("{}".utf8)
     }
 

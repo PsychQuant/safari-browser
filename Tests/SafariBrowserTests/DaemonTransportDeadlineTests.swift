@@ -333,3 +333,275 @@ private final class DiagnosticCapture: @unchecked Sendable {
     func append(_ text: String) { lock.withLock { storage.append(text) } }
     var values: [String] { lock.withLock { storage } }
 }
+
+// MARK: - #174: bounded reply lines
+
+extension DaemonTransportDeadlineTests {
+    private func pair() -> (reader: Int32, writer: Int32) {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
+        var enabled: Int32 = 1
+        _ = setsockopt(fds[1], SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
+        // The real client reads a non-blocking socket and waits through its
+        // deadline; a blocking fd here would hang instead of timing out.
+        _ = fcntl(fds[0], F_SETFL, fcntl(fds[0], F_GETFL) | O_NONBLOCK)
+        return (fds[0], fds[1])
+    }
+
+    func testLineOfExactlyTheLimitIsAccepted() throws {
+        let (r, w) = pair(); defer { close(r); close(w) }
+        XCTAssertTrue(DeadlinePeer.write(w, Data(repeating: 65, count: 1000) + Data([10])))
+        var reader = DaemonClient.LineReader()
+        let line = try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 2), maxBytes: 1000)
+        XCTAssertEqual(line.count, 1000)
+    }
+
+    func testExactLimitWithNewlineArrivingInTheNextRead() throws {
+        let (r, w) = pair(); defer { close(r); close(w) }
+        XCTAssertTrue(DeadlinePeer.write(w, Data(repeating: 65, count: 1000)))
+        DispatchQueue.global().async {
+            usleep(20_000)
+            _ = DeadlinePeer.write(w, Data([10]))
+        }
+        var reader = DaemonClient.LineReader()
+        XCTAssertEqual(try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 2), maxBytes: 1000).count, 1000)
+    }
+
+    func testLineOneByteOverTheLimitIsRejected() {
+        let (r, w) = pair(); defer { close(r); close(w) }
+        XCTAssertTrue(DeadlinePeer.write(w, Data(repeating: 65, count: 1001) + Data([10])))
+        var reader = DaemonClient.LineReader()
+        XCTAssertThrowsError(try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 2), maxBytes: 1000))
+    }
+
+    func testOversizedLineWithoutNewlineIsRejectedBeforeTheDeadline() {
+        // The peer keeps the connection open and never sends a newline: the
+        // reader must stop at the limit, not buffer until the deadline.
+        let (r, w) = pair()
+        // Written from another thread: 64 KiB exceeds the socket buffer, so a
+        // same-thread write would block until the reader drains it.
+        let writerDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = DeadlinePeer.write(w, Data(repeating: 65, count: 64 * 1024))
+            writerDone.signal()
+        }
+        defer {
+            close(r)                                   // unblocks the writer (EPIPE)
+            _ = writerDone.wait(timeout: .now() + 2)
+            close(w)
+        }
+        var reader = DaemonClient.LineReader()
+        let start = Date()
+        XCTAssertThrowsError(try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 5), maxBytes: 4096))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.0)
+    }
+
+    func testSegmentedLineAndSecondLineInTheSameReadBothSurvive() throws {
+        let (r, w) = pair(); defer { close(r); close(w) }
+        DispatchQueue.global().async {
+            _ = DeadlinePeer.write(w, Data("{\"a\":".utf8)); usleep(20_000)
+            _ = DeadlinePeer.write(w, Data("1}\n{\"b\":2}\n".utf8))
+        }
+        var reader = DaemonClient.LineReader()
+        let deadline = DaemonClient.Deadline(timeout: 2)
+        XCTAssertEqual(String(decoding: try reader.readLine(fd: r, deadline: deadline, maxBytes: 64), as: UTF8.self), "{\"a\":1}")
+        XCTAssertEqual(String(decoding: try reader.readLine(fd: r, deadline: deadline, maxBytes: 64), as: UTF8.self), "{\"b\":2}")
+    }
+
+    func testCoalescedLinesUseTheirOwnPhaseLimits() throws {
+        let (r, w) = pair(); defer { close(r); close(w) }
+        XCTAssertTrue(DeadlinePeer.write(w, Data("ok\nlarge-reply\n".utf8)))
+        var reader = DaemonClient.LineReader()
+        let deadline = DaemonClient.Deadline(timeout: 2)
+        XCTAssertEqual(try reader.readLine(fd: r, deadline: deadline, maxBytes: 5), Data("ok".utf8))
+        XCTAssertEqual(try reader.readLine(fd: r, deadline: deadline, maxBytes: 20), Data("large-reply".utf8))
+    }
+
+    func testEOFBeforeNewlineIsStillAnError() {
+        let (r, w) = pair(); defer { close(r) }
+        XCTAssertTrue(DeadlinePeer.write(w, Data("partial".utf8)))
+        close(w)
+        var reader = DaemonClient.LineReader()
+        XCTAssertThrowsError(try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 2), maxBytes: 64))
+    }
+
+    func testOversizedReplyAfterTransmissionIsOutcomeUnknownNotReplayed() async throws {
+        let peer = try DeadlinePeer { fd in
+            DeadlinePeer.handshake(fd)
+            _ = DeadlinePeer.readRequest(fd)
+            _ = DeadlinePeer.write(fd, Data(repeating: 65, count: 8192))   // no newline, over the test limit
+        }
+        defer { peer.stop() }
+        var fallbackCalls = 0
+        do {
+            _ = try await SafariBridge.runViaRouter(source: "owned fixture", daemonOptIn: true,
+                daemonFn: { _ in
+                    let data = try await DaemonClient.sendRequest(name: peer.name, method: "mutate", params: Data("{}".utf8),
+                        requestId: 7, timeout: 2, socketDir: peer.directory, responseLineLimit: 1024)
+                    return String(decoding: data, as: UTF8.self)
+                }, statelessFn: { _ in fallbackCalls += 1; return "replayed" })
+            XCTFail("an oversized reply must not count as success")
+        } catch let error as DaemonClient.Error {
+            guard case .requestOutcomeUnknown = error else { return XCTFail("Unexpected classification: \(error)") }
+            XCTAssertTrue(error.description.contains("limit"), "Must reject size, not merely observe EOF")
+            XCTAssertNil(error.fallbackReason, "the request was transmitted: an oversized reply must not authorize replay")
+        }
+        XCTAssertEqual(fallbackCalls, 0)
+    }
+
+    func testLegitimateLargeJSONReplyPassesThroughClient() async throws {
+        let expected = String(repeating: "漢字😀", count: 300_000)
+        let response = try JSONSerialization.data(withJSONObject: [
+            "requestId": 7, "result": ["status": "ok", "output": expected]
+        ]) + Data([10])
+        let peer = try DeadlinePeer { fd in
+            DeadlinePeer.handshake(fd)
+            _ = DeadlinePeer.readRequest(fd)
+            _ = DeadlinePeer.write(fd, response)
+        }
+        defer { peer.stop() }
+        let result = try await peer.request(timeout: 10)
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: result) as? [String: String])
+        XCTAssertEqual(payload["output"], expected)
+        XCTAssertEqual(payload["status"], "ok")
+    }
+
+    func testMalformedAndOversizedOptionalTimingPreserveClientResult() async throws {
+        for timing in [["spans": "not an array"], ["blob": String(repeating: "x", count: 100_000)]] {
+            let response = try JSONSerialization.data(withJSONObject: [
+                "requestId": 7, "result": ["status": "ok", "output": "owned result", "timing": timing]
+            ]) + Data([10])
+            let peer = try DeadlinePeer { fd in
+                DeadlinePeer.handshake(fd)
+                _ = DeadlinePeer.readRequest(fd)
+                _ = DeadlinePeer.write(fd, response)
+            }
+            defer { peer.stop() }
+            let collector = PerformanceTrace.Collector()
+            let result = try await PerformanceTrace.$context.withValue(.init(collector: collector, parentID: nil)) {
+                try await peer.request(timeout: 5)
+            }
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: result) as? [String: Any])
+            XCTAssertEqual(payload["status"] as? String, "ok")
+            XCTAssertEqual(payload["output"] as? String, "owned result")
+            let trace = try XCTUnwrap(collector.finish(status: .ok))
+            XCTAssertEqual(trace.spans.count, 1, "Invalid peer timing must not add imported spans")
+            XCTAssertEqual(trace.spans.first?.phase, .daemonRequest)
+            XCTAssertEqual(trace.status, .ok)
+        }
+    }
+
+    func testOversizedOptionalTimingPreservesRemoteError() async throws {
+        let response = try JSONSerialization.data(withJSONObject: [
+            "requestId": 7, "error": ["code": "ownedFailure", "message": "owned message"],
+            "timing": ["blob": String(repeating: "x", count: 100_000)]
+        ]) + Data([10])
+        let peer = try DeadlinePeer { fd in
+            DeadlinePeer.handshake(fd)
+            _ = DeadlinePeer.readRequest(fd)
+            _ = DeadlinePeer.write(fd, response)
+        }
+        defer { peer.stop() }
+        let collector = PerformanceTrace.Collector()
+        do {
+            _ = try await PerformanceTrace.$context.withValue(.init(collector: collector, parentID: nil)) {
+                try await peer.request(timeout: 5)
+            }
+            XCTFail("Expected the original remote error")
+        } catch DaemonClient.Error.remoteError(let code, let message) {
+            XCTAssertEqual(code, "ownedFailure")
+            XCTAssertEqual(message, "owned message")
+        }
+        let trace = try XCTUnwrap(collector.finish(status: .error))
+        XCTAssertEqual(trace.spans.count, 1)
+        XCTAssertEqual(trace.status, .error)
+    }
+
+    func testHandshakeAtProductionLimitAcceptsTrailingJSONWhitespace() async throws {
+        var handshake = DaemonProtocol.encodeHandshake()
+        handshake.append(Data(repeating: 32, count: DaemonClient.maxHandshakeLineBytes - handshake.count))
+        handshake.append(10)
+        let frame = handshake
+        let peer = try DeadlinePeer { fd in
+            _ = DeadlinePeer.write(fd, frame)
+            _ = DeadlinePeer.readRequest(fd)
+            _ = DeadlinePeer.write(fd, Data(#"{"requestId":7,"result":"owned"}"#.utf8) + Data([10]))
+        }
+        defer { peer.stop() }
+        let result = try await peer.request(timeout: 5)
+        XCTAssertEqual(String(decoding: result, as: UTF8.self), #""owned""#)
+    }
+
+    func testOversizedHandshakeFailsBeforeTheRequestIsSent() async throws {
+        let sent = ExecSubprocessOutputTests.Output()
+        let peer = try DeadlinePeer { fd in
+            _ = DeadlinePeer.write(fd, Data(repeating: 65, count: DaemonClient.maxHandshakeLineBytes + 1))
+            let request = DeadlinePeer.readRequest(fd)
+            if !request.isEmpty { sent.append("request") }
+        }
+        defer { peer.stop() }
+        do {
+            _ = try await peer.request(timeout: 1)
+            XCTFail("an oversized handshake must fail")
+        } catch let error as DaemonClient.Error {
+            XCTAssertTrue(error.description.contains("limit"), "Must reject size, not merely time out")
+            XCTAssertNotNil(error.fallbackReason, "nothing was sent yet, so the stateless path stays available")
+        }
+        XCTAssertTrue(sent.text.isEmpty, "the request must never be written after an oversized handshake")
+    }
+
+    func testDefaultLimitsAreGenerousForLegitimateOutput() {
+        XCTAssertEqual(DaemonClient.maxHandshakeLineBytes, 64 * 1024)
+        XCTAssertEqual(DaemonClient.maxResponseLineBytes, 128 * 1024 * 1024)
+    }
+
+    func testLegitimateMultiMegabyteLineAcrossManyReadsIsAcceptedInLinearTime() throws {
+        // Verify R1: every accepted line above was one read() long. A real
+        // `get source` / `snapshot` reply is one multi-megabyte JSON line
+        // assembled from thousands of reads — the path the incremental newline
+        // scan exists for. Rescanning from the start after each 8 KiB read
+        // would touch ~150 GB for this line; a linear scan touches 48 MiB.
+        let size = 48 * 1024 * 1024
+        let (r, w) = pair()
+        let writerDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            var body = Data(repeating: 66, count: size)
+            body[0] = 65
+            body[size - 1] = 67
+            _ = DeadlinePeer.write(w, body + Data([10]))
+            writerDone.signal()
+        }
+        defer {
+            close(r)
+            _ = writerDone.wait(timeout: .now() + 5)
+            close(w)
+        }
+        var reader = DaemonClient.LineReader()
+        let start = Date()
+        let line = try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 30), maxBytes: 64 * 1024 * 1024)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5, "the newline scan must stay linear in the line length")
+        XCTAssertEqual(line.count, size)
+        XCTAssertEqual(line.first, 65)
+        XCTAssertEqual(line.last, 67)
+    }
+
+    func testRejectionBuffersAtMostOneByteBeyondTheLimit() {
+        // Verify R1: reads were a fixed 8 KiB, so a line without a newline was
+        // rejected only after up to 8 KiB past the limit had been buffered.
+        let (r, w) = pair()
+        // 20 KB exceeds the 8 KiB socket buffer: write from another thread.
+        let writerDone = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            _ = DeadlinePeer.write(w, Data(repeating: 65, count: 20_000))
+            writerDone.signal()
+        }
+        defer {
+            close(r)
+            _ = writerDone.wait(timeout: .now() + 2)
+            close(w)
+        }
+        var reader = DaemonClient.LineReader()
+        XCTAssertThrowsError(try reader.readLine(fd: r, deadline: DaemonClient.Deadline(timeout: 2), maxBytes: 1000))
+        XCTAssertLessThanOrEqual(reader.pending.count, 1001)
+    }
+}

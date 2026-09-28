@@ -92,22 +92,50 @@ final class DaemonLifecycleCancellationTests: XCTestCase {
 
     // MARK: - In-flight tracking
 
-    func testInstance_inFlightTrackingRoundTrip() async throws {
-        let server = DaemonServer.Instance()
-        let id1 = DaemonServer.Instance.encodeRequestId(11)
-        let id2 = DaemonServer.Instance.encodeRequestId(22)
-        await server.markInFlight(fd: 100, requestIdJSON: id1)
-        await server.markInFlight(fd: 200, requestIdJSON: id2)
+    private actor TrackingGate {
+        private var open = false
+        private var waiter: CheckedContinuation<Void, Never>?
+        func wait() async {
+            if open { return }
+            await withCheckedContinuation { waiter = $0 }
+        }
+        func release() { open = true; waiter?.resume(); waiter = nil }
+    }
 
+    func testInstance_inFlightTrackingRoundTrip() async throws {
+        let server = DaemonServer.Instance(), a = TrackingGate(), b = TrackingGate()
+        let path = NSTemporaryDirectory() + "track-" + String(UUID().uuidString.prefix(8)) + ".sock"
+        defer { unlink(path) }
+        let entered = expectation(description: "both requests in flight")
+        entered.expectedFulfillmentCount = 2
+        await server.register("fixture.a") { _ in entered.fulfill(); await a.wait(); return Data("{}".utf8) }
+        await server.register("fixture.b") { _ in entered.fulfill(); await b.wait(); return Data("{}".utf8) }
+        try await server.start(socketPath: path)
+        let first = try TestUnixSocket.connect(path: path), second = try TestUnixSocket.connect(path: path)
+        defer { close(first); close(second) }
+        var timeout = timeval(tv_sec: 1, tv_usec: 0)
+        for fd in [first, second] {
+            _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        }
+        try TestUnixSocket.writeLine(fd: first, line: #"{"method":"fixture.a","params":{},"requestId":11}"#)
+        try TestUnixSocket.writeLine(fd: second, line: #"{"method":"fixture.b","params":{},"requestId":22}"#)
+        await fulfillment(of: [entered], timeout: 1)
         let snapshot = await server.snapshotInFlight()
         XCTAssertEqual(snapshot.count, 2)
-        XCTAssertTrue(snapshot.contains { $0.fd == 100 && $0.requestIdJSON == id1 })
-        XCTAssertTrue(snapshot.contains { $0.fd == 200 && $0.requestIdJSON == id2 })
-
-        await server.clearInFlight(fd: 100)
+        XCTAssertEqual(Set(snapshot.map(\.connectionID)).count, 2)
+        XCTAssertEqual(Set(snapshot.map(\.requestID)).count, 2)
+        XCTAssertEqual(Set(snapshot.map(\.requestIdJSON)), [Data("11".utf8), Data("22".utf8)])
+        await a.release()
+        _ = try TestUnixSocket.readLine(fd: first)
+        for _ in 0..<100 {
+            if await server.snapshotInFlight().count == 1 { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
         let after = await server.snapshotInFlight()
         XCTAssertEqual(after.count, 1)
-        XCTAssertTrue(after.contains { $0.fd == 200 })
+        XCTAssertEqual(after.first?.requestIdJSON, Data("22".utf8))
+        await server.stop()
+        await b.release()
     }
 
     // MARK: - Status snapshot bypass (a)
