@@ -274,6 +274,23 @@ When command pacing is enabled, the client SHALL choose the existing subprocess-
 - **WHEN** `SAFARI_BROWSER_PACING=off` and the script qualifies for the existing daemon batch route
 - **THEN** the client SHALL use the original single-request batch route without pacing waits
 
+
+<!-- @trace
+source: script-exec-command
+updated: 2026-04-25
+code:
+-->
+
+<!-- @trace
+source: global-command-pacing
+updated: 2026-09-29
+code:
+  - Sources/SafariBrowser/Commands/ExecCommand.swift
+  - Sources/SafariBrowser/Utilities/CLIExecution.swift
+  - Sources/SafariBrowser/Utilities/CommandPacing.swift
+  - Tests/command-pacing-test.py
+-->
+
 ---
 ### Requirement: Phase 1 command coverage
 
