@@ -32,3 +32,20 @@
 在上述最終原始碼執行 `swift test --filter MCP`：99 tests，0 failures。`git diff --check` 與 Spectra validation 通過。
 
 尚待 request stdio/state 隔離、hidden command 整合、persistent runner、公開模式切換、完整 #110 回歸、同 build 效能對照、完整測試與六方審查。未操作 Safari GUI，未安裝 binary，未宣告 #172 verified。
+
+
+## Request scope／CLI／stdio 元件（2.2 進行中）
+
+本批新增元件已實作，但 task 2.2 仍未勾選：須在 task 2.3 的 actual worker 迴圈接上 AX quiescence 的不重用／退休回覆，才能證明完整路徑。
+
+- `MCPInvocationContext`：每次建立獨立 gate／trace；gate 優先序為 daemon request、MCP invocation、普通 process。成功與錯誤路徑均 cancel 並 await 已知輔助工作；一般 CLI 保持原 cancel-only 行為。SafariBridge 的 watchdog 與 System Events waiting-message 已接上此邊界。
+- `BoundedAXWorker.isQuiescent`：只讀狀態，不因呼叫端 timeout 提早重設 allowance。測試以受控背景工作證明真正返回前仍不可重用。
+- `CLIExecution`：普通 main 與 persistent 執行共用 parser／run／diagnostics；只有 main 退出程序。保留 help、validation、silent ExitCode、glued-flag hint 與 trace 格式。Persistent 模式拒絕執行 hidden/MCP commands。
+- `MCPRequestStdio`：一個 worker process 只有一個 stdio owner；每筆獨立管線、4 MiB input cap、兩個 8192-byte relay 與 stdin feeder。清除 libc stdin 殘留／EOF，flush 後轉回 null，非阻塞地等待 relay 全部結束；output failure 或 seal deadline 未完成永久拒絕該 owner 的後續呼叫。Relay 自己關閉 descriptor，不從其他執行緒關閉尚在使用的 fd。
+- Scope 的 owned RED：14 tests／15 個行為失敗；CLI stub RED：4 tests／22 個失敗；stdio stub RED：5 tests／20 個失敗。各自實作後 GREEN。最終相關範圍 141 tests 通過。
+- 11 項新增變異全部被抓到並還原：gate isolation、auxiliary join、AX quiescence、diagnostic newline、stdin purge、stdout flush、poisoned reuse、input cap、relay join、writer failure、process lifetime claim。
+- 使用重構前後兩個實際 executable，比較 90 條公開 help 路徑與 8 個其他案例：98/98 的 stdout、stderr、exit code 完全相同。這是此次 CLI 入口抽取的比較；後續新增明示 MCP 模式選項與 hidden metadata 時，需另按預期差異驗證。
+- 原 `Tests/mcp-stdio.py` 10 項端到端測試通過（含 77 個公開 tool help、stdin、cancel／EOF／backpressure、nested group、explicit daemon、binary replacement）。目前仍使用原 isolated runner，不把它當作常駐 backend 的驗收。
+- 還原所有變異後 `make test-all` exit 0：1,516 XCTest、38 Swift Testing、66 smoke；簽章 49 PASS／2 SKIP（缺少所需簽章身分）。GUI harness 明確 SKIP，沒有新的 Safari GUI 驗收。
+
+下一步：hidden supervisor／worker 入口、私有 framing 與 request dispatch 整合；驗證健康呼叫的同 PID 重用、AX busy／descendant／scope failure 的實際退休，然後才完成 task 2.2／2.3。Public MCP 尚未改成 persistent；沒有新的效能改善宣稱。

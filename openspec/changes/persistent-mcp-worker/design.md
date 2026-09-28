@@ -48,6 +48,8 @@ worker 每筆都以 SafariBrowser.parseAsRoot 建立新的 command struct；抽�
 
 control FD 3 與 CLI 0/1/2 分開。worker idle stdio 指向 /dev/null；每筆建立 private stdin/stdout/stderr pipes，dup2 後關閉多餘 ends。stdin feeder 在背景提供有界 input，結束即 EOF；兩個 relay 同時讀 stdout/stderr，每次最多 8192 bytes，透過序列化 control writer 傳送 token-tagged chunks。命令結束／error formatting／trace emission 後 fflush，將 stdio 還原到 idle null、完成 feeder 與 relay，才送 complete。setup 或收尾失敗不接受下一筆，retire frame 後由 host 清理 group；不以不完整輸出冒充成功。
 
+stdio owner 在 process lifetime 只能建立一次；以獨立 relay-owned descriptor 避免 timeout 後從外部 close 尚在使用的 fd。seal 以 dispatch completion 與預設 1 秒 deadline 仲裁，不阻塞 Swift cooperative executor；任一路徑失敗永久停用同一 owner。除了 FD 置換，也清除 libc stdin 的未讀緩衝與 EOF 狀態，避免留下上一筆 input。
+
 每筆新的 MCPInvocationContext 包含新的 BlockingDialogGate 與 PerformanceTrace collector；shared gate 在這個 context 下解析，不能借用 processGate 的先前快取／warning budget。SafariBridge 的 subprocess watchdog 與 System Events waiting-message task 在 persistent context 下 cancel 後等待真正結束，避免晚到 stderr 跨越 stdio boundary。既有 GCD pipe readers 已在返回前 join。
 
 BoundedAXWorker 增加只讀 quiescence 查詢；若 command 返回時仍有 AX 工作，完整結果可回傳但 reusable=false，整組退休，絕不把未完成工作交給下一筆。背景 AX 只觀察而不按按鈕的既有契約維持。若 group snapshot 不能確定只有 supervisor／worker，回報 retire，不把未知後代的輸出當完整；正常 helper 已 wait/reap 才允許重用。新增可能晚到的工作必須納入這個 request 邊界，不能只清掉計數假裝完成。

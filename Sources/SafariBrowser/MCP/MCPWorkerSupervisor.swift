@@ -119,9 +119,10 @@ enum MCPWorkerGroup {
     }
 }
 
+/// Each descriptor has a single I/O owner, including when moved into a relay.
 /// Descriptors always live above all six inherited slots, even if caller stdio
 /// is closed. RAII closes only locally owned copies, never borrowed descriptors.
-private final class MCPWorkerFD {
+final class MCPWorkerFD: @unchecked Sendable {
     private(set) var value: Int32
     init(duplicating descriptor: Int32) throws {
         value = fcntl(descriptor, F_DUPFD_CLOEXEC, 6)
