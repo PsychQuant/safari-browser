@@ -79,6 +79,21 @@ Cancellation, timeout, EOF, invalid control data and output backpressure SHALL c
 - **WHEN** public MCP output is backpressured and input closes
 - **THEN** active and idle worker cleanup SHALL proceed independently of that output stream
 
+#### Scenario: Preselected one-shot survives no longer than its host lifetime protection
+- **WHEN** a valid large-argv or private-encoding-expansion request selects one-shot execution and the MCP host dies during the call
+- **THEN** independent lifetime supervision SHALL terminate the actual owned worker and its ordinary descendants without requiring that worker to respond
+- **AND** verification SHALL observe actual worker termination, not only host termination
+
+##### Example: Large valid wait input
+- **GIVEN** a valid `wait 5000` argument with enough leading zeroes to trigger kernel-admission preselection
+- **WHEN** the owned MCP host is terminated after one-shot launch
+- **THEN** the worker SHALL be cleaned up by its lifetime supervisor rather than waiting for the five-second command to complete naturally
+
+#### Scenario: Preselected cleanup cannot be confirmed before its deadline
+- **WHEN** one-shot cleanup reaches its userspace deadline without confirming a quiescent group and actual leader exit
+- **THEN** the runner SHALL return an incomplete cleanup result, retain the reserved owner and refuse new business execution
+- **AND** it SHALL NOT block indefinitely in waitpid or release signal authority for reuse
+
 ### Requirement: Warm workers honor executable identity and argument admission
 The loaded worker image SHALL match the host catalog image. Before each persistent dispatch, the launch-path image SHALL be checked using bounded Mach-O parsing, including the applicable thin or universal slice. Missing, malformed, ambiguous or different images SHALL invalidate the worker and require host restart without dispatching on another engine. Identity SHALL NOT be represented as an atomic guarantee against a later filesystem replacement or as code-signing authentication. Calls near the OS argv/environment boundary SHALL select the original isolated runner before any private request bytes, preserving kernel admission rather than imposing a new approximate rejection or widening its limit. No execution failure SHALL trigger backend retry.
 

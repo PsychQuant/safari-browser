@@ -124,3 +124,13 @@ R1 六份報告均已收齊：五份 Claude CODE PASS（DA 附條件）、Codex 
 R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Gaps／Localization 均無發現，21 項皆為補充 Example 的 Suggestion，沒有阻擋項目。具體反例及測試資料見本節與對應測試。
 
 尚需以新的固定提交完成R2獨立審查及最終交付；仍未verified。
+
+## R2 aggregate FAIL 與實際重現
+
+固定版本 `1e0ad622f853942da844662527e94d7d13d7b30f` 已收齊六份獨立報告；四個初始 lens PASS，DA／Codex FAIL。總裁定見 https://github.com/PsychQuant/safari-browser/issues/172#issuecomment-5868747615 ，不採多數決，未打 verified tag／未開 PR。
+
+- 真正公開 MCP persistent，大 argv 的 `wait 5000` 觸發 one-shot 預選；只終止本地持有的 host，半秒後 worker 仍為 sleeping 且 reparented，直到自然5秒結束才消失。沒有向 ps 觀察得到的 worker PID 發訊號。
+- 一般 persistent pair 對照以 busy 拒絕確認 active call，終止 host 後半秒，supervisor 與實際 worker 均已消失。這補上普通非 stopped worker 的 raw host-death 證據；先前 SIGSTOP 情境仍是分層 fixture。
+- 未修改的原 `MCPProcessRunner` 自有 SIGSTOP fixture：1秒 timeout，三次分別約54／27／24毫秒被 signal9 終止。僅在外部診斷複本補 si_code 真退出判斷，相同案例約1.02秒才回報 timeout／signal15。不是完整正式修正。
+- #209 已有診斷 https://github.com/PsychQuant/safari-browser/issues/209#issuecomment-5868722871 ；late member、pending／lost ownership 及 bounded shutdown 仍需原 runner 的直接證據。
+- 既有1555 XCTest等PASS仍代表該固定版本已跑的範圍，不能覆蓋新發現；4.x完成後必須重新驗證及量測，不得沿用R2PASS計數宣告完成。

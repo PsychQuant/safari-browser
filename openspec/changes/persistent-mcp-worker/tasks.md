@@ -17,3 +17,12 @@
 - [x] 3.1 完成 #110 與新 lifecycle 的完整回歸：actual MCP 的取消、busy/ping、EOF、unread stdout、nested children、explicit daemon detach；以 ownership、frame/correlation、no-replay、idle generation、quiescence 的關鍵變異證明測試能辨識失效，還原後 make test-all 通過。
 - [x] 3.2 完成 Persistent worker benefits and regressions are measured：更新 benchmark 的 mode 與 scenario 命名，在同 build／同固定 fixture 比較 cold/warm p50/p95、成功率、PID 重用與 trace overhead；warm p50/p95 未改善就繼續調整，文件保留原始範圍及 cold 成本，不以診斷迴圈代替交付。
 - [ ] 3.3 更新 README／CLAUDE.md／CHANGELOG.md 與診斷／task 狀態，六方確認、spectra analyze／validate、規格同步歸檔；各提交引用 #172，PR 附實際證據與限制，verified 後 issue 保留 OPEN。
+
+## 4. R2 完整清理契約修正（#172／#209）
+
+以下為R2新增驗收，既有完成項目保留為當時成果；3.3交付依賴4.1–4.4。
+
+- [ ] 4.1 將原 runner 的 stopped-event 與公開 MCP 預選 host-death 重現納入受控自動測試，向未修改版本取得具名 RED；測試只終止自己 spawn 且持有的程序，觀察實際 worker 終止，不用 host exit 代替。
+- [ ] 4.2 實作等 argv／等 environment bytes 的 one-shot supervisor bootstrap、固定 parent metadata、獨立 lease／status 與業務退出碼傳遞；以原 kernel 接納邊界、早期啟動失敗及 host-death RED轉GREEN證明，不縮小公開輸入也不重播。
+- [ ] 4.3 將 explicit isolated／persistent預選／custom fixtures 收斂到可保留的 serial reservation owner，完成真退出判讀、late member 重複清理、bounded pending／lost ownership、取消及shutdown；固定小環境直接驗 private expansion 分支，補 image failure 欄位差異的說明與斷言。
+- [ ] 4.4 完成兩題的必要行為變異、原kernel與雙模式#110回歸，重新建置最終release做同build交錯cold／warm比較，再固定提交跑六方審查；清理或接納仍有缺口不得改成例外宣告PASS。

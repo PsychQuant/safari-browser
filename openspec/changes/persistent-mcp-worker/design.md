@@ -100,3 +100,23 @@ controller-death fixture 用真實 controller process 持有 lifetime writer，�
 ## Open Questions
 
 沒有需要使用者裁定的產品歧義。平台／lifetime 假設仍須由真實 owned-process fixtures 證明；量測實驗不是已完成的 worker。若 host／supervisor 自己被外部停止或核心不讓行程退休，必須如實記錄清理未確認，不宣稱無條件硬即時。
+
+## R2 整合修正：一次性預選也受監督
+
+此節補足「Executable 身分與原 argv 邊界」中「交由原 runner」的實作缺口：保留的是原 kernel 接納與新 CLI instance，並非保留無 supervisor 的生命週期。`1e0ad62` 的原 runner 不符合完整清理契約，不能作為最終驗收基準。#209 的 ownership 修正與 #172 序列整合。
+
+### 保留 kernel 接納的 bootstrap
+
+採用與原 one-shot 完全相同的 argv 及等位元組數的環境，先由同 executable 的私有入口啟動不執行業務的 supervisor。利用既有 `SAFARI_BROWSER_MCP_DIRECT` 的等長私有值區分 bootstrap 與真正 CLI，不能為監督功能另加 argv 或 environment 欄位。父程序身分以 inherited control FD 的固定有界 metadata 傳入；lease／status 沿用獨立 descriptor，不在參數內傳遞大型輸入。supervisor 必須驗證 descriptor 型別、預期父程序及自有 group，啟用 lifetime monitor 後才 spawn 真正 one-shot。真正 CLI 恢復原 direct context、相同 argv/environment 並保留 image guard。
+
+這個選擇須先用原 kernel 邊界的接受／拒絕對照證明；若 bootstrap 會改變接納邊界，該實作不合格，不能調降公開上限。custom executable／workerPrefix 測試必須明示 supervisor executable，不能從 XCTest host 猜測程式位置。沒有增加公開 tool 或允許由 MCP caller 選擇 executable。
+
+### 一次性 owner 與狀態回傳
+
+`MCPProcessRunner` 需委派至可跨呼叫存活的 serial owner；取消只發布 intent。owner 使用同一 reservation 的真退出判讀、重複 group 清理與非阻塞 reap。清理截止後保留 pending owner並拒絕新工作；lost ownership 永久停止訊號。所有啟動中途錯誤也要退休或保留已建立的 child，不遺失責任。
+
+stdin／stdout／stderr 繼續獨立傳送，真正 CLI 的退出狀態透過固定 status record 傳回；supervisor 的終止碼不得冒充業務結果。absolute invocation deadline、原 capture cap、busy／cancel／EOF／shutdown／daemon detach 皆套用於預選及 explicit isolated。host 死亡後 monitor 必須清除實際 one-shot，而不是只觀察 host 已退出。
+
+### 驗收及依賴順序
+
+先固定原 runner 的 stopped／host-death RED，再驗 bootstrap kernel 接納與 lease／status，接著整合 pending ownership，最後跑所有正式呼叫端與 custom fixtures。private expansion 測試固定小環境，確保測到編碼膨脹而非先被 ARG_MAX 分支選走。修正後重新建置 release 並做兩模式交錯比較；先前數值保留為歷史，不套用到新 runtime。任務3.3必須在新增4.x驗收完成後才可完成。

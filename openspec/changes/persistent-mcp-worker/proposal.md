@@ -31,3 +31,9 @@
 ## Impact
 
 MCP worker／runner／stdio 整合、CLI entry 的可重用執行邊界、BlockingDialogGate 的 request scope、既有兩個輔助 task 的結束觀測、benchmark 與 #110 回歸測試。新增私有 hidden helper，不新增公開 MCP tool，不安裝 binary、不更動 TCC、不快取 Safari 狀態。
+
+## R2 驗證後補充
+
+`1e0ad62` 的一般 pair 已有實際 host SIGKILL 對照通過，但合法大 argv 的預先選路在 host 死亡後仍留下 one-shot worker。這違反原清理驗收；#209 同時已重現舊 runner 的 stopped-event 誤判。兩題需共同修正 `MCPProcessRunner`／supervision／admission ownership，不能把公開輸入拒絕掉或僅列為例外取得通過。
+
+一次性執行仍保留每筆新的 CLI 與原 kernel argv/environment 接納，但也需獨立 lifetime supervision、bounded pending owner 及真正退出判讀。原公開 schema、大小上限、未知結果不重播與 explicit daemon detach 全部維持。改動涵蓋 MCP runner／supervisor／入口 bootstrap 與其測試；不新增公開能力。

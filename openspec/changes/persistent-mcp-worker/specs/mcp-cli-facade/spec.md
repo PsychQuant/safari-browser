@@ -1,7 +1,12 @@
 ## MODIFIED Requirements
 
 ### Requirement: Isolated command worker
-Each tool call SHALL execute the existing command struct through an isolated worker of the same executable and a newly parsed command instance. CLI business logic SHALL NOT be duplicated. A healthy persistent worker SHALL support multiple sequential calls under the mcp-persistent-worker isolation and retirement contract; explicit isolated mode SHALL retain one process per call. Worker input/output SHALL be separate from MCP protocol streams. Worker build identity SHALL match the catalog's running image before dispatch, including nested CLI invocations. Ordinary CLI behavior SHALL remain unchanged outside the internal MCP context, and MCP workers SHALL NOT route implicitly through a daemon.
+Each tool call SHALL execute the existing command struct through an isolated worker of the same executable and a newly parsed command instance. CLI business logic SHALL NOT be duplicated. A healthy persistent worker SHALL support multiple sequential calls under the mcp-persistent-worker isolation and retirement contract; explicit isolated mode SHALL retain one fresh CLI execution process per call. Worker input/output SHALL be separate from MCP protocol streams. Worker build identity SHALL match the catalog's running image before dispatch, including nested CLI invocations. Ordinary CLI behavior SHALL remain unchanged outside the internal MCP context, and MCP workers SHALL NOT route implicitly through a daemon.
+
+#### Scenario: One-shot lifetime and argument admission
+- **WHEN** explicit isolated mode or persistent preselection executes one fresh CLI instance
+- **THEN** it SHALL preserve the original kernel argv/environment admission while independently supervising host lifetime and retaining unconfirmed cleanup ownership
+- **AND** adding supervision SHALL NOT narrow public input limits, replace the business exit status with a helper status, or replay an uncertain invocation
 
 #### Scenario: Executable changes
 - **WHEN** the executable at the launch path is replaced after the server starts
