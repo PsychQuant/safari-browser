@@ -8,6 +8,15 @@ Each tool call SHALL execute the existing command struct through an isolated wor
 - **THEN** it SHALL preserve the original kernel argv/environment admission while independently supervising host lifetime and retaining unconfirmed cleanup ownership
 - **AND** adding supervision SHALL NOT narrow public input limits, replace the business exit status with a helper status, or replay an uncertain invocation
 
+#### Scenario: Helper runtime augments the environment
+- **WHEN** the supervisor runtime adds an environment entry before executing the one-shot CLI
+- **THEN** the child SHALL receive the parent's original environment snapshot and preserve the original kernel admission boundary rather than inheriting the helper's augmented environment
+
+##### Example: Environment padding at the kernel boundary
+- **GIVEN** original argv immediately below the kernel rejection boundary with either zero or 8192 bytes of environment padding
+- **WHEN** the supervised runner executes the same input
+- **THEN** the accepted original input SHALL still execute and the adjacent rejected input SHALL remain rejected
+
 #### Scenario: Executable changes
 - **WHEN** the executable at the launch path is replaced after the server starts
 - **THEN** a different launch-path or loaded worker image is rejected before running the tool, including when a worker is already warm and the caller is told to restart; the operation is not retried on another engine.

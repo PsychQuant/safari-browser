@@ -5,7 +5,18 @@ import Darwin
 
 final class MCPProcessRunnerTests: XCTestCase, @unchecked Sendable {
     private func fixture(timeout: TimeInterval = 3, limit: Int = 2 * 1024 * 1024) -> MCPProcessRunner {
-        MCPProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/python3"), workerPrefix: ["-c"], timeout: timeout, outputLimit: limit)
+        MCPProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/python3"), workerPrefix: ["-c"], supervisorExecutable: Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser"), timeout: timeout, outputLimit: limit)
+    }
+
+    func testStoppedWorkerWaitsForTimeoutInsteadOfBeingMistakenForExit() async {
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = await fixture(timeout: 1).run(
+            arguments: ["import os,signal; print('stopped-fixture',flush=True); os.kill(os.getpid(),signal.SIGSTOP)"],
+            input: Data(), expectedImage: "test")
+        XCTAssertEqual(result.stdout, Data("stopped-fixture\n".utf8))
+        XCTAssertTrue(result.failure?.contains("timed out") == true)
+        XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - started, 0.8,
+                                    "A stopped event must not prematurely retire a live worker")
     }
 
     func testSeparateStreamsStdinArgumentsAndContext() async {

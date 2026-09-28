@@ -54,7 +54,8 @@ final class MCPPersistentRunnerFailureTests: XCTestCase, @unchecked Sendable {
             }
             return child.retire(timeout: 0)
         }
-        return (MCPPersistentRunner(executable: executable, timeout: 2, outputLimit: limit,
+        return (MCPPersistentRunner(executable: executable, environment: [:],
+                                     isolatedSupervisorExecutable: Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser"), timeout: 2, outputLimit: limit,
                                      cleanupTimeout: cleanup, lifecycle: lifecycle), image)
     }
     private func directory() throws -> URL {
@@ -207,7 +208,7 @@ final class MCPPersistentRunnerFailureTests: XCTestCase, @unchecked Sendable {
         // The public UTF-8 JSON input fits 8 MiB. Private base64 expansion does not.
         let publicInput = try JSONSerialization.data(withJSONObject: ["arguments": arguments, "stdin": String(decoding: input, as: UTF8.self)])
         XCTAssertLessThan(publicInput.count, 8 * 1024 * 1024)
-        let expected = await MCPProcessRunner(executable: try Self.fixture.get(), timeout: 3)
+        let expected = await MCPProcessRunner(executable: try Self.fixture.get(), environment: [:], supervisorExecutable: Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser"), timeout: 3)
             .run(arguments: arguments, input: input, expectedImage: image)
         XCTAssertNil(expected.failure)
         XCTAssertEqual(expected.stdout, Data("isolated\n".utf8))
@@ -231,7 +232,7 @@ final class MCPPersistentRunnerFailureTests: XCTestCase, @unchecked Sendable {
         // on a particular OS limit or exceeding a per-argument string limit.
         let padding = Array(repeating: String(repeating: "x", count: 4096), count: maximum / 2 / 4096 + 1)
         let arguments = ["large"] + padding
-        let expected = await MCPProcessRunner(executable: try Self.fixture.get(), timeout: 2)
+        let expected = await MCPProcessRunner(executable: try Self.fixture.get(), environment: [:], supervisorExecutable: Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser"), timeout: 2)
             .run(arguments: arguments, input: Data(), expectedImage: image)
         let actual = await runner.run(arguments: arguments, input: Data(), expectedImage: image)
         XCTAssertEqual(actual.stdout, expected.stdout); XCTAssertEqual(actual.stderr, expected.stderr)

@@ -12,6 +12,7 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
     }
     private struct Configuration: Sendable {
         let executable: URL
+        let isolatedSupervisorExecutable: URL?
         let environment: [String: String]
         let timeout: TimeInterval
         let idleTimeout: TimeInterval
@@ -106,10 +107,12 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
     private let state: State
 
     init(executable: URL, environment: [String: String] = ProcessInfo.processInfo.environment,
+         isolatedSupervisorExecutable: URL? = nil,
          timeout: TimeInterval = 300, idleTimeout: TimeInterval = 30,
          outputLimit: Int = 2 * 1024 * 1024, inputLimit: Int = 4 * 1024 * 1024,
          cleanupTimeout: TimeInterval = 2, lifecycle: Lifecycle = Lifecycle()) {
-        config = Configuration(executable: executable, environment: environment, timeout: timeout,
+        config = Configuration(executable: executable, isolatedSupervisorExecutable: isolatedSupervisorExecutable,
+                               environment: environment, timeout: timeout,
                                idleTimeout: idleTimeout, outputLimit: outputLimit, inputLimit: inputLimit,
                                cleanupTimeout: cleanupTimeout, lifecycle: lifecycle)
         state = State(config)
@@ -145,6 +148,7 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
                 let config = config
                 let task = Task {
                     await MCPProcessRunner(executable: config.executable, environment: config.environment,
+                                           supervisorExecutable: config.isolatedSupervisorExecutable,
                                            timeout: config.timeout, outputLimit: config.outputLimit, inputLimit: config.inputLimit, invocationDeadline: deadline)
                         .run(arguments: arguments, input: input, expectedImage: expectedImage)
                 }

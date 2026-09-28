@@ -23,6 +23,8 @@ struct MCPProcessRunner: MCPCommandRunning {
     let executable: URL
     var environment: [String: String] = ProcessInfo.processInfo.environment
     var workerPrefix: [String] = ["__mcp-exec"]
+    /// Defaults to the same executable; custom command fixtures provide the CLI helper explicitly.
+    var supervisorExecutable: URL? = nil
     var timeout: TimeInterval = 300
     var outputLimit: Int = 2 * 1024 * 1024
     var inputLimit: Int = 4 * 1024 * 1024
@@ -55,7 +57,7 @@ struct MCPProcessRunner: MCPCommandRunning {
             return result
         }
         var childEnvironment = environment
-        childEnvironment["SAFARI_BROWSER_MCP_DIRECT"] = "1"
+        childEnvironment["SAFARI_BROWSER_MCP_DIRECT"] = MCPIsolatedBootstrap.contextValue
         childEnvironment["SAFARI_BROWSER_MCP_IMAGE_ID"] = expectedImage
         let argv = [executable.path] + workerPrefix + arguments
         guard argv.allSatisfy({ !$0.utf8.contains(0) }),
@@ -74,6 +76,11 @@ struct MCPProcessRunner: MCPCommandRunning {
             return result
         }
 
+        let deadline = invocationDeadline ?? (ProcessInfo.processInfo.systemUptime + timeout)
+        let supervision: MCPIsolatedChannels
+        do { supervision = try MCPIsolatedChannels(deadline: deadline, environment: childEnvironment) }
+        catch { result.failure = "Worker supervision could not be prepared."; return result }
+
         // Reserve descriptors above stdio and make all unused ends close-on-exec.
         var descriptors: [Int32] = []
         defer { for fd in descriptors where fd >= 0 { Darwin.close(fd) } }
@@ -84,7 +91,7 @@ struct MCPProcessRunner: MCPCommandRunning {
                 return result
             }
             for original in pair {
-                let owned = fcntl(original, F_DUPFD_CLOEXEC, 3)
+                let owned = fcntl(original, F_DUPFD_CLOEXEC, 6)
                 let savedError = errno
                 Darwin.close(original)
                 if owned < 0 {
@@ -112,6 +119,9 @@ struct MCPProcessRunner: MCPCommandRunning {
         var setupError = posix_spawn_file_actions_adddup2(&actions, descriptors[0], STDIN_FILENO)
         setupError |= posix_spawn_file_actions_adddup2(&actions, descriptors[3], STDOUT_FILENO)
         setupError |= posix_spawn_file_actions_adddup2(&actions, descriptors[5], STDERR_FILENO)
+        for (source, target) in [(supervision.metadata.value, Int32(3)), (supervision.leaseRead.value, 4), (supervision.statusWrite.value, 5)] {
+            setupError |= posix_spawn_file_actions_adddup2(&actions, source, target)
+        }
         for fd in descriptors { setupError |= posix_spawn_file_actions_addclose(&actions, fd) }
         var emptyMask = sigset_t()
         sigemptyset(&emptyMask)
@@ -151,19 +161,18 @@ struct MCPProcessRunner: MCPCommandRunning {
         var pid: pid_t = 0
         let spawnError = argvPointers.withUnsafeBufferPointer { argvBuffer in
             envPointers.withUnsafeBufferPointer { envBuffer in
-                posix_spawn(&pid, executable.path, &actions, &attributes, argvBuffer.baseAddress!, envBuffer.baseAddress!)
+                posix_spawn(&pid, (supervisorExecutable ?? executable).path, &actions, &attributes, argvBuffer.baseAddress!, envBuffer.baseAddress!)
             }
         }
         guard spawnError == 0 else {
             result.failure = "Worker launch failed: \(String(cString: strerror(spawnError)))."
             return result
         }
+        supervision.didSpawn()
         func closeDescriptor(_ index: Int) {
             if descriptors[index] >= 0 { Darwin.close(descriptors[index]); descriptors[index] = -1 }
         }
         for index in [0, 3, 5] { closeDescriptor(index) }
-        let start = ProcessInfo.processInfo.systemUptime
-        let deadline = min(start + timeout, invocationDeadline ?? .infinity)
         var stoppedAt: TimeInterval?
         var killed = false
         var killedAt: TimeInterval?
@@ -198,7 +207,8 @@ struct MCPProcessRunner: MCPCommandRunning {
             if !leaderExited {
                 var info = siginfo_t()
                 let waitResult = waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT)
-                if waitResult == 0, info.si_pid == pid { leaderExited = true }
+                if waitResult == 0, info.si_pid == pid,
+                   [CLD_EXITED, CLD_KILLED, CLD_DUMPED].contains(info.si_code) { leaderExited = true }
                 else if waitResult < 0, errno != EINTR {
                     // If another reaper violated ownership, the PID is no longer
                     // reserved. Never signal a potentially reused group ID.
@@ -217,6 +227,10 @@ struct MCPProcessRunner: MCPCommandRunning {
                 killed = true
                 killedAt = now
                 closeDescriptor(1)
+            }
+            if stoppedAt == nil {
+                do { try supervision.pumpEnvironment() }
+                catch { stop("Worker startup context could not be delivered; command outcome is unknown.") }
             }
             for index in [2, 4] where descriptors[index] >= 0 {
                 // Bound each drain turn so a producer cannot starve cancellation/stdin.
@@ -262,6 +276,9 @@ struct MCPProcessRunner: MCPCommandRunning {
                 if leaderExited { break }
             }
             var pollItems: [pollfd] = []
+            if stoppedAt == nil, let metadata = supervision.pendingMetadataDescriptor {
+                pollItems.append(pollfd(fd: metadata, events: Int16(POLLOUT), revents: 0))
+            }
             for index in [2, 4] where descriptors[index] >= 0 { pollItems.append(pollfd(fd: descriptors[index], events: Int16(POLLIN), revents: 0)) }
             if descriptors[1] >= 0 { pollItems.append(pollfd(fd: descriptors[1], events: Int16(POLLOUT), revents: 0)) }
             _ = poll(&pollItems, nfds_t(pollItems.count), 10)
@@ -273,6 +290,11 @@ struct MCPProcessRunner: MCPCommandRunning {
         var waited: pid_t
         repeat { waited = waitpid(pid, &status, 0) } while waited < 0 && errno == EINTR
         if waited == pid {
+            do { status = try supervision.termination().rawWaitStatus }
+            catch {
+                result.failure = result.failure ?? "Worker ended without a valid status record; output may be incomplete."
+                return result
+            }
             let signal = status & 0x7f
             if signal == 0 { result.exitCode = (status >> 8) & 0xff }
             else {

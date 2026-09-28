@@ -111,6 +111,10 @@ controller-death fixture 用真實 controller process 持有 lifetime writer，�
 
 這個選擇須先用原 kernel 邊界的接受／拒絕對照證明；若 bootstrap 會改變接納邊界，該實作不合格，不能調降公開上限。custom executable／workerPrefix 測試必須明示 supervisor executable，不能從 XCTest host 猜測程式位置。沒有增加公開 tool 或允許由 MCP caller 選擇 executable。
 
+Bootstrap 實測補充：Foundation 會在 main 之前新增 `__CF_USER_TEXT_ENCODING`，直接把 supervisor 的 `ProcessInfo.environment` 傳給 child，會在原 kernel 邊界多出位元組而失敗。因此 FD3 先傳固定16-byte header（magic、parent PID、absolute deadline），再由 host 的同一 I/O owner 以非阻塞 write 傳遞原環境的 JSON string dictionary（最多8 MiB），EOF 封閉快照。Supervisor 先驗證 header／父程序並啟動獨立 lease monitor，再有界讀取環境；真正 child 使用這份快照，不使用已被 runtime 擴增的 environment。FD3／4／5 不傳入真正 CLI。child spawn 在配置argv後再次檢查同一deadline。
+
+實測以直接 posix_spawn 的真正 CLI 找出 kernel 接納／拒絕相鄰邊界，再對照新 runner；空padding及8192-byte環境padding皆一致。初版沿用 supervisor environment 確實在邊界失敗，修正及退回快照的變異均由同一測試識別。Private context value只在helper階段使用2，真正CLI恢復1，字串位元組數不變。
+
 ### 一次性 owner 與狀態回傳
 
 `MCPProcessRunner` 需委派至可跨呼叫存活的 serial owner；取消只發布 intent。owner 使用同一 reservation 的真退出判讀、重複 group 清理與非阻塞 reap。清理截止後保留 pending owner並拒絕新工作；lost ownership 永久停止訊號。所有啟動中途錯誤也要退休或保留已建立的 child，不遺失責任。

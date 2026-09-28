@@ -254,6 +254,78 @@ class MCPStdioTests(unittest.TestCase):
             return None
         return (int(fields[0]), int(fields[1]), int(fields[2]), fields[3], fields[4])
 
+    def test_private_oneshot_bootstrap_requires_owned_descriptors(self):
+        result = subprocess.run([BIN, 'wait', '0'], env=dict(os.environ, SAFARI_BROWSER_MCP_DIRECT='2'),
+                                capture_output=True, start_new_session=True, timeout=3)
+        self.assertEqual(result.returncode, 64)
+        self.assertEqual(result.stdout, b'')
+        self.assertIn(b'Invalid isolated worker bootstrap', result.stderr)
+
+    def test_host_death_retires_actual_workers_including_large_argument_preselection(self):
+        # No observed PID is used as signal authority. A failing old worker runs
+        # only wait 5000 and exits naturally; only our Popen host is killed.
+        def table():
+            rows = {}
+            output = subprocess.check_output(['/bin/ps', '-axo', 'pid=,ppid=,stat=,comm='], text=True)
+            for line in output.splitlines():
+                fields = line.split(None, 3)
+                if len(fields) == 4:
+                    rows[int(fields[0])] = (int(fields[1]), fields[2], fields[3])
+            return rows
+
+        for large in (False, True):
+            with self.subTest(mode=self.client.mode, large=large):
+                client = Client('--timeout=10')
+                observed = set()
+                try:
+                    warm = client.call('safari.wait', {'positionals': {'milliseconds': '0'}})['result']
+                    self.assertFalse(warm['isError'], warm)
+                    value = ('0' * (os.sysconf('SC_ARG_MAX') // 2 + 4096) if large else '') + '5000'
+                    client.send('tools/call', {'name': 'safari.wait', 'arguments': {'positionals': {'milliseconds': value}}})
+                    busy = client.call('safari.wait', {'positionals': {'milliseconds': '0'}})['result']
+                    self.assertTrue(busy['isError'])
+                    self.assertIn('Another tool is running or stopping', busy['structuredContent']['failure'])
+                    deadline = time.monotonic() + 2
+                    while time.monotonic() < deadline:
+                        rows = table()
+                        owned = {client.process.pid}
+                        for _ in range(4):
+                            owned.update(pid for pid, row in rows.items() if row[0] in owned)
+                        observed = owned - {client.process.pid}
+                        if observed:
+                            # Give the fresh helper a scheduling opportunity to
+                            # spawn its worker; capture the entire owned tree.
+                            time.sleep(.1)
+                            rows = table()
+                            for _ in range(4):
+                                owned.update(pid for pid, row in rows.items() if row[0] in owned)
+                            observed = owned - {client.process.pid}
+                            break
+                        time.sleep(.01)
+                    self.assertTrue(observed, 'No actual execution process was observed')
+                    client.process.kill()
+                    client.process.wait(timeout=3)
+                    deadline = time.monotonic() + 1
+                    live = observed
+                    while live and time.monotonic() < deadline:
+                        rows = table()
+                        live = {pid for pid in observed if pid in rows and not rows[pid][1].startswith('Z')}
+                        if live:
+                            time.sleep(.02)
+                    self.assertFalse(live, 'Actual owned worker survived MCP host death')
+                finally:
+                    client.close()
+                    # A RED old runner may be orphaned; do not signal from ps.
+                    # The harmless fixture is time-bounded, and we observe its
+                    # natural completion before allowing the test to finish.
+                    deadline = time.monotonic() + 7
+                    while observed and time.monotonic() < deadline:
+                        rows = table()
+                        observed = {pid for pid in observed if pid in rows and not rows[pid][1].startswith('Z')}
+                        if observed:
+                            time.sleep(.05)
+                    self.assertFalse(observed, 'Bounded fixture did not finish naturally')
+
     def test_nested_exec_children_stay_owned_through_cancel_and_eof(self):
         for cancel in (False, True):
             with self.subTest(cancel=cancel):
@@ -269,25 +341,22 @@ class MCPStdioTests(unittest.TestCase):
                             leader_info = self.process_info(leader)
                             if not leader_info:
                                 continue
-                            if client.mode == 'persistent':
-                                children = subprocess.run(['/usr/bin/pgrep', '-P', str(leader)], capture_output=True, text=True)
-                                if not children.stdout.strip():
-                                    continue
-                                worker = int(children.stdout.split()[0])
-                                worker_info = self.process_info(worker)
-                                if not worker_info or '__mcp-worker' not in worker_info[4]:
-                                    continue
-                            else:
-                                worker = leader
+                            children = subprocess.run(['/usr/bin/pgrep', '-P', str(leader)], capture_output=True, text=True)
+                            if not children.stdout.strip():
+                                continue
+                            worker = int(children.stdout.split()[0])
+                            worker_info = self.process_info(worker)
+                            entry = '__mcp-worker' if client.mode == 'persistent' else '__mcp-exec'
+                            if not worker_info or entry not in worker_info[4]:
+                                continue
                             nested = subprocess.run(['/usr/bin/pgrep', '-P', str(worker)], capture_output=True, text=True)
                             if nested.stdout.strip():
                                 grandchild = int(nested.stdout.split()[0])
                                 info = self.process_info(grandchild)
                                 if info and 'wait 30000' in info[4]:
                                     self.assertEqual(leader_info[2], leader)
-                                    if client.mode == 'persistent':
-                                        self.assertEqual(worker_info[1], leader)
-                                        self.assertEqual(worker_info[2], leader)
+                                    self.assertEqual(worker_info[1], leader)
+                                    self.assertEqual(worker_info[2], leader)
                                     self.assertEqual(info[1], worker)
                                     break
                         time.sleep(0.01)

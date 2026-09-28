@@ -134,3 +134,11 @@ R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Ga
 - 未修改的原 `MCPProcessRunner` 自有 SIGSTOP fixture：1秒 timeout，三次分別約54／27／24毫秒被 signal9 終止。僅在外部診斷複本補 si_code 真退出判斷，相同案例約1.02秒才回報 timeout／signal15。不是完整正式修正。
 - #209 已有診斷 https://github.com/PsychQuant/safari-browser/issues/209#issuecomment-5868722871 ；late member、pending／lost ownership 及 bounded shutdown 仍需原 runner 的直接證據。
 - 既有1555 XCTest等PASS仍代表該固定版本已跑的範圍，不能覆蓋新發現；4.x完成後必須重新驗證及量測，不得沿用R2PASS計數宣告完成。
+
+## R3 task4.1／4.2 進度（未完成整體驗收）
+
+- 新增自動回歸：原runner自停時1秒timeout卻約44ms終止，兩項斷言RED；真正公開MCP大argv的host-death測試RED。普通pair對照通過。
+- 一次性執行新增same-argv／等長context值的supervisor bootstrap、固定parent/deadline header、唯一host lease及真正worker的status record；兩模式的host-death案例均GREEN。缺少合法inherited descriptors時拒絕bootstrap，舊binary退出0、新版退出64，已取得RED／GREEN。
+- 精確kernel接納測試先抓到Foundation額外環境欄位導致的新邊界退化；改傳parent原始環境快照後，0及8192-byte padding的接受／拒絕相鄰邊界均通過。Python系統shim本身會再exec並改變邊界，已改用真正CLI的raw posix_spawn作獨立對照，未把shim失敗當產品缺陷。
+- environment-snapshot及post-allocation-deadline兩項有效變異都造成具名行為失敗並還原。還原後focused與MCP family 152 XCTest通過；public MCP persistent／isolated各14項通過。這不是全repository test-all，也不是新release benchmark。
+- 修正原runner的si_code判讀；但仍需4.3的stateful pending owner、late member重複清理及有界回收，不能宣稱#209完成。#172維持needs-fix、尚無新六方PASS。

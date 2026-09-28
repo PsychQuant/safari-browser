@@ -165,7 +165,7 @@ enum MCPWorkerSpawn {
     /// `descriptors` maps inherited target slots to borrowed source descriptors.
     /// All sources are duplicated before constructing any dup2/close action.
     static func child(executable: URL, arguments: [String], environment: [String: String],
-                      descriptors: [Int32: Int32], group: Group = .create) throws -> MCPChildReservation {
+                      descriptors: [Int32: Int32], group: Group = .create, deadline: TimeInterval? = nil) throws -> MCPChildReservation {
         let argv = [executable.path] + arguments
         guard executable.isFileURL, !executable.path.isEmpty,
               argv.allSatisfy({ !$0.utf8.contains(0) }),
@@ -200,6 +200,9 @@ enum MCPWorkerSpawn {
         defer { for pointer in argvPointers + envPointers { free(pointer) } }
         guard argvPointers.dropLast().allSatisfy({ $0 != nil }), envPointers.dropLast().allSatisfy({ $0 != nil }) else {
             throw MCPWorkerLaunchError.spawn
+        }
+        if let deadline {
+            guard deadline.isFinite, ProcessInfo.processInfo.systemUptime < deadline else { throw MCPWorkerLaunchError.invalidConfiguration }
         }
         var pid: pid_t = 0
         let result = argvPointers.withUnsafeBufferPointer { argv in

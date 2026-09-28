@@ -62,6 +62,13 @@ struct SafariBrowser: AsyncParsableCommand {
 
     /// Persistent workers use the same execution boundary without exiting.
     static func main() async {
+        if ProcessInfo.processInfo.environment[MCPWorkerContext.directKey] == MCPIsolatedBootstrap.contextValue {
+            do { try MCPIsolatedBootstrap.run() }
+            catch {
+                try? FileHandle.standardError.write(contentsOf: Data("Invalid isolated worker bootstrap.\n".utf8))
+                Foundation.exit(64)
+            }
+        }
         let code = await CLIExecution.execute()
         Foundation.exit(code)
     }
