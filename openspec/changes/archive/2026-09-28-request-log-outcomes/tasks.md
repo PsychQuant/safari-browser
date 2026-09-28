@@ -10,4 +10,4 @@
 ## 2. 完整驗證與交付
 
 - [x] 2.1 驗證 Outcome logging preserves lifecycle and logger ownership：blocked candidate／handoff writer 不阻擋 response／stop、新舊 logger 分離、nil writer 靜默、每 request 有界事件；更新既有日誌測試的 payload event 篩選，執行關鍵守衛／事件變異及 make test-all，並在 CLAUDE.md／CHANGELOG.md 記錄多行遷移與 best-effort 限制。
-- [ ] 2.2 完成六方審查與修正、spectra analyze／validate、五項 requirements 同步歸檔；依最終提交留下完整證據，PR 與每個 commit 引用 #205，驗證後保留 issue OPEN。
+- [x] 2.2 完成六方審查與修正、spectra analyze／validate、五項 requirements 同步歸檔；依最終提交留下完整證據，PR 與每個 commit 引用 #205，驗證後保留 issue OPEN。
