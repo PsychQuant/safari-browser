@@ -185,3 +185,11 @@ R3六份報告已全文讀取，固定HEAD49ca317；master：https://github.com/
 - 尚待完整回歸、更新release量測與R4六方審查；不可沿用R3測試PASS或效能數值作新runtime完成證據。
 
 - 第9項R4變異移除actual worker的TERM預設恢復，既有self-TERM143斷言會失敗；還原後runner family16項通過。這證明supervisor忽略TERM不會把忽略狀態洩漏到CLI。SIGCHLD launcher測試是既有行為characterization PASS，不計為RED。
+
+## R4 完整候選證據（2026-09-29，待獨立審查）
+
+- Runtime `834dc89` 的正式`make test-all` exit0：1575 XCTest／38 Swift Testing／66 smoke、兩模式各15 MCP、新TERM host-death測試1項含3subcases、benchmark52／CLI trace7。簽章49 PASS／2身分SKIP，GUI harness SKIP。
+- R4九項有效變異均攔截並還原；完整原始log及driver definitions保留供reviewer核對，不只提供summary。
+- Release SHA256 `02320ed601bc71f34fabd715463d0a058d5a3776a08b00122b00ba7cfb1ca505`：60 samples／3warmups／3秒deadline／ABBA，全部18個non-live rows均60/60且warmups皆成功。off warm isolated24.296/25.574ms vs persistent1.139/1.470；on23.574/24.707 vs1.124/1.371。Trace-on仍60 vs1 worker PID，各60requestIDs。
+- 新三次呼叫resident snapshot：isolated0 child／17728KiB RSS、persistent2 children／38896KiB RSS；共享頁加總、單次snapshot，非unique memory。全部cohorts保留，沒有GUI效能宣稱。
+- tasks現為16/18，4.4的獨立審查及3.3歸檔／PR仍待完成，尚未verified。

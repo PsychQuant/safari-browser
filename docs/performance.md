@@ -319,3 +319,27 @@ as aligned arrays, including separate CLI/daemon and explicitly skipped live
 rows. The earlier R3 report is retained above. A new three-call resident snapshot
 found zero versus two children and RSS sums of 18,352 versus 38,144 KiB; the same
 single-snapshot/shared-page limitations apply.
+
+## R4 TERM-protected comparison (2026-09-29)
+
+Runtime `834dc89` keeps both supervisors alive through TERM grace and preserves
+actual worker signal handling. Release SHA-256:
+`02320ed601bc71f34fabd715463d0a058d5a3776a08b00122b00ba7cfb1ca505`.
+The same 60-sample, three-warmup, three-second AB/BA comparison again completed
+all non-live rows 60/60, including all warmups.
+
+| Trace | Mode | Cold p50 / p95 ms | Interleaved warm p50 / p95 ms |
+|---|---|---:|---:|
+| off | isolated | 52.90 / 64.56 | 24.30 / 25.57 |
+| off | persistent | 36.27 / 43.84 | 1.14 / 1.47 |
+| on | isolated | 47.16 / 53.09 | 23.57 / 24.71 |
+| on | persistent | 35.75 / 38.19 | 1.12 / 1.37 |
+
+Trace-on warm identity counts remain 60 versus one actual CLI PID and 60 request
+IDs per mode. [All R4 scenario wall/status/identity arrays](benchmarks/mcp-worker-release-r4-2026-09-29.json)
+include CLI/daemon baselines and skipped live rows. Earlier cohorts remain above;
+changes across cohorts are not attributed solely to the TERM correction.
+A separate three-call resident snapshot found zero versus two children, with
+RSS sums of 17,728 versus 38,896 KiB (shared pages included, not unique memory).
+These measurements support this fixed workload comparison; lifetime correctness
+is established separately by the TERM/grace/host-death regressions.
