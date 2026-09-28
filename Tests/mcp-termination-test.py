@@ -47,7 +47,7 @@ def process_table():
 
 
 class MCPTerminationTests(unittest.TestCase):
-    def test_host_death_after_real_group_term_keeps_lifetime_protection(self):
+    def test_owned_termination_preserves_prelaunch_cancellation_grace_and_lifetime(self):
         with tempfile.TemporaryDirectory(prefix='mcp-term-', dir='/tmp') as directory:
             directory = Path(directory)
             library = directory / 'owned-termination.dylib'
@@ -65,24 +65,62 @@ class MCPTerminationTests(unittest.TestCase):
             library.write_bytes(data)
             subprocess.run(['codesign', '--force', '--sign', '-', str(library)],
                            check=True, capture_output=True, timeout=20)
-            for mode, large in [('persistent', False), ('isolated', False), ('persistent', True)]:
-                with self.subTest(mode=mode, large=large):
-                    marker = directory / f'{mode}-{large}.events'
+            cases = [('persistent', False, False), ('isolated', False, False), ('persistent', True, False),
+                     ('isolated', False, True), ('persistent', True, True)]
+            for mode, large, prelaunch in cases:
+                with self.subTest(mode=mode, large=large, prelaunch=prelaunch):
+                    marker = directory / f'{mode}-{large}-{prelaunch}.events'
                     env = dict(os.environ, DYLD_INSERT_LIBRARIES=str(library),
                                OWNED_TERM_RECORD=str(marker), OWNED_STOP_AFTER_TERM='1')
+                    if prelaunch:
+                        env['OWNED_STOP_BEFORE_SPAWN'] = '1'
                     client = mcp.Client('--timeout=10', binary=BIN, worker_mode=mode, environment=env)
                     observed = set()
                     try:
                         value = ('0' * (os.sysconf('SC_ARG_MAX') // 2 + 4096) if large else '') + '5000'
                         client.send('tools/call', {'name': 'safari.wait', 'arguments': {'positionals': {'milliseconds': value}}}, identifier='owned-wait')
                         deadline = time.monotonic() + 3
-                        while time.monotonic() < deadline and (not marker.exists() or 'R' not in marker.read_text()):
+                        ready = 'B' if prelaunch else 'R'
+                        while time.monotonic() < deadline and (not marker.exists() or ready not in marker.read_text()):
                             time.sleep(.005)
-                        self.assertTrue(marker.exists() and 'R' in marker.read_text(), 'Actual CLI signal fixture did not start')
+                        self.assertTrue(marker.exists() and ready in marker.read_text(),
+                                        f'Owned signal fixture did not reach its barrier: events={marker.read_text() if marker.exists() else ""}, responses={list(client.lines.queue)}')
                         rows = process_table()
                         leaders = [pid for pid, row in rows.items() if row[0] == client.process.pid]
                         self.assertEqual(len(leaders), 1)
                         leader = leaders[0]
+                        if prelaunch:
+                            observed = {leader}
+                            deadline = time.monotonic() + 1
+                            while time.monotonic() < deadline:
+                                row = process_table().get(leader)
+                                if row and row[2].startswith('T'):
+                                    break
+                                time.sleep(.005)
+                            self.assertTrue(row and row[2].startswith('T'), 'Bootstrap must finish self-STOP before cancellation')
+                            self.assertEqual(marker.read_text(), 'B', 'The actual CLI must not have started at the barrier')
+                            client.send('notifications/cancelled', {'requestId': 'owned-wait'}, notification=True)
+                            deadline = time.monotonic() + 2
+                            stopped = False
+                            while time.monotonic() < deadline:
+                                row = process_table().get(client.process.pid)
+                                if row and row[2].startswith('T'):
+                                    stopped = True
+                                    break
+                                time.sleep(.005)
+                            self.assertTrue(stopped, 'Host must stop after TERM, before its KILL escalation')
+                            deadline = time.monotonic() + 1
+                            exited = False
+                            while time.monotonic() < deadline:
+                                row = process_table().get(leader)
+                                if not row or row[2].startswith('Z'):
+                                    exited = True
+                                    break
+                                time.sleep(.005)
+                            self.assertEqual(marker.read_text(), 'BHC',
+                                             'Complete environment, actual group TERM and resume must never reach CLI entry')
+                            self.assertTrue(exited, 'Cancelled bootstrap must reject spawn while host is stopped')
+                            continue
                         workers = [pid for pid, row in rows.items() if row[0] == leader]
                         self.assertEqual(len(workers), 1)
                         worker = workers[0]
@@ -92,6 +130,9 @@ class MCPTerminationTests(unittest.TestCase):
                         self.assertEqual(len(descendants), 1, 'Owned descendant did not start')
                         self.assertEqual(rows[descendants[0]][1], leader)
                         observed = {leader, worker, descendants[0]}
+                        route = 'I' if mode == 'isolated' or large else 'P'
+                        self.assertEqual(marker.read_text(), route + 'SR',
+                                         'Assert actual CLI route, unblocked/default TERM, and descendant readiness')
                         client.send('notifications/cancelled', {'requestId': 'owned-wait'}, notification=True)
                         deadline = time.monotonic() + 2
                         stopped = False

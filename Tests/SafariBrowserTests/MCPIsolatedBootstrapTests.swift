@@ -6,6 +6,21 @@ import XCTest
 final class MCPIsolatedBootstrapTests: XCTestCase, @unchecked Sendable {
     private var helper: URL { Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser") }
 
+    func testPendingTerminationCheckRejectsBackgroundThread() async {
+        let refused: Bool = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                guard pthread_main_np() == 0 else { continuation.resume(returning: false); return }
+                do {
+                    try MCPWorkerSpawn.checkPendingTermination()
+                    continuation.resume(returning: false)
+                } catch MCPWorkerLaunchError.supervisorContext {
+                    continuation.resume(returning: true)
+                } catch { continuation.resume(returning: false) }
+            }
+        }
+        XCTAssertTrue(refused, "A background thread cannot establish the initial thread's pending TERM state")
+    }
+
     func testFixedContextRejectsMalformedParentDeadlineAndFraming() throws {
         // Independent literal: SBI1 magic little-endian, parent 42, deadline1.0.
         let literal = Data([0x31, 0x49, 0x42, 0x53, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f])

@@ -195,7 +195,7 @@ final class MCPProcessRunner: MCPCommandRunning, @unchecked Sendable {
                     arguments: arguments, environment: environment,
                     descriptors: [0: streams[0].value, 1: streams[3].value, 2: streams[5].value,
                                   3: channels.metadata.value, 4: channels.leaseRead.value, 5: channels.statusWrite.value],
-                    deadline: deadline, argument0: config.executable.path)
+                    deadline: deadline, argument0: config.executable.path, blockTermination: true)
             } catch MCPWorkerLaunchError.spawnSystemError(let code) {
                 return MCPCommandResult(failure: "Worker launch failed: \(String(cString: strerror(code))).")
             } catch {
