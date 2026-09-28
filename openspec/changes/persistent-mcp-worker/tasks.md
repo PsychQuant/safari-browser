@@ -7,8 +7,8 @@
 ## 2. 程序生命週期與 request 邊界
 
 - [x] 2.1 實作「監督程序與存活管線」及 Supervisor ownership survives controller death：private launcher／supervisor／PID lease，唯一 host writer EOF、worker 繼承 group、固定 status pipe、訊號先於 reap；以 owned custodian/controller/suspended-worker 的真實程序測試驗證 controller 死亡及後代終止，失去 reservation 不再 signal，fd 與 group 無跨代誤用。
-- [ ] 2.2 實作「CLI request scope 與 stdio 封閉」及 Request state and streams are isolated before reuse：每筆 stdin feeder、stdout/stderr relay、flush/seal/join、fresh probe gate/trace，抽出 CLI 不退出程序的共用執行邊界；保留 help/error bytes，補輸入／輸出／late writer／AX busy retirement 的 RED／GREEN，已知輔助 task 要在可重用之前真正結束。
-- [ ] 2.3 串接 hidden __mcp-supervise／__mcp-worker 與協定／capture，履行 Persistent workers execute fresh command instances：健康 command 在同 PID 執行多筆，hidden/MCP recursion 拒絕，未知 descendants 或未完成 scope 不重用；actual binary 的重複 wait/help/exec、token、stream、probe budget 與故障 fixtures 通過。
+- [x] 2.2 實作「CLI request scope 與 stdio 封閉」及 Request state and streams are isolated before reuse：每筆 stdin feeder、stdout/stderr relay、flush/seal/join、fresh probe gate/trace，抽出 CLI 不退出程序的共用執行邊界；保留 help/error bytes，補輸入／輸出／late writer／AX busy retirement 的 RED／GREEN，已知輔助 task 要在可重用之前真正結束。
+- [x] 2.3 串接 hidden __mcp-supervise／__mcp-worker 與協定／capture，履行 Persistent workers execute fresh command instances：健康 command 在同 PID 執行多筆，hidden/MCP recursion 拒絕，未知 descendants 或未完成 scope 不重用；actual binary 的重複 wait/help/exec、token、stream、probe budget 與故障 fixtures 通過。
 - [ ] 2.4 實作「常駐 pair 與單一接納」及 Retirement and recovery never replay uncertain work：MCPPersistentRunner 的 generation、lazy start、idle、crash recovery、cancel/deadline/cap、保留 PID 到最後 signal；真實 marker、partial/wrong-id frame、idle/call race、輸出上限與清理未確認時拒絕新 pair 的測試通過。
 - [ ] 2.5 整合 MCPCommand／MCPSession 的 default persistent、explicit isolated、idle timeout、runner shutdown 與 pre-send large-argv route；完成「Executable 身分與原 argv 邊界」及 Isolated command worker、Stdio protocol 的修改契約，暖 worker 的實際 replacement／NUL/input limits／EOF idle cleanup／schema/help parity 測試通過。
 

@@ -47,7 +47,8 @@ enum CLIExecution {
                     var command = try SafariBrowser.parseAsRoot(arguments)
                     try validate(command, mode: mode)
                     // Long-lived hosts own no command-wide timing collector.
-                    if command is DaemonServeCommand || command is MCPCommand {
+                    if command is DaemonServeCommand || command is MCPCommand
+                        || command is MCPSupervisorCommand || command is MCPPersistentWorkerCommand {
                         _ = timing?.finish(status: .ok)
                     }
                     if var asynchronous = command as? any AsyncParsableCommand {

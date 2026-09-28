@@ -1,6 +1,6 @@
 # 元件實作證據（2026-09-28）
 
-目前完成 tasks 1.1、1.2、1.3、2.1；其餘未完成。這份紀錄不是完整 #172 驗收，也不表示 public MCP 已改用常駐 worker。
+目前完成 tasks 1.1、1.2、1.3、2.1、2.2、2.3（6/11）；其餘未完成。這份紀錄不是完整 #172 驗收，也不表示 public MCP 已改用常駐 worker。
 
 ## 私有 wire codec（1.2）
 
@@ -27,16 +27,16 @@
 - 5 項變異均被抓到並還原：停用 lease monitor、錯置 worker status、移除 parent identity、保留 bootstrap streams、遺失 reservation 不記錄 terminal state。
 - Parent identity 變異最初存活；補上合法數字但非實際 parent 的案例後抓到，保留原非法 PID 案例。
 
-## 合併後局部回歸
+## 元件階段局部回歸（bf6b7b2）
 
 在上述最終原始碼執行 `swift test --filter MCP`：99 tests，0 failures。`git diff --check` 與 Spectra validation 通過。
 
-尚待 request stdio/state 隔離、hidden command 整合、persistent runner、公開模式切換、完整 #110 回歸、同 build 效能對照、完整測試與六方審查。未操作 Safari GUI，未安裝 binary，未宣告 #172 verified。
+此階段的後續隔離與 hidden command 證據見下文；persistent runner、公開模式切換與整體驗收仍未完成。
 
 
-## Request scope／CLI／stdio 元件（2.2 進行中）
+## Request scope／CLI／stdio 元件（73bbb72 階段）
 
-本批新增元件已實作，但 task 2.2 仍未勾選：須在 task 2.3 的 actual worker 迴圈接上 AX quiescence 的不重用／退休回覆，才能證明完整路徑。
+73bbb72 當時先保留 task 2.2 未勾選，等待 worker 迴圈的 AX quiescence 不重用決策；該整合現已完成，見下節。
 
 - `MCPInvocationContext`：每次建立獨立 gate／trace；gate 優先序為 daemon request、MCP invocation、普通 process。成功與錯誤路徑均 cancel 並 await 已知輔助工作；一般 CLI 保持原 cancel-only 行為。SafariBridge 的 watchdog 與 System Events waiting-message 已接上此邊界。
 - `BoundedAXWorker.isQuiescent`：只讀狀態，不因呼叫端 timeout 提早重設 allowance。測試以受控背景工作證明真正返回前仍不可重用。
@@ -48,4 +48,20 @@
 - 原 `Tests/mcp-stdio.py` 10 項端到端測試通過（含 77 個公開 tool help、stdin、cancel／EOF／backpressure、nested group、explicit daemon、binary replacement）。目前仍使用原 isolated runner，不把它當作常駐 backend 的驗收。
 - 還原所有變異後 `make test-all` exit 0：1,516 XCTest、38 Swift Testing、66 smoke；簽章 49 PASS／2 SKIP（缺少所需簽章身分）。GUI harness 明確 SKIP，沒有新的 Safari GUI 驗收。
 
-下一步：hidden supervisor／worker 入口、私有 framing 與 request dispatch 整合；驗證健康呼叫的同 PID 重用、AX busy／descendant／scope failure 的實際退休，然後才完成 task 2.2／2.3。Public MCP 尚未改成 persistent；沒有新的效能改善宣稱。
+此階段的下一步是 worker 整合，結果見下節。Public MCP 尚未改成 persistent，沒有新的效能改善宣稱。
+
+
+## 實際 worker 迴圈（完成 2.2／2.3）
+
+- 註冊 hidden `__mcp-supervise`／`__mcp-worker`，沿用 production supervisor 的 group／lease／status pipe。Worker 驗證 parent／PGID／私有 socket，將原 control FD 標記 CLOEXEC，bootstrap stdio 在 ready handshake 前釋放。
+- `MCPPersistentWorkerLoop` 是 production 實際使用的單筆執行迴圈：typed frames、UUID-tagged output、每筆 image guard、capture 全部收尾後才 complete；stream／execution failure 或未確認的 descendants 產生 retire 並停止取下一筆。AX 未 quiescent 則回傳當筆完整結果、reusable=false 並結束 worker。
+- `MCPWorkerControlWriter` 的鎖涵蓋整個 frame 的全部 partial writes。最多兩個 relay 同步背壓，不用每 chunk 新建非同步 task queue。I/O 失敗後停用 sender，peer 斷線不觸發 SIGPIPE。
+- Actual binary 的初始 RED：3 tests 因入口尚不存在而失敗；loop stub RED：4 tests／6 failures。實作後全部通過。
+- Actual binary 證據：20 次 `wait 0` 的 trace PID 全部等於 hello 中的 actual worker PID，且 20 個 requestID 不同；77 個公開 tool help 都由該 worker 執行。help／exec invalid+valid stdin／負值 wait／hidden recursion rejection 後，下一筆正常命令沒有殘留輸出。
+- Actual binary 證據：暖 worker 的 private executable copy 原子替換為另一 LC_UUID 後，下一筆 code64、not-executed/restart 指引、reusable=false、control EOF；沒有重播。Malformed／partial frame 終止，bootstrap EOF、缺少 lease context、錯 parent／PGID 的拒絕也通過。
+- 分層故障證據：production loop 使用真正的 BoundedAXWorker 受控未完成 read，回覆 complete(false)，排隊的第二筆保持未執行；另外注入未封閉 stream、未知 descendants、execution/image failure，證明同一 loop 的 retirement 分支停止後續接納。這些是同一 production state machine 的故障測試，沒有冒充 Safari GUI／真正卡住 AX service 的驗收。
+- 小 socket send buffer 與兩個並行 relay 的實際 partial writes 測試：24 個 8192-byte output frames 保持完整、不混流；斷線寫入可回報錯誤。
+- 新增 8 項變異全部被抓到並還原：AX retirement、stream retirement、descendant retirement、image-before-execute、disk image check、parent guard、group guard、whole-frame lock。
+- 還原後 `make test-all` exit0：1,530 XCTest、38 Swift Testing、66 smoke；簽章 49 PASS／2 身分限制 SKIP，GUI harness SKIP。之後只將 missing-parent 測試明確清除 ambient parent keys，該單項重跑 PASS；production source 沒有再改。
+
+下一步是 task 2.4 的 host runner：owner admission、idle generation、cancel/deadline/cap、crash/partial/wrong-id/no-replay、清理 pending 時保留 reservation 並拒絕新 pair。尚未切換公開 MCP backend，也尚未進行同 build 的完整效能驗收、最終六方審查或宣告 verified。

@@ -37,10 +37,14 @@ enum MCPWorkerContext {
         return ["__mcp-exec"] + arguments
     }
 
+    static var imageChangedError: ValidationError {
+        ValidationError("MCP executable changed; restart the MCP server before calling tools. The command was not executed.")
+    }
+
     static func validate(environment: [String: String], currentImage: () throws -> String) throws {
         guard let expected = environment[imageKey] else { return }
         guard !expected.isEmpty, try currentImage() == expected else {
-            throw ValidationError("MCP executable changed; restart the MCP server before calling tools. The command was not executed.")
+            throw imageChangedError
         }
     }
 }
