@@ -125,3 +125,19 @@ After initialization with genuine browser intrinsics, direct changes to the page
 - **WHEN** a page capture listener registered earlier replaces the genuine FileList before the upload observer runs
 - **THEN** the completion receipt SHALL represent the metadata visible to that observer and SHALL NOT be described as proof of the file bytes originally supplied by the browser
 - **AND** native selected-path authorization SHALL remain independent of page receipt data
+
+### Requirement: Native upload preserves requested target constraints
+
+Native upload SHALL retain the original URL matcher and carried profile constraint across native resolution and the fixed worker request. Before treating the current page as its transaction owner or opening its chooser, the worker SHALL verify the original constraint against the bound window/tab candidate. A mismatch SHALL stop without chooser opening, Paste, confirmation, re-resolution or replay. Matcher semantics SHALL reuse UrlMatcher, and unconstrained positional targets SHALL retain existing behavior. The serialized constraint SHALL reject unknown fields and invalid combinations.
+
+#### Scenario: Resolved slot changes to a nonmatching URL
+- **WHEN** an exact URL target resolves to window 42 and tab 2, but that slot contains a different URL before worker capture
+- **THEN** the worker SHALL reject the candidate before opening the input or sending a file action
+
+#### Scenario: Carried matcher and profile
+- **WHEN** a resolvedTab carries a matcher or profile constraint
+- **THEN** the fixed worker request SHALL preserve and verify both present constraints using the existing matching semantics
+
+#### Scenario: Positional request without an original matcher
+- **WHEN** a native request has no original URL or profile constraint
+- **THEN** it SHALL retain the existing window/tab capture and subsequent owner checks without adding a rematch policy

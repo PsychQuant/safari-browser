@@ -4,15 +4,15 @@ import XCTest
 @testable import SafariBrowser
 
 final class NativeUploadScriptTests: XCTestCase {
-    private func script(window: Int? = 2, windowID: Int? = nil, tabIndex: Int? = nil, deadlineUptime: Double? = nil) -> String {
-        NativeUploadScript.make(selector: "input[data-name=\"a'\\b\"]", path: "/tmp/隱藏 ' café.txt", fileSize: 17, modificationTimeMilliseconds: 123456, clipboardChangeCount: 42, window: window, timeout: 8, nonce: "test-'\\nonce", windowID: windowID, tabIndex: tabIndex, deadlineUptime: deadlineUptime)
+    private func script(window: Int? = 2, windowID: Int? = nil, tabIndex: Int? = nil, deadlineUptime: Double? = nil, targetCheckRequired: Bool = false) -> String {
+        NativeUploadScript.make(selector: "input[data-name=\"a'\\b\"]", path: "/tmp/隱藏 ' café.txt", fileSize: 17, modificationTimeMilliseconds: 123456, clipboardChangeCount: 42, window: window, timeout: 8, nonce: "test-'\\nonce", windowID: windowID, tabIndex: tabIndex, deadlineUptime: deadlineUptime, targetCheckRequired: targetCheckRequired)
     }
 
     func testGeneratedScriptCompilesWithoutRunningSafari() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: dir) }
-        for generated in [script(window: nil), script(window: 2), script(windowID: 901, tabIndex: 4, deadlineUptime: 1234.5)] {
+        for generated in [script(window: nil), script(window: 2), script(windowID: 901, tabIndex: 4, deadlineUptime: 1234.5), script(windowID: 901, tabIndex: 4, deadlineUptime: 1234.5, targetCheckRequired: true)] {
             let source = dir.appendingPathComponent("upload.applescript")
             try generated.write(to: source, atomically: true, encoding: .utf8)
             _ = try await SafariBridge.runShell("/usr/bin/osacompile", ["-o", dir.appendingPathComponent("upload.scpt").path, source.path], timeout: 10)

@@ -97,3 +97,15 @@ R1 review 的可重現缺陷：可探索的 window state 暴露 selection 與 li
 裁定：receipt 保證私有 observer 結果，拒絕無可信事件時直接修改 state/global/listener 製造的假成功；它不是瀏覽器不可變的交付紀錄或內容雜湊證明。原生 AX 的確認前路徑授權維持，不採 page receipt 授權新的確認。這次不引入瀏覽器 extension／isolated world。保留原始拒絕假設的 RED 紀錄，將 repository 測試命名為 testReceiptObservesFileListAfterEarlierCaptureListener，明確記錄已知限制；不得把該測試列為「敵意頁面錯檔攻擊已修復」。既有真正錯誤 metadata、property override 與無可信事件的 state 偽造拒絕測試均維持。
 
 R2 另項裁定：真實 /tmp、/private/tmp、/var/tmp、/private/var/tmp、系統暫存與 realpath 六種入口，parent request.path、probe canonical helper 與 CF file-reference 的 Foundation 字串全部一致，且獨立 Darwin realpath 指向正確檔案；實體檔改成 symlink 仍拒絕。所稱 /private 必然不一致被實測反駁，runtime 不為此變更。確認公告改回傳 Bool；deadline、clipboard、標題或寫入失敗一律 false，AppleScript 只有 true 才 AXPress，標題比對考慮 case/diacriticals。負向 harness 同時拒絕程序 capture 截斷及 TerminalText 的 …[truncated]，零公告才有可用的零確認證據；已有公告不代表一定派送，仍是保守失敗。
+
+## #179 解析至捕捉間的原條件
+
+### 封閉原生 target constraint
+
+NativeUploadTargetConstraint 為 Codable/Sendable/Equatable 的 immutable value。`from(_ target: SafariBridge.TargetDocument) throws -> NativeUploadTargetConstraint?` 對 urlMatch 保留 matcher；對 resolvedTab 保留 optional matcher 與 profile；其他 positional case 返回 nil。matcher 有 contains/exact/endsWith/regex 四種 kind、pattern（UTF-8 <=65536、不得 NUL）與 regex options；profile 若存在須非空、UTF-8 <=4096、不得 NUL。JSON 為 optional matcher {kind,pattern,options（regex 必填）} 與 optional profile，至少一個；未知 keys／null／非法 kind、欄位組合或 regex option bits 拒絕。Regex 在 construction/decode 編譯一次，matches(url:windowName:) 沿用 UrlMatcher.matches 與 parseProfile。不能接受任意 AppleScript／JS。
+
+### 捕捉前原條件守衛
+
+UploadCommand 在仍持有 scoped TargetDocument 時建立 constraint，傳給 performNativeUpload 和 NativeUploadRequest 的 optional targetConstraint。Worker validation 在任何 UI 前驗解碼；`makeScript()` 只傳 `targetCheckRequired` 給固定 builder。新 @objc targetMatchesWindow:urlString:windowName: 使用 TaskLocal request，綁 windowID、deadline 與 clipboard 前後檢查並比對 constraint。腳本先取得 candidate URL／Safari window name，要求 bridge true，才將該候選視為 owner 並繼續 activate／initializer／input。後續原 URL/document/input 守衛維持；不符合時直接失敗，不 rematch／re-resolve／重送。無 constraint 不加新的 Safari 查詢，保留 positional targeting 行為。
+
+這項補強不提供穩定 tab ID；同 URL 的頁面替換仍依既有語意在 worker 初始化後綁 document/input。Profile 沿用現有 window-name parsing，不宣稱不同的原生 profile 身分來源。

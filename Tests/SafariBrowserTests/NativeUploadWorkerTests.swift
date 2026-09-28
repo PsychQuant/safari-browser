@@ -185,4 +185,84 @@ extension NativeUploadWorkerTests {
             XCTAssertTrue(String(describing: error).contains("matching parent executable"), "Unexpected error: \(error)")
         }
     }
+    private func constrainedRequest() throws -> NativeUploadRequest {
+        var value = request()
+        value.targetConstraint = try NativeUploadTargetConstraint.from(.resolvedTab(windowID: 8128, tabInWindow: 1,
+            rematch: .exact("https://fixture.invalid/upload"), profile: "Work"))
+        return value
+    }
+
+    func testTargetConstraintSurvivesClosedRequestRoundTrip() throws {
+        let value = try constrainedRequest()
+        XCTAssertEqual(try NativeUploadRequest.decode(value.encodedArgument()), value)
+        XCTAssertTrue(value.makeScript().contains("my verifyUploadRequestedTarget()"))
+        XCTAssertFalse(request().makeScript().contains("my verifyUploadRequestedTarget()"))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? [String: Any])
+        let invalidConstraints: [[String: Any]] = [
+            ["profile": "Work", "script": "arbitrary"],
+            ["matcher": ["kind": "exact", "pattern": "https://fixture.invalid/upload", "script": "arbitrary"]],
+            ["matcher": ["kind": "script", "pattern": "arbitrary"]],
+            ["matcher": ["kind": "regex", "pattern": "[", "options": 0]],
+            ["profile": NSNull()], [:]
+        ]
+        for constraint in invalidConstraints {
+            var invalid = object; invalid["targetConstraint"] = constraint
+            XCTAssertThrowsError(try NativeUploadRequest.decode(JSONSerialization.data(withJSONObject: invalid).base64EncodedString()))
+        }
+    }
+
+    func testTargetConstraintChecksOriginalURLAndProfile() throws {
+        let value = try constrainedRequest()
+        func check(url: String = "https://fixture.invalid/upload", name: String = "Work — Fixture") -> Bool {
+            NativeUploadWorkerContext.targetMatches(windowID: 8128, url: url, windowName: name,
+                request: value, now: {100}, clipboardCount: {42})
+        }
+        XCTAssertTrue(check())
+        XCTAssertFalse(check(url: "https://fixture.invalid/other"))
+        XCTAssertFalse(check(name: "Personal — Fixture"))
+        XCTAssertFalse(check(name: "Fixture"))
+    }
+
+    func testTargetConstraintRejectsAbsentExpiredOrWrongWindowBeforeClipboard() throws {
+        var clipboardReads = 0
+        let value = try constrainedRequest()
+        func check(_ value: NativeUploadRequest?, windowID: Int = 8128, now: Double = 100) -> Bool {
+            NativeUploadWorkerContext.targetMatches(windowID: windowID, url: "https://fixture.invalid/upload",
+                windowName: "Work — Fixture", request: value, now: {now},
+                clipboardCount: { clipboardReads += 1; return 42 })
+        }
+        XCTAssertFalse(check(nil))
+        XCTAssertFalse(check(request()))
+        XCTAssertFalse(check(value, windowID: 8129))
+        XCTAssertFalse(check(value, now: 107))
+        XCTAssertEqual(clipboardReads, 0)
+    }
+
+    func testTargetConstraintRechecksClockAndClipboardAfterMatching() throws {
+        let value = try constrainedRequest()
+        for (times, counts) in [([100.0, 100.0], [42, 42]), ([100.0, 107.0], [42, 42]), ([100.0, 100.0], [42, 43]), ([100.0, 100.0], [43, 42])] {
+            var timeIndex = 0; var countIndex = 0
+            let result = NativeUploadWorkerContext.targetMatches(windowID: 8128, url: "https://fixture.invalid/upload",
+                windowName: "Work — Fixture", request: value,
+                now: { defer { timeIndex += 1 }; return times[min(timeIndex, times.count - 1)] },
+                clipboardCount: { defer { countIndex += 1 }; return counts[min(countIndex, counts.count - 1)] })
+            XCTAssertEqual(result, times[1] < 107 && counts == [42, 42])
+        }
+    }
+
+    @MainActor
+    func testTargetConstraintObjCBridgeRejectsAbsentOrExpiredContextWithoutUI() throws {
+        let script = try XCTUnwrap(NSAppleScript(source: """
+        use framework "Foundation"
+        return (current application's SBNativeUploadBridge's targetMatchesWindow:8128 urlString:"https://fixture.invalid/upload" windowName:"Work — Fixture") as boolean
+        """))
+        var error: NSDictionary?
+        XCTAssertFalse(script.executeAndReturnError(&error).booleanValue)
+        XCTAssertNil(error)
+        var expired = try constrainedRequest(); expired.deadlineUptime = 0
+        let result = NativeUploadWorkerContext.$request.withValue(expired) { script.executeAndReturnError(&error) }
+        XCTAssertFalse(result.booleanValue)
+        XCTAssertNil(error)
+    }
+
 }

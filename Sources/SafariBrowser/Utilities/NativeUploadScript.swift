@@ -134,7 +134,25 @@ enum NativeUploadScript {
         """
     }
 
-    static func make(selector: String, path: String, fileSize: Int64, modificationTimeMilliseconds: Int64, clipboardChangeCount: Int, window: Int?, timeout: Double, nonce: String, windowID: Int? = nil, tabIndex: Int? = nil, deadlineUptime: Double? = nil) -> String {
+    static func requestedTargetGuardScript() -> String {
+        """
+        my checkUploadDeadline()
+        my checkUploadClipboard()
+        tell application "Safari" to set requestedWindowName to name of window id uploadWindowID
+        set requestedTargetMatches to (current application's SBNativeUploadBridge's targetMatchesWindow:uploadWindowID urlString:uploadPageURL windowName:requestedWindowName) as boolean
+        my checkUploadDeadline()
+        my checkUploadClipboard()
+        if not requestedTargetMatches then error "Native upload target no longer matches the original URL/profile; no chooser was opened"
+        """
+    }
+
+    static func make(selector: String, path: String, fileSize: Int64, modificationTimeMilliseconds: Int64, clipboardChangeCount: Int, window: Int?, timeout: Double, nonce: String, windowID: Int? = nil, tabIndex: Int? = nil, deadlineUptime: Double? = nil, targetCheckRequired: Bool = false) -> String {
+        let requestedTargetHandler = targetCheckRequired ? """
+        on verifyUploadRequestedTarget()
+            \(requestedTargetGuardScript())
+        end verifyUploadRequestedTarget
+        """ : ""
+        let requestedTargetCheck = targetCheckRequired ? "my verifyUploadRequestedTarget()" : ""
         let receiptToken = "SB_UPLOAD_RECEIPT:" + UUID().uuidString
         let initial = initializeJS(selector: selector, nonce: nonce,
             fileName: URL(fileURLWithPath: path).lastPathComponent, fileSize: fileSize,
@@ -174,6 +192,8 @@ enum NativeUploadScript {
         on checkUploadClipboard()
             if ((current application's NSPasteboard's generalPasteboard()'s changeCount()) as integer) is not \(clipboardChangeCount) then error "Clipboard changed during native upload; no further file action was sent"
         end checkUploadClipboard
+
+        \(requestedTargetHandler)
 
         on readUploadCompletion()
             tell application "Safari" to set rawReceipt to do JavaScript "\(completion)" in current tab of window id uploadWindowID
@@ -327,6 +347,7 @@ enum NativeUploadScript {
             set uploadTabIndex to index of current tab of window id uploadWindowID
             \(expectedTabGuard)
             set uploadPageURL to URL of current tab of window id uploadWindowID
+            \(requestedTargetCheck)
             my checkUploadDeadline()
             my checkUploadClipboard()
             my verifyUploadNativeTarget()

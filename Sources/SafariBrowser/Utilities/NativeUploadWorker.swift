@@ -17,6 +17,7 @@ struct NativeUploadRequest: Codable, Sendable, Equatable {
     var windowID: Int
     var tabIndex: Int?
     var deadlineUptime: Double
+    var targetConstraint: NativeUploadTargetConstraint? = nil
 
     static let maximumBytes = 128 * 1024
 
@@ -34,7 +35,7 @@ struct NativeUploadRequest: Codable, Sendable, Equatable {
             throw ValidationError("Invalid native upload request encoding or size")
         }
         let allowed: Set<String> = ["version", "selector", "path", "fileSize", "modificationTimeMilliseconds",
-                                   "clipboardChangeCount", "window", "timeout", "nonce", "windowID", "tabIndex", "deadlineUptime"]
+                                   "clipboardChangeCount", "window", "timeout", "nonce", "windowID", "tabIndex", "deadlineUptime", "targetConstraint"]
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               Set(object.keys).isSubset(of: allowed) else {
             throw ValidationError("Invalid native upload request schema")
@@ -46,7 +47,7 @@ struct NativeUploadRequest: Codable, Sendable, Equatable {
         NativeUploadScript.make(selector: selector, path: path, fileSize: fileSize,
             modificationTimeMilliseconds: modificationTimeMilliseconds, clipboardChangeCount: clipboardChangeCount,
             window: window, timeout: timeout, nonce: nonce, windowID: windowID, tabIndex: tabIndex,
-            deadlineUptime: deadlineUptime)
+            deadlineUptime: deadlineUptime, targetCheckRequired: targetConstraint != nil)
     }
 }
 
@@ -97,6 +98,17 @@ enum NativeUploadWorkerContext {
         return result
     }
 
+    static func targetMatches(windowID: Int, url: String, windowName: String, request: NativeUploadRequest?,
+                              now: () -> Double, clipboardCount: () -> Int) -> Bool {
+        guard let request, let constraint = request.targetConstraint, windowID == request.windowID,
+              now() < request.deadlineUptime,
+              clipboardCount() == request.clipboardChangeCount else { return false }
+        guard constraint.matches(url: url, windowName: windowName) else { return false }
+        // Regex matching may take time; recheck the lease and clock before
+        // allowing the script to activate or open anything in this window.
+        return now() < request.deadlineUptime && clipboardCount() == request.clipboardChangeCount
+    }
+
     /// Returning true authorizes the script to continue to its final guarded
     /// AXPress. A diagnostic alone is not evidence that any press occurred.
     static func authorizeConfirmation(title: String, request: NativeUploadRequest?, now: () -> Double,
@@ -124,6 +136,14 @@ final class SBNativeUploadBridge: NSObject {
         return NativeUploadWorkerContext.selection(windowID: windowID, request: NativeUploadWorkerContext.request,
             now: { ProcessInfo.processInfo.systemUptime },
             clipboardCount: { NSPasteboard.general.changeCount }, probe: NativeUploadSelectionProbe.check) as NSString
+    }
+
+    @objc(targetMatchesWindow:urlString:windowName:)
+    static func targetMatchesWindow(_ windowID: Int, urlString: String, windowName: String) -> Bool {
+        MainActor.preconditionIsolated()
+        return NativeUploadWorkerContext.targetMatches(windowID: windowID, url: urlString, windowName: windowName,
+            request: NativeUploadWorkerContext.request, now: { ProcessInfo.processInfo.systemUptime },
+            clipboardCount: { NSPasteboard.general.changeCount })
     }
 
     @objc(logConfirmation:)

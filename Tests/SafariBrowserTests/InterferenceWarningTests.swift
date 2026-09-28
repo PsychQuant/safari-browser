@@ -172,6 +172,22 @@ final class InterferenceWarningTests: XCTestCase {
             })
     }
 
+    func testOriginalURLConstraintSurvivesClipboardTransactionRequest() async throws {
+        let (file, board) = try fixture()
+        defer { board.releaseGlobally(); try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let constraint = try XCTUnwrap(NativeUploadTargetConstraint.from(.urlMatch(.exact("https://a.example/upload"))))
+        try await UploadCommand.performNativeUpload(fileURL: file, selector: "#file", window: 2,
+            timeout: 4, pasteboard: board, windowID: 8128, tabIndex: 3, targetConstraint: constraint,
+            warn: { _ in }, runRequest: { request in
+                let object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+                let carried = try XCTUnwrap(object["targetConstraint"] as? [String: Any])
+                let matcher = try XCTUnwrap(carried["matcher"] as? [String: Any])
+                XCTAssertEqual(matcher["pattern"] as? String, "https://a.example/upload")
+                XCTAssertTrue(request.makeScript().contains("my verifyUploadRequestedTarget()"))
+            })
+        XCTAssertEqual(board.string(forType: .string), "previous clipboard")
+    }
+
     // MARK: - Routing: truth table and short-circuit
 
     /// All eight combinations. The earlier version tested four and left the

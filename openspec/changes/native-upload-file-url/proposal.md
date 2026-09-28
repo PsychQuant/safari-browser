@@ -39,3 +39,7 @@ R2 要求事件當下保存檔案交付證據、拒絕資料夾欄位，並補�
 ## #169 補充
 
 共用 #101 單一流程，將確認前的選取證據改為直接 C AX 讀取；支援已實測的 ColumnView、ListView、IconView 並拒絕未知模式。新增 NativeUploadSelectionProbe.swift 與 NativeUploadWorker.swift，前者負責有界唯讀選取證明，後者以固定結構請求執行既有腳本，不接受任意程式碼。擴充 file-upload 規格、相關測試及效能證據；不改 PDF 或 JS 上傳。
+
+## #179 原生目標條件補充
+
+原生 resolver 結果沒有攜帶原 URL matcher。上傳流程將從 scoped TargetDocument 保留封閉的 NativeUploadTargetConstraint，跨固定 request 傳遞，並在建立頁面 owner／任何檔案動作前，以 native bridge 重驗原條件。影響限上傳、request／worker／script 與相關測試；不改一般 JS 的 retry，也不改跨指令狀態快取。

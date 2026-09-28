@@ -67,6 +67,7 @@ struct UploadCommand: AsyncParsableCommand {
     static func performNativeUpload(fileURL: URL, selector: String, window: Int?, timeout: Double,
                                     pasteboard: NSPasteboard = .general,
                                     windowID: Int? = nil, tabIndex: Int? = nil,
+                                    targetConstraint: NativeUploadTargetConstraint? = nil,
                                     prepareTarget: () async throws -> Void = {},
                                     warn: (String) -> Void,
                                     runRequest: (NativeUploadRequest) async throws -> Void) async throws {
@@ -106,7 +107,8 @@ struct UploadCommand: AsyncParsableCommand {
                 modificationTimeMilliseconds: milliseconds,
                 clipboardChangeCount: clipboard.ownedChangeCount, window: window,
                 timeout: timeout, nonce: UUID().uuidString,
-                windowID: windowID, tabIndex: tabIndex, deadlineUptime: deadline)
+                windowID: windowID, tabIndex: tabIndex, deadlineUptime: deadline,
+                targetConstraint: targetConstraint)
             try await runRequest(request)
         } catch { operationError = error }
 
@@ -257,10 +259,12 @@ struct UploadCommand: AsyncParsableCommand {
     /// Safari sessions.
     private func runNativeWithResolver(expandedPath: String) async throws {
         let scoped = try await target.resolveProfileScoped()
+        let constraint = try NativeUploadTargetConstraint.from(scoped)
         let resolved = try await SafariBridge.resolveNativeTarget(from: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
 
         try await uploadViaNativeDialog(
-            selector: selector, path: expandedPath, timeout: timeout, resolved: resolved)
+            selector: selector, path: expandedPath, timeout: timeout, resolved: resolved,
+            targetConstraint: constraint)
     }
 
     // MARK: - Native file dialog
@@ -268,14 +272,15 @@ struct UploadCommand: AsyncParsableCommand {
     /// Click file input to open dialog, then navigate via a single bounded internal worker.
     /// Preparation is inside the same exclusion lease as the chooser itself.
     private func uploadViaNativeDialog(selector: String, path: String, timeout: Double,
-                                       resolved: SafariBridge.ResolvedWindowTarget) async throws {
+                                       resolved: SafariBridge.ResolvedWindowTarget,
+                                       targetConstraint: NativeUploadTargetConstraint?) async throws {
         guard let windowID = resolved.windowID, windowID > 0 else {
             throw SafariBrowserError.appleScriptFailed("Native upload could not bind a stable target window; no chooser was opened")
         }
         try await Self.performNativeUpload(
             fileURL: URL(fileURLWithPath: path), selector: selector,
             window: resolved.windowIndex, timeout: timeout,
-            windowID: windowID, tabIndex: resolved.anchorTabIndex,
+            windowID: windowID, tabIndex: resolved.anchorTabIndex, targetConstraint: targetConstraint,
             prepareTarget: {
                 try await SafariBridge.ensureSystemEventsLive()
                 if resolved.anchorTabIndex != nil {

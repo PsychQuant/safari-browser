@@ -28,6 +28,10 @@
 - [x] [P] 2.11 以實際暫存路徑驗證 parent/probe 正規化契約，證實或反證 R2 的 /private 前綴拒絕疑慮，保留 symlink 置換拒絕測試。
 - [x] [P] 2.12 確認公告必須回傳成功才可 AXPress；以 AppleScript adapter 驗 logger 拒絕時零確認、Swift bridge 及純函式測試驗 deadline／clipboard／標題拒絕，統一大小寫語意。
 
+- [x] [P] 2.13 封閉原生 target constraint：以 NativeUploadTargetConstraint 和純函式／Codable 測試履行 Native upload preserves requested target constraints，驗四種 matcher、carried profile、未知／錯誤欄位拒絕及 positional nil。
+- [x] [P] 2.14 捕捉前原條件守衛：為固定 NativeUploadScript 加 bridge 條件分支，使用真正 AppleScript adapter 證明非匹配 candidate 在 activation／input 前拒絕，無 constraint 不新增查詢。
+- [x] 2.15 串接 typed constraint、request／worker／UploadCommand，補 lifecycle、schema 與 ObjC bridge 測試，確認原始條件未在 resolver 後遺失。
+
 ## 3. 實際驗證與交付
 
 - [ ] 3.1 執行完整 make test-all 及自有 GUI 特殊路徑、不同起始資料夾、大檔、焦點／錯誤／逾時案例；核對實際檔名／內容、自有面板清理及剪貼簿還原，並記錄同 fixture System Events／直接 AX 查詢結果與等待差異。
