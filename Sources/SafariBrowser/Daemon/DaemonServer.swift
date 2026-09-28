@@ -1139,7 +1139,7 @@ enum DaemonServer {
             connection: DaemonConnection, instance: Instance
         ) async -> DaemonDiagnosticBudget.Event? {
             defer { connection.revoke() }
-            guard await writeLine(connection: connection, line: DaemonProtocol.encodeHandshake()) else { return nil }
+            guard await writeLine(connection: connection, line: DaemonProtocol.encodeHandshake(maxRequestLineBytes: instance.requestLineLimit)) else { return nil }
             var reader = RequestLineReader(maxBytes: instance.requestLineLimit)
             while !Task.isCancelled && !connection.isRevoked {
                 let line: Data

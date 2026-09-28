@@ -21,10 +21,13 @@ enum DaemonClient {
         case remoteError(code: String, message: String)
         case requestOutcomeUnknown(String)
         case invalidTimeout
+        case requestTooLarge(encodedBytes: Int, limit: Int)
 
         var description: String {
             switch self {
             case .requestOutcomeUnknown(let r): return "daemon request outcome unknown: \(r); operation may have executed; not retrying"
+            case .requestTooLarge(let bytes, let limit):
+                return "daemon request too large: encoded JSON line is \(bytes) bytes; peer limit is \(limit) bytes (excluding LF); no request bytes sent for this RPC; reduce the request size"
             case .invalidTimeout: return "daemon invalid timeout: expected finite seconds in 0.001...86400"
             case .connectFailed(let r): return "daemon connect failed: \(r)"
             case .ioError(let r):       return "daemon io error: \(r)"
@@ -81,7 +84,7 @@ enum DaemonClient {
         /// when the error should propagate (Safari domain errors).
         var fallbackReason: String? {
             switch self {
-            case .requestOutcomeUnknown, .invalidTimeout: return nil
+            case .requestOutcomeUnknown, .invalidTimeout, .requestTooLarge: return nil
             case .connectFailed(let r):  return "connect: \(r)"
             case .ioError(let r):        return "io: \(r)"
             case .protocolError(let r):  return "protocol: \(r)"
@@ -204,9 +207,10 @@ enum DaemonClient {
         defer { close(fd) }
         var reader = LineReader()
         let handshake = try reader.readLine(fd: fd, deadline: deadline, maxBytes: maxHandshakeLineBytes)
-        guard let version = DaemonProtocol.decodeHandshakeVersion(handshake) else {
+        guard let metadata = DaemonProtocol.decodeHandshake(handshake) else {
             throw Error.protocolError("invalid handshake")
         }
+        let version = metadata.version
         guard DaemonProtocol.versionsMatch(server: version, client: DaemonProtocol.currentVersion) else {
             throw Error.remoteError(code: "versionMismatch", message: "daemon \(version.description), client \(DaemonProtocol.currentVersion.description)")
         }
@@ -214,6 +218,9 @@ enum DaemonClient {
         var payload = try JSONSerialization.data(withJSONObject: [
             "method": method, "params": paramsValue, "requestId": requestId
         ])
+        if let limit = metadata.maxRequestLineBytes, payload.count > limit {
+            throw Error.requestTooLarge(encodedBytes: payload.count, limit: limit)
+        }
         payload.append(10)
         try writeFrame(fd: fd, payload: payload, deadline: deadline)
 

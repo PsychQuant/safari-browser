@@ -238,6 +238,8 @@ writer 在 actor 外執行；request 拒絕先關閉 fd 並釋放 reader，再�
 
 伺服端每筆 request 的完整 JSON 行上限為 128 MiB（134,217,728 bytes，不含結尾 LF），包含 method、params 與 requestId；大型 source／exec 共用此限制。超量時在讀取中關閉該連線，不解析、不呼叫 handler，也不掃描前綴取 requestId。客戶端沿用送出後結果未知／不重播的分類；其他連線仍可繼續服務。
 
+#202：新 daemon 在既有 v2 握手的 `protocol.maxRequestLineBytes` 宣告實際 reader 上限，wire 值為 ASCII 十進位正整數字串（預設 `"134217728"`，形式 `[1-9][0-9]*`、值須落在 Int 範圍）。使用字串避免 JSON 數值解析把大數小數捨入成整數；JSON number、null、布林、空字串、前導零、符號、空白、小數、指數與溢位都是無效握手。新 client 在版本驗證後，先編碼完整 method／params／requestId，再於加 LF 和傳送前比較 bytes；等於上限可送，超量回報 `requestTooLarge`，只含長度、上限和縮小請求指引，本筆 RPC 零送出且不自動 fallback。這不代表同一命令先前的 RPC 未執行，也不避免 JSON 編碼的記憶體配置。舊 daemon 缺欄位時保留原傳送流程，不由版本猜測上限；舊 client 可忽略新欄位。宣告只是傳輸 metadata，並非 caller 授權。server 仍獨立限制輸入；legacy／失準宣告或其他送出後失敗仍是結果未知、不重播。無效握手沿用既有送出前 protocolError 分類。typed version 同時拒絕以數字 0／1 冒充 JSON boolean 的 dirty 欄位；正式 server 一律輸出 true／false，舊版有效握手不受影響。
+
 分段讀取每次最多 8 KiB，只掃新增資料並保存多行剩餘資料。沒有 LF 的行最多累積上限加 1 byte 即拒絕；恰好上限加 LF 可接受。真 EOF 保留舊有最後一行可無 LF 的行為，但 EINTR 會重試，其他讀取錯誤直接結束連線，不把部分資料當作完整請求。這是刻意的輸入相容界線，超過上限的合法 JSON 也會拒絕；不是全行程記憶體上限；即使只有一條連線，buffer、複本、JSON 解析與字串轉換仍有額外配置，多條連線會疊加。已接納連線的取消／回收另見 #199。
 
 ### Reply size limits（#174）

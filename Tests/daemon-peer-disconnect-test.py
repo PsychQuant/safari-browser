@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -20,6 +21,43 @@ BINARY = Path(os.environ.get('SAFARI_BROWSER_BIN', ROOT / '.build/debug/safari-b
 
 
 class DaemonPeerDisconnectTests(unittest.TestCase):
+    def test_exec_known_oversize_never_falls_back(self):
+        # An empty exec script is safe even if a broken client falls back:
+        # it runs no command and never operates Safari.
+        with tempfile.TemporaryDirectory(prefix='sb-size-', dir='/tmp') as directory:
+            env = owned.isolated_environment(directory, False)
+            env['SAFARI_BROWSER_DAEMON'] = '1'
+            script = Path(directory, 'empty.json')
+            script.write_text('[]')
+            path = str(Path(directory, 'safari-browser-' + env['SAFARI_BROWSER_NAME'] + '.sock'))
+            handshake = {'protocol': {'name': 'persistent-daemon',
+                'version': {'semver': '1.0.0', 'commit': 'unknown', 'dirty': False, 'vendor': 'source'},
+                'maxRequestLineBytes': '1'}}
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                listener.bind(path)
+                listener.listen(1)
+                listener.settimeout(3)
+                process = subprocess.Popen([str(BINARY), 'exec', '--script', str(script)], env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.settimeout(3)
+                        connection.sendall(json.dumps(handshake).encode() + b'\n')
+                        received = connection.recv(1024)
+                    stdout, stderr = process.communicate(timeout=3)
+                    self.assertEqual(received, b'', 'exec preflight must send zero request bytes')
+                    self.assertNotEqual(process.returncode, 0, 'local fallback would incorrectly succeed')
+                    self.assertEqual(stdout, b'')
+                    self.assertIn(b'daemon request too large', stderr)
+                    self.assertIn(b'no request bytes sent for this RPC', stderr)
+                    self.assertNotIn(b'daemon fallback', stderr)
+                    self.assertNotIn(str(script).encode(), stderr)
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                    process.communicate(timeout=3)
+
     def test_peer_disconnects_preserve_service_and_subsequent_requests(self):
         with tempfile.TemporaryDirectory(prefix='sb-peer-', dir='/tmp') as directory:
             env = owned.isolated_environment(directory, False)
