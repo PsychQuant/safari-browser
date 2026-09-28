@@ -48,17 +48,16 @@ struct JSCommand: AsyncParsableCommand {
         // Resolve once at the command boundary so (a) `--first-match`
         // multi-match fires its stderr warning at most once and (b)
         // downstream internal `doJavaScript` calls (store/read-length/
-        // read-result/delete) cannot race on Safari tab-list changes
-        // between chunked reads. The concrete target is normally an
-        // identity-anchored `.resolvedTab` (#79 — stable window id +
-        // in-script URL guard + bounded retry on every round-trip);
+        // read-result/delete) reuse the resolved window and tab position.
+        // URL-selected targets carry an in-script URL guard and bounded
+        // retry (#79); positional targets do not have stable tab identity.
         // legacy enumeration without window ids degrades to positional
         // `.windowTab` / `.windowIndex`.
         //
         // #180: positional targets (`--window N --tab-in-window M`,
-        // `--window N`, no flag) are anchored here too — `.resolvedTab` is
-        // the only case `resolveScriptTarget` accepts without re-running
-        // the resolver, and this command issues up to six round-trips.
+        // `--window N`, no flag) are anchored here too. `.resolvedTab` and
+        // `.anchoredCurrentTab` skip repeated enumeration, and this command
+        // issues up to six round-trips.
         // Before this, `.windowTab` cost one full enumeration per step.
         let (initialTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let profile = target.resolveProfile()

@@ -635,12 +635,15 @@ one logical command, matching its subprocess counterpart. Window-ID resolution
 uses the normal AppleScript transport and is separate from this AX budget.
 Within a command, cached verdicts require the same key and a fresh monotonic
 TTL; another window's dialog is never used to classify the target's failure. A
-`js` invocation additionally permits at most one actual probe across target
+`js` subcommand invocation additionally permits at most one actual probe across target
 resolution and all protocol steps, including timeout diagnostics. Cache expiry,
 a changed window or forced refresh after that allowance is spent returns
 `unprobed`; it never extends an old clear/blocked verdict. A timeout retains its
 original error when no fresh evidence remains. Other commands retain their
-existing refresh behavior.
+existing refresh behavior. The daemon's in-process `exec` JS dispatcher currently
+bypasses this subcommand wrapper and retains its original refresh policy.
+Policy-skipped checks do not add an incomplete-inspection warning; debug mode
+labels them `skipped: invocation limit`. The underlying state remains `unprobed`.
 `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1` prints per-probe costs; the e2e harness
 asserts their per-command sum stays within 200 ms.
 

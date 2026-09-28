@@ -365,6 +365,28 @@ final class BlockingDialogGateTests: XCTestCase {
         }
     }
 
+    func testPolicySkippedProbeDoesNotClaimInspectionFailed() async {
+        for debug in [false, true] {
+            var clock: TimeInterval = 100
+            let calls = Counter()
+            let (gate, stderr) = makeGate(probe: { _ in calls.increment(); return .clear },
+                environment: [BlockingDialogGate.debugVariable: debug ? "1" : "0"], now: { clock })
+            await BlockingDialogGate.withSingleProbe {
+                XCTAssertEqual(gate.check(.id(1)), .clear)
+                clock += 2.1
+                XCTAssertEqual(gate.check(.id(1)), .unprobed)
+            }
+            XCTAssertEqual(calls.value, 1)
+            XCTAssertFalse(stderr.lines.contains { $0.contains("could not inspect") }, "policy skip is not an inspection failure")
+            if debug {
+                XCTAssertTrue(stderr.lines.last?.contains("skipped: invocation limit") == true, "debug must identify why no provider ran")
+                XCTAssertEqual(stderr.lines.count, 2)
+            } else {
+                XCTAssertTrue(stderr.lines.isEmpty)
+            }
+        }
+    }
+
     func testSingleProbeForceRefreshInvalidatesCachedClearWithoutAnotherProbe() async {
         let calls = Counter()
         let (gate, _) = makeGate(probe: { _ in calls.increment(); return .clear })

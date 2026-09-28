@@ -458,8 +458,8 @@ enum SafariBridge {
         return anchor
     }
 
-    /// Pure: map a positional window-level target onto the identity-anchored
-    /// `.resolvedTab` given its anchor. `nil` anchor → target unchanged.
+    /// Pure: map a positional window-level target onto `.anchoredCurrentTab`
+    /// given its window ID and current tab index. This is not stable tab identity. `nil` anchor → target unchanged.
     /// `.windowTab` is NOT anchored here — the anchor only knows the window's
     /// *current* tab, not tab M; that case collapses through the enumeration
     /// path in `resolveToAnchoredTarget`. Already-concrete / matcher targets
@@ -485,11 +485,11 @@ enum SafariBridge {
     /// `resolveToConcreteTarget` only collapses `.urlMatch` / `.documentIndex`
     /// into `.resolvedTab`; it returns `.frontWindow` / `.windowIndex` /
     /// `.windowTab` unchanged ("already concrete"). But only `.resolvedTab`
-    /// takes the no-resolve shortcut in `resolveScriptTarget` — every other
-    /// case re-runs `resolveNativeTarget` per call, which for `.windowTab` is
+    /// and `.anchoredCurrentTab` take the no-enumeration shortcut in
+    /// `resolveScriptTarget`; unresolved positional cases resolve per call, which for `.windowTab` is
     /// a full window/tab enumeration (six per `js` command with ~100 tabs
     /// ≈ 20 s, #180). This wrapper spends at most ONE extra round-trip at the
-    /// command boundary so every later call is identity-anchored:
+    /// command boundary so later calls can reuse the window ID and tab position:
     ///
     /// - `.windowTab` → one enumeration, collapsed by `concreteTarget`
     ///   (stays positional only for legacy records without a window id);
@@ -1691,8 +1691,8 @@ enum SafariBridge {
                     expected: matcher.description, actualURL: nil)
             }
             let retry = try await resolveScriptTarget(retryTarget)
-            // #126: the re-resolve probed again; refuse here too rather than
-            // letting the retry pay the 30 s osascript timeout.
+            // #126: the re-resolve consulted the gate. Refuse if it has fresh
+            // evidence of a dialog; a spent JS allowance may leave it unprobed.
             try BlockingDialogGate.shared.throwIfBlocked(retry.key)
             do {
                 return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key, diagnosticTarget: retry.diagnosticTarget, warnWriter: warnWriter)
