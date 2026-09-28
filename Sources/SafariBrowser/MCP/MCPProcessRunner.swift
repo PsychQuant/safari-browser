@@ -19,296 +19,282 @@ extension MCPCommandRunning {
     func shutdown() async -> String? { nil }
 }
 
-struct MCPProcessRunner: MCPCommandRunning {
-    let executable: URL
-    var environment: [String: String] = ProcessInfo.processInfo.environment
-    var workerPrefix: [String] = ["__mcp-exec"]
-    /// Defaults to the same executable; custom command fixtures provide the CLI helper explicitly.
-    var supervisorExecutable: URL? = nil
-    var timeout: TimeInterval = 300
-    var outputLimit: Int = 2 * 1024 * 1024
-    var inputLimit: Int = 4 * 1024 * 1024
-    /// Internal inherited budget for preselected execution. Ordinary isolated
-    /// calls retain their existing timeout origin when this is nil.
-    var invocationDeadline: TimeInterval? = nil
+/// The runner, including an unconfirmed retirement, has one serial I/O owner.
+/// Admission and cancellation never signal, close descriptors, or reap children.
+final class MCPProcessRunner: MCPCommandRunning, @unchecked Sendable {
+    struct Lifecycle: Sendable {
+        var retire: @Sendable (MCPChildReservation) -> MCPChildReservation.Retirement = { $0.retire(timeout: 0) }
+        var didLaunch: @Sendable (pid_t) -> Void = { _ in }
+    }
+    private struct Configuration: Sendable {
+        let executable: URL
+        let environment: [String: String]
+        let workerPrefix: [String]
+        let supervisorExecutable: URL?
+        let timeout: TimeInterval
+        let outputLimit: Int
+        let inputLimit: Int
+        let invocationDeadline: TimeInterval?
+        let cleanupTimeout: TimeInterval
+        let lifecycle: Lifecycle
+        var valid: Bool {
+            timeout.isFinite && (0.001...86400).contains(timeout) && outputLimit > 0 && inputLimit >= 0
+                && invocationDeadline?.isFinite != false && cleanupTimeout.isFinite && (0.001...5).contains(cleanupTimeout)
+        }
+    }
+    private final class Request: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        private var done = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+        var isCancelled: Bool { lock.withLock { cancelled } }
+        func cancel() { lock.withLock { cancelled = true } }
+        func finish() {
+            let pending = lock.withLock { done = true; let value = waiters; waiters = []; return value }
+            for waiter in pending { waiter.resume() }
+        }
+        func wait() async {
+            await withCheckedContinuation { continuation in
+                let finished = lock.withLock {
+                    if done { return true }
+                    waiters.append(continuation); return false
+                }
+                if finished { continuation.resume() }
+            }
+        }
+    }
+    private final class Admission: @unchecked Sendable {
+        private let lock = NSLock()
+        private var active: Request?
+        private var stopped = false
+        func begin(_ request: Request) -> String? {
+            lock.withLock {
+                guard !stopped else { return "MCP runner is shut down; command was not executed." }
+                guard active == nil else { return "MCP worker is busy; command was not executed." }
+                active = request; return nil
+            }
+        }
+        func finish(_ request: Request) {
+            lock.withLock { if active === request { active = nil } }
+            request.finish()
+        }
+        func stop() -> Request? { lock.withLock { stopped = true; return active } }
+    }
+    private let config: Configuration
+    private let admission = Admission()
+    private let state: State
+
+    init(executable: URL, environment: [String: String] = ProcessInfo.processInfo.environment,
+         workerPrefix: [String] = ["__mcp-exec"], supervisorExecutable: URL? = nil,
+         timeout: TimeInterval = 300, outputLimit: Int = 2 * 1024 * 1024, inputLimit: Int = 4 * 1024 * 1024,
+         invocationDeadline: TimeInterval? = nil, cleanupTimeout: TimeInterval = 2, lifecycle: Lifecycle = Lifecycle()) {
+        config = Configuration(executable: executable, environment: environment, workerPrefix: workerPrefix,
+            supervisorExecutable: supervisorExecutable, timeout: timeout, outputLimit: outputLimit, inputLimit: inputLimit,
+            invocationDeadline: invocationDeadline, cleanupTimeout: cleanupTimeout, lifecycle: lifecycle)
+        state = State(config)
+    }
+    deinit {
+        let owner = state
+        owner.queue.async { owner.dispose() }
+    }
 
     func run(arguments: [String], input: Data, expectedImage: String) async -> MCPCommandResult {
-        let cancellation = MCPCancellation()
+        await run(arguments: arguments, input: input, expectedImage: expectedImage, deadline: config.invocationDeadline)
+    }
+    func run(arguments: [String], input: Data, expectedImage: String, deadline: TimeInterval?) async -> MCPCommandResult {
+        guard config.valid, deadline?.isFinite != false else { return MCPCommandResult(failure: "Invalid worker limits.") }
+        let request = Request()
+        if let failure = admission.begin(request) { return MCPCommandResult(failure: failure) }
+        let absoluteDeadline = deadline ?? (ProcessInfo.processInfo.systemUptime + config.timeout)
+        defer { admission.finish(request) }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                DispatchQueue.global(qos: .utility).async {
-                    continuation.resume(returning: execute(arguments: arguments, input: input, expectedImage: expectedImage, cancellation: cancellation))
+                state.queue.async { [state] in
+                    continuation.resume(returning: state.execute(arguments: arguments, input: input, image: expectedImage,
+                                                                 request: request, deadline: absoluteDeadline))
                 }
             }
-        } onCancel: {
-            cancellation.cancel()
+        } onCancel: { request.cancel() }
+    }
+
+    /// The persistent facade calls this before choosing *either* engine. An old
+    /// one-shot reservation must not be hidden by starting a fresh warm pair.
+    func prepareForInvocation() async -> String? {
+        await withCheckedContinuation { continuation in
+            state.queue.async { [state] in continuation.resume(returning: state.retireRetained()) }
         }
     }
 
-    private func execute(arguments: [String], input: Data, expectedImage: String, cancellation: MCPCancellation) -> MCPCommandResult {
-        var result = MCPCommandResult()
-        guard timeout.isFinite, timeout >= 0.001, timeout <= 86400, outputLimit > 0, inputLimit >= 0,
-              invocationDeadline?.isFinite != false else {
-            result.failure = "Invalid worker limits."
-            return result
-        }
-        guard input.count <= inputLimit else {
-            result.failure = "Worker stdin exceeds the input limit; command was not executed."
-            return result
-        }
-        var childEnvironment = environment
-        childEnvironment["SAFARI_BROWSER_MCP_DIRECT"] = MCPIsolatedBootstrap.contextValue
-        childEnvironment["SAFARI_BROWSER_MCP_IMAGE_ID"] = expectedImage
-        let argv = [executable.path] + workerPrefix + arguments
-        guard argv.allSatisfy({ !$0.utf8.contains(0) }),
-              childEnvironment.allSatisfy({ !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.utf8.contains(0) && !$0.value.utf8.contains(0) }) else {
-            result.failure = "Worker argv or environment contains an invalid string; command was not executed."
-            return result
-        }
-        if cancellation.isCancelled {
-            result.cancelled = true
-            result.failure = "Command cancelled before execution."
-            return result
-        }
+    func shutdown() async -> String? {
+        if let request = admission.stop() { request.cancel(); await request.wait() }
+        return await prepareForInvocation()
+    }
 
-        if let invocationDeadline, ProcessInfo.processInfo.systemUptime >= invocationDeadline {
-            result.failure = "Command timed out before execution; command was not executed."
-            return result
-        }
+    private final class State: @unchecked Sendable {
+        let queue = DispatchQueue(label: "safari-browser.mcp.isolated-owner", qos: .userInitiated)
+        let config: Configuration
+        var child: MCPChildReservation?
+        var supervision: MCPIsolatedChannels?
+        var lostOwnership = false
+        init(_ config: Configuration) { self.config = config }
+        private let pendingMessage = "Worker cleanup is pending; its process reservation is retained."
+        private let lostMessage = "Worker ownership was lost; cleanup cannot be confirmed."
 
-        let deadline = invocationDeadline ?? (ProcessInfo.processInfo.systemUptime + timeout)
-        let supervision: MCPIsolatedChannels
-        do { supervision = try MCPIsolatedChannels(deadline: deadline, environment: childEnvironment) }
-        catch { result.failure = "Worker supervision could not be prepared."; return result }
-
-        // Reserve descriptors above stdio and make all unused ends close-on-exec.
-        var descriptors: [Int32] = []
-        defer { for fd in descriptors where fd >= 0 { Darwin.close(fd) } }
-        for _ in 0..<3 {
-            var pair: [Int32] = [-1, -1]
-            guard pipe(&pair) == 0 else {
-                result.failure = "Worker pipe creation failed: \(String(cString: strerror(errno)))."
-                return result
-            }
-            for original in pair {
-                let owned = fcntl(original, F_DUPFD_CLOEXEC, 6)
-                let savedError = errno
-                Darwin.close(original)
-                if owned < 0 {
-                    // The remaining original pipe end has not yet been closed.
-                    if original == pair[0] { Darwin.close(pair[1]) }
-                    result.failure = "Worker pipe descriptor failed: \(String(cString: strerror(savedError)))."
-                    return result
+        func retireRetained() -> String? {
+            if lostOwnership { return lostMessage }
+            guard let child else { return nil }
+            let deadline = ProcessInfo.processInfo.systemUptime + config.cleanupTimeout
+            repeat {
+                switch config.lifecycle.retire(child) {
+                case .reaped:
+                    self.child = nil; supervision = nil; return nil
+                case .ownershipLost:
+                    lostOwnership = true; self.child = nil; supervision = nil; return lostMessage
+                case .pending: break
                 }
-                descriptors.append(owned)
-            }
+                if ProcessInfo.processInfo.systemUptime >= deadline { return pendingMessage }
+                usleep(5_000)
+            } while true
         }
-        // stdin read/write, stdout read/write, stderr read/write.
-        var actions: posix_spawn_file_actions_t?
-        var attributes: posix_spawnattr_t?
-        guard posix_spawn_file_actions_init(&actions) == 0 else {
-            result.failure = "Worker spawn actions could not be initialized."
-            return result
-        }
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        guard posix_spawnattr_init(&attributes) == 0 else {
-            result.failure = "Worker spawn attributes could not be initialized."
-            return result
-        }
-        defer { posix_spawnattr_destroy(&attributes) }
-        var setupError = posix_spawn_file_actions_adddup2(&actions, descriptors[0], STDIN_FILENO)
-        setupError |= posix_spawn_file_actions_adddup2(&actions, descriptors[3], STDOUT_FILENO)
-        setupError |= posix_spawn_file_actions_adddup2(&actions, descriptors[5], STDERR_FILENO)
-        for (source, target) in [(supervision.metadata.value, Int32(3)), (supervision.leaseRead.value, 4), (supervision.statusWrite.value, 5)] {
-            setupError |= posix_spawn_file_actions_adddup2(&actions, source, target)
-        }
-        for fd in descriptors { setupError |= posix_spawn_file_actions_addclose(&actions, fd) }
-        var emptyMask = sigset_t()
-        sigemptyset(&emptyMask)
-        var defaultSignals = sigset_t()
-        sigemptyset(&defaultSignals)
-        sigaddset(&defaultSignals, SIGPIPE)
-        setupError |= posix_spawnattr_setsigmask(&attributes, &emptyMask)
-        setupError |= posix_spawnattr_setsigdefault(&attributes, &defaultSignals)
-        setupError |= posix_spawnattr_setpgroup(&attributes, 0)
-        setupError |= posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_CLOEXEC_DEFAULT))
-        // Parent pipe writes must not raise SIGPIPE; this does not change global signal state.
-        for index in [1, 2, 4] {
-            let fd = descriptors[index]
-            let flags = fcntl(fd, F_GETFL)
-            if flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 { setupError |= 1 }
-        }
-        if fcntl(descriptors[1], F_SETNOSIGPIPE, 1) < 0 { setupError |= 1 }
-        guard setupError == 0 else {
-            result.failure = "Worker pipe or process-group configuration failed."
-            return result
-        }
-        let argvPointers = argv.map { strdup($0) } + [nil]
-        let envPointers = childEnvironment.sorted(by: { $0.key < $1.key }).map { strdup("\($0.key)=\($0.value)") } + [nil]
-        defer {
-            for pointer in argvPointers { free(pointer) }
-            for pointer in envPointers { free(pointer) }
-        }
-        guard argvPointers.dropLast().allSatisfy({ $0 != nil }), envPointers.dropLast().allSatisfy({ $0 != nil }) else {
-            result.failure = "Worker argument allocation failed."
-            return result
-        }
-        // Preparation and allocation do not reset an inherited deadline.
-        if let invocationDeadline, ProcessInfo.processInfo.systemUptime >= invocationDeadline {
-            result.failure = "Command timed out before execution; command was not executed."
-            return result
-        }
-        var pid: pid_t = 0
-        let spawnError = argvPointers.withUnsafeBufferPointer { argvBuffer in
-            envPointers.withUnsafeBufferPointer { envBuffer in
-                posix_spawn(&pid, (supervisorExecutable ?? executable).path, &actions, &attributes, argvBuffer.baseAddress!, envBuffer.baseAddress!)
-            }
-        }
-        guard spawnError == 0 else {
-            result.failure = "Worker launch failed: \(String(cString: strerror(spawnError)))."
-            return result
-        }
-        supervision.didSpawn()
-        func closeDescriptor(_ index: Int) {
-            if descriptors[index] >= 0 { Darwin.close(descriptors[index]); descriptors[index] = -1 }
-        }
-        for index in [0, 3, 5] { closeDescriptor(index) }
-        var stoppedAt: TimeInterval?
-        var killed = false
-        var killedAt: TimeInterval?
-        var reservationLost = false
-        var leaderExited = false
-        var inputOffset = 0
-        var buffer = [UInt8](repeating: 0, count: 8192)
-        if input.isEmpty { closeDescriptor(1) }
-        func stop(_ reason: String) {
-            if result.failure == nil { result.failure = reason }
-            if stoppedAt == nil {
-                stoppedAt = ProcessInfo.processInfo.systemUptime
-                kill(-pid, SIGTERM)
-                closeDescriptor(1)
-            }
+        func dispose() {
+            _ = retireRetained()
+            if child != nil, !lostOwnership { queue.asyncAfter(deadline: .now() + 1) { self.dispose() } }
         }
 
-        while true {
-            let now = ProcessInfo.processInfo.systemUptime
-            if cancellation.isCancelled {
-                result.cancelled = true
-                stop("Command cancelled; earlier side effects may already have occurred.")
+        func execute(arguments: [String], input: Data, image: String, request: Request, deadline: TimeInterval) -> MCPCommandResult {
+            var result = MCPCommandResult()
+            if let failure = retireRetained() { return MCPCommandResult(failure: failure + " Command was not executed.") }
+            guard input.count <= config.inputLimit else { return MCPCommandResult(failure: "Worker stdin exceeds the input limit; command was not executed.") }
+            var environment = config.environment
+            environment[MCPWorkerContext.directKey] = MCPIsolatedBootstrap.contextValue
+            environment[MCPWorkerContext.imageKey] = image
+            let arguments = config.workerPrefix + arguments
+            guard ([config.executable.path] + arguments).allSatisfy({ !$0.utf8.contains(0) }),
+                  environment.allSatisfy({ !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.utf8.contains(0) && !$0.value.utf8.contains(0) }) else {
+                return MCPCommandResult(failure: "Worker argv or environment contains an invalid string; command was not executed.")
             }
-            if now >= deadline { stop("Command timed out; earlier side effects may already have occurred.") }
-            if let stoppedAt, now - stoppedAt >= 0.15, !killed {
-                kill(-pid, SIGKILL)
-                killed = true
-                killedAt = now
+            if request.isCancelled { return MCPCommandResult(cancelled: true, failure: "Command cancelled before execution; command was not executed.") }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return MCPCommandResult(failure: "Command timed out before execution; command was not executed.") }
+
+            // Stack-owned stream endpoints close on every return. An unfinished
+            // process reservation and its lease remain on State across returns.
+            let channels: MCPIsolatedChannels
+            let streams: [MCPWorkerFD]
+            do {
+                channels = try MCPIsolatedChannels(deadline: deadline, environment: environment)
+                let input = try MCPWorkerFD.pipePair(), output = try MCPWorkerFD.pipePair(), error = try MCPWorkerFD.pipePair()
+                streams = [input.0, input.1, output.0, output.1, error.0, error.1]
+                for index in [1, 2, 4] { try streams[index].nonblocking() }
+                guard fcntl(streams[1].value, F_SETNOSIGPIPE, 1) == 0 else { throw MCPWorkerLaunchError.descriptors }
+            } catch { return MCPCommandResult(failure: "Worker supervision or streams could not be prepared.") }
+            defer { for stream in streams { stream.close() } }
+            let owned: MCPChildReservation
+            do {
+                if request.isCancelled { return MCPCommandResult(cancelled: true, failure: "Command cancelled before execution; command was not executed.") }
+                owned = try MCPWorkerSpawn.child(executable: config.supervisorExecutable ?? config.executable,
+                    arguments: arguments, environment: environment,
+                    descriptors: [0: streams[0].value, 1: streams[3].value, 2: streams[5].value,
+                                  3: channels.metadata.value, 4: channels.leaseRead.value, 5: channels.statusWrite.value],
+                    deadline: deadline, argument0: config.executable.path)
+            } catch MCPWorkerLaunchError.spawnSystemError(let code) {
+                return MCPCommandResult(failure: "Worker launch failed: \(String(cString: strerror(code))).")
+            } catch {
+                return MCPCommandResult(failure: ProcessInfo.processInfo.systemUptime >= deadline
+                    ? "Command timed out before execution; command was not executed." : "Worker launch could not be prepared; command was not executed.")
             }
-            // WNOWAIT keeps the leader (and therefore its process-group ID) reserved
-            // until all signals and pipe cleanup finish. No delayed signal follows waitpid.
-            if !leaderExited {
-                var info = siginfo_t()
-                let waitResult = waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT)
-                if waitResult == 0, info.si_pid == pid,
-                   [CLD_EXITED, CLD_KILLED, CLD_DUMPED].contains(info.si_code) { leaderExited = true }
-                else if waitResult < 0, errno != EINTR {
-                    // If another reaper violated ownership, the PID is no longer
-                    // reserved. Never signal a potentially reused group ID.
-                    if errno == ECHILD {
-                        reservationLost = true
-                        result.failure = "Worker ownership was lost before cleanup."
-                        break
+            child = owned; supervision = channels
+            channels.didSpawn()
+            config.lifecycle.didLaunch(owned.pid)
+            for index in [0, 3, 5] { streams[index].close() }
+            if input.isEmpty { streams[1].close() }
+            var retirementStarted: TimeInterval?
+            var retired = false
+            var inputOffset = 0
+            var buffer = [UInt8](repeating: 0, count: 8192)
+            func stop(_ failure: String?) {
+                if result.failure == nil { result.failure = failure }
+                if retirementStarted == nil { retirementStarted = ProcessInfo.processInfo.systemUptime }
+                streams[1].close()
+            }
+            while true {
+                let now = ProcessInfo.processInfo.systemUptime
+                if request.isCancelled {
+                    result.cancelled = true
+                    stop("Command cancelled; earlier side effects may already have occurred.")
+                }
+                if now >= deadline { stop("Command timed out; earlier side effects may already have occurred.") }
+                if !retired {
+                    do { if try owned.observe() == .exited { stop(nil) } }
+                    catch MCPWorkerLaunchError.ownershipLost {
+                        lostOwnership = true; child = nil; supervision = nil
+                        result.failure = lostMessage; return result
+                    } catch { stop("Worker status could not be read; cleanup cannot be confirmed.") }
+                }
+                if retirementStarted == nil {
+                    do { try channels.pumpEnvironment() }
+                    catch { stop("Worker startup context could not be delivered; command outcome is unknown.") }
+                }
+                for index in [2, 4] where streams[index].value >= 0 {
+                    for _ in 0..<32 {
+                        let count = Darwin.read(streams[index].value, &buffer, buffer.count)
+                        if count > 0 {
+                            let existing = index == 2 ? result.stdout.count : result.stderr.count
+                            let kept = min(count, config.outputLimit - existing)
+                            if index == 2 { result.stdout.append(contentsOf: buffer.prefix(kept)) }
+                            else { result.stderr.append(contentsOf: buffer.prefix(kept)) }
+                            if kept < count { result.truncated = true; stop("Worker output exceeded the capture limit; output is incomplete.") }
+                        } else if count == 0 { streams[index].close(); break }
+                        else if errno == EAGAIN || errno == EWOULDBLOCK { break }
+                        else if errno != EINTR { stop("Worker output could not be read; output is incomplete."); streams[index].close(); break }
                     }
-                    stop("Worker status could not be read.")
                 }
-            }
-            if leaderExited, !killed {
-                // A returned command does not leave inherited workers behind. Detached
-                // daemon services have their own group and are deliberately unaffected.
-                kill(-pid, SIGKILL)
-                killed = true
-                killedAt = now
-                closeDescriptor(1)
-            }
-            if stoppedAt == nil {
-                do { try supervision.pumpEnvironment() }
-                catch { stop("Worker startup context could not be delivered; command outcome is unknown.") }
-            }
-            for index in [2, 4] where descriptors[index] >= 0 {
-                // Bound each drain turn so a producer cannot starve cancellation/stdin.
-                for _ in 0..<32 {
-                    let count = Darwin.read(descriptors[index], &buffer, buffer.count)
-                    if count > 0 {
-                        let existing = index == 2 ? result.stdout.count : result.stderr.count
-                        let retained = min(count, outputLimit - existing)
-                        if index == 2 { result.stdout.append(contentsOf: buffer.prefix(retained)) }
-                        else { result.stderr.append(contentsOf: buffer.prefix(retained)) }
-                        if retained < count {
-                            result.truncated = true
-                            stop("Worker output exceeded the capture limit; output is incomplete.")
+                if streams[1].value >= 0 {
+                    let count = input.withUnsafeBytes { bytes in
+                        Darwin.write(streams[1].value, bytes.baseAddress!.advanced(by: inputOffset), min(16384, bytes.count - inputOffset))
+                    }
+                    if count > 0 { inputOffset += count; if inputOffset == input.count { streams[1].close() } }
+                    else if count < 0, errno == EPIPE { streams[1].close() }
+                    else if count < 0, errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK { stop("Worker stdin could not be delivered.") }
+                }
+                if let retirementStarted {
+                    if !retired {
+                        switch config.lifecycle.retire(owned) {
+                        case .reaped: retired = true; child = nil
+                        case .ownershipLost:
+                            lostOwnership = true; child = nil; supervision = nil
+                            result.failure = lostMessage; return result
+                        case .pending: break
                         }
-                    } else if count == 0 { closeDescriptor(index); break }
-                    else if errno == EAGAIN || errno == EWOULDBLOCK { break }
-                    else if errno != EINTR {
-                        stop("Worker output could not be read; output is incomplete.")
-                        closeDescriptor(index)
+                    }
+                    if retired, streams[2].value < 0, streams[4].value < 0 { break }
+                    if ProcessInfo.processInfo.systemUptime - retirementStarted >= config.cleanupTimeout {
+                        if !retired {
+                            result.failure = (result.failure.map { $0 + " " } ?? "") + pendingMessage
+                            return result // State retains child + lease; no new work.
+                        }
+                        result.failure = result.failure ?? "Worker output remained open after termination; capture is incomplete."
                         break
                     }
                 }
-            }
-            if descriptors[1] >= 0 {
-                let written = input.withUnsafeBytes { bytes in
-                    Darwin.write(descriptors[1], bytes.baseAddress!.advanced(by: inputOffset), min(16384, input.count - inputOffset))
+                var items: [pollfd] = []
+                if retirementStarted == nil, let metadata = channels.pendingMetadataDescriptor {
+                    items.append(pollfd(fd: metadata, events: Int16(POLLOUT), revents: 0))
                 }
-                if written > 0 {
-                    inputOffset += written
-                    if inputOffset == input.count { closeDescriptor(1) }
-                } else if written < 0, errno == EPIPE { closeDescriptor(1) }
-                else if written < 0, errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK {
-                    stop("Worker stdin could not be delivered.")
+                for index in [2, 4] where streams[index].value >= 0 { items.append(pollfd(fd: streams[index].value, events: Int16(POLLIN), revents: 0)) }
+                if streams[1].value >= 0 { items.append(pollfd(fd: streams[1].value, events: Int16(POLLOUT), revents: 0)) }
+                _ = poll(&items, nfds_t(items.count), 10)
+            }
+            supervision = nil
+            do {
+                let status = try channels.termination().rawWaitStatus
+                let signal = status & 0x7f
+                if signal == 0 { result.exitCode = (status >> 8) & 0xff }
+                else {
+                    result.exitCode = 128 + signal
+                    result.failure = result.failure ?? "Worker terminated by signal \(signal); earlier side effects may already have occurred."
                 }
-            }
-            if leaderExited, descriptors[2] < 0, descriptors[4] < 0 { break }
-            // Escaped descendants could retain a pipe. They are outside the owned
-            // process group: bound cleanup and report incomplete capture explicitly.
-            if let killedAt, now - killedAt > 1 {
-                result.failure = result.failure ?? "Worker output remained open after termination; capture is incomplete."
-                closeDescriptor(2)
-                closeDescriptor(4)
-                if leaderExited { break }
-            }
-            var pollItems: [pollfd] = []
-            if stoppedAt == nil, let metadata = supervision.pendingMetadataDescriptor {
-                pollItems.append(pollfd(fd: metadata, events: Int16(POLLOUT), revents: 0))
-            }
-            for index in [2, 4] where descriptors[index] >= 0 { pollItems.append(pollfd(fd: descriptors[index], events: Int16(POLLIN), revents: 0)) }
-            if descriptors[1] >= 0 { pollItems.append(pollfd(fd: descriptors[1], events: Int16(POLLOUT), revents: 0)) }
-            _ = poll(&pollItems, nfds_t(pollItems.count), 10)
+            } catch { result.failure = result.failure ?? "Worker ended without a valid status record; output may be incomplete." }
+            return result
         }
-        // Last group signal happens while the child is still reserved. Reap once.
-        if reservationLost { return result }
-        if !killed { kill(-pid, SIGKILL) }
-        var status: Int32 = 0
-        var waited: pid_t
-        repeat { waited = waitpid(pid, &status, 0) } while waited < 0 && errno == EINTR
-        if waited == pid {
-            do { status = try supervision.termination().rawWaitStatus }
-            catch {
-                result.failure = result.failure ?? "Worker ended without a valid status record; output may be incomplete."
-                return result
-            }
-            let signal = status & 0x7f
-            if signal == 0 { result.exitCode = (status >> 8) & 0xff }
-            else {
-                result.exitCode = 128 + signal
-                result.failure = result.failure ?? "Worker terminated by signal \(signal); earlier side effects may already have occurred."
-            }
-        } else { result.failure = result.failure ?? "Worker could not be reaped." }
-        return result
     }
-}
-
-private final class MCPCancellation: @unchecked Sendable {
-    private let lock = NSLock()
-    private var cancelled = false
-    var isCancelled: Bool { lock.withLock { cancelled } }
-    func cancel() { lock.withLock { cancelled = true } }
 }

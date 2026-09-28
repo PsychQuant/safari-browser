@@ -242,6 +242,6 @@ Reproduction command:
 python3 scripts/benchmark-performance.py --binary /path/to/release/safari-browser --samples 60 --warmups 3 --timeout 3 --timing both --mcp-worker-mode both --mcp-warm-order interleaved
 ```
 
-The original isolated runner's stopped-event and late-group cleanup limitations
-are separately tracked in issue #209; they are not claimed fixed by the new
-persistent owner or by these latency measurements.
+These R2 measurements predate the one-shot supervision and retained ownership
+work for issue #209. They do not certify that later implementation or predict
+its isolated-mode startup cost; the final runtime requires a new comparison.

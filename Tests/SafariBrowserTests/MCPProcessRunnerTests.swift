@@ -33,6 +33,75 @@ final class MCPProcessRunnerTests: XCTestCase, @unchecked Sendable {
                                     "A stopped group leader must remain reserved until timeout")
     }
 
+    func testShutdownCancelsActiveExecutionAndRejectsLaterCalls() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let started = directory.appendingPathComponent("started")
+        let runner = fixture(timeout: 3)
+        let active = Task { await runner.run(arguments: ["import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch(); time.sleep(30)", started.path], input: Data(), expectedImage: "fixture") }
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: started.path) { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: started.path))
+        let start = ProcessInfo.processInfo.systemUptime
+        let cleanup = await runner.shutdown()
+        XCTAssertNil(cleanup)
+        let result = await active.value
+        XCTAssertTrue(result.cancelled)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 1)
+        let later = await runner.run(arguments: ["print('unexpected')"], input: Data(), expectedImage: "fixture")
+        XCTAssertTrue(later.failure?.contains("not executed") == true)
+        XCTAssertEqual(later.stdout, Data())
+    }
+
+    func testConcurrentExecutionIsRejectedBeforeItsEffect() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let started = directory.appendingPathComponent("started"), release = directory.appendingPathComponent("release"), effect = directory.appendingPathComponent("effect")
+        let runner = fixture(timeout: 3)
+        let active = Task { await runner.run(arguments: ["import pathlib,sys,time; pathlib.Path(sys.argv[1]).touch();\nwhile not pathlib.Path(sys.argv[2]).exists(): time.sleep(.005)", started.path, release.path], input: Data(), expectedImage: "fixture") }
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: started.path) { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: started.path))
+        let result = await runner.run(arguments: ["import pathlib,sys; pathlib.Path(sys.argv[1]).touch()", effect.path], input: Data(), expectedImage: "fixture")
+        FileManager.default.createFile(atPath: release.path, contents: nil)
+        let first = await active.value
+        XCTAssertNil(first.failure)
+        XCTAssertTrue(result.failure?.contains("not executed") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: effect.path))
+    }
+
+    func testPendingCleanupPreventsAnotherEffectUntilTheSameOwnerRetires() async throws {
+        final class Gate: @unchecked Sendable {
+            let lock = NSLock()
+            private var blocked = true
+            func unblock() { lock.withLock { blocked = false } }
+            var isBlocked: Bool { lock.withLock { blocked } }
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let effect = directory.appendingPathComponent("effect")
+        let gate = Gate()
+        var lifecycle = MCPProcessRunner.Lifecycle()
+        lifecycle.retire = { gate.isBlocked ? .pending : $0.retire(timeout: 0) }
+        let runner = MCPProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/python3"), workerPrefix: ["-c"],
+            supervisorExecutable: Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser"),
+            timeout: 2, cleanupTimeout: 0.05, lifecycle: lifecycle)
+        let started = ProcessInfo.processInfo.systemUptime
+        let first = await runner.run(arguments: ["print('first')"], input: Data(), expectedImage: "fixture")
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.8, "Unconfirmed retirement must return within its userspace budget")
+        XCTAssertEqual(first.stdout, Data("first\n".utf8))
+        XCTAssertTrue(first.failure?.contains("pending") == true)
+        let rejected = await runner.run(arguments: ["import pathlib,sys; pathlib.Path(sys.argv[1]).touch()", effect.path], input: Data(), expectedImage: "fixture")
+        XCTAssertTrue(rejected.failure?.contains("not executed") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: effect.path))
+        gate.unblock()
+        let recovered = await runner.run(arguments: ["print('recovered')"], input: Data(), expectedImage: "fixture")
+        XCTAssertNil(recovered.failure)
+        XCTAssertEqual(recovered.stdout, Data("recovered\n".utf8))
+        let cleanup = await runner.shutdown(); XCTAssertNil(cleanup)
+    }
+
     func testSeparateStreamsStdinArgumentsAndContext() async {
         let script = "import os,sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); print(repr(sys.argv[1:]),file=sys.stderr); print(os.environ['SAFARI_BROWSER_MCP_DIRECT']+os.environ['SAFARI_BROWSER_MCP_IMAGE_ID'],file=sys.stderr); sys.exit(7)"
         let result = await fixture().run(arguments: [script, "--literal", "a b'\"$()"], input: Data([0, 10, 255]), expectedImage: "IMAGE")

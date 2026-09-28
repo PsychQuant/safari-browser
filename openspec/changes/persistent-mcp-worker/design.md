@@ -121,6 +121,10 @@ Bootstrap 實測補充：Foundation 會在 main 之前新增 `__CF_USER_TEXT_ENC
 
 stdin／stdout／stderr 繼續獨立傳送，真正 CLI 的退出狀態透過固定 status record 傳回；supervisor 的終止碼不得冒充業務結果。absolute invocation deadline、原 capture cap、busy／cancel／EOF／shutdown／daemon detach 皆套用於預選及 explicit isolated。host 死亡後 monitor 必須清除實際 one-shot，而不是只觀察 host 已退出。
 
+Owner整合補充：`MCPProcessRunner`是持有獨立serial State的runner；pre-queue admission拒絕第二筆呼叫，shutdown停止接納並取消active request。State重用`MCPChildReservation`，執行與後續retained cleanup各自有cleanup budget，沒有阻塞waitpid。Pending保留child及lease；lost ownership永久拒絕後續工作。物件釋放時仍由State繼續退休已持有的reservation，不轉交僅有PID的清理器。
+
+`MCPPersistentRunner`持有同一個one-shot runner而非每筆新建；在選擇任何engine前呼叫其prepareForInvocation，舊pending／lost owner會阻擋普通pair和下一筆one-shot。absolute deadline改成每筆run參數，沒有共享可變deadline。Shutdown同時包含兩個owner；每次清理等待有界，但原active清理與shutdown清理可能各消耗一個budget，不承諾核心硬即時。
+
 ### 驗收及依賴順序
 
 先固定原 runner 的 stopped／host-death RED，再驗 bootstrap kernel 接納與 lease／status，接著整合 pending ownership，最後跑所有正式呼叫端與 custom fixtures。private expansion 測試固定小環境，確保測到編碼膨脹而非先被 ARG_MAX 分支選走。修正後重新建置 release 並做兩模式交錯比較；先前數值保留為歷史，不套用到新 runtime。任務3.3必須在新增4.x驗收完成後才可完成。

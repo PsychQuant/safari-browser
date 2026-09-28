@@ -9,6 +9,7 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
         var retire: @Sendable (MCPChildReservation) -> MCPChildReservation.Retirement = { $0.retire(timeout: 0) }
         var didLaunch: @Sendable (pid_t) -> Void = { _ in }
         var beforeRequestSend: @Sendable () throws -> Void = {}
+        var isolated = MCPProcessRunner.Lifecycle()
     }
     private struct Configuration: Sendable {
         let executable: URL
@@ -105,6 +106,7 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
     private let config: Configuration
     private let admission = Admission()
     private let state: State
+    private let isolatedRunner: MCPProcessRunner
 
     init(executable: URL, environment: [String: String] = ProcessInfo.processInfo.environment,
          isolatedSupervisorExecutable: URL? = nil,
@@ -116,6 +118,9 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
                                idleTimeout: idleTimeout, outputLimit: outputLimit, inputLimit: inputLimit,
                                cleanupTimeout: cleanupTimeout, lifecycle: lifecycle)
         state = State(config)
+        isolatedRunner = MCPProcessRunner(executable: executable, environment: environment,
+            supervisorExecutable: isolatedSupervisorExecutable, timeout: timeout, outputLimit: outputLimit,
+            inputLimit: inputLimit, cleanupTimeout: cleanupTimeout, lifecycle: lifecycle.isolated)
     }
     deinit {
         let owner = state
@@ -137,6 +142,9 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
         // The caller cannot observe completion until admission has been released.
         defer { admission.finish(request) }
         return await withTaskCancellationHandler {
+            if let failure = await isolatedRunner.prepareForInvocation() {
+                return MCPCommandResult(cancelled: request.isCancelled, failure: failure + " Command was not executed.")
+            }
             let step: Step = await withCheckedContinuation { continuation in
                 state.queue.async { [state] in
                     continuation.resume(returning: state.execute(arguments, input: input, image: expectedImage, request: request, deadline: deadline))
@@ -145,12 +153,9 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
             switch step {
             case .result(let value): return value
             case .isolated(let deadline):
-                let config = config
+                let runner = isolatedRunner
                 let task = Task {
-                    await MCPProcessRunner(executable: config.executable, environment: config.environment,
-                                           supervisorExecutable: config.isolatedSupervisorExecutable,
-                                           timeout: config.timeout, outputLimit: config.outputLimit, inputLimit: config.inputLimit, invocationDeadline: deadline)
-                        .run(arguments: arguments, input: input, expectedImage: expectedImage)
+                    await runner.run(arguments: arguments, input: input, expectedImage: expectedImage, deadline: deadline)
                 }
                 request.attach(task)
                 return await task.value
@@ -160,12 +165,14 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
 
     func shutdown() async -> String? {
         if let request = admission.stop() { request.cancel(); await request.wait() }
-        return await withCheckedContinuation { continuation in
+        let pairFailure: String? = await withCheckedContinuation { continuation in
             state.queue.async { [state] in
                 state.invalidateIdle()
                 continuation.resume(returning: state.retire(collecting: nil))
             }
         }
+        let isolatedFailure = await isolatedRunner.shutdown()
+        return pairFailure ?? isolatedFailure
     }
 
     private enum Failure: Error { case message(String) }

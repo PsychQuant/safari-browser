@@ -76,7 +76,7 @@ By default, `--worker-mode persistent` lazily starts one supervisor and one
 reusable CLI worker. Each call parses a fresh command and receives separate
 stdin/stdout/stderr, trace and dialog-probe state. Healthy sequential calls reuse
 the actual worker process. `--worker-mode isolated` explicitly selects a fresh
-worker for every call. Idle persistent workers exit after 30 seconds;
+worker for every call, with its own lifetime supervisor. Idle persistent workers exit after 30 seconds;
 `--worker-idle-timeout` accepts a finite value from 0.001 to 86400 seconds.
 Within MCP, command subprocesses use POSIX spawn to inherit that worker’s process
 group from creation. Ordinary CLI subprocesses keep the existing Foundation
@@ -89,6 +89,11 @@ stream. Results preserve separate `stdout` and `stderr` objects containing
 and `failure`. Text content presents diagnostics before stdout. A nonzero exit,
 failed capture or transport limit produces `isError: true`. The output schema
 describes this common capture envelope; command-specific JSON remains in stdout.
+`capture_complete` describes capture, not command success. An isolated worker's
+executable-identity rejection is a fully captured CLI error (exit 64, `isError:
+true`); a persistent pre-dispatch identity rejection also sets `failure` and
+`capture_complete: false`. Both require restarting the server, never replaying
+the failed request automatically.
 
 There is one active tool call per server. Other calls receive a busy error
 stating that they were not executed; ping, discovery and cancellation remain
@@ -108,9 +113,12 @@ effects or an explicitly started persistent daemon. Calls are never retried auto
 After a crash, only a later distinct call can create a new worker, after cleanup
 is confirmed. Unconfirmed cleanup prevents additional workers from starting.
 Calls near the OS argument/environment size limit, or whose private encoding
-exceeds the transport cap, select the original isolated runner before dispatch.
+exceeds the transport cap, select supervised one-shot execution before dispatch.
 They preserve kernel admission and the same invocation deadline; this is not a
-retry of a failure.
+retry of a failure. The same one-shot owner is retained across calls: a cleanup
+failure blocks both another one-shot and a new persistent pair. Userspace cleanup
+returns within its configured budget while retaining an unconfirmed reservation;
+lost ownership stops further signaling and requires restarting the server.
 
 Restart the server after updating its executable: workers check the loaded
 Mach-O build UUID before running a command, including nested CLI calls. The host

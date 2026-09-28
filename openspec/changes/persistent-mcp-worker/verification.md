@@ -144,3 +144,12 @@ R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Ga
 - 修正原runner的si_code判讀；但仍需4.3的stateful pending owner、late member重複清理及有界回收，不能宣稱#209完成。#172維持needs-fix、尚無新六方PASS。
 
 - 新監督架構下，actual worker 的SIGSTOP不再等於host直接child的SIGSTOP；另補自有不合作supervisor自行停止的測試，直接覆蓋host的leader判讀。退回si_pid-only變異會再次在期限前失敗；還原後MCPProcessRunner family 11項通過。這避免架構改變後原斷言失去對si_code修法的辨識力。
+
+## R3 task4.3 ownership（待全套與獨立審查）
+
+- 原runner的shutdown／concurrent case取得6項具名RED，pending case取得3項RED。新serial owner會取消active call、拒絕並行副作用、保留未清理reservation、稍後完成同一owner退休。
+- 只修改one-shot owner仍不足：persistent外層每筆新建runner，曾在舊pending存在時實際執行新exec並輸出66bytes。整合測試取得RED後，改為長期持有one-shot runner並在兩條engine前檢查舊owner，GREEN。
+- 實際ECHILD（測試故意回收本地持有且已結束的direct child）會讓owner永久停止retirement及新launch。Shutdown對pending有界返回、可在原owner可退休後完成，但不重新開放已關閉runner。
+- late-member測試走真正MCPProcessRunner：自停且忽略TERM的helper在第一次KILL後仍被保留，新自有member加入該group，再確認runner重複KILL並於釋放leader前清除member。Fixture member有獨立spawn reservation作失敗清理，不向ps／reply PID發訊號。
+- 8項有效變異：late-group重複KILL、保留pending、lost-owner終止態、跨engine guard、active cleanup截止、retained cleanup截止、shutdown取消、image capture契約；全部具名行為失敗，還原後161項MCP XCTest通過。這是本階段驗證，不代替4.4的完整test-all、最終release量測與六方審查。
+- README／CLAUDE／CHANGELOG已同步受監督one-shot、跨engine pending、環境快照及兩模式image error欄位差異；4.3完成，整體13/15。

@@ -4,11 +4,13 @@ import Darwin
 /// Fixed diagnostics: neither argv nor environment data belong in launch errors.
 enum MCPWorkerLaunchError: Error, LocalizedError {
     case invalidConfiguration, descriptors, spawn, ownershipLost, status, supervisorContext
+    case spawnSystemError(Int32)
     var errorDescription: String? {
         switch self {
         case .invalidConfiguration: "Invalid private worker launch configuration."
         case .descriptors: "Private worker descriptors could not be prepared."
         case .spawn: "Private worker could not be launched."
+        case .spawnSystemError(let code): "Private worker launch failed: \(String(cString: strerror(code)))."
         case .ownershipLost: "Private worker ownership was lost before cleanup."
         case .status: "Private worker status could not be observed."
         case .supervisorContext: "Invalid private worker supervisor context."
@@ -165,8 +167,8 @@ enum MCPWorkerSpawn {
     /// `descriptors` maps inherited target slots to borrowed source descriptors.
     /// All sources are duplicated before constructing any dup2/close action.
     static func child(executable: URL, arguments: [String], environment: [String: String],
-                      descriptors: [Int32: Int32], group: Group = .create, deadline: TimeInterval? = nil) throws -> MCPChildReservation {
-        let argv = [executable.path] + arguments
+                      descriptors: [Int32: Int32], group: Group = .create, deadline: TimeInterval? = nil, argument0: String? = nil) throws -> MCPChildReservation {
+        let argv = [argument0 ?? executable.path] + arguments
         guard executable.isFileURL, !executable.path.isEmpty,
               argv.allSatisfy({ !$0.utf8.contains(0) }),
               environment.allSatisfy({ !$0.key.isEmpty && !$0.key.contains("=") && !$0.key.utf8.contains(0) && !$0.value.utf8.contains(0) }),
@@ -210,7 +212,8 @@ enum MCPWorkerSpawn {
                 posix_spawn(&pid, executable.path, &actions, &attributes, argv.baseAddress!, environment.baseAddress!)
             }
         }
-        guard result == 0, pid > 0 else { throw MCPWorkerLaunchError.spawn }
+        guard result == 0 else { throw MCPWorkerLaunchError.spawnSystemError(result) }
+        guard pid > 0 else { throw MCPWorkerLaunchError.spawn }
         // Keep the copies alive until posix_spawn has consumed its actions.
         withExtendedLifetime(owned) {}
         return MCPChildReservation(pid: pid, group: group == .create)

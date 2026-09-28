@@ -21,6 +21,11 @@ Each tool call SHALL execute the existing command struct through an isolated wor
 - **WHEN** the executable at the launch path is replaced after the server starts
 - **THEN** a different launch-path or loaded worker image is rejected before running the tool, including when a worker is already warm and the caller is told to restart; the operation is not retried on another engine.
 
+#### Scenario: Image rejection capture metadata
+- **WHEN** an isolated CLI worker returns its executable-image validation error
+- **THEN** a fully captured exit-64 error SHALL retain capture_complete true and failure null while isError remains true
+- **AND** a persistent pre-dispatch image rejection SHALL retain its explicit failure and capture_complete false without retrying
+
 #### Scenario: Cancellation or capture limit
 - **WHEN** a worker is cancelled, exceeds its configured timeout, or exceeds output limits
 - **THEN** its owned process group is stopped and reaped, incomplete output is not reported as success, and prior side effects are not claimed to be rolled back.
