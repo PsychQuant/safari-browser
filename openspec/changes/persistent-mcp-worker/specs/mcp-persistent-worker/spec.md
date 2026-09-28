@@ -116,6 +116,7 @@ The loaded worker image SHALL match the host catalog image. Before each persiste
 #### Scenario: Preselected execution keeps the invocation deadline
 - **WHEN** image inspection or cached-pair retirement consumes part of the invocation's time budget before isolated dispatch
 - **THEN** the original runner SHALL use the same absolute deadline and SHALL reject execution if it has already expired
+- **AND** an inherited deadline later than the configured per-call timeout SHALL NOT extend that timeout
 
 ### Requirement: Persistent worker benefits and regressions are measured
 Verification SHALL compare isolated and persistent modes from the same build under the same fixed fixture, sample count and deadline, reporting cold/warm p50, p95, success rates and actual worker PID reuse. It SHALL separate spawn syscall, loader/entry, parsing, execution and exit/cleanup evidence rather than calling all overhead spawn time. Warm p50 and p95 SHALL improve without reducing the successful-call rate before performance acceptance. Cold-start and resident-process costs SHALL be disclosed. Existing full catalog/help, CLI validation, stdin, cancellation, EOF, process-group, backpressure, explicit-daemon and binary-replacement regressions SHALL remain covered; adapter evidence SHALL NOT be presented as new Safari GUI acceptance.

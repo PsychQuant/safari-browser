@@ -102,6 +102,17 @@ final class MCPProcessRunnerTests: XCTestCase, @unchecked Sendable {
         let cleanup = await runner.shutdown(); XCTAssertNil(cleanup)
     }
 
+    func testInheritedDeadlineCannotExtendConfiguredTimeout() async {
+        let runner = MCPProcessRunner(executable: URL(fileURLWithPath: "/usr/bin/python3"), workerPrefix: ["-c"],
+            supervisorExecutable: Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser"),
+            timeout: 0.15, invocationDeadline: ProcessInfo.processInfo.systemUptime + 30)
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = await runner.run(arguments: ["import time; time.sleep(1)"], input: Data(), expectedImage: "fixture")
+        XCTAssertTrue(result.failure?.contains("timed out") == true)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - started, 0.7,
+                          "An inherited budget may shorten, but never extend, the configured timeout")
+    }
+
     func testSeparateStreamsStdinArgumentsAndContext() async {
         let script = "import os,sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); print(repr(sys.argv[1:]),file=sys.stderr); print(os.environ['SAFARI_BROWSER_MCP_DIRECT']+os.environ['SAFARI_BROWSER_MCP_IMAGE_ID'],file=sys.stderr); sys.exit(7)"
         let result = await fixture().run(arguments: [script, "--literal", "a b'\"$()"], input: Data([0, 10, 255]), expectedImage: "IMAGE")

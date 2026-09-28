@@ -105,7 +105,7 @@ final class MCPProcessRunner: MCPCommandRunning, @unchecked Sendable {
         guard config.valid, deadline?.isFinite != false else { return MCPCommandResult(failure: "Invalid worker limits.") }
         let request = Request()
         if let failure = admission.begin(request) { return MCPCommandResult(failure: failure) }
-        let absoluteDeadline = deadline ?? (ProcessInfo.processInfo.systemUptime + config.timeout)
+        let absoluteDeadline = min(deadline ?? .infinity, ProcessInfo.processInfo.systemUptime + config.timeout)
         defer { admission.finish(request) }
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in

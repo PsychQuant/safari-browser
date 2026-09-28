@@ -163,3 +163,5 @@ R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Ga
 - cold off isolated59.113/63.115ms vs persistent50.725/59.361；新one-shot多了supervision，不能拿R2舊baseline宣稱同一runtime成本。所有scenario（含CLI／daemon）的wall samples／warmups及trace identity已保存，未跑live Safari。
 - 另測三次成功呼叫後的process tree：isolated0個resident child、persistent2個；RSS加總17040 vs38000KiB，包含共享頁，僅為單次snapshot。不是unique memory或全場景效能推論。
 - 實作、測試與量測證據現已備妥；4.4的獨立審查及3.3歸檔／PR尚未完成，不能標verified。
+
+- 最後的caller契約核對另抓到R3重構將較晚inherited deadline直接採用、可能放寬configured timeout。原0.15秒設定配未來30秒deadline卻讓1秒fixture正常完成，兩項具名RED；改為兩者取min後約0.156秒timeout，23項相關測試GREEN。此為內部呼叫參數邊界修正；將重新建置、回歸及量測最終runtime，a12ba03資料保留為前一cohort。
