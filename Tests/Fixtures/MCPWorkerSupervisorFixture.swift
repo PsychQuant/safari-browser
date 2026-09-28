@@ -34,6 +34,15 @@ import Darwin
                 data.append(contentsOf: buffer.prefix(count))
             }
             _ = data.withUnsafeBytes { Darwin.write(3, $0.baseAddress, $0.count) }
+        } else if args.first == "stopped-owner" || args.first == "join-group" {
+            signal(SIGTERM, SIG_IGN)
+            if args.first == "join-group" {
+                guard args.count == 2, let group = Int32(args[1]), setpgid(0, group) == 0 else { _exit(87) }
+            }
+            let data = try JSONSerialization.data(withJSONObject: ["pid": getpid(), "group": getpgrp()]) + Data([10])
+            _ = data.withUnsafeBytes { Darwin.write(3, $0.baseAddress!, $0.count) }
+            if args.first == "stopped-owner" { raise(SIGSTOP) }
+            while true { pause() }
         } else if args.first == "controller" {
             signal(SIGTERM, SIG_IGN)
             let ready = Data("ready".utf8)

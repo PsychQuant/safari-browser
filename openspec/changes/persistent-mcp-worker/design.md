@@ -18,6 +18,8 @@ MCPCommand 預設使用 MCPPersistentRunner；新增 --worker-mode persistent|is
 
 每個 host 最多一組 supervisor + actual worker，仍只有一筆 business invocation；MCPSession 的 busy 拒絕維持。runner 在自己的單一 I/O owner 上序列化 PID、fd、start/run/retire；取消只提交停止意圖並喚醒 owner，不能從其他執行緒任意 close 或 reap。新 request 若碰到正在退休的 generation，必須先等其有界清理或得到 not-executed 失敗；不開第二組來掩蓋清理失敗。
 
+host 實作補充：取消以鎖保護的 intent 傳遞，I/O owner 透過至多 10 ms 的 poll 間隔及每輪有界 drain 重驗。這是上述喚醒／停止處理的具體機制，不從 cancellation callback close FD 或 signal PID，也不另添可與 close 競爭的 wakeup descriptor。Busy admission 在入 I/O queue 前拒絕；完成後先釋放 admission，呼叫端才收到結果。
+
 idle timer 由 host 管理，generation 綁定；新 request 取消舊 timer，期限到且仍 idle 才退休。worker 崩潰、協定失效或不適合重用時，當筆不重播，下一筆才新建一組。MCPCommandRunning 增加有預設空實作的 async shutdown，MCPSession 在 EOF／output failure 時同時清理 active 與 idle worker。
 
 ### 監督程序與存活管線
@@ -31,6 +33,10 @@ host 保有 lifetime pipe 的唯一 write end；supervisor 只拿 read end，在
 host 對 group 的訊號只用自己 posix_spawn 得到、仍 live／unreaped 的 supervisor PID。最後 group signal 在 waitpid 釋放 reservation 前發出；ECHILD／失去 reservation 時不再 signal。清理保留 SIGTERM、150 ms grace、SIGKILL 與有界 drain／exit observation；若無法在 cleanup budget 內確認，回報 failure、保留尚未退休的 owner，禁止再 spawn，不能宣稱已清乾淨。
 
 實作驗證補充：在本機，已退出但尚未 reap 的群組收到 signal 可能回 EPERM。這個 errno 本身不是清理成功證據；owner 保留 reservation，以有界 proc_listpids／proc_pidinfo snapshot 確認群組已無其他執行中成員，才 reap。snapshot 超過 4096 個 PID 或無法讀取成員時保守回傳未確認。retire 每輪開始重驗 userspace deadline，逾時保留同一 owner，後續呼叫延續原 TERM／KILL 狀態。
+
+runner 實測補充：waitid 的 si_pid 非零不是退出證據；只接受 CLD_EXITED／CLD_KILLED／CLD_DUMPED，CLD_STOPPED 保留為尚未退出。第一次 KILL 後若仍觀察到 live group members，在 leader reservation 尚未釋放時繼續 group KILL；確認 quiescent 才 reap。固定 cleanup deadline 到期保留 pending owner，後續呼叫不得用新 pair 掩蓋它；ownership lost 則永久停止該 owner 的 signal。
+
+閒置 worker 的控制通道若在下一筆任何 byte 送出前已 EOF，可清理舊 generation 後為該新請求建立一組；送出任何 byte 後的 crash／partial／wrong-id 則只回報不完整，不重播。不同 image、缺檔或解析失敗會使此 runner 持續要求 restart，即使稍後路徑恢復。Termination record 是 worker process 的診斷，不得覆蓋 valid complete 的 business exit code。
 
 ### 私有有界協定
 

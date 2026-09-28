@@ -1,6 +1,6 @@
 # 元件實作證據（2026-09-28）
 
-目前完成 tasks 1.1、1.2、1.3、2.1、2.2、2.3（6/11）；其餘未完成。這份紀錄不是完整 #172 驗收，也不表示 public MCP 已改用常駐 worker。
+目前完成 tasks 1.1、1.2、1.3、2.1、2.2、2.3、2.4（7/11）；其餘未完成。這份紀錄不是完整 #172 驗收，也不表示 public MCP 已改用常駐 worker。
 
 ## 私有 wire codec（1.2）
 
@@ -65,3 +65,18 @@
 - 還原後 `make test-all` exit0：1,530 XCTest、38 Swift Testing、66 smoke；簽章 49 PASS／2 身分限制 SKIP，GUI harness SKIP。之後只將 missing-parent 測試明確清除 ambient parent keys，該單項重跑 PASS；production source 沒有再改。
 
 下一步是 task 2.4 的 host runner：owner admission、idle generation、cancel/deadline/cap、crash/partial/wrong-id/no-replay、清理 pending 時保留 reservation 並拒絕新 pair。尚未切換公開 MCP backend，也尚未進行同 build 的完整效能驗收、最終六方審查或宣告 verified。
+
+
+## Host runner（2.4）
+
+- `MCPPersistentRunner` 以 admission lock 與單一 I/O queue 管理每組程序／FD；取消只發布 intent，owner 在有界 poll/drain 迴圈處理。正常 sequential calls 重用實際 worker，busy 立即拒絕；idle epoch／generation 擋掉舊 timer。
+- 崩潰、partial／wrong-id／超長 frame、cap 或 deadline 一律不重播。實際 append marker fixtures 每筆只留下單次 effect，下一筆獨立呼叫才重建。保留 prefix；business exit17 不會被 worker process0 或 supervisor signal 覆蓋。
+- cleanup pending 保留同一 reservation／generation；ownership lost 永久停止該 owner 的 signal／新接納。Shutdown 能取消 active／isolated fallback 並清理 idle，回報未確認清理。
+- 原實作在 idle EOF 且 supervisor 尚存活時錯誤拒絕下一筆；實際 fixture RED 後改為僅在新請求零 byte 送出前清理／重建。
+- 大參數測試依本機 ARG_MAX=1 MiB 取得 half-boundary，分割為 4096-byte argv，與原 runner 的 kernel 接納結果比對；另以 started marker 證明 legacy route 的 active cancellation。
+- 暖 launch path 消失後持續要求 restart，即使路徑恢復也不偷偷重用原 instance；舊 idle deadline 跨越 active call 與下一筆呼叫時 PID 維持正確。
+- 實測 waitid 回報 si_pid、CLD_STOPPED、SIGSTOP，證明只查 PID 會誤判退出；新增事件種類守衛。另一個自有 direct child 在首次 KILL 後加入仍受保留的 group，原本存活而 cleanup pending；現持續 KILL 至 quiescent 再 reap。測試以兩個 direct-child reservations 安全收尾，不對失去所有權的 PID 發訊號。
+- 最終 focused：25 tests PASS（15 runner／10 supervisor）。12 個新增變異全被攔截並還原：replay、correlation、output cap、cancel、deadline、sticky image、kernel route、cleanup failure、idle generation、frame cap、stopped event、repeat group kill。
+- 中斷前 full suite 沒有完成，原 handle 消失且無測試程序後才重新執行；不把中斷紀錄當 PASS。完整結果另以恢復後的 exit code 為準。
+
+- 恢復後 `make test-all` exit0：1,546 XCTest／38 Swift Testing／66 smoke；簽章 49 PASS／2 身分限制 SKIP，GUI harness SKIP。

@@ -49,6 +49,15 @@ The host SHALL launch its supervisor as a new process-group leader and the actua
 - **WHEN** a public daemon start command deliberately creates its separate service group
 - **THEN** request cleanup SHALL leave that explicitly created daemon unaffected while terminating ordinary owned descendants
 
+#### Scenario: A stopped leader is still reserved
+- **WHEN** waitid reports a stopped event for the owned leader
+- **THEN** the host SHALL keep it classified as not exited and SHALL NOT reap based on that event
+
+#### Scenario: Group membership changes after an initial kill
+- **WHEN** a live member remains or joins while the terminated leader is still reserved
+- **THEN** retirement SHALL continue signaling only that reserved group until it is quiescent or the cleanup deadline expires
+- **AND** an unconfirmed cleanup SHALL retain the owner instead of authorizing a new pair
+
 ### Requirement: Retirement and recovery never replay uncertain work
 Cancellation, timeout, EOF, invalid control data and output backpressure SHALL cause bounded userspace retirement while preserving unknown-outcome semantics after request transmission. The host SHALL stop and reap its owned group before reusing the slot; if cleanup cannot be confirmed it SHALL report failure and SHALL NOT start additional workers to hide the unresolved owner. A crash SHALL permit a fresh pair for the next distinct invocation, not retransmission of the failed invocation. Idle pairs SHALL retire after the configured finite idle interval, with generation checks preventing stale timers from stopping active or replacement workers. Session shutdown SHALL retire idle workers as well as active ones.
 
@@ -60,6 +69,11 @@ Cancellation, timeout, EOF, invalid control data and output backpressure SHALL c
 #### Scenario: Idle deadline races a new request
 - **WHEN** an old idle timer fires as a new call is admitted
 - **THEN** generation ownership SHALL select either retirement before dispatch or the active request, without killing a replacement or admitting two pairs
+
+#### Scenario: An idle channel closes before a new request is transmitted
+- **WHEN** the cached worker channel is closed before any bytes of a new invocation are sent
+- **THEN** the host SHALL retire that generation and SHALL execute the new invocation once in a fresh pair after confirmed cleanup
+- **AND** it SHALL NOT retransmit an invocation whose transmission already began
 
 #### Scenario: MCP stdout is unread at EOF
 - **WHEN** public MCP output is backpressured and input closes

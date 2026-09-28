@@ -155,6 +155,33 @@ final class MCPWorkerSupervisorTests: XCTestCase {
         XCTAssertTrue(hasExited(try XCTUnwrap(message["pid"])))
     }
 
+    func testRetirementKillsAnOwnedMemberThatJoinsAfterTheFirstKill() throws {
+        var ownerReady: [Int32] = [-1, -1], memberReady: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&ownerReady), 0); XCTAssertEqual(pipe(&memberReady), 0)
+        defer { for fd in ownerReady + memberReady { Darwin.close(fd) } }
+        let owner = try MCPWorkerSpawn.child(executable: Self.fixture.get(), arguments: ["stopped-owner"],
+            environment: ProcessInfo.processInfo.environment, descriptors: [3: ownerReady[1]])
+        defer { _ = owner.retire() }
+        XCTAssertFalse(read(ownerReady[0]).isEmpty)
+        XCTAssertTrue(waitForState(owner.pid, state: SSTOP))
+        XCTAssertEqual(try owner.observe(), .running, "A stopped child has not exited")
+        guard case .pending = owner.retire(timeout: 0) else { return XCTFail("First step released reservation") }
+        usleep(170_000)
+        // The running/stopped observation occurs before SIGKILL, so timeout:0
+        // retains the reservation for the later observation and reap.
+        guard case .pending = owner.retire(timeout: 0) else { return XCTFail("Second step released reservation") }
+        XCTAssertTrue(hasExited(owner.pid))
+        let member = try MCPWorkerSpawn.child(executable: Self.fixture.get(), arguments: ["join-group", String(owner.pid)],
+            environment: ProcessInfo.processInfo.environment, descriptors: [3: memberReady[1]], group: .inherit)
+        defer { _ = member.retire() } // independently owned direct child, safe even if the assertion fails
+        let joined = try XCTUnwrap(JSONSerialization.jsonObject(with: read(memberReady[0])) as? [String: Int32])
+        XCTAssertEqual(joined["group"], owner.pid)
+        XCTAssertEqual(joined["pid"], member.pid)
+        let retirement = owner.retire(timeout: 0.3)
+        guard case .reaped = retirement else { return XCTFail("Late group member survived the first kill: \(retirement)") }
+        XCTAssertTrue(hasExited(member.pid))
+    }
+
     func testWorkerInheritsSupervisorGroupButNotLifetimeOrStatusDescriptors() throws {
         let pair = try launch()
         defer { _ = pair.child.retire() }

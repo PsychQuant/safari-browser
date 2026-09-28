@@ -46,7 +46,10 @@ final class MCPChildReservation {
             }
             throw MCPWorkerLaunchError.status
         }
-        return info.si_pid == pid ? .exited : .running
+        // Darwin can report CLD_STOPPED even with WEXITED here. A PID alone
+        // is not proof of exit; retain the grace period for stopped children.
+        let exited = info.si_pid == pid && [CLD_EXITED, CLD_KILLED, CLD_DUMPED].contains(info.si_code)
+        return exited ? .exited : .running
     }
 
     private var groupIsQuiescent: Bool {
@@ -72,7 +75,9 @@ final class MCPChildReservation {
             let now = ProcessInfo.processInfo.systemUptime
             let target = group ? -pid : pid
             if observation == .exited || (stopStarted.map { now - $0 >= 0.15 } ?? false) {
-                if !killSent {
+                // Fork/group-membership changes can finish after the first
+                // signal. Keep killing live members while this leader is reserved.
+                if !killSent || !groupIsQuiescent {
                     // Darwin may return EPERM when only zombies remain.
                     // A group snapshot, not that errno, proves retirement.
                     let result = kill(target, SIGKILL)
