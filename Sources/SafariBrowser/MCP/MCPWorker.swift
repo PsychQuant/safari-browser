@@ -54,22 +54,22 @@ struct MCPWorkerCommand: AsyncParsableCommand {
     @Argument(parsing: .captureForPassthrough) var arguments: [String] = []
 
     mutating func run() async throws {
-        let environment = ProcessInfo.processInfo.environment
+        try await run(environment: ProcessInfo.processInfo.environment)
+    }
+
+    mutating func run(environment: [String: String],
+                      sleep: (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }) async throws {
         guard environment[MCPWorkerContext.imageKey] != nil, environment[MCPWorkerContext.directKey] == "1" else {
             throw ValidationError("This command is an internal MCP worker")
         }
         // The normal main entry point has already checked the loaded image.
-        var command = try SafariBrowser.parseAsRoot(arguments)
+        let command = try SafariBrowser.parseAsRoot(arguments)
         // The public catalog excludes hidden commands. Internal daemon start
         // also uses this guard to launch its hidden service, which detaches itself.
         guard !(command is MCPWorkerCommand),
               type(of: command).configuration.commandName != "mcp" else {
             throw ValidationError("Recursive or hidden MCP dispatch is not allowed")
         }
-        if var asynchronous = command as? AsyncParsableCommand {
-            try await asynchronous.run()
-        } else {
-            try command.run()
-        }
+        try await CLIExecution.runParsed(command, environment: environment, sleep: sleep)
     }
 }
