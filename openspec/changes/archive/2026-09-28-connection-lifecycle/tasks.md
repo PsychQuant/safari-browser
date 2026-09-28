@@ -13,4 +13,4 @@
 ## 3. 驗證與交付
 
 - [x] 3.1 整合 #198 最終基底後執行完整 daemon tests、關鍵撤銷／ID／reply guard 變異與 make test-all；比較自有 warm RPC 延遲，證明正常回覆、不重播、停止有界與資源退休，保留原始量測紀錄。
-- [ ] 3.2 更新 CLAUDE.md／CHANGELOG.md，完成 spectra analyze／validate、六方確認與規格同步歸檔；PR 和每個提交引用 #199，報告所有仍未完成的實機或審查條件。
+- [x] 3.2 更新 CLAUDE.md／CHANGELOG.md，完成 spectra analyze／validate、六方確認與規格同步歸檔；PR 和每個提交引用 #199，報告所有仍未完成的實機或審查條件。

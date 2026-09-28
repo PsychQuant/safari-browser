@@ -214,7 +214,7 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 
 transport 與 handler 工作分開：停止可完成 transport、釋放 reader／frame，已開始的不合作 handler 仍如實追蹤到返回。取消不是副作用回滾，也不會自動重播；晚到結果不存入已取消的完成物件、不寫入新連線。每筆 request 捕捉當時的 logger／redaction 設定；transport 診斷在所屬連線退休的同一 actor turn 準備 emission，晚到寫入不借用新 Run 的 logger 或 budget。
 
-正常結果與 cancelled 回覆共用單次完成仲裁，只有 transport 寫出一個 frame。shutdown 先嘗試自己的 ACK（總預算 250 ms），再讓所有 in-flight cancelled 回覆共用另一個 250 ms 絕對期限；不逐 client／partial write 重設，耗盡仍繼續停止。已開始的正常 frame 不插入取消 JSON；完整 cancelled 仍是 domain error，部分／缺少回覆仍是結果未知且不重播。一般 RPC 不新增執行期限，單 Run host 的五秒退出 watchdog 保留。
+正常結果與 cancelled 回覆共用單次完成仲裁，只有 transport 寫出一個 frame。shutdown 先嘗試自己的 ACK（總預算 250 ms），再讓所有 in-flight cancelled 回覆共用另一個 250 ms 絕對期限；不逐 client／partial write 重設，耗盡仍繼續停止。已開始的正常 frame 不插入取消 JSON；完整 cancelled 仍是 domain error，部分／缺少回覆仍是結果未知且不重播。ACK 代表已接納停止要求，不是停止完成或 peer 收到的證明；真正 revoke 前的短暫窗口仍可接納新 request，snapshot 外的請求也可能只得到 EOF／結果未知。一般 RPC 不新增執行期限，單 Run host 的五秒退出 watchdog 保留。
 
 測試 fixture 量到原生通知版 warm RPC 中位數約 0.140 ms（基準約 0.124 ms；各 40 次），移除了初版固定等待的約 6.83 ms 中位數。36 次 2 MiB request 的 RSS 樣本約 45,360–45,536 KiB，連線與未完成 operation 每次回到零；這是本機觀察，不推論 Foundation Data capacity 或整體行程記憶體上限。無效 JSON／非 object frame 的 log 只保留安全 byte-count marker，即使 LOG_FULL 也不保存原始壞 frame；有效請求的 full-log 語意不變。shutdown 日誌的預備／最終結果語意另由 #205 追蹤。
 

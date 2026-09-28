@@ -24,7 +24,7 @@ Environment.wait 只保留為可控制 syscall／clock fixture 的替代等待�
 
 ### 連線登記與 dispatch 接納
 
-Instance 改用 Connection ID 的登記集合，保存 owner、transport task 與世代。task 建立／登記在同一個 actor turn；transport 結束以 ID／世代退休，停止先撤銷全部 owner 再取消 transport，不等待 read loop 排程。完成舊工作的通知不可用 fd 數值清除新項目。transport 診斷在同一 actor turn 比對連線世代、準備原 logging-session emission 後才退休，後續 writer 不消耗新 session 額度。stop 移除 active registry 不代表 join 已在解析的 transport task；其有界解析離開後仍須走拒絕與完成通知。
+Instance 改用 Connection ID 的登記集合，保存 owner、transport task 與世代。task 建立／登記在同一個 actor turn；transport 結束以 ID／世代退休，停止先撤銷全部 owner 再取消 transport，不等待 read loop 排程。完成舊工作的通知不可用 fd 數值清除新項目。transport 診斷在退休的同一 actor turn 比對連線世代並準備原 logging-session emission，後續 writer 不消耗新 session 額度。stop 移除 active registry 不代表 join 已在解析的 transport task；其有界解析離開後仍須走拒絕與完成通知。
 
 讀取／解析後，actor 在同一個 turn 檢查連線仍 active、世代符合且未取消，再接納 handler task。讀取期間撤銷、EOF 的部分行或合併多行，都必須經過此守衛；只有真 EOF 的合法最後一行保留 #194 相容性，取消不是 EOF。handler 已接納後的副作用不能被宣稱沒有發生。
 

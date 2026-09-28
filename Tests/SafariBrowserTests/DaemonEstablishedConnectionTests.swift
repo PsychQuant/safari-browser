@@ -312,20 +312,22 @@ final class DaemonEstablishedConnectionTests: XCTestCase {
     func testMalformedFrameLogKeepsByteCountWithoutRetainingPayload() async throws {
         let socketPath = path(), server = DaemonServer.Instance()
         let log = DaemonDiagnosticBudgetTests.Sink()
-        let frame = #"{"method":"fixture.private","params":{"source":"私有-prefix-199"}"#
+        let frames = [#"{"method":"fixture.private","params":{"source":"私有-prefix-199"}"#, #"["私有-array-199"]"#]
         defer { unlink(socketPath); Task { await server.stop() } }
         try await server.start(socketPath: socketPath)
         let fd = try connect(socketPath)
         defer { close(fd) }
-        for full in [false, true] {
-            await server.setLogWriter({ log.append($0) }, logFull: full)
-            try TestUnixSocket.writeLine(fd: fd, line: frame)
-            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try TestUnixSocket.readLine(fd: fd).utf8)) as? [String: Any])
-            XCTAssertEqual((reply["error"] as? [String: Any])?["code"] as? String, "parseError")
-            let entry = try XCTUnwrap(log.objects.last)
-            XCTAssertEqual((entry["params"] as? [String: String])?["_log"], "<redacted \(frame.utf8.count) bytes; malformed params>")
-            XCTAssertEqual(entry["error"] as? String, "parseError")
-            XCTAssertFalse(log.all.joined().contains("私有-prefix-199"))
+        for frame in frames {
+            for full in [false, true] {
+                await server.setLogWriter({ log.append($0) }, logFull: full)
+                try TestUnixSocket.writeLine(fd: fd, line: frame)
+                let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try TestUnixSocket.readLine(fd: fd).utf8)) as? [String: Any])
+                XCTAssertEqual((reply["error"] as? [String: Any])?["code"] as? String, "parseError")
+                let entry = try XCTUnwrap(log.objects.last)
+                XCTAssertEqual((entry["params"] as? [String: String])?["_log"], "<redacted \(frame.utf8.count) bytes; malformed params>")
+                XCTAssertEqual(entry["error"] as? String, "parseError")
+                XCTAssertFalse(log.all.joined().contains("私有"))
+            }
         }
         await server.stop()
     }
