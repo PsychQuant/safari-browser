@@ -25,7 +25,7 @@
 - [x] 4.1 將原 runner 的 stopped-event 與公開 MCP 預選 host-death 重現納入受控自動測試，向未修改版本取得具名 RED；測試只終止自己 spawn 且持有的程序，觀察實際 worker 終止，不用 host exit 代替。
 - [x] 4.2 實作等 argv／等 environment bytes 的 one-shot supervisor bootstrap、固定 parent metadata、獨立 lease／status 與業務退出碼傳遞；以原 kernel 接納邊界、早期啟動失敗及 host-death RED轉GREEN證明，不縮小公開輸入也不重播。
 - [x] 4.3 履行「一次性 owner 與狀態回傳」：將 explicit isolated／persistent預選／custom fixtures 收斂到可保留的 serial reservation owner，完成真退出判讀、late member 重複清理、bounded pending／lost ownership、取消及shutdown；固定小環境直接驗 private expansion 分支，補 image failure 欄位差異的說明與斷言。
-- [ ] 4.4 依「驗收及依賴順序」，完成兩題的必要行為變異、原kernel與雙模式#110回歸，重新建置最終release做同build交錯cold／warm比較，再固定提交跑六方審查；清理或接納仍有缺口不得改成例外宣告PASS。
+- [x] 4.4 依「驗收及依賴順序」，完成兩題的必要行為變異、原kernel與雙模式#110回歸，重新建置最終release做同build交錯cold／warm比較，再固定提交跑六方審查；清理或接納仍有缺口不得改成例外宣告PASS。
 
 ## 5. R3 審查的 TERM 與 bootstrap 驗收
 

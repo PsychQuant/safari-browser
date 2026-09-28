@@ -193,3 +193,11 @@ R3六份報告已全文讀取，固定HEAD49ca317；master：https://github.com/
 - Release SHA256 `02320ed601bc71f34fabd715463d0a058d5a3776a08b00122b00ba7cfb1ca505`：60 samples／3warmups／3秒deadline／ABBA，全部18個non-live rows均60/60且warmups皆成功。off warm isolated24.296/25.574ms vs persistent1.139/1.470；on23.574/24.707 vs1.124/1.371。Trace-on仍60 vs1 worker PID，各60requestIDs。
 - 新三次呼叫resident snapshot：isolated0 child／17728KiB RSS、persistent2 children／38896KiB RSS；共享頁加總、單次snapshot，非unique memory。全部cohorts保留，沒有GUI效能宣稱。
 - tasks現為16/18，4.4的獨立審查及3.3歸檔／PR仍待完成，尚未verified。
+
+## R4 六方 PASS（固定529325d）
+
+全部六份獨立報告均CODE PASS；Codex另讀完整raw logs的證據附錄，維持PASS。Master：https://github.com/PsychQuant/safari-browser/issues/172#issuecomment-5874525074 ，#209：https://github.com/PsychQuant/safari-browser/issues/209#issuecomment-5874536221 。Verified tags `idd-172-verified`／`idd-209-verified`固定於529325de7d8e38967c421f4f86824fad77019885，已推送。
+
+- 最終凍結版TERM fixture又對R3保留binary重跑，三路徑皆RED且每路徑都有worker＋普通後代存活；補充log記錄test／fixture／binary SHA，已解除舊RED版本不一致的疑慮。
+- 已取消後仍可能在startup race開始CLI的Low，以及大argv時序測試的更強路由斷言，另追蹤#211。當前有界／unknown／不重播契約不改成零副作用保證。
+- GUI／簽章身分SKIP、受控插樁、kernel pending、來源provenance邊界均保留。後續spec歸檔與PR不改產品runtime。

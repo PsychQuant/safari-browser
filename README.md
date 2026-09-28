@@ -115,7 +115,12 @@ is confirmed. Unconfirmed cleanup prevents additional workers from starting.
 Calls near the OS argument/environment size limit, or whose private encoding
 exceeds the transport cap, select supervised one-shot execution before dispatch.
 They preserve kernel admission and the same invocation deadline; this is not a
-retry of a failure. The same one-shot owner is retained across calls: a cleanup
+retry of a failure. Cancellation can race command startup during the bounded
+grace period; it does not guarantee that an admitted command never starts.
+A persistent timeout may retain `exit_code: null` if no correlated completion
+arrives. Isolated mode reports the actual signal status when its record is
+available, otherwise null. Both outcomes remain incomplete errors and must not
+be replayed automatically. The same one-shot owner is retained across calls: a cleanup
 failure blocks both another one-shot and a new persistent pair. Userspace cleanup
 returns within its configured budget while retaining an unconfirmed reservation;
 lost ownership stops further signaling and requires restarting the server.
