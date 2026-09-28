@@ -21,6 +21,7 @@ actor MCPSession {
     private var legacyReady = false
     private var stopped = false
     private var outputFailure: String?
+    private var runnerShutdown: Task<String?, Never>?
     private struct Active {
         let id: JSONValue
         let token: UUID
@@ -161,6 +162,10 @@ actor MCPSession {
         let pending = active?.task
         await pending?.value
         active = nil
+        if runnerShutdown == nil {
+            runnerShutdown = Task { [runner] in await runner.shutdown() }
+        }
+        if let failure = await runnerShutdown?.value { outputFailure = outputFailure ?? failure }
     }
     func terminalFailure() -> String? { outputFailure }
 

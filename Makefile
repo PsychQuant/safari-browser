@@ -328,7 +328,8 @@ test-data-interruption:
 # Metadata-generated MCP facade; uses only help and non-GUI validation paths.
 .PHONY: test-mcp
 test-mcp: build-debug
-	python3 Tests/mcp-stdio.py
+	SAFARI_BROWSER_TEST_WORKER_MODE=persistent python3 Tests/mcp-stdio.py
+	SAFARI_BROWSER_TEST_WORKER_MODE=isolated python3 Tests/mcp-stdio.py
 
 .PHONY: test-background-dialog-harness test-background-dialog
 test-background-dialog-harness:

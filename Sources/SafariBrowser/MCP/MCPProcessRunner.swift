@@ -12,6 +12,11 @@ struct MCPCommandResult: Sendable {
 
 protocol MCPCommandRunning: Sendable {
     func run(arguments: [String], input: Data, expectedImage: String) async -> MCPCommandResult
+    func shutdown() async -> String?
+}
+
+extension MCPCommandRunning {
+    func shutdown() async -> String? { nil }
 }
 
 struct MCPProcessRunner: MCPCommandRunning {

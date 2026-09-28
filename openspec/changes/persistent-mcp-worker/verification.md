@@ -1,6 +1,6 @@
 # 元件實作證據（2026-09-28）
 
-目前完成 tasks 1.1、1.2、1.3、2.1、2.2、2.3、2.4（7/11）；其餘未完成。這份紀錄不是完整 #172 驗收，也不表示 public MCP 已改用常駐 worker。
+目前完成 tasks 1.1、1.2、1.3、2.1、2.2、2.3、2.4、2.5、3.1（9/11）；其餘未完成。這份紀錄不是完整 #172 驗收，目前開發分支的 public MCP 已預設 persistent；仍待同 build 效能驗收與最終獨立審查。
 
 ## 私有 wire codec（1.2）
 
@@ -80,3 +80,16 @@
 - 中斷前 full suite 沒有完成，原 handle 消失且無測試程序後才重新執行；不把中斷紀錄當 PASS。完整結果另以恢復後的 exit code 為準。
 
 - 恢復後 `make test-all` exit0：1,546 XCTest／38 Swift Testing／66 smoke；簽章 49 PASS／2 身分限制 SKIP，GUI harness SKIP。
+
+
+## 公開 MCP 整合（2.5）
+
+- `mcp` 預設 persistent；明示 isolated 保留原 runner。Idle timeout 預設 30 秒、有限且 0.001...86400。Mode／idle parser 的初始 stub RED 為 3 tests／10 failures，包含 session 尚未呼叫 runner shutdown 的缺口。
+- `MCPCommandRunning.shutdown` 有預設空實作；session 先取消／等待 active，再以同一 cached shutdown task 清理 runner，涵蓋 idle 與 concurrent/repeated shutdown。清理失敗可經 terminalFailure 送到 CLI error path。
+- 原 atomic executable test 在新 host-side guard 上 RED：failure 欄位有指引但 stderr 空白。已補原 CLI diagnostic 與 exit64，保留 stderr restart／not-executed 指引；此呼叫仍未送出 private request。
+- `make test-mcp` 兩模式皆執行。新增無 mode flag 的真實預設 PID reuse、明示 isolated 的 fresh PID、actual idle exit/new PID/EOF cleanup。Nested test 在 persistent 模式檢查 supervisor／worker／nested CLI 每層 parent 與 supervisor PGID，backpressure case 等到 actual worker 存在。
+- 測試 cleanup 移除依 ps 結果盲目補送 PID kill：普通子程序交由持有 reservation 的 host 清理；explicit daemon 使用自有唯一 instance 的 stop RPC，失敗保留 fixture 目錄。
+- Focused 26 tests PASS；兩模式各 12 項 end-to-end PASS。4 個公開整合變異均被攔截並還原：default mode、idle bounds、shutdown wiring、cleanup failure surfacing。最後一項初始變異無法編譯，不計為行為證據；改成合法的忽略 failure 變異後，確實得到 assertion RED。
+- README／CLAUDE／CHANGELOG 已同步模式、生命週期、版本失效與 no-replay 語意；尚未宣稱固定加速倍數。
+
+- 還原後 `make test-all` exit0：1,549 XCTest／38 Swift Testing／66 smoke，persistent 與 isolated 各 12 個 MCP end-to-end；簽章 49 PASS／2 SKIP，GUI harness SKIP。Task 3.1 的回歸與關鍵變異條件已完成；3.2／3.3 仍未完成。

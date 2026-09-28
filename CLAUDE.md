@@ -41,6 +41,16 @@ The script is idempotent — re-running is a no-op once specs are clean. Real co
 
 See `#41` for the bloat incident that motivated this.
 
+## MCP worker lifecycle
+
+`mcp` 預設 `--worker-mode persistent`；`--worker-mode isolated` 保留每次新程序的明示路徑。`--worker-idle-timeout` 預設 30 秒，有限值 0.001...86400。CLI business logic 由 `CLIExecution` 共用；persistent 每筆重新 parse，建立新的 gate／trace，`MCPRequestStdio` 封閉並 join 全部輸出後才宣告 complete。
+
+`MCPPersistentRunner` 的唯一 I/O owner 持有 supervisor reservation 與 FD。取消只提交 intent；任何未知／部分結果都不得重播。只有 locally spawned 且尚未 reap 的 supervisor PID 可用來 signal group，不能用 reply 中的 worker PID。Pending cleanup 保留 owner 並拒絕新 pair；lost ownership 永久停止 signal。`waitid` 的 stopped event 不是 exit；group 尚有 live member 時繼續清理，最後 signal 必須先於 reap。
+
+Supervisor 以唯一 host writer 的 lifetime pipe EOF 處理 host 死亡；actual worker 即使 SIGSTOP 也不需配合。Explicit daemon start 的 service 仍可 setsid 脫離。Warm executable probe 每筆重讀原 launch path，不使用 mtime cache；UUID 是 build consistency，不是 code-signing 認證。近 ARG_MAX 邊界只允許在任何 private request byte 前選擇原 runner。
+
+`MCPSession.shutdown` 必須包含 idle runner cleanup，且清理未確認需由 terminalFailure 回報。`make test-mcp` 兩模式都跑；nested-process 測試在 persistent 模式須檢查 host → supervisor → worker → nested CLI，PGID 屬於 supervisor。不得對僅由 ps／reply 找到、沒有 reservation 的 PID 盲目補送 kill。
+
 ## Plugin
 
 Claude Code plugin 位於另一個 repo：

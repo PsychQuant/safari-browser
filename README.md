@@ -72,7 +72,12 @@ reports capabilities and versions. Legacy clients send `initialize`, then
 `nextCursor`; pass it as the next request's `cursor`. Only the tools capability
 is advertised. [MCP versioning](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
 
-Each call uses an isolated worker that parses and runs the existing CLI command.
+By default, `--worker-mode persistent` lazily starts one supervisor and one
+reusable CLI worker. Each call parses a fresh command and receives separate
+stdin/stdout/stderr, trace and dialog-probe state. Healthy sequential calls reuse
+the actual worker process. `--worker-mode isolated` explicitly selects a fresh
+worker for every call. Idle persistent workers exit after 30 seconds;
+`--worker-idle-timeout` accepts a finite value from 0.001 to 86400 seconds.
 Within MCP, command subprocesses use POSIX spawn to inherit that worker’s process
 group from creation. Ordinary CLI subprocesses keep the existing Foundation
 launcher. This prevents nested `exec` and external commands from escaping MCP
@@ -93,23 +98,30 @@ written; reaching that queue limit closes the transport. Input processing and
 EOF cleanup do not wait for the client to drain stdout. Limits are 2 MiB per
 captured output stream, 4 MiB for stdin and 8 MiB per RPC frame. Oversized or incomplete command capture is a tool error, never a successful
 silent truncation. Closing stdin means shutting down the transport: EOF cancels
-the active worker and discards pending replies. Keep stdin open until you receive
+active and idle workers and discards pending replies. Keep stdin open until you receive
 the matching complete response. A missing or interrupted reply leaves the outcome
 unknown, regardless of the server process’s exit status, and must not trigger an
 automatic retry. Cancellation stops its process group and suppresses the active call’s response. Cancellation that arrives after
 a call has completed and submitted its final response has no effect, including
 when that response is still queued for delivery. Cancellation cannot undo earlier
 effects or an explicitly started persistent daemon. Calls are never retried automatically.
+After a crash, only a later distinct call can create a new worker, after cleanup
+is confirmed. Unconfirmed cleanup prevents additional workers from starting.
+Calls near the OS argument/environment size limit select the original isolated
+runner before dispatch, preserving kernel admission rather than retrying a failure.
 
 Restart the server after updating its executable: workers check the loaded
-Mach-O build UUID before running a command, including nested CLI calls. This
+Mach-O build UUID before running a command, including nested CLI calls. The host
+and a warm persistent worker also inspect the executable at the launch path
+before dispatch. A missing, malformed or changed image invalidates the runner
+until the server is restarted. This
 check is build consistency, not additional code-signing trust. MCP does not grant
 Accessibility, Automation, Screen Recording or Full Disk Access; the existing
 installation and permission requirements still apply. Tool metadata does not
 establish user authorization for a browser action.
 
-`make test-mcp` checks real stdio, every public help route and representative CLI
-parity without operating Safari UI or querying personal databases. It does not
+`make test-mcp` checks both persistent and isolated modes, real stdio, every public
+help route and representative CLI parity without operating Safari UI or querying personal databases. It does not
 claim live GUI side-effect coverage for all tools.
 
 ## Install

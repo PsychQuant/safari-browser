@@ -238,6 +238,9 @@ final class MCPPersistentRunner: MCPCommandRunning, @unchecked Sendable {
                     }
                 } catch {
                     invalidatedImage = true
+                    let diagnostic = CLIExecution.diagnostic(for: MCPWorkerContext.imageChangedError)
+                    invocation.result.exitCode = diagnostic.exitCode
+                    try append(diagnostic.bytes, stream: .stderr, invocation: invocation)
                     throw Failure.message("MCP executable changed; restart the MCP server before calling tools. The command was not executed.")
                 }
                 try check(request, deadline: deadline, sent: 0)

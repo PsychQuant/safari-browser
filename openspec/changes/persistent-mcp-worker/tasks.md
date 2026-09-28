@@ -10,10 +10,10 @@
 - [x] 2.2 實作「CLI request scope 與 stdio 封閉」及 Request state and streams are isolated before reuse：每筆 stdin feeder、stdout/stderr relay、flush/seal/join、fresh probe gate/trace，抽出 CLI 不退出程序的共用執行邊界；保留 help/error bytes，補輸入／輸出／late writer／AX busy retirement 的 RED／GREEN，已知輔助 task 要在可重用之前真正結束。
 - [x] 2.3 串接 hidden __mcp-supervise／__mcp-worker 與協定／capture，履行 Persistent workers execute fresh command instances：健康 command 在同 PID 執行多筆，hidden/MCP recursion 拒絕，未知 descendants 或未完成 scope 不重用；actual binary 的重複 wait/help/exec、token、stream、probe budget 與故障 fixtures 通過。
 - [x] 2.4 實作「常駐 pair 與單一接納」及 Retirement and recovery never replay uncertain work：MCPPersistentRunner 的 generation、lazy start、idle、crash recovery、cancel/deadline/cap、保留 PID 到最後 signal；真實 marker、partial/wrong-id frame、idle/call race、idle EOF 前置重建、輸出上限、CLD_STOPPED 不誤判退出、late group member 繼續清理與 pending／lost ownership 拒絕新 pair 的測試通過。
-- [ ] 2.5 整合 MCPCommand／MCPSession 的 default persistent、explicit isolated、idle timeout、runner shutdown 與 pre-send large-argv route；完成「Executable 身分與原 argv 邊界」及 Isolated command worker、Stdio protocol 的修改契約，暖 worker 的實際 replacement／NUL/input limits／EOF idle cleanup／schema/help parity 測試通過。
+- [x] 2.5 整合 MCPCommand／MCPSession 的 default persistent、explicit isolated、idle timeout、runner shutdown 與 pre-send large-argv route；完成「Executable 身分與原 argv 邊界」及 Isolated command worker、Stdio protocol 的修改契約，暖 worker 的實際 replacement／NUL/input limits／EOF idle cleanup／schema/help parity 測試通過。
 
 ## 3. 回歸、量測與交付
 
-- [ ] 3.1 完成 #110 與新 lifecycle 的完整回歸：actual MCP 的取消、busy/ping、EOF、unread stdout、nested children、explicit daemon detach；以 ownership、frame/correlation、no-replay、idle generation、quiescence 的關鍵變異證明測試能辨識失效，還原後 make test-all 通過。
+- [x] 3.1 完成 #110 與新 lifecycle 的完整回歸：actual MCP 的取消、busy/ping、EOF、unread stdout、nested children、explicit daemon detach；以 ownership、frame/correlation、no-replay、idle generation、quiescence 的關鍵變異證明測試能辨識失效，還原後 make test-all 通過。
 - [ ] 3.2 完成 Persistent worker benefits and regressions are measured：更新 benchmark 的 mode 與 scenario 命名，在同 build／同固定 fixture 比較 cold/warm p50/p95、成功率、PID 重用與 trace overhead；warm p50/p95 未改善就繼續調整，文件保留原始範圍及 cold 成本，不以診斷迴圈代替交付。
 - [ ] 3.3 更新 README／CLAUDE.md／CHANGELOG.md 與診斷／task 狀態，六方確認、spectra analyze／validate、規格同步歸檔；各提交引用 #172，PR 附實際證據與限制，verified 後 issue 保留 OPEN。
