@@ -46,7 +46,7 @@ observation 的等待刻意不自動隨 Task cancellation 撤銷：正常 stop �
 
 R1 真實 ServeLoop 測試證實 eager close 會使正常 handoff 寫入必然遺失。DaemonLogFile 為 Run 專屬的 reference owner；writer closure 持有它，Run teardown 只清除 underlying writer 與自己的 owner reference，不等待 writer，也不提前關閉仍由 request／diagnostic snapshots 使用的 sink。最後 reference 退休時關閉描述元。
 
-以 O_APPEND／O_CLOEXEC 開啟（新檔 0600）；不能只移除舊 close 並保留 seekToEnd，否則舊／新 Run 的獨立 offset 會覆寫新紀錄。同一 owner 串行寫入並處理短寫／EINTR；既有 I/O failure 仍 best-effort。舊 descriptor 繼續指向原 inode，不對晚到事件重新開啟目前路徑。LifecycleEnvironment 的預設空 log-write／sink-close 觀測只供受控 fixture，不能取得新的停止權限。
+以 O_APPEND／O_CLOEXEC 開啟（sink 自行建立的新檔 0600；既有檔案保留權限，包含 CLI spawner 先以 0644 建立的 stdout/stderr log）；不能只移除舊 close 並保留 seekToEnd，否則舊／新 Run 的獨立 offset 會覆寫新紀錄。同一 owner 串行寫入並處理短寫／EINTR；既有 I/O failure 仍 best-effort。舊 descriptor 繼續指向原 inode，不對晚到事件重新開啟目前路徑。LifecycleEnvironment 的預設空 log-write／sink-close 觀測只供受控 fixture，不能取得新的停止權限。
 
 ## Implementation Contract
 

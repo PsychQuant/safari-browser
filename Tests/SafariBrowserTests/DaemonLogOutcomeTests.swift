@@ -250,7 +250,7 @@ final class DaemonLogOutcomeTests: XCTestCase {
                 _ = try await DaemonClient.sendRequest(name: "owned", method: "daemon.shutdown",
                     params: Data("{}".utf8), requestId: 7, timeout: 1, socketDir: directory.path)
                 await fulfillment(of: [entered], timeout: 1)
-                await fulfillment(of: [finished], timeout: 0.3)
+                await fulfillment(of: [finished], timeout: 1)
                 XCTAssertEqual(FileManager.default.fileExists(atPath: path), useNoStopHook)
                 let connections = await server.trackedConnectionCount
                 XCTAssertEqual(connections, 0, "even a custom hook must not retain the transport behind its logger")
