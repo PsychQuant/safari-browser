@@ -7,6 +7,7 @@ import queue
 import shutil
 import uuid
 import struct
+import sys
 import tempfile
 import subprocess
 import threading
@@ -196,6 +197,20 @@ class MCPStdioTests(unittest.TestCase):
             finally:
                 client.close()
 
+    def test_launcher_ignoring_sigchld_still_allows_repeated_calls(self):
+        with tempfile.TemporaryDirectory(prefix='mcp-sigchld-', dir='/tmp') as directory:
+            launcher = Path(directory, 'launcher')
+            launcher.write_text('#!' + sys.executable + '\nimport os,signal,sys\nsignal.signal(signal.SIGCHLD,signal.SIG_IGN)\nos.execv(' + repr(BIN) + ', [' + repr(BIN) + '] + sys.argv[1:])\n')
+            launcher.chmod(0o700)
+            client = Client(binary=str(launcher))
+            try:
+                for _ in range(2):
+                    result = client.call('safari.wait', {'positionals': {'milliseconds': '0'}})['result']
+                    self.assertFalse(result['isError'], result)
+                    self.assertEqual(result['structuredContent']['exit_code'], 0)
+            finally:
+                client.close()
+
     def test_backpressured_output_does_not_block_eof_or_cancellation(self):
         for cancel in (False, True):
             with self.subTest(cancel=cancel):
@@ -213,16 +228,30 @@ class MCPStdioTests(unittest.TestCase):
                     # Wait until the real worker exists, so cancellation cannot
                     # accidentally pass by cancelling a call before it starts.
                     deadline = time.monotonic() + 1
+                    child = None
+                    actual = None
+                    info = None
                     while time.monotonic() < deadline:
                         child = subprocess.run(['/usr/bin/pgrep', '-P', str(process.pid)], capture_output=True)
                         if child.returncode == 0:
                             leader = int(child.stdout.split()[0])
-                            actual = subprocess.run(['/usr/bin/pgrep', '-P', str(leader)], capture_output=True) if (WORKER_MODE or 'persistent') == 'persistent' else child
+                            actual = subprocess.run(['/usr/bin/pgrep', '-P', str(leader)], capture_output=True)
                             if actual.returncode == 0:
-                                break
+                                worker = int(actual.stdout.split()[0])
+                                info = self.process_info(worker)
+                                entry = '__mcp-worker' if (WORKER_MODE or 'persistent') == 'persistent' else '__mcp-exec'
+                                if info and info[1] == leader and info[2] == leader and entry in info[4]:
+                                    break
+
                         time.sleep(0.01)
+                    self.assertIsNotNone(child, 'group leader did not start')
                     self.assertEqual(child.returncode, 0, 'group leader did not start')
+                    self.assertIsNotNone(actual, 'actual worker did not start')
                     self.assertEqual(actual.returncode, 0, 'actual worker did not start')
+                    self.assertIsNotNone(info, 'actual worker identity was not observed')
+                    self.assertEqual(info[1], leader)
+                    self.assertEqual(info[2], leader)
+                    self.assertIn(entry, info[4])
                     send('x' * 262144, 'ping', {})
                     if cancel:
                         send(None, 'notifications/cancelled', {'requestId': 'slow'}, notification=True)

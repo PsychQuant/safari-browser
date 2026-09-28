@@ -113,6 +113,31 @@ final class MCPProcessRunnerTests: XCTestCase, @unchecked Sendable {
                           "An inherited budget may shorten, but never extend, the configured timeout")
     }
 
+    func testTimeoutPreservesActualWorkerTermGraceAndSignalStatus() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("grace")
+        let script = """
+        import os,signal,sys,time,pathlib
+        def finish(sig,frame):
+            pathlib.Path(sys.argv[1]).write_text('received')
+            time.sleep(.1)
+            pathlib.Path(sys.argv[1]).write_text('completed')
+            signal.signal(signal.SIGTERM,signal.SIG_DFL)
+            os.kill(os.getpid(),signal.SIGTERM)
+        signal.signal(signal.SIGTERM,finish)
+        print('ready',flush=True)
+        time.sleep(5)
+        """
+        let result = await fixture(timeout: 0.4).run(arguments: [script, marker.path], input: Data(), expectedImage: "fixture")
+        XCTAssertEqual(result.stdout, Data("ready\n".utf8))
+        XCTAssertTrue(result.failure?.contains("timed out") == true)
+        XCTAssertEqual(try String(contentsOf: marker, encoding: .utf8), "completed",
+                       "The real CLI must retain its TERM grace even though a supervisor leads its group")
+        XCTAssertEqual(result.exitCode, 143, "Report the actual CLI signal status, not a missing helper record")
+    }
+
     func testSeparateStreamsStdinArgumentsAndContext() async {
         let script = "import os,sys; sys.stdout.buffer.write(sys.stdin.buffer.read()); print(repr(sys.argv[1:]),file=sys.stderr); print(os.environ['SAFARI_BROWSER_MCP_DIRECT']+os.environ['SAFARI_BROWSER_MCP_IMAGE_ID'],file=sys.stderr); sys.exit(7)"
         let result = await fixture().run(arguments: [script, "--literal", "a b'\"$()"], input: Data([0, 10, 255]), expectedImage: "IMAGE")

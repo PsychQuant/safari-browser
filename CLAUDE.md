@@ -51,6 +51,8 @@ Supervisor 以唯一 host writer 的 lifetime pipe EOF 處理 host 死亡；actu
 
 `MCPProcessRunner` 也有可持續存活的serial owner，重用`MCPChildReservation`，所有reap都是非阻塞。Pending保留原reservation；`MCPPersistentRunner`長期持有同一個one-shot runner，選任一engine前先確認舊owner已退休，不能每次重新建runner來掩蓋未完成清理。Shutdown會取消active call，清理截止後回報failure；lost ownership永久停止訊號。Bootstrap透過私有管線取得parent原始environment，避免Foundation新增欄位縮小ARG_MAX接納邊界。
 
+兩種supervisor在spawn actual CLI前忽略TERM，讓lease monitor及CLI grace仍存活；`MCPWorkerSpawn`必須為actual CLI恢復TERM預設。`SAFARI_BROWSER_MCP_DIRECT`是私有context，值2保留給one-shot supervisor；沒有inherited channels的一般CLI會拒絕，不能當使用者設定。背景pending cleanup沒有總放棄期限，每次嘗試仍有界；KILL後的核心停頓不保證在host死亡後仍有userspace清理者。
+
 `MCPSession.shutdown` 必須包含 idle runner cleanup，且清理未確認需由 terminalFailure 回報。`make test-mcp` 兩模式都跑；nested-process 測試在兩種模式都須檢查 host → supervisor → worker → nested CLI，PGID 屬於 supervisor。不得對僅由 ps／reply 找到、沒有 reservation 的 PID 盲目補送 kill。
 
 ## Plugin

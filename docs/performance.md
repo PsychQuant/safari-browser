@@ -250,7 +250,9 @@ its isolated-mode startup cost; the final runtime requires a new comparison.
 
 Runtime commit `a12ba03b053c9c9e291c1482dc90bf4923332e6b` adds lifetime
 supervision and retained cleanup ownership to the one-shot path as well.
-This changes the isolated baseline; the R2 numbers above describe their own
+Each isolated call now pays for a fresh supervisor as well as a fresh CLI;
+its total cost also includes MCP framing and transport. This changes the isolated
+baseline; the R2 numbers above describe their own
 older binaries. The new release binary SHA-256 is
 `7797668ff99fe7113fdb86d19f67de325fe591e28770dabe9736f357206f40d8`.
 The same fixed `wait 0` comparison uses 60 samples, three warmups, three-second

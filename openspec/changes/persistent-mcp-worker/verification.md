@@ -171,3 +171,17 @@ R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Ga
 - 測試觀察修正後，最終完整`make test-all` exit0：1569 XCTest／38 Swift Testing／66 smoke、兩模式各14 MCP；簽章49 PASS／2身分SKIP，GUI harness仍SKIP。產品runtime仍是`7c585c3`；`f0432d6`只改測試與驗證紀錄。
 - 最終release SHA256 `6d327f2b0ad928b69c024e259ea19a2bd120ce774507862a5093c6b2d7eee997`：60樣本ABBA、3 warmups／3秒deadline，off warm isolated24.475/27.471ms vs persistent1.129/1.765；on23.973/25.481 vs1.103/1.455；全部60/60成功，trace-on仍60 vs1 worker PIDs／各60 request IDs。所有scenario的wall／status／identity陣列已保存；舊a12cohort保留，不把跨cohort差異全歸因於deadline修正。
 - 最終三次呼叫後resident snapshot：isolated0 child／18352KiB RSS，persistent2 children／38144KiB RSS；仍為包含共享頁的單次加總，非unique memory。
+
+## R3 FAIL 與 R4 修正
+
+R3六份報告已全文讀取，固定HEAD49ca317；master：https://github.com/PsychQuant/safari-browser/issues/172#issuecomment-5873322439 ，#209 pointer：https://github.com/PsychQuant/safari-browser/issues/209#issuecomment-5873323127 。TERM會先終止正式supervisor，grace／status與cleanup-grace host-death要求未完成，未打verified tag。
+
+- 未插樁exact-source runner＋正式helper：0.3秒timeout、80ms收尾fixture只到TERM received，exitCode null，約0.318秒返回。正式100ms收尾回歸取得兩項RED（未完成／非143）。
+- 真正MCP三路徑（persistent普通、isolated普通、persistent大argv）以自有fault injection在送TERM後暫停host，再只終止其Popen host，均重現sup先成zombie、worker持續存活到wait5000自然結束。Dyld插樁setup曾因缺SDK header／image0 UUID拒絕而失敗；那些不算產品RED。有效fixture只對齊自有library UUID並簽署，產品binary不變。
+- 正式兩個supervisor現於spawn worker前忽略TERM；實際worker的spawn仍重設TERM預設。31項相關測試GREEN，100ms收尾與143恢復；公開三路徑GREEN，進一步含真正普通後代且在TERM後仍活著的前置條件。
+- 新`Tests/mcp-termination-test.py`及自有C fixture納入test-all；舊R3release跑同一正式測試得到3個subcase RED。
+- 背壓測試已改為兩模式都驗host→supervisor→actual CLI的parent／PGID／entry；SIGCHLD忽略launcher在兩模式2次呼叫均成功，該靜態假設未重現，未新增訊號重設。
+- 新增5項bootstrap程序測試：實際大環境pump、8MiB cap在EOF/deadline前拒絕、讀環境期間lease EOF、錯誤／截斷metadata不得exec、missing/truncated/oversized/bad-status不得當成功。8項R4有效變異已攔截並還原，MCP family168項通過。Actual CLI TERM default的追加變異另驗。
+- 尚待完整回歸、更新release量測與R4六方審查；不可沿用R3測試PASS或效能數值作新runtime完成證據。
+
+- 第9項R4變異移除actual worker的TERM預設恢復，既有self-TERM143斷言會失敗；還原後runner family16項通過。這證明supervisor忽略TERM不會把忽略狀態洩漏到CLI。SIGCHLD launcher測試是既有行為characterization PASS，不計為RED。

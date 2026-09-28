@@ -278,6 +278,9 @@ enum MCPWorkerSupervisor {
         let flags = fcntl(4, F_GETFL)
         guard flags >= 0, fcntl(4, F_SETFL, flags | O_NONBLOCK) == 0,
               fcntl(5, F_SETNOSIGPIPE, 1) == 0 else { throw MCPWorkerLaunchError.descriptors }
+        // Group TERM is for the CLI, not its lifetime monitor. Stay alive
+        // through its grace period; child() resets TERM for the actual worker.
+        _ = signal(SIGTERM, SIG_IGN)
         let ownGroup = getpid()
         let monitor = DispatchSource.makeReadSource(fileDescriptor: 4, queue: DispatchQueue(label: "mcp.supervisor.lease"))
         monitor.setEventHandler {

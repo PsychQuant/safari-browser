@@ -38,6 +38,14 @@ runner 實測補充：waitid 的 si_pid 非零不是退出證據；只接受 CLD
 
 閒置 worker 的控制通道若在下一筆任何 byte 送出前已 EOF，可清理舊 generation 後為該新請求建立一組；送出任何 byte 後的 crash／partial／wrong-id 則只回報不完整，不重播。不同 image、缺檔或解析失敗會使此 runner 持續要求 restart，即使稍後路徑恢復。Termination record 是 worker process 的診斷，不得覆蓋 valid complete 的 business exit code。
 
+### TERM grace 期間維持 supervisor 存活
+
+R3審查重現正式supervisor採預設TERM處置，會先於actual CLI退出，讓grace縮短且host死亡後不再有lease monitor。兩種正式supervisor在spawn actual CLI前忽略SIGTERM；actual CLI的posix_spawn仍明確將TERM恢復預設。CLI在grace內完成時，supervisor記錄其真實status再終止group；忽略TERM的CLI仍由host在150ms後KILL。Host若在TERM後死亡，仍存活的supervisor會從lease EOF清理group。
+
+驗收使用自有fault-injection library：只讓actual CLI及一個普通後代忽略TERM，host在轉送真group TERM後自停；driver只終止其Popen host。UUID只對齊該測試library以配合dyld image0的既有build一致性guard，不修改產品binary／安裝／TCC。正常與預選路徑都須觀察實際worker及後代終止，RED時則只等待無副作用的5秒fixture自然結束。另以未插樁的正式helper搭配100ms收尾CLI驗143status。
+
+SIGCHLD=SIG_IGN啟動器的疑慮在本機兩模式均未重現：兩次工具呼叫皆成功，故僅保留回歸，不更動host訊號設定。執行中任意外部reaper仍屬ownership違反，不能為相容性放寬lost-owner終止態。若已進KILL且核心未完成退休，host再死亡不保證另有userspace清理者；這不是TERM grace窗口的例外。Deinit後保留owner的週期性清理沒有總放棄期限，但每次嘗試及caller等待仍有界。
+
 ### 私有有界協定
 
 MCPWorkerWire.swift 使用 JSON-lines；stdin 以 canonical base64 放在 request，CLI 輸出以帶 id 的 output chunks 回傳，絕不拿原始 stdout 當控制 frame。parent request 最大 8 MiB；server frame 最大 64 KiB；stdin 最大 4 MiB；單 output chunk 最大 8192 bytes。每筆用 parent 產生的 UUID，輸出及完成訊息須完全對應，未知／過期 id 不得套到下一筆。

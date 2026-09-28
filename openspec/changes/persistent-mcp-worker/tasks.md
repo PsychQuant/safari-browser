@@ -26,3 +26,11 @@
 - [x] 4.2 實作等 argv／等 environment bytes 的 one-shot supervisor bootstrap、固定 parent metadata、獨立 lease／status 與業務退出碼傳遞；以原 kernel 接納邊界、早期啟動失敗及 host-death RED轉GREEN證明，不縮小公開輸入也不重播。
 - [x] 4.3 履行「一次性 owner 與狀態回傳」：將 explicit isolated／persistent預選／custom fixtures 收斂到可保留的 serial reservation owner，完成真退出判讀、late member 重複清理、bounded pending／lost ownership、取消及shutdown；固定小環境直接驗 private expansion 分支，補 image failure 欄位差異的說明與斷言。
 - [ ] 4.4 依「驗收及依賴順序」，完成兩題的必要行為變異、原kernel與雙模式#110回歸，重新建置最終release做同build交錯cold／warm比較，再固定提交跑六方審查；清理或接納仍有缺口不得改成例外宣告PASS。
+
+## 5. R3 審查的 TERM 與 bootstrap 驗收
+
+4.4的最終審查及3.3交付須包含本節，不以先前PASS計數替代。
+
+- [x] 5.1 履行「TERM grace 期間維持 supervisor 存活」：正式persistent／one-shot supervisor在group TERM階段保持lease監聽，actual CLI仍接收原TERM處置；以100ms收尾與143退出碼RED／GREEN、真正公開MCP三條路徑的TERM後host死亡及普通後代清理證明，並將fixture納入test-all。
+- [x] 5.2 兩模式的背壓驗收都等待真正CLI的parent／PGID／入口；新增大環境production pump、metadata錯誤與上限、讀取期間lease EOF、缺漏／截斷／超長status的程序測試與有效變異。
+- [x] 5.3 核對繼承SIGCHLD忽略的靜態疑慮；目前兩模式均可連續成功呼叫，保留實際launcher回歸而不加入未重現的訊號重設；同步DIRECT私有值及pending背景清理限制。

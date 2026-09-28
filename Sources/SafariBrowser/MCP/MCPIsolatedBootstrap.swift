@@ -59,6 +59,9 @@ enum MCPIsolatedBootstrap {
         let leaseFlags = fcntl(4, F_GETFL)
         guard leaseFlags >= 0, fcntl(4, F_SETFL, leaseFlags | O_NONBLOCK) == 0,
               fcntl(5, F_SETNOSIGPIPE, 1) == 0 else { throw MCPWorkerLaunchError.descriptors }
+        // Preserve the independent lease monitor and the CLI's TERM grace.
+        // MCPWorkerSpawn restores the actual CLI's default signal disposition.
+        _ = signal(SIGTERM, SIG_IGN)
         let ownGroup = getpid()
         let monitor = DispatchSource.makeReadSource(fileDescriptor: 4, queue: DispatchQueue(label: "mcp.isolated.lease"))
         monitor.setEventHandler {

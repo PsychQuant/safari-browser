@@ -45,6 +45,15 @@ The host SHALL launch its supervisor as a new process-group leader and the actua
 - **THEN** the supervisor SHALL observe EOF and terminate its group
 - **AND** verification SHALL observe actual worker termination, not infer it merely from controller exit
 
+#### Scenario: Host dies after retirement TERM
+- **WHEN** the host sends group TERM and then dies before escalating to KILL while an actual worker or ordinary descendant has not terminated
+- **THEN** the supervisor SHALL still observe its lifetime lease and terminate the owned group independently of that worker
+- **AND** the supervisor's TERM disposition SHALL NOT be inherited as ignored TERM by the actual CLI
+
+#### Scenario: Actual CLI completes during TERM grace
+- **WHEN** a one-shot CLI handles TERM and completes its cleanup within the 150 ms grace period
+- **THEN** the supervisor SHALL remain alive long enough to record the actual CLI status rather than shortening grace by terminating itself
+
 #### Scenario: An explicitly started daemon detaches
 - **WHEN** a public daemon start command deliberately creates its separate service group
 - **THEN** request cleanup SHALL leave that explicitly created daemon unaffected while terminating ordinary owned descendants
