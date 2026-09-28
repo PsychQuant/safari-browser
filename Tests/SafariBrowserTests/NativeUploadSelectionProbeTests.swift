@@ -20,6 +20,8 @@ final class NativeUploadSelectionProbeTests: XCTestCase {
         var reads: [(Int, String)] = []
         var canonical: [URL: String] = [:]
         var useRealFilesystem = false
+        var failAttribute: String?
+        var onRead: ((Int, String) -> Void)?
         func foreground() throws -> Bool { active }
         func windows() throws -> [Int] { roots }
         func windowID(_ node: Int) throws -> Int { nodes[node]!.id }
@@ -29,7 +31,10 @@ final class NativeUploadSelectionProbeTests: XCTestCase {
         func selected(_ node: Int) throws -> Bool? { nodes[node]!.selected }
         func url(_ node: Int) throws -> URL? { nodes[node]!.url }
         func elements(_ node: Int, _ attribute: String, limit: Int) throws -> [Int] {
-            reads.append((node, attribute)); return nodes[node]!.edges[attribute] ?? []
+            reads.append((node, attribute))
+            if attribute == failAttribute { throw CocoaError(.fileReadUnknown) }
+            onRead?(node, attribute)
+            return nodes[node]!.edges[attribute] ?? []
         }
         func canonicalRegularFile(_ url: URL) throws -> String {
             if useRealFilesystem { return try NativeUploadSelectionProbe.canonicalRegularFile(url) }
@@ -59,6 +64,47 @@ final class NativeUploadSelectionProbeTests: XCTestCase {
     func testMeasuredViewsSelectExactHiddenUnicodeFile() {
         for mode in ["ColumnView", "ListView", "IconView"] { XCTAssertEqual(verdict(fixture(mode)), "MATCH", mode) }
     }
+    func testReadableEmptySelectionIsPendingInMeasuredViews() {
+        for mode in ["ColumnView", "ListView", "IconView"] {
+            let p = fixture(mode)
+            let node = mode == "ColumnView" ? 7 : 3
+            let attribute = mode == "ListView" ? "AXSelectedRows" : "AXSelectedChildren"
+            p.nodes[node]!.edges[attribute] = []
+            XCTAssertEqual(verdict(p), "PENDING", mode)
+        }
+    }
+
+    func testUnavailableEvidenceCannotBecomePending() {
+        for mode in ["ColumnView", "ListView", "IconView"] {
+            let missingLeaf = fixture(mode)
+            missingLeaf.nodes[5]!.selected = false
+            XCTAssertEqual(verdict(missingLeaf), "UNAVAILABLE")
+            let wrongFile = fixture(mode)
+            wrongFile.nodes[5]!.url = URL(fileURLWithPath: "/tmp/different.txt")
+            XCTAssertEqual(verdict(wrongFile), "UNAVAILABLE")
+            let unreadable = fixture(mode)
+            unreadable.failAttribute = mode == "ListView" ? "AXSelectedRows" : "AXSelectedChildren"
+            XCTAssertEqual(verdict(unreadable), "UNAVAILABLE")
+            let ambiguous = fixture(mode)
+            let node = mode == "ColumnView" ? 7 : 3
+            ambiguous.nodes[node]!.edges[mode == "ListView" ? "AXSelectedRows" : "AXSelectedChildren"] = [4, 4]
+            XCTAssertEqual(verdict(ambiguous), "UNAVAILABLE")
+            XCTAssertEqual(verdict(fixture(mode), maxNodes: 3), "UNAVAILABLE")
+        }
+        let noCollections = fixture("ColumnView")
+        noCollections.nodes[3]!.edges["AXColumns"] = []
+        XCTAssertEqual(verdict(noCollections), "UNAVAILABLE")
+    }
+
+    func testEmptySelectionStillRequiresFinalOwnerCheck() {
+        let p = fixture("ListView")
+        p.nodes[3]!.edges["AXSelectedRows"] = []
+        p.onRead = { [weak p] _, attribute in
+            if attribute == "AXSelectedRows" { p?.active = false }
+        }
+        XCTAssertEqual(verdict(p), "UNAVAILABLE")
+    }
+
     func testRejectsMissingSelectedLeafAndWrongPath() {
         let p = fixture("ListView")
         p.nodes[5]!.selected = false

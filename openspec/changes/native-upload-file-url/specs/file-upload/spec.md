@@ -141,3 +141,31 @@ Native upload SHALL retain the original URL matcher and carried profile constrai
 #### Scenario: Positional request without an original matcher
 - **WHEN** a native request has no original URL or profile constraint
 - **THEN** it SHALL retain the existing window/tab capture and subsequent owner checks without adding a rematch policy
+
+### Requirement: Native upload waits only on proven pending selection
+
+The native selection reader SHALL distinguish MATCH, PENDING and UNAVAILABLE. PENDING SHALL require a supported completely readable native file view, at least one successful bounded selected-rows or selected-children collection read, and zero entries across those collections, followed by the existing owner and deadline checks. Missing or unreadable attributes, selected groups without valid leaf evidence, different files, ambiguous selections, unsupported structure and exceeded bounds SHALL remain UNAVAILABLE and SHALL stop the transaction without confirmation. An explicitly empty readable selection SHALL NOT be treated as evidence of a selected file.
+
+After Paste, the command SHALL inspect its completion receipt or selected path immediately without an unconditional settle delay. It SHALL wait only for a proven PENDING selection or for its existing PENDING completion receipt after the chooser disappears. Each observation SHALL preserve the original ownership, clipboard and monotonic deadline guards. Each wait SHALL request at most 100 ms and at most the original remaining time. The command SHALL NOT reset the deadline or repeat Paste, menu cancellation or confirmation while waiting. The immediate MATCH path SHALL reuse its first selected-path read and SHALL retain the second read before confirmation. Observed delivery SHALL enter the existing read-only completion phase.
+
+#### Scenario: Immediate selected path or completed delivery
+- **WHEN** the first post-Paste observation returns MATCH or a valid completed receipt
+- **THEN** the command SHALL continue without a fixed settle sleep
+- **AND** completed delivery SHALL NOT authorize another confirmation
+
+#### Scenario: Empty readable selection becomes ready
+- **WHEN** a supported view has an empty readable selection, later returns MATCH, and all ownership guards remain valid
+- **THEN** the command SHALL perform bounded read-only rechecks using the original deadline and SHALL NOT repeat Paste
+
+#### Scenario: Unknown evidence is not pending
+- **WHEN** a selection read fails, exceeds a bound, encounters a selected group without a valid leaf, or observes a different or ambiguous file
+- **THEN** the command SHALL fail without further waiting or confirmation rather than converting UNAVAILABLE to PENDING
+
+#### Scenario: Deadline or ownership expires while pending
+- **WHEN** pending persists until the original deadline or the window, page, foreground or clipboard ownership changes
+- **THEN** the command SHALL stop without another file action
+- **AND** completion SHALL remain unverified
+
+#### Scenario: Selection changes before confirmation
+- **WHEN** an earlier MATCH is followed by a nonmatching second selected-path read or a failed final ownership guard
+- **THEN** the command SHALL refuse confirmation

@@ -115,17 +115,21 @@ enum NativeUploadSelectionProbe {
             let (view, viewDepth, mode) = views[0]
             var selectedPaths: [String] = []
             var selectedPending: [(P.Node, Int, Bool)] = []
-            func selectedGroup(_ node: P.Node, _ attribute: String, _ depth: Int, required: Bool) throws {
+            var selectionCollectionCount = 0
+            var sawSelectedEntry = false
+            func selectedGroup(_ node: P.Node, _ attribute: String, _ depth: Int) throws {
                 let selections = try edges(node, attribute)
-                guard selections.count <= 1, !required || selections.count == 1 else {
+                guard selections.count <= 1 else {
                     throw NativeSelectionReadError.unavailable
                 }
+                selectionCollectionCount += 1
+                sawSelectedEntry = sawSelectedEntry || !selections.isEmpty
                 selectedPending.append(contentsOf: selections.map { ($0, depth + 1, true) })
             }
             if mode == "ColumnView" {
                 selectedPending = try edges(view, "AXColumns").map { ($0, viewDepth + 1, false) }
             } else {
-                try selectedGroup(view, mode == "ListView" ? "AXSelectedRows" : "AXSelectedChildren", viewDepth, required: true)
+                try selectedGroup(view, mode == "ListView" ? "AXSelectedRows" : "AXSelectedChildren", viewDepth)
             }
             while let (node, depth, onSelectedEdge) = selectedPending.popLast() {
                 try visit(depth)
@@ -135,7 +139,7 @@ enum NativeUploadSelectionProbe {
                 }
                 if nodeRole == "AXList" {
                     guard mode == "ColumnView", !onSelectedEdge else { throw NativeSelectionReadError.unavailable }
-                    try selectedGroup(node, "AXSelectedChildren", depth, required: false)
+                    try selectedGroup(node, "AXSelectedChildren", depth)
                     continue
                 }
                 if onSelectedEdge, ["AXTextField", "AXImage"].contains(nodeRole),
@@ -151,12 +155,17 @@ enum NativeUploadSelectionProbe {
                 }
             }
             try tick()
-            guard selectedPaths == [expected], try provider.foreground(),
+            guard try provider.foreground(),
                   try provider.windowID(window) == windowID,
                   try sheets(window) == [panel],
                   try provider.string(panel, "AXIdentifier") == "open-panel" else { return "UNAVAILABLE" }
             try tick()
-            return "MATCH"
+            if selectedPaths == [expected] { return "MATCH" }
+            // Only successful, explicitly empty selection-collection reads can
+            // mean not ready. A selected row with missing leaf evidence remains
+            // unavailable, as do missing/failed attributes and unreadable views.
+            if selectionCollectionCount > 0 && !sawSelectedEntry { return "PENDING" }
+            return "UNAVAILABLE"
         } catch { return "UNAVAILABLE" }
     }
 }

@@ -32,6 +32,12 @@
 - [x] [P] 2.14 捕捉前原條件守衛：為固定 NativeUploadScript 加 bridge 條件分支，使用真正 AppleScript adapter 證明非匹配 candidate 在 activation／input 前拒絕，無 constraint 不新增查詢。
 - [x] 2.15 串接 typed constraint、request／worker／UploadCommand，補 lifecycle、schema 與 ObjC bridge 測試，確認原始條件未在 resolver 後遺失。
 
+## 2B. #171 有界就緒與等待成本
+
+- [x] 2.16 可辨識的 pending 選取：履行 Native upload waits only on proven pending selection，以 provider 行為 RED/GREEN 驗三種完整可讀空集合為 PENDING，缺失／錯檔／歧義／超界／已選但缺葉仍 UNAVAILABLE，並保留 worker context 前後 guard。
+- [x] 2.17 貼上後立即觀察與有界重查：以實際產生的 AppleScript adapter 先 RED，再移除固定100 ms；驗立即就緒零等待、PENDING 有界重查、UNAVAILABLE 立即停止、取消／owner／前景／clipboard／deadline 拒絕，且確認前第二次 selection 及公告授權保留。
+- [x] 2.18 同 fixture 的等待證據：記錄 adapter 前後觀察數、等待成本與成功率，證明立即 MATCH 不新增 AX traversal；執行相關回歸與規格驗證。原生三種檢視、特殊路徑、大檔及延遲就緒效能／成功率與3.1共用，未完成 GUI 時不得勾選3.1或宣稱原生收益。
+
 ## 3. 實際驗證與交付
 
 - [ ] 3.1 執行完整 make test-all 及自有 GUI 特殊路徑、不同起始資料夾、大檔、焦點／錯誤／逾時案例；核對實際檔名／內容、自有面板清理及剪貼簿還原，並記錄同 fixture System Events／直接 AX 查詢結果與等待差異。

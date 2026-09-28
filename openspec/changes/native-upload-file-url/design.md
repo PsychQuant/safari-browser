@@ -109,3 +109,19 @@ NativeUploadTargetConstraint 為 Codable/Sendable/Equatable 的 immutable value�
 UploadCommand 在仍持有 scoped TargetDocument 時建立 constraint，傳給 performNativeUpload 和 NativeUploadRequest 的 optional targetConstraint。Worker validation 在任何 UI 前驗解碼；`makeScript()` 只傳 `targetCheckRequired` 給固定 builder。新 @objc targetMatchesWindow:urlString:windowName: 使用 TaskLocal request，綁 windowID、deadline 與 clipboard 前後檢查並比對 constraint。腳本先取得 candidate URL／Safari window name，要求 bridge true，才將該候選視為 owner 並繼續 activate／initializer／input。後續原 URL/document/input 守衛維持；不符合時直接失敗，不 rematch／re-resolve／重送。無 constraint 不加新的 Safari 查詢，保留 positional targeting 行為。
 
 這項補強不提供穩定 tab ID；同 URL 的頁面替換仍依既有語意在 worker 初始化後綁 document/input。Profile 沿用現有 window-name parsing，不宣稱不同的原生 profile 身分來源。
+
+## #171 有界選取就緒
+
+### 可辨識的 pending 選取
+
+NativeUploadSelectionProbe 的字串結果新增 PENDING；只有支援且完整可讀的原生檢視，至少成功查詢一個 selected-rows／selected-children 集合，而且所有此類集合均為空時才回傳。必須完成原本的前景／windowID／唯一面板及 deadline 重驗。ColumnView 沒有任何可查詢選取集合、已選群組缺少可信葉節點、讀取失敗、錯檔、歧義及超界仍為 UNAVAILABLE；不將不確定性重新命名為 pending。Worker callback 的 request／clipboard／deadline 前後檢查保留，無效 context 不得回 pending。
+
+### 貼上後立即觀察與有界重查
+
+移除 NativeUploadScript 貼上後固定100 ms，使用同一腳本內的等待分支：先 verifyUploadCompletionTarget，再讀本次 receipt。OK 轉現有只讀完成；非 OK/PENDING 立即失敗。receipt PENDING 且面板仍在時，完整 verifyUploadPanel 包住原生選取讀取；MATCH 前進、PENDING 等待、其他結果立即拒絕。面板已消失但 receipt 仍 PENDING 時僅等本次完成證據，不再次開面板。每次等待為 min(0.1秒, uploadEndTime - systemUptime)，等待前後檢查原 monotonic deadline；不建立新的期限，不重送 Paste／AXCancel／確認。
+
+立即 MATCH 路徑用這次讀取取代原本確認區塊的第一次 selection 檢查，不能多加一次完整 AX traversal。原本確認前的第二次選取、頁面／視窗／前景、剪貼簿、deadline 與確認公告授權保留；任何一次失敗都不按鈕。新的等待不把 AX acknowledgement、sheet 存在、PENDING 或私有 receipt 本身當成新的原生確認授權。已觀察 OK 後只走既有完成階段，仍要面板關閉。
+
+### 同 fixture 的等待證據
+
+先用真實 selection provider 邊界的空集合／故障矩陣及真正產生的 AppleScript 控制流程 adapter 做行為 RED/GREEN。adapter 僅替換外部 UI 讀取、時鐘與等待，不替換 production 分支；記錄每次等待、觀察、guard 與確認計數，涵蓋立即 MATCH／已交付、延遲 PENDING、永遠 PENDING、UNAVAILABLE、取消／前景／owner／clipboard 變化及截止前後。基準比較同一 fixture 的等待成本與成功率，立即就緒不得付固定100 ms或新增選取 traversal。實際 Safari 三種檢視／特殊檔名／大檔與延遲就緒仍屬3.1；無 GUI 證據不宣稱原生加速或完成驗收。

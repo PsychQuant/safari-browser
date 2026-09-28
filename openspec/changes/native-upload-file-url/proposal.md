@@ -43,3 +43,7 @@ R2 要求事件當下保存檔案交付證據、拒絕資料夾欄位，並補�
 ## #179 原生目標條件補充
 
 原生 resolver 結果沒有攜帶原 URL matcher。上傳流程將從 scoped TargetDocument 保留封閉的 NativeUploadTargetConstraint，跨固定 request 傳遞，並在建立頁面 owner／任何檔案動作前，以 native bridge 重驗原條件。影響限上傳、request／worker／script 與相關測試；不改一般 JS 的 retry，也不改跨指令狀態快取。
+
+## #171 依證據就緒取代固定停頓
+
+貼上後固定100 ms不能證明選取就緒，也讓已就緒的路徑固定多等。沿用同一原生流程，先將完整可讀但零選取區分成 PENDING；未知、錯檔與歧義仍拒絕。立即以完成憑證或原生選取前進，只有 PENDING 才在原剩餘時間內重查，不重送 Paste、不放寬確認前檢查。影響 NativeUploadSelectionProbe、NativeUploadScript、其 adapter／worker tests 與 file-upload 規格；共用 #101 的同 fixture 原生驗收。PDF、截圖、顯式 wait／jitter 與故障恢復僅留在 #171 盤點，這次不修改。

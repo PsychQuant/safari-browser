@@ -424,15 +424,33 @@ enum NativeUploadScript {
             my closeOwnedUploadMenu()
 
             -- Paste can accept directly or leave an initial confirmation.
-            delay 0.1
-            my verifyUploadCompletionTarget()
-            set selectionResult to my readUploadCompletion()
-            if selectionResult is not "OK" and selectionResult is not "PENDING" then error "Native upload selected file verification failed: " & selectionResult
+            -- Observe first; only a positively identified pending state waits.
+            repeat
+                my verifyUploadCompletionTarget()
+                set selectionResult to my readUploadCompletion()
+                if selectionResult is "OK" then exit repeat
+                if selectionResult is not "PENDING" then error "Native upload selected file verification failed: " & selectionResult
+                tell application "System Events" to tell process "Safari"
+                    if (exists sheet 1 of front window) then
+                        my verifyUploadPanel()
+                        set nativeSelection to my readUploadSelection()
+                        my verifyUploadPanel()
+                        if nativeSelection is "MATCH" then exit repeat
+                        if nativeSelection is not "PENDING" then error "Native file selection is unavailable, ambiguous or does not match the requested file; no confirmation was sent"
+                    end if
+                end tell
+                my checkUploadDeadline()
+                set selectionPause to uploadEndTime - ((current application's NSProcessInfo's processInfo()'s systemUptime()) as real)
+                if selectionPause > 0.1 then set selectionPause to 0.1
+                if selectionPause > 0 then
+                    delay selectionPause
+                end if
+                my checkUploadDeadline()
+            end repeat
             tell application "System Events" to tell process "Safari"
-                if (exists sheet 1 of front window) and selectionResult is not "OK" then
-                    my verifyUploadPanel()
-                    if my readUploadSelection() is not "MATCH" then error "Native file selection is unavailable, ambiguous or does not match the requested file; no confirmation was sent"
-                    my verifyUploadPanel()
+                if selectionResult is not "OK" then
+                    -- The readiness read replaces the original first selection
+                    -- read. The second check immediately before AXPress remains.
                     set fileButtons to buttons of uploadPanel
                     repeat with panelGroup in splitter groups of uploadPanel
                         set fileButtons to fileButtons & (buttons of panelGroup)

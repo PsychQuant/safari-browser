@@ -404,7 +404,7 @@ final class NativeUploadScriptTests: XCTestCase {
         let source = script()
         let begin = try XCTUnwrap(source.range(of: "-- Paste can accept directly"))
         let terminal = "    repeat\n        my verifyUploadCompletionTarget()"
-        let end = try XCTUnwrap(source.range(of: terminal, range: begin.upperBound..<source.endIndex))
+        let end = try XCTUnwrap(source.range(of: terminal, options: .backwards, range: begin.upperBound..<source.endIndex))
         var fragment = String(source[begin.lowerBound..<end.lowerBound])
         let selection = try XCTUnwrap(fragment.split(separator: "\n").first { $0.contains("set selectionResult to my readUploadCompletion()") })
         fragment = fragment.replacingOccurrences(of: String(selection), with: "set selectionResult to observedDelivery")

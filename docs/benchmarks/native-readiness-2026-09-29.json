@@ -1,0 +1,719 @@
+{
+  "scope": "Actual generated AppleScript decision/confirmation fragment with external UI, clock, file-action substitutions; fixture delay executes real AppleScript delay. Not Safari upload completion or end-to-end acceptance. Fixed order before then after, 5 samples per immediate scenario; no statistical generalization.",
+  "summary": {
+    "before": {
+      "immediateSelected": {
+        "n": 5,
+        "phaseOK": 5,
+        "medianWallMS": 214.4381666657864,
+        "requestedWaitMS": [
+          100,
+          100,
+          100,
+          100,
+          100
+        ],
+        "selectionReads": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ]
+      },
+      "alreadyDelivered": {
+        "n": 5,
+        "phaseOK": 5,
+        "medianWallMS": 160.98600000259466,
+        "requestedWaitMS": [
+          100,
+          100,
+          100,
+          100,
+          100
+        ]
+      },
+      "delayedSelected": {
+        "n": 1,
+        "phaseOK": 0,
+        "confirmations": [
+          0
+        ]
+      }
+    },
+    "after": {
+      "immediateSelected": {
+        "n": 5,
+        "phaseOK": 5,
+        "medianWallMS": 50.6377916681231,
+        "requestedWaitMS": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "selectionReads": [
+          2,
+          2,
+          2,
+          2,
+          2
+        ]
+      },
+      "alreadyDelivered": {
+        "n": 5,
+        "phaseOK": 5,
+        "medianWallMS": 50.48170833470067,
+        "requestedWaitMS": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "delayedSelected": {
+        "n": 1,
+        "phaseOK": 1,
+        "confirmations": [
+          1
+        ]
+      }
+    }
+  },
+  "samples": {
+    "before": [
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.2144381666657864
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "OK",
+        "wallSeconds": 0.16098600000259466
+      },
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.1560896250011865
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "OK",
+        "wallSeconds": 0.15670970833889442
+      },
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.22708654166490305
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "OK",
+        "wallSeconds": 0.23027466666826513
+      },
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.23461350000434322
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "OK",
+        "wallSeconds": 0.16337729166843928
+      },
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.1572196666675154
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "OK",
+        "wallSeconds": 0.15979683332989225
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "Native file selection is unavailable, ambiguous or does not match the requested file; no confirmation was sent",
+        "confirmations": 0,
+        "selectionReads": 1,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.16034641666192329
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "cancelled",
+        "status": "cancelled",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 0,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.15839695832983125
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "focus changed",
+        "status": "focus changed",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 0,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.1631574583298061
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "target changed",
+        "status": "target changed",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 0,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.2169707083303365
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "clipboard changed",
+        "status": "clipboard changed",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 0,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.16367049999826122
+      },
+      {
+        "states": [
+          "PENDING"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "Native file selection is unavailable, ambiguous or does not match the requested file; no confirmation was sent",
+        "confirmations": 0,
+        "selectionReads": 1,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.15896604166482575
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 2,
+        "panel": false,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.15284195833373815
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "Native file selection is unavailable, ambiguous or does not match the requested file; no confirmation was sent",
+        "confirmations": 0,
+        "selectionReads": 1,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.15714316666708328
+      },
+      {
+        "states": [
+          "MATCH",
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "Native file selection changed before confirmation; no confirmation was sent",
+        "confirmations": 0,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.16252054167125607
+      }
+    ],
+    "after": [
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "PENDING",
+        "wallSeconds": 0.05473399999755202
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "OK",
+        "wallSeconds": 0.05324220833426807
+      },
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "PENDING",
+        "wallSeconds": 0.0506377916681231
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "OK",
+        "wallSeconds": 0.048632666665071156
+      },
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "PENDING",
+        "wallSeconds": 0.05002033333585132
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "OK",
+        "wallSeconds": 0.05048170833470067
+      },
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "PENDING",
+        "wallSeconds": 0.11310837500059279
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "OK",
+        "wallSeconds": 0.051906458334997296
+      },
+      {
+        "states": [
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "PENDING",
+        "wallSeconds": 0.049520833330461755
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 1,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "OK",
+        "wallSeconds": 0.04882187500334112
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 1,
+        "selectionReads": 3,
+        "receiptReads": 2,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.2210332499962533
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "cancelled",
+        "status": "cancelled",
+        "confirmations": 0,
+        "selectionReads": 1,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.22350112500134856
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "focus changed",
+        "status": "focus changed",
+        "confirmations": 0,
+        "selectionReads": 1,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.22252012500393903
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "target changed",
+        "status": "target changed",
+        "confirmations": 0,
+        "selectionReads": 1,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.15796570832753787
+      },
+      {
+        "states": [
+          "PENDING",
+          "MATCH"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "clipboard changed",
+        "status": "clipboard changed",
+        "confirmations": 0,
+        "selectionReads": 1,
+        "receiptReads": 1,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "PENDING",
+        "wallSeconds": 0.15180812499602325
+      },
+      {
+        "states": [
+          "PENDING"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "deadline",
+        "confirmations": 0,
+        "selectionReads": 2,
+        "receiptReads": 2,
+        "waits": 2,
+        "requestedWaitMS": 150,
+        "receipt": "PENDING",
+        "wallSeconds": 0.20762333333550487
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 2,
+        "panel": false,
+        "fault": "",
+        "status": "ok",
+        "confirmations": 0,
+        "selectionReads": 0,
+        "receiptReads": 2,
+        "waits": 1,
+        "requestedWaitMS": 100,
+        "receipt": "OK",
+        "wallSeconds": 0.15704766666749492
+      },
+      {
+        "states": [
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "Native file selection is unavailable, ambiguous or does not match the requested file; no confirmation was sent",
+        "confirmations": 0,
+        "selectionReads": 1,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "PENDING",
+        "wallSeconds": 0.05068737499823328
+      },
+      {
+        "states": [
+          "MATCH",
+          "UNAVAILABLE"
+        ],
+        "deliveredAt": 0,
+        "panel": true,
+        "fault": "",
+        "status": "Native file selection changed before confirmation; no confirmation was sent",
+        "confirmations": 0,
+        "selectionReads": 2,
+        "receiptReads": 1,
+        "waits": 0,
+        "requestedWaitMS": 0,
+        "receipt": "PENDING",
+        "wallSeconds": 0.047864416665106546
+      }
+    ]
+  },
+  "baselinePhaseCommit": "0e2e395905339000b33e776ad336faeb2b9ca8f9",
+  "sourceHashes": {
+    "baselineScript": "83261351b7b886726f424cb3117c6003ffe1dddeaf6599f660723b61446be9bc",
+    "currentScript": "13291b492f5cc6fc53b8b226d9a8b0a3618fb9fdff41190a0d743fcc0f77fb8d",
+    "currentProbe": "9a5b50286c5b8b2f2fa81661a6e92d2ab405a2beb716f7674a583f7fb15a2be4"
+  }
+}

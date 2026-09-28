@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Native selection readiness** (#171, acceptance in progress): distinguish a completely readable empty selection from unavailable AX evidence, and replace the post-Paste fixed pause with immediate observation and bounded pending-only rechecks. Unknown or conflicting selection still refuses confirmation, the original deadline and final selected-path check remain, and file actions are not replayed. Controlled AppleScript-fragment evidence is recorded separately from pending Safari acceptance.
+
 - **Native file URL upload** (#101, #169, #179, acceptance in progress): replaces upload keyboard navigation with a file URL clipboard lease, named AX Paste/Upload, bounded direct AX selected-path checks before confirmation, and delivery validation. A fixed internal worker preserves the single upload transaction and bounded diagnostics, rechecks the original URL/profile constraints before opening a chooser, and validates a private completion receipt outside the page realm. Preserves newer clipboard contents and refuses overlapping native uploads. Mechanism fixtures cover hidden and special paths; real WebKit timestamps and delivery before page input handlers are regression-tested; directory inputs are rejected; final Safari CLI acceptance remains pending.
 
 - **Owned-process cleanup** (#176): recheck the unreaped child after Darwin reports EPERM, so a normal exit just before signal delivery is not misreported as cleanup failure. Live or unconfirmed groups remain rejected.
