@@ -76,7 +76,7 @@ final class DaemonRequestBoundsTests: XCTestCase {
         return (server, name, directory.path)
     }
 
-    private func connect(name: String, directory: String) throws -> Int32 {
+    private func connect(name: String, directory: String, consumeHandshake: Bool = true) throws -> Int32 {
         let path = DaemonClient.socketPath(dir: directory, name: name)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw POSIXError(.EIO) }
@@ -94,9 +94,22 @@ final class DaemonRequestBoundsTests: XCTestCase {
                 }
             }
             guard result == 0 else { throw POSIXError(.ECONNREFUSED) }
-            _ = try line(fd) // handshake, before the request
+            if consumeHandshake { _ = try line(fd) } // handshake, before the request
             return fd
         } catch { close(fd); throw error }
+    }
+
+    func testHandshakeAdvertisesActualReaderLimit() async throws {
+        for limit in [1024, DaemonServer.maxRequestLineBytes] {
+            let (_, name, directory) = try await start(limit: limit)
+            let fd = try connect(name: name, directory: directory, consumeHandshake: false)
+            defer { close(fd) }
+            let data = try line(fd)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let proto = try XCTUnwrap(object["protocol"] as? [String: Any])
+            XCTAssertEqual(proto["maxRequestLineBytes"] as? String, String(limit))
+            XCTAssertEqual(DaemonProtocol.decodeHandshakeVersion(data), DaemonProtocol.currentVersion)
+        }
     }
 
     func testExactLimitAndCoalescedFollowingLinesSurvive() throws {
@@ -274,7 +287,7 @@ final class DaemonRequestBoundsTests: XCTestCase {
         XCTAssertEqual(result, Data("true".utf8))
     }
 
-    func testClientRouterDoesNotReplayOversizedRequest() async throws {
+    func testClientRouterRejectsKnownOversizedRequestWithoutFallback() async throws {
         let (server, name, directory) = try await start(limit: 1024)
         let counter = Counter()
         await server.register("owned") { _ in counter.hit(); return Data("true".utf8) }
@@ -290,15 +303,27 @@ final class DaemonRequestBoundsTests: XCTestCase {
                     }, statelessFn: { _ in fallbackCalls += 1; return "replayed" })
                 XCTFail("oversized request cannot succeed")
             } catch let error as DaemonClient.Error {
-                guard case .requestOutcomeUnknown(let reason) = error else { return XCTFail("unexpected classification: \(error)") }
-                if sourceBytes == 4_000_000 {
-                    XCTAssertTrue(reason.contains("request transmission interrupted"), "exercise the interrupted-write path: \(reason)")
-                }
+                guard case .requestTooLarge(let bytes, let limit) = error else { return XCTFail("unexpected classification: \(error)") }
+                XCTAssertGreaterThan(bytes, sourceBytes)
+                XCTAssertEqual(limit, 1024)
                 XCTAssertNil(error.fallbackReason)
             }
             XCTAssertEqual(counter.value, 0)
             XCTAssertEqual(fallbackCalls, 0)
         }
+    }
+
+    func testClientExactAdvertisedBoundaryDispatchesOnce() async throws {
+        let (server, name, directory) = try await start(limit: 1024)
+        let counter = Counter()
+        await server.register("owned") { _ in counter.hit(); return Data("true".utf8) }
+        let emptyFrame = #"{"method":"owned","params":{"source":""},"requestId":7}"#
+        let source = String(repeating: "x", count: 1024 - emptyFrame.utf8.count)
+        let params = try JSONSerialization.data(withJSONObject: ["source": source])
+        let reply = try await DaemonClient.sendRequest(name: name, method: "owned", params: params,
+            requestId: 7, timeout: 2, socketDir: directory)
+        XCTAssertEqual(reply, Data("true".utf8))
+        XCTAssertEqual(counter.value, 1)
     }
 
     func testCoalescedOversizedFrameDoesNotDispatchOrSkipToFollowingFrame() async throws {
