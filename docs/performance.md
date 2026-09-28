@@ -293,3 +293,27 @@ zero resident children for isolated mode and two for persistent mode. Host plus
 child RSS sums were 17,040 KiB versus 38,000 KiB. These are single `ps` snapshots
 that count shared pages, not unique memory or a population estimate. Idle cleanup
 is separately tested; the extra resident helpers are the cost of process reuse.
+
+### Final R3 deadline-clamped runtime
+
+The final runtime at `7c585c3` also prevents an internal inherited deadline from
+extending the configured timeout. Its release SHA-256 is
+`6d327f2b0ad928b69c024e259ea19a2bd120ce774507862a5093c6b2d7eee997`.
+A fresh run used the same 60/3/3-second AB/BA settings; all non-live rows again
+succeeded 60/60. Differences from the earlier cohort include system load and
+must not be attributed solely to that internal deadline correction.
+
+| Trace | Mode | Cold p50 / p95 ms | Interleaved warm p50 / p95 ms |
+|---|---|---:|---:|
+| off | isolated | 46.97 / 50.03 | 24.48 / 27.47 |
+| off | persistent | 35.51 / 39.20 | 1.13 / 1.77 |
+| on | isolated | 47.19 / 50.27 | 23.97 / 25.48 |
+| on | persistent | 36.69 / 44.41 | 1.10 / 1.46 |
+
+Trace-on warm identity counts remained 60 versus one CLI PID and 60 request IDs
+per mode. [Final R3 samples](benchmarks/mcp-worker-release-r3-final-2026-09-28.json)
+retain every scenario's sample/warmup wall times, statuses and trace identities
+as aligned arrays, including separate CLI/daemon and explicitly skipped live
+rows. The earlier R3 report is retained above. A new three-call resident snapshot
+found zero versus two children and RSS sums of 18,352 versus 38,144 KiB; the same
+single-snapshot/shared-page limitations apply.

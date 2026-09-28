@@ -167,3 +167,7 @@ R2 `spectra validate` 通過；`spectra analyze` 的 Coverage／Consistency／Ga
 - 最後的caller契約核對另抓到R3重構將較晚inherited deadline直接採用、可能放寬configured timeout。原0.15秒設定配未來30秒deadline卻讓1秒fixture正常完成，兩項具名RED；改為兩者取min後約0.156秒timeout，23項相關測試GREEN。此為內部呼叫參數邊界修正；將重新建置、回歸及量測最終runtime，a12ba03資料保留為前一cohort。
 
 - 最終全套在late-member測試遇到一次kernel觀察時序差異：runner已完成group清理後，單次waitid尚未給出exit；診斷當下proc_pidinfo沒有資料、getpgid為-1，50ms後同一reservation的waitid回報exited。測試改為在任何fixture清理訊號前，有界0.3秒等待真exit事件，並核對最終SIGKILL狀態。五次獨立重跑GREEN，移除repeat-KILL仍能抓到真正存活的late member；還原後ownership family通過。沒有改產品retirement或忽略失敗。
+
+- 測試觀察修正後，最終完整`make test-all` exit0：1569 XCTest／38 Swift Testing／66 smoke、兩模式各14 MCP；簽章49 PASS／2身分SKIP，GUI harness仍SKIP。產品runtime仍是`7c585c3`；`f0432d6`只改測試與驗證紀錄。
+- 最終release SHA256 `6d327f2b0ad928b69c024e259ea19a2bd120ce774507862a5093c6b2d7eee997`：60樣本ABBA、3 warmups／3秒deadline，off warm isolated24.475/27.471ms vs persistent1.129/1.765；on23.973/25.481 vs1.103/1.455；全部60/60成功，trace-on仍60 vs1 worker PIDs／各60 request IDs。所有scenario的wall／status／identity陣列已保存；舊a12cohort保留，不把跨cohort差異全歸因於deadline修正。
+- 最終三次呼叫後resident snapshot：isolated0 child／18352KiB RSS，persistent2 children／38144KiB RSS；仍為包含共享頁的單次加總，非unique memory。
