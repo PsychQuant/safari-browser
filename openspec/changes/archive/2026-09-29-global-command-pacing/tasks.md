@@ -24,7 +24,7 @@
 ## 5. 驗證與交付
 
 - [x] 5.1 固定來源，執行六方獨立驗證、逐項對照#184與兩份delta specs，修正阻擋發現並確認來源新鮮度；公開Implementation Complete與Verify紀錄及tasks來源。
-- [ ] 5.2 Spectra analyze／validate／archive，機械核對兩份正式spec更新並建立Refs #184的PR，核對PR來源與已驗證快照；外部合併狀態依下方交付追蹤驗收。
+- [x] 5.2 Spectra analyze／validate／archive，機械核對兩份正式spec更新並建立Refs #184的PR，核對PR來源與已驗證快照；外部合併狀態依下方交付追蹤驗收。
 
 ## 交付追蹤
 
