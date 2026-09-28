@@ -289,14 +289,13 @@ struct DaemonServeCommand: AsyncParsableCommand {
     @OptionGroup var socketDirFlags: DaemonSocketDirFlags
 
     func run() async throws {
+        let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
+        let dir = try resolveDaemonSocketDir(flags: socketDirFlags)
         // Detach from the parent's terminal so closing the shell does not
         // send SIGHUP to the daemon. `setsid` moves us into a new session
         // and process group; we also ignore SIGHUP belt-and-braces.
         signal(SIGHUP, SIG_IGN)
         _ = setsid()
-
-        let resolvedName = DaemonClient.resolveName(flag: nameFlag.name)
-        let dir = try resolveDaemonSocketDir(flags: socketDirFlags)
         let socketPath = DaemonClient.socketPath(dir: dir, name: resolvedName)
         let pidPath = DaemonClient.pidPath(dir: dir, name: resolvedName)
         let logPath = DaemonClient.logPath(dir: dir, name: resolvedName)

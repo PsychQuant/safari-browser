@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Daemon socket directory validation** (#214): reject non-directory `--socket-dir` and `TMPDIR` values before service launch or dispatch, with a distinct diagnostic. `--allow-unsafe-socket-dir` only bypasses the existing permission check. Symlink lookup continues to follow the target; directory links retain target-permission checks and dangling links remain missing/not statable.
+
 - **Opt-in command pacing** (#184): `SAFARI_BROWSER_PACING=cauchy` adds a bounded jitter wait after each ordinary CLI operation or executed `exec` step, with optional `_MIN_MS`, `_MAX_MS`, `_MEDIAN_MS`, and `_SCALE_MS` parameters. Defaults remain off; explicit `off` ignores inherited pacing parameters. Standalone and both MCP modes share the same boundary, while help, explicit waits, daemon controls, hosts, wrappers and the outer batch do not add a second wait. Paced batches choose the existing per-step path before dispatch and retain per-command daemon routing. Validation occurs before effects; cancellation never replays an operation or extends the existing MCP deadline.
 
 - **One-shot MCP cleanup** (#209, #172): explicit isolated calls and persistent preselection now use a lifetime supervisor and a retained serial reservation owner. Pending cleanup blocks both execution paths; shutdown cancels active work and reports unconfirmed cleanup within a bounded userspace wait. Stopped leaders are not mistaken for exited processes, and live group members are checked again before reaping. Original argv/environment admission is preserved even when the helper runtime adds environment fields.
