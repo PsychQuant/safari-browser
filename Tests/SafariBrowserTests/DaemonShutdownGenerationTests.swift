@@ -62,9 +62,14 @@ final class DaemonShutdownGenerationTests: XCTestCase {
         if useHook { await server.setShutdownHook { newHook.increment(); await server.stop() } }
         try await server.start(socketPath: path)
         release.signal()
-        let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try TestUnixSocket.readLine(fd: oldFD).utf8)) as? [String: Any])
-        let error = reply["error"] as? [String: Any]
-        XCTAssertEqual(error?["code"] as? String, "cancelled", "revoked shutdown must not claim it stopped the replacement run")
+        // #199 revokes the old transport itself. If an error frame was
+        // already delivered it remains cancelled; otherwise EOF is unknown
+        // to the post-send client and must never authorize replay.
+        if let line = try? TestUnixSocket.readLine(fd: oldFD) {
+            let reply = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any])
+            let error = reply["error"] as? [String: Any]
+            XCTAssertEqual(error?["code"] as? String, "cancelled", "revoked shutdown must not claim success")
+        }
         XCTAssertEqual(oldHook.read(), 0)
         XCTAssertEqual(newHook.read(), 0)
         XCTAssertEqual(watchdog.read(), 0, "revoked dispatch cannot schedule process termination")

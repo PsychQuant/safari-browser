@@ -395,9 +395,16 @@ final class DaemonRequestBoundsTests: XCTestCase {
 
     func testReadFailureProducesDiagnosticWithoutDispatchingItsPrefix() async throws {
         let (accepted, peer) = try pair(); defer { close(peer) }
-        var timeout = timeval(tv_sec: 0, tv_usec: 50_000)
-        setsockopt(accepted, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        let server = DaemonServer.Instance()
+        let chunks = Counter()
+        // #199 nonblocking EAGAIN is readiness, not a terminal read error.
+        // Read a real prefix from the socket, then inject a non-retryable EIO.
+        let server = DaemonServer.Instance(connectionEnvironment: .init(read: { fd, buffer, count in
+            if chunks.value > 0 { return .init(count: -1, errno: EIO) }
+            let result = Darwin.read(fd, buffer, count)
+            let code = result < 0 ? errno : 0
+            if result > 0 { chunks.hit() }
+            return .init(count: result, errno: code)
+        }))
         let sink = DaemonDiagnosticBudgetTests.Sink()
         let logged = expectation(description: "read error diagnostic")
         await server.setLogWriter { line in
@@ -421,7 +428,7 @@ final class DaemonRequestBoundsTests: XCTestCase {
         await fulfillment(of: [logged], timeout: 1)
         XCTAssertEqual(calls.value, 0)
         XCTAssertFalse(sink.all.joined().contains("private-prefix-197"))
-        XCTAssertEqual(sink.objects.first?["errno"] as? Int, Int(EAGAIN))
+        XCTAssertEqual(sink.objects.first?["errno"] as? Int, Int(EIO))
         await server.stop()
     }
 
