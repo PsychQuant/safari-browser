@@ -75,6 +75,7 @@ enum CLIExecution {
         // hidden from help. Exempt only the actual internal hosts/wrapper.
         let exempt = configuration.commandName == "help"
             || command is MCPWorkerCommand || command is MCPSupervisorCommand || command is MCPPersistentWorkerCommand
+            || command is NativeUploadWorkerCommand
             || !configuration.subcommands.isEmpty
             || command is SafariBrowser || command is WaitCommand || command is MCPCommand
             || command is DaemonCommand || command is DaemonStartCommand || command is DaemonStopCommand

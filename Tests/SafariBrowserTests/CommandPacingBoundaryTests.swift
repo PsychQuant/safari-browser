@@ -122,6 +122,24 @@ final class CommandPacingBoundaryTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    func testNativeUploadWorkerDoesNotAddParentCommandPacing() async throws {
+        // Decoding rejects this owned invalid request before identity lookup,
+        // clipboard access, AppleScript construction or any native operation.
+        let worker = try NativeUploadWorkerCommand.parse(["!invalid-base64!", "owned-image"])
+        for environment in [enabled, ["SAFARI_BROWSER_PACING": "invalid-owned-policy"]] {
+            var sleeps = 0
+            do {
+                try await CLIExecution.runParsed(worker, environment: environment, sleep: { _ in sleeps += 1 })
+                XCTFail("the worker must reject its invalid request")
+            } catch {
+                XCTAssertTrue(SafariBrowser.message(for: error).contains("Invalid native upload request encoding or size"))
+                XCTAssertFalse(SafariBrowser.message(for: error).contains("SAFARI_BROWSER_PACING"))
+            }
+            XCTAssertEqual(sleeps, 0, "the parent upload command owns pacing, not its internal worker")
+            XCTAssertNil(CommandPacing.currentEnabled)
+        }
+    }
+
     func testOneShotWrapperUsesSuppliedEnvironmentAndSleepsExactlyOnce() async throws {
         var wrapper = MCPWorkerCommand()
         wrapper.arguments = ["history", "--limit", "0"]
