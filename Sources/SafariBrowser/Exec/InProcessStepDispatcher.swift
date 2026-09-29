@@ -6,10 +6,11 @@ import Foundation
 /// handler so the entire client-daemon interaction is one socket round
 /// trip; per-step subprocess overhead is eliminated.
 ///
-/// v2.0 ships the most common Phase 1 commands as in-process; less
-/// common commands (storage, snapshot, wait, type, press, fill, click,
-/// get text/source) throw `unsupportedInExec` so the client falls
-/// back to the subprocess path. Future iterations expand coverage.
+/// In-process: `js`, `documents`, `get url`, `get title`, `get text`,
+/// `get source` (`supportedCommands`). Any other command throws
+/// `unsupportedInExec`, and the client runs a script containing one through
+/// the subprocess path; `screenshot` / `pdf` / `upload` are unsupported on
+/// that path too.
 struct InProcessStepDispatcher: StepDispatcher {
     /// #170: the shared exec target, resolved once per exec run and verified
     /// before each reuse. A new dispatcher is created for every
@@ -38,7 +39,16 @@ struct InProcessStepDispatcher: StepDispatcher {
             _ resolver: () async throws -> SafariBridge.TargetDocument
         ) async throws -> SafariBridge.TargetDocument {
             if let hit = lock.withLock({ cached }), hit.args == args {
-                if try await verify(hit.target) { return hit.target }
+                // Any failure of the check counts as "not verified": the
+                // daemon's NSAppleScript errors carry no -1719 / -1728 and are
+                // localized, so a closed tab or window cannot be recognised
+                // by its message (verify R2). A check that threw used to skip
+                // this reset and leave every later step failing.
+                do {
+                    if try await verify(hit.target) { return hit.target }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {}
                 lock.withLock { cached = nil }
             }
             let target = try await resolver()
@@ -82,6 +92,13 @@ struct InProcessStepDispatcher: StepDispatcher {
             ? Self.extractTargetArgs(args)
             : sharedTargetArgs
         let cmdArgs = Self.stripTargetFlags(args)
+
+        // A step that cannot run in-process must not pay for a resolution
+        // first, nor report a resolution error instead of its own (verify R2).
+        guard Self.supportedCommands.contains(cmd) else { throw ScriptDispatchError.unsupportedInExec(cmd) }
+        if cmd == "js", cmdArgs.first == nil {
+            throw ScriptDispatchError.unsupportedInExec("js: missing code argument")
+        }
 
         let target = try Self.parseTargetOptions(from: effectiveTargetArgs)
         // #170: resolve to a concrete target (a `--url` / `--document` target

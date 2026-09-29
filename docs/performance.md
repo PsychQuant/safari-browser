@@ -343,3 +343,37 @@ A separate three-call resident snapshot found zero versus two children, with
 RSS sums of 17,728 versus 38,896 KiB (shared pages included, not unique memory).
 These measurements support this fixed workload comparison; lifetime correctness
 is established separately by the TERM/grace/host-death regressions.
+
+## Daemon exec shared target (#170, 2026-09-29)
+
+What changed: the daemon's in-process exec dispatcher resolved a `--url` shared target once per step (one full window/tab enumeration each). It now resolves once per `exec.runScript` request and, before each reuse, runs one small guarded AppleScript that checks the tab still shows a URL the pattern accepts; any failed or erroring check re-resolves.
+
+Environment: Safari with 3 windows / 41 tabs; Developer-ID signed debug builds of `main` a26eda8 and `idd/170-exec-shared-target-once`; one daemon per build under its own `SAFARI_BROWSER_NAME`; background load average 20–40.
+
+Script (`exec170.json`), all read-only:
+
+```json
+[{"cmd":"get url"},{"cmd":"get title"},{"cmd":"js","args":["document.title.length"]},{"cmd":"get url"},{"cmd":"js","args":["location.host"]},{"cmd":"get title"}]
+```
+
+Commands (target: a tab whose URL is unique across windows):
+
+```bash
+SAFARI_BROWSER_NAME=<name> ./safari-browser daemon start
+SAFARI_BROWSER_NAME=<name> SAFARI_BROWSER_DAEMON=1 ./safari-browser exec --url <unique-url> --script exec170.json   # 5×, alternating builds
+SAFARI_BROWSER_NAME=<unused> ./safari-browser exec --url <unique-url> --script exec170.json                       # stateless, 3× per build
+SAFARI_BROWSER_TRACE_TIMING=1 SAFARI_BROWSER_NAME=<name> SAFARI_BROWSER_DAEMON=1 ./safari-browser exec ...        # span counts
+```
+
+| Run | `main` daemon | this branch |
+|---|---|---|
+| 1 (cold: first request after `daemon start`) | 5.86 s | 1.31 s |
+| 2 | 5.32 s | 1.12 s |
+| 3 | 5.27 s | 1.08 s |
+| 4 | 5.23 s | 1.27 s |
+| 5 | 5.34 s | 1.12 s |
+| stateless ×3 | 8.37 / 8.62 / 8.92 s | 8.24 / 8.55 / 9.25 s |
+
+Spans of one warm run: `main` 6 × `target.native` (one enumeration per step) and 12 in-process AppleScripts; this branch 1 × `target.native` and 12 in-process AppleScripts (1 enumeration, 5 checks, 6 reads). Both builds: 12 `daemon.cache_hit`, 0 compiles — the compile cache was not the cost. The stateless path is unchanged (each step is its own process).
+
+Scope: only scripts made entirely of in-process commands (`js`, `documents`, `get url/title/text/source`) take the daemon path; any other step sends the script through the subprocess path, where nothing changed. With `--profile`, positional targets still enumerate every step, because the profile filter needs the window list.

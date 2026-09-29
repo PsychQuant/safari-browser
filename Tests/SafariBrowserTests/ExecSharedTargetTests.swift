@@ -9,16 +9,29 @@ import XCTest
 /// nothing is carried across exec requests.
 final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
     /// Minimal fake Safari: 2 windows, 3 tabs each; every AppleScript counted.
-    /// Tabs are positional, so a test can navigate or close one mid-run.
+    /// Tabs are positional and windows keep their ids, so a test can navigate
+    /// or close a tab, close a window, or open a new one mid-run.
     final class Fake: @unchecked Sendable {
         private let lock = NSLock()
         private var sent: [String] = []
-        private var windows = [(1...3).map { "https://w1.example/\($0)" }, (1...3).map { "https://w2.example/\($0)" }]
+        private var windows: [(id: Int, tabs: [String])] = [
+            (101, (1...3).map { "https://w1.example/\($0)" }), (102, (1...3).map { "https://w2.example/\($0)" }),
+        ]
+        /// #170 verify R2: the daemon runs scripts through NSAppleScript, whose
+        /// error message carries no numeric code (-1719 / -1728) and a curly
+        /// apostrophe. osascript's text, which every fake used, ends in "(-1719)".
+        var daemonShapedErrors = false
         var scripts: [String] { lock.lock(); defer { lock.unlock() }; return sent }
         var enumerations: Int { scripts.filter { $0.contains("set windowCount to count of windows") }.count }
         var verifications: Int { scripts.filter { $0.contains("SB_TARGET_CHANGED") && $0.contains("return \"ok\"") }.count }
-        func navigate(window: Int, tab: Int, to url: String) { lock.withLock { windows[window - 1][tab - 1] = url } }
-        func close(window: Int, tab: Int) { lock.withLock { _ = windows[window - 1].remove(at: tab - 1) } }
+        func navigate(window: Int, tab: Int, to url: String) {
+            lock.withLock { if let i = windows.firstIndex(where: { $0.id == 100 + window }) { windows[i].tabs[tab - 1] = url } }
+        }
+        func close(window: Int, tab: Int) {
+            lock.withLock { if let i = windows.firstIndex(where: { $0.id == 100 + window }) { windows[i].tabs.remove(at: tab - 1) } }
+        }
+        func closeWindow(id: Int) { lock.withLock { windows.removeAll { $0.id == id } } }
+        func openWindow(id: Int, tabs: [String]) { lock.withLock { windows.append((id, tabs)) } }
 
         func respond(_ script: String) throws -> String {
             lock.lock(); defer { lock.unlock() }
@@ -26,10 +39,10 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
             if script.contains("set windowCount to count of windows") {
                 let gs = "\u{1D}", rs = "\u{1E}"
                 var out = ""
-                for (i, tabs) in windows.enumerated() {
-                    for (j, url) in tabs.enumerated() {
+                for (i, window) in windows.enumerated() {
+                    for (j, url) in window.tabs.enumerated() {
                         out += ["\(i + 1)", "\(j + 1)", j == 0 ? "1" : "0", url,
-                                "Tab \(j + 1)", "個人 — Tab 1", "\(101 + i)"].joined(separator: gs) + rs
+                                "Tab \(j + 1)", "個人 — Tab 1", "\(window.id)"].joined(separator: gs) + rs
                     }
                 }
                 return out
@@ -37,13 +50,20 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
             guard let tab = Self.int(after: "tab ", in: script), let id = Self.int(after: "window id ", in: script) else {
                 return "ok"
             }
-            let tabs = windows.indices.contains(id - 101) ? windows[id - 101] : []
-            guard tabs.indices.contains(tab - 1) else {
-                throw SafariBrowserError.appleScriptFailed("execution error: Can’t get tab. Invalid index. (-1719)")
+            guard let window = windows.first(where: { $0.id == id }) else {
+                throw SafariBrowserError.appleScriptFailed(daemonShapedErrors
+                    ? "Safari got an error: Can’t get window id \(id)."
+                    : "execution error: Safari got an error: Can’t get window id \(id). (-1728)")
             }
-            let url = tabs[tab - 1]
+            guard window.tabs.indices.contains(tab - 1) else {
+                throw SafariBrowserError.appleScriptFailed(daemonShapedErrors
+                    ? "Safari got an error: Can’t get tab \(tab) of window id \(id). Invalid index."
+                    : "execution error: Can’t get tab. Invalid index. (-1719)")
+            }
+            let url = window.tabs[tab - 1]
             if let pattern = Self.quoted(after: "does not contain ", in: script), !url.contains(pattern) {
-                throw SafariBrowserError.appleScriptFailed("execution error: SB_TARGET_CHANGED (9001)")
+                throw SafariBrowserError.appleScriptFailed(daemonShapedErrors
+                    ? "SB_TARGET_CHANGED" : "execution error: SB_TARGET_CHANGED (9001)")
             }
             if script.contains("return \"ok\"") { return "ok" }
             if script.contains("URL of") { return url }
@@ -126,6 +146,97 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         }
         XCTAssertEqual(urls, ["https://w1.example/2", "https://w1.example/2"])
         XCTAssertEqual(fake.enumerations, 2)
+    }
+
+    // MARK: - Verify R2: the daemon's error shape, and nothing resolved in vain
+
+    func testAClosedTabOnTheDaemonPathIsResolvedAfresh() async throws {
+        // Round 2: the daemon's NSAppleScript error has no -1719, so the check
+        // threw instead of reporting "not verified", and the error escaped.
+        let fake = Fake()
+        fake.daemonShapedErrors = true
+        let urls = try await run([("get url", []), ("get url", [])], shared: ["--url", "w1.example/3"], on: fake) { i in
+            if i == 1 { fake.close(window: 1, tab: 1) }          // tab 3 no longer exists; the page is now tab 2
+        }
+        XCTAssertEqual(urls, ["https://w1.example/3", "https://w1.example/3"])
+        XCTAssertEqual(fake.enumerations, 2)
+    }
+
+    func testAClosedWindowOnTheDaemonPathFailsLikeStatelessAndDoesNotPoisonTheCache() async throws {
+        // A check that threw never cleared the cache, so every later step
+        // failed too, even after the page reappeared in another window.
+        let fake = Fake()
+        fake.daemonShapedErrors = true
+        let dispatcher = InProcessStepDispatcher()
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        try await DaemonRequestContext.$current.withValue(context) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                let shared = ["--url", "w2.example/2"]
+                _ = try await dispatcher.dispatch(cmd: "get url", args: [], sharedTargetArgs: shared)
+                fake.closeWindow(id: 102)
+                do {
+                    _ = try await dispatcher.dispatch(cmd: "get url", args: [], sharedTargetArgs: shared)
+                    XCTFail("nothing matches after the window closed")
+                } catch SafariBrowserError.documentNotFound {}
+                fake.openWindow(id: 103, tabs: ["https://w2.example/2"])
+                let again = try await dispatcher.dispatch(cmd: "get url", args: [], sharedTargetArgs: shared)
+                XCTAssertEqual(again, "https://w2.example/2")
+            }
+        }
+        XCTAssertEqual(fake.enumerations, 3)
+    }
+
+    func testAStepThatCannotRunDoesNotResolveTheTarget() async throws {
+        let fake = Fake()
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        try await DaemonRequestContext.$current.withValue(context) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                let dispatcher = InProcessStepDispatcher()
+                for (cmd, args) in [("click", ["button"]), ("js", [String]())] {
+                    do {
+                        _ = try await dispatcher.dispatch(cmd: cmd, args: args, sharedTargetArgs: ["--url", "w1.example/2"])
+                        XCTFail("\(cmd) \(args) must not run in-process")
+                    } catch is ScriptDispatchError {}
+                }
+            }
+        }
+        XCTAssertEqual(fake.enumerations, 0, "an unsupported or malformed step must not pay for a resolution")
+    }
+
+    func testTheVerificationScriptCompilesWithAHostilePattern() async throws {
+        // The pattern reaches AppleScript as a string literal; quotes,
+        // backslashes and line breaks must not end it early.
+        final class Captured: @unchecked Sendable { var script = "" }
+        let captured = Captured()
+        let hostile = "a\"b\\c\nd\" & (do shell script \"echo pwned\") & \""
+        let ok = try await DaemonRequestContext.$appleScriptRunner.withValue({ captured.script = $0; return "ok" }) {
+            try await SafariBridge.verifyResolvedTab(.resolvedTab(windowID: 101, tabInWindow: 1,
+                                                                  rematch: .contains(hostile), profile: nil))
+        }
+        XCTAssertTrue(ok)
+        XCTAssertTrue(captured.script.contains("does not contain \"\(hostile.escapedForAppleScript)\""), captured.script)
+        let script = try XCTUnwrap(NSAppleScript(source: captured.script))
+        var error: NSDictionary?
+        XCTAssertTrue(script.compileAndReturnError(&error), "\(String(describing: error))")
+        XCTAssertFalse(captured.script.contains("do shell script \"echo"), "the payload must stay inside the literal")
+    }
+
+    func testTheDaemonHandlerBuildsAFreshDispatcherPerRequest() async throws {
+        // Pinned at the handler, not only at the dispatcher: one stored
+        // dispatcher would carry a resolved window and tab across requests.
+        let fake = Fake()
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        let envelope = try JSONSerialization.data(withJSONObject: [
+            "steps": [["cmd": "get url"]], "targetArgs": ["--url", "w1.example/2"],
+        ])
+        try await DaemonRequestContext.$current.withValue(context) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                _ = try await DaemonDispatch.Handlers.execRunScript(paramsData: envelope)
+                _ = try await DaemonDispatch.Handlers.execRunScript(paramsData: envelope)
+            }
+        }
+        XCTAssertEqual(fake.enumerations, 2)
+        XCTAssertEqual(fake.verifications, 0, "the second request must not reuse the first request's target")
     }
 
     func testADocumentIndexTargetIsNotCached() async throws {
