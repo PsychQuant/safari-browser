@@ -346,9 +346,9 @@ is established separately by the TERM/grace/host-death regressions.
 
 ## Daemon exec shared target (#170, 2026-09-29)
 
-What changed: the daemon's in-process exec dispatcher resolved a `--url` shared target once per step (one full window/tab enumeration each). It now resolves once per `exec.runScript` request and, before each reuse, runs one small guarded AppleScript that checks the tab still shows a URL the pattern accepts; any failed or erroring check re-resolves.
+What changed: the daemon's in-process exec dispatcher resolved a `--url` shared target once per step (one full window/tab enumeration each). It now resolves a URL-pattern target at the first step that needs it and, before each reuse, runs one small AppleScript that checks the tab still shows a URL the pattern accepts; any failed or erroring check resolves afresh. Other target forms are resolved every step (see Scope).
 
-Environment: Safari with 3 windows / 41 tabs; Developer-ID signed debug builds of `main` a26eda8 and `idd/170-exec-shared-target-once`; one daemon per build under its own `SAFARI_BROWSER_NAME`; background load average 20–40.
+Environment: Safari with 3 windows / 41 tabs; Developer-ID signed debug builds of `main` a26eda8 and of this branch built 2026-09-29 16:07 +08:00 from a tree between 4eca186 and 070939e (the exact tree was not recorded; the confirmation run below names its commit); one daemon per build under its own `SAFARI_BROWSER_NAME`; background load average 20–40.
 
 Script (`exec170.json`), all read-only:
 
@@ -374,6 +374,18 @@ SAFARI_BROWSER_TRACE_TIMING=1 SAFARI_BROWSER_NAME=<name> SAFARI_BROWSER_DAEMON=1
 | 5 | 5.34 s | 1.12 s |
 | stateless ×3 | 8.37 / 8.62 / 8.92 s | 8.24 / 8.55 / 9.25 s |
 
-Spans of one warm run: `main` 6 × `target.native` (one enumeration per step) and 12 in-process AppleScripts; this branch 1 × `target.native` and 12 in-process AppleScripts (1 enumeration, 5 checks, 6 reads). Both builds: 12 `daemon.cache_hit`, 0 compiles — the compile cache was not the cost. The stateless path is unchanged (each step is its own process).
+Spans of one warm run: `main` 6 × `target.native` (one enumeration per step) and 12 in-process AppleScripts; this branch 1 × `target.native` and 12 in-process AppleScripts (1 enumeration, 5 checks, 6 reads). Both builds on that warm run: 12 `daemon.cache_hit`, 0 compiles — the compile cache was not the cost there. The cold run (run 1) necessarily compiled; its compile count was not recorded. This holds for today's scripts, which are identical from call to call; once #190's per-call identity lands, scripts differ per call and the compile cache has to be measured again. The stateless path is unchanged (each step is its own process).
 
-Scope: only scripts made entirely of in-process commands (`js`, `documents`, `get url/title/text/source`) take the daemon path; any other step sends the script through the subprocess path, where nothing changed. With `--profile`, positional targets still enumerate every step, because the profile filter needs the window list.
+Confirmation run (verify round 3), build pinned: Developer-ID signed debug builds of `main` a26eda8 and of c41bd0e, same script, same target and 41 tabs, alternating, background load average 55–70 (higher than above, so absolute times are higher):
+
+| Run | `main` daemon | c41bd0e |
+|---|---|---|
+| 1 (cold) | 6.72 s | 2.12 s |
+| 2 | 6.81 s | 1.20 s |
+| 3 | 5.85 s | 1.26 s |
+| 4 | 5.61 s | 1.52 s |
+| 5 | 6.53 s | 1.88 s |
+
+Spans of one warm run: `main` 6 × `target.native`, c41bd0e 1 × `target.native`; both 12 in-process AppleScripts, all `daemon.cache_hit`.
+
+Scope: only scripts made entirely of in-process commands (`js`, `documents`, `get url/title/text/source`) take the daemon path. A script with any other step (`click`, `fill`, `type`, `press`, `wait`, `snapshot`, `storage`) runs through the subprocess path — one process and one resolution per step, unchanged; that cost is tracked in #219. `screenshot`, `pdf` and `upload` are rejected in exec scripts on both paths. Only a URL-pattern target (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`) is reused. `--document N` / `--tab N` are resolved every step, one enumeration each, as before. `--profile` without a URL pattern (alone, or with `--window`) now enumerates every step: before #170 this path ignored `--profile`, so it enumerated nothing and filtered nothing. That cost is new and was not measured.
