@@ -237,9 +237,11 @@ enum PreCompiledScripts {
         /// it `isTargetDangleError` and the not-found translation cannot
         /// classify a daemon-path error.
         nonisolated static func describe(_ info: NSDictionary) -> String {
-            let message = (info["NSAppleScriptErrorMessage"] as? String) ?? String(describing: info)
-            guard let number = (info["NSAppleScriptErrorNumber"] as? NSNumber)?.intValue else { return message }
-            return "\(message) (\(number))"
+            let number = (info["NSAppleScriptErrorNumber"] as? NSNumber)?.intValue
+            guard let message = info["NSAppleScriptErrorMessage"] as? String else {
+                return number.map { "AppleScript error (\($0))" } ?? String(describing: info)
+            }
+            return number.map { "\(message) (\($0))" } ?? message
         }
 
         /// Number of compiled handles currently cached.

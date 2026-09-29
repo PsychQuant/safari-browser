@@ -575,16 +575,15 @@ enum SafariBridge {
                 }
                 await emitBackgroundTabHint(for: diagnosticTarget, warnWriter: warnWriter)
             }
-            // Only translate when the error is plausibly "document not found"
-            // from a non-default target. AppleScript uses error codes -1719
-            // (invalid index) and -1728 (object not found) for missing
-            // documents. We also match localized error strings.
+            // Only translate when the error is "document not found" from a
+            // non-default target: AppleScript error -1719 (invalid index) or
+            // -1728 (object not found). The code, not the localized message,
+            // decides (#218): both runners now end the text with it.
             if case .frontWindow = target {
                 // Default target: propagate as-is (backward compat).
                 throw error
             }
-            if case .appleScriptFailed(let msg) = error,
-               msg.contains("-1719") || msg.contains("-1728") || msg.contains("Can't get") || msg.contains("Can’t get") || msg.contains("無法取得") {
+            if case .appleScriptFailed(let msg) = error, isObjectNotFound(msg) {
                 let docs = (try? await listAllDocuments()) ?? []
                 // #72: carry each tab's coordinates, not just its URL — the
                 // error's hint tells the reader to retarget with
@@ -1409,6 +1408,20 @@ enum SafariBridge {
     /// #79: does this error mean the identity-anchored target dangled
     /// (window closed / tab moved / guard tripped) — i.e. a bounded
     /// re-resolve is worth one attempt? Pure; drives the retry decision.
+    /// The AppleScript error number at the end of an error text, as both
+    /// runners print it: `… (-1728)` (#218). Nil when there is none.
+    static func appleScriptErrorCode(in message: String) -> Int? {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasSuffix(")"), let open = trimmed.lastIndex(of: "(") else { return nil }
+        return Int(trimmed[trimmed.index(after: open)..<trimmed.index(before: trimmed.endIndex)])
+    }
+
+    /// AppleScript's "invalid index" (-1719) or "object not found" (-1728).
+    static func isObjectNotFound(_ message: String) -> Bool {
+        guard let code = appleScriptErrorCode(in: message) else { return false }
+        return code == -1719 || code == -1728
+    }
+
     static func isTargetDangleError(_ error: SafariBrowserError) -> Bool {
         switch error {
         case .appleScriptFailed(let msg):

@@ -157,5 +157,46 @@ final class PreCompiledScriptsTests: XCTestCase {
             XCTAssertNotNil(message.range(of: #"\(-?\d+\)$"#, options: .regularExpression), message)
         } catch { XCTFail("\(error)") }
     }
+
+    func testDescribeKeepsTheCodeForEveryMessageShape() {
+        typealias Cache = PreCompiledScripts.CompileCache
+        // The daemon's locale decides the message language; the code does not
+        // change with it.
+        let localized: NSDictionary = ["NSAppleScriptErrorMessage": "Safari發生錯誤：無法取得「window id 999999」。",
+                                       "NSAppleScriptErrorNumber": NSNumber(value: -1728)]
+        XCTAssertEqual(Cache.describe(localized), "Safari發生錯誤：無法取得「window id 999999」。 (-1728)")
+        XCTAssertTrue(SafariBridge.isObjectNotFound(Cache.describe(localized)))
+        XCTAssertTrue(SafariBridge.isTargetDangleError(.appleScriptFailed(Cache.describe(localized))))
+        let noCode: NSDictionary = ["NSAppleScriptErrorMessage": "Can’t get window 2."]
+        XCTAssertEqual(Cache.describe(noCode), "Can’t get window 2.", "no code: the message is unchanged")
+        let noMessage: NSDictionary = ["NSAppleScriptErrorNumber": NSNumber(value: -1719)]
+        XCTAssertEqual(Cache.describe(noMessage), "AppleScript error (-1719)", "the code appears once")
+    }
+
+    func testNotFoundIsDecidedByTheCodeAlone() {
+        for text in ["6:14: execution error: Safari發生錯誤：無法取得「window 2」。 (-1728)",   // osascript, zh-TW
+                     "Safari got an error: Can’t get tab 9 of window id 101. Invalid index. (-1719)"] {
+            XCTAssertTrue(SafariBridge.isObjectNotFound(text), text)
+        }
+        for text in ["Can’t get window 2.", "無法取得「window 2」。", "Can't get it (-2700)", "broken (-2700)"] {
+            XCTAssertFalse(SafariBridge.isObjectNotFound(text), text)
+        }
+    }
+
+    func testADaemonShapedMissingWindowIsTranslatedToDocumentNotFound() async throws {
+        // End to end through the bridge: the cached runner's error for a
+        // missing window reaches runTargetedAppleScript's translation.
+        let cache = PreCompiledScripts.CompileCache()
+        do {
+            _ = try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+                if source.contains("set windowCount to count of windows") { return "" }
+                return try await DaemonDispatch.Handlers.cachedScriptText(
+                    source: #"error "Can’t get window 2." number -1728"#, cache: cache)
+            }) {
+                try await SafariBridge.getCurrentURL(target: .windowIndex(2))
+            }
+            XCTFail("the window does not exist")
+        } catch SafariBrowserError.documentNotFound {}
+    }
 }
 
