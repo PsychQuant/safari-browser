@@ -19,16 +19,18 @@ struct InProcessStepDispatcher: StepDispatcher {
     /// one full window/tab enumeration per step for a `--url` target.
     private let sharedResolution = SharedTargetResolution()
 
-    /// Only a `--url` target is effectively reused: it resolves to a tab that
-    /// can be re-checked by its URL, while `verifyResolvedTab` refuses any
-    /// target with nothing to check by (`--document N`, positional flags), so
-    /// those are resolved afresh every step. Each reuse first checks that the tab still shows
-    /// a URL the pattern accepts; if not, the cache is dropped and the target
-    /// is resolved afresh, exactly as stateless exec does for every step — so
-    /// a navigated, moved or closed tab gives the same result on both paths
-    /// (verify R1: get steps used to read the cached tab unchecked). A change
-    /// between the check and the step itself is not detected; stateless exec
-    /// has the same gap between its resolution and its read.
+    /// Only a `--url` target (any matcher form) is effectively reused: it
+    /// resolves to a tab that can be re-checked by its URL, while
+    /// `verifyResolvedTab` refuses any target with nothing to check by
+    /// (`--document N`, positional flags, `--profile` alone), so those are
+    /// resolved afresh every step. Each reuse first checks that the tab still
+    /// shows a URL the pattern accepts; if not, the cache is dropped and the
+    /// target is resolved afresh, exactly as stateless exec does for every
+    /// step — so a navigated, moved or closed tab gives the same result on
+    /// both paths (verify R1: get steps used to read the cached tab
+    /// unchecked). A failed resolution leaves nothing cached. A change between
+    /// the check and the step itself is not detected; stateless exec has the
+    /// same gap between its resolution and its read.
     final class SharedTargetResolution: @unchecked Sendable {
         private let lock = NSLock()
         private var cached: (args: [String], target: SafariBridge.TargetDocument)?
@@ -56,7 +58,6 @@ struct InProcessStepDispatcher: StepDispatcher {
             return target
         }
     }
-
 
     /// Phase 1 commands this dispatcher handles directly. v2.0 ships the
     /// most-common read commands; v2.1 adds `get text` and `get source`
@@ -158,8 +159,10 @@ struct InProcessStepDispatcher: StepDispatcher {
             )
 
         case "documents":
-            // Reuse the existing JSON encoder used by `documents --json`.
-            let documents = try await SafariBridge.listAllDocuments()
+            // Reuse the existing JSON encoder used by `documents --json`, and
+            // its --profile filter (#47), which this path used to skip (verify R3).
+            let profile = target.resolveProfile()
+            let documents = try await SafariBridge.listAllDocuments().filter { profile == nil || $0.profile == profile }
             guard !documents.isEmpty else { return "[]" }
             let observation = WindowDialogObservation.capture()
             DocumentsCommand.emitDialogWarning(DocumentsCommand.dialogWarnings(commandName: "documents",

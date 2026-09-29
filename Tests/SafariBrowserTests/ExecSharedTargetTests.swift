@@ -24,6 +24,8 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         var scripts: [String] { lock.lock(); defer { lock.unlock() }; return sent }
         var enumerations: Int { scripts.filter { $0.contains("set windowCount to count of windows") }.count }
         var verifications: Int { scripts.filter { $0.contains("SB_TARGET_CHANGED") && $0.contains("return \"ok\"") }.count }
+        /// The regex form of the check: a bare URL read of the resolved tab.
+        var urlReads: Int { scripts.filter { $0.hasPrefix("tell application \"Safari\" to get URL of tab ") }.count }
         func navigate(window: Int, tab: Int, to url: String) {
             lock.withLock { if let i = windows.firstIndex(where: { $0.id == 100 + window }) { windows[i].tabs[tab - 1] = url } }
         }
@@ -61,7 +63,14 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
                     : "execution error: Can’t get tab. Invalid index. (-1719)")
             }
             let url = window.tabs[tab - 1]
-            if let pattern = Self.quoted(after: "does not contain ", in: script), !url.contains(pattern) {
+            // The three guard forms `urlGuardClause` writes (#79); a regex
+            // target has none and is checked in Swift from the URL read.
+            let rejected: Bool
+            if let p = Self.quoted(after: "does not contain ", in: script) { rejected = !url.contains(p) }
+            else if let p = Self.quoted(after: "is not equal to ", in: script) { rejected = url != p }
+            else if let p = Self.quoted(after: "does not end with ", in: script) { rejected = !url.hasSuffix(p) }
+            else { rejected = false }
+            if rejected {
                 throw SafariBrowserError.appleScriptFailed(daemonShapedErrors
                     ? "SB_TARGET_CHANGED" : "execution error: SB_TARGET_CHANGED (9001)")
             }
@@ -192,23 +201,28 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         try await DaemonRequestContext.$current.withValue(context) {
             try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
                 let dispatcher = InProcessStepDispatcher()
+                var messages: [String] = []
                 for (cmd, args) in [("click", ["button"]), ("js", [String]())] {
                     do {
                         _ = try await dispatcher.dispatch(cmd: cmd, args: args, sharedTargetArgs: ["--url", "w1.example/2"])
                         XCTFail("\(cmd) \(args) must not run in-process")
-                    } catch is ScriptDispatchError {}
+                    } catch let error as ScriptDispatchError { messages.append(error.message) }
                 }
+                // The text a client sees is unchanged from before the check moved ahead of resolution.
+                XCTAssertEqual(messages, ["command 'click' is not yet available in exec scripts",
+                                          "command 'js: missing code argument' is not yet available in exec scripts"])
             }
         }
         XCTAssertEqual(fake.enumerations, 0, "an unsupported or malformed step must not pay for a resolution")
     }
 
+    @MainActor  // NSAppleScript is created and compiled on the main actor (#130)
     func testTheVerificationScriptCompilesWithAHostilePattern() async throws {
         // The pattern reaches AppleScript as a string literal; quotes,
-        // backslashes and line breaks must not end it early.
+        // backslashes, line breaks, tabs and non-ASCII text must not end it early.
         final class Captured: @unchecked Sendable { var script = "" }
         let captured = Captured()
-        let hostile = "a\"b\\c\nd\" & (do shell script \"echo pwned\") & \""
+        let hostile = "a\"b\\c\nd\re\tf 日本語 é 😀\" & (do shell script \"echo pwned\") & \""
         let ok = try await DaemonRequestContext.$appleScriptRunner.withValue({ captured.script = $0; return "ok" }) {
             try await SafariBridge.verifyResolvedTab(.resolvedTab(windowID: 101, tabInWindow: 1,
                                                                   rematch: .contains(hostile), profile: nil))
@@ -277,5 +291,124 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         } catch SafariBrowserError.documentNotFound {
             // expected
         }
+    }
+
+
+    // MARK: - Verify R3: every matcher form, the reset, cancellation, documents --profile
+
+    private static let matcherForms: [[String]] = [
+        ["--url-exact", "https://w1.example/2"], ["--url-endswith", "w1.example/2"],
+        ["--url-regex", "^https://w1\\.example/2$"],
+    ]
+
+    func testEveryURLMatcherFormIsReusedWhileItStillMatches() async throws {
+        for shared in Self.matcherForms {
+            let fake = Fake()
+            let urls = try await run([("get url", []), ("get url", []), ("get url", [])], shared: shared, on: fake)
+            XCTAssertEqual(urls, Array(repeating: "https://w1.example/2", count: 3), "\(shared)")
+            XCTAssertEqual(fake.enumerations, 1, "\(shared): one resolution, then checked reuse")
+        }
+    }
+
+    func testEveryURLMatcherFormIsResolvedAfreshOnceItStopsMatching() async throws {
+        // A get step has no guard of its own; the check before reuse is its
+        // only protection, for the regex form too (checked in Swift).
+        for shared in Self.matcherForms {
+            let fake = Fake()
+            do {
+                _ = try await run([("get url", []), ("get url", [])], shared: shared, on: fake) { i in
+                    if i == 1 { fake.navigate(window: 1, tab: 2, to: "https://other.example/x") }
+                }
+                XCTFail("\(shared): nothing matches after the navigation")
+            } catch SafariBrowserError.documentNotFound {
+                XCTAssertEqual(fake.enumerations, 2, "\(shared)")
+            }
+        }
+    }
+
+    func testAfterAFailedResolutionAnAmbiguousMatchIsReportedNotHidden() async throws {
+        // The resolved tab navigates away (step 2 finds nothing), then comes
+        // back while a second tab also matches. Stateless exec reports the
+        // ambiguity at step 3; the daemon path must not reuse the old tab.
+        let fake = Fake()
+        fake.navigate(window: 1, tab: 2, to: "https://target.example/a")
+        let dispatcher = InProcessStepDispatcher()
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        let shared = ["--url", "target.example"]
+        try await DaemonRequestContext.$current.withValue(context) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                _ = try await dispatcher.dispatch(cmd: "get url", args: [], sharedTargetArgs: shared)
+                fake.navigate(window: 1, tab: 2, to: "https://other.example/x")
+                do {
+                    _ = try await dispatcher.dispatch(cmd: "get url", args: [], sharedTargetArgs: shared)
+                    XCTFail("nothing matches while the tab is away")
+                } catch SafariBrowserError.documentNotFound {}
+                fake.navigate(window: 1, tab: 2, to: "https://target.example/a")
+                fake.navigate(window: 2, tab: 3, to: "https://target.example/b")
+                do {
+                    let url = try await dispatcher.dispatch(cmd: "get url", args: [], sharedTargetArgs: shared)
+                    XCTFail("two tabs match; read \(url) instead of failing closed")
+                } catch SafariBrowserError.ambiguousWindowMatch {}
+            }
+        }
+    }
+
+    func testAFailedResolutionLeavesNothingToReuse() async throws {
+        final class Counts: @unchecked Sendable { var checks = 0; var resolutions = 0 }
+        struct Gone: Error {}
+        let counts = Counts()
+        let resolution = InProcessStepDispatcher.SharedTargetResolution()
+        let args = ["--url", "x"]
+        let tab = SafariBridge.TargetDocument.resolvedTab(windowID: 101, tabInWindow: 2, rematch: .contains("x"), profile: nil)
+        _ = try await resolution.resolve(args: args, verify: { _ in counts.checks += 1; return true }) {
+            counts.resolutions += 1; return tab
+        }
+        do {
+            _ = try await resolution.resolve(args: args, verify: { _ in counts.checks += 1; return false }) {
+                counts.resolutions += 1; throw Gone()
+            }
+            XCTFail("the fresh resolution failed")
+        } catch is Gone {}
+        _ = try await resolution.resolve(args: args, verify: { _ in counts.checks += 1; return true }) {
+            counts.resolutions += 1; return tab
+        }
+        XCTAssertEqual(counts.checks, 1, "after a failed resolution there is nothing cached to check")
+        XCTAssertEqual(counts.resolutions, 3)
+    }
+
+    func testACancelledCheckIsNotTakenForAFailedOne() async throws {
+        final class Counts: @unchecked Sendable { var resolutions = 0 }
+        let counts = Counts()
+        let resolution = InProcessStepDispatcher.SharedTargetResolution()
+        let args = ["--url", "x"]
+        let tab = SafariBridge.TargetDocument.resolvedTab(windowID: 101, tabInWindow: 2, rematch: .contains("x"), profile: nil)
+        _ = try await resolution.resolve(args: args, verify: { _ in true }) { counts.resolutions += 1; return tab }
+        do {
+            _ = try await resolution.resolve(args: args, verify: { _ in throw CancellationError() }) {
+                counts.resolutions += 1; return tab
+            }
+            XCTFail("cancellation must propagate")
+        } catch is CancellationError {}
+        XCTAssertEqual(counts.resolutions, 1, "a cancelled step must not start a fresh resolution")
+    }
+
+    func testADocumentsStepHonoursTheProfileFilter() async throws {
+        // Stateless `documents --profile X` lists only X's tabs; the daemon
+        // exec step listed every profile.
+        let fake = Fake()
+        let rows = { (shared: [String]) -> Int in
+            // No live AX scan in a unit test: the listing is what is under test.
+            let out = try await WindowDialogObservation.$provider.withValue({ .unavailable(reason: "disabled") }) {
+                try await self.run([("documents", [])], shared: shared, on: fake)[0]
+            }
+            let array = try JSONSerialization.jsonObject(with: Data(out.utf8)) as? [Any]
+            return array?.count ?? -1
+        }
+        let all = try await rows([])
+        let mine = try await rows(["--profile", "個人"])
+        let nobody = try await rows(["--profile", "nobody"])
+        XCTAssertEqual(all, 6)
+        XCTAssertEqual(mine, 6)
+        XCTAssertEqual(nobody, 0)
     }
 }
