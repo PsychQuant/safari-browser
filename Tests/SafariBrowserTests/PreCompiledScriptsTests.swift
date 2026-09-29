@@ -127,4 +127,26 @@ final class PreCompiledScriptsTests: XCTestCase {
         let count = await cache.cacheCount
         XCTAssertEqual(count, 1)
     }
+
+    // MARK: - #170 verify R1: bounded capacity
+
+    func testCompileCacheEvictsTheLeastRecentlyUsedScriptAtCapacity() async throws {
+        // Every distinct source (window ids, JavaScript text) was kept for the
+        // daemon's lifetime; the issue requires a bounded cache.
+        let cache = PreCompiledScripts.CompileCache(capacity: 2)
+        try await cache.compile(source: "return 1")
+        try await cache.compile(source: "return 2")
+        try await cache.compile(source: "return 1")           // most recently used again
+        try await cache.compile(source: "return 3")
+        let count = await cache.cacheCount
+        XCTAssertEqual(count, 2)
+        let keptRecent = await cache.contains(source: "return 1")
+        let evictedOldest = await cache.contains(source: "return 2")
+        XCTAssertTrue(keptRecent)
+        XCTAssertFalse(evictedOldest)
+    }
+
+    func testDefaultCompileCacheCapacityIsBounded() {
+        XCTAssertEqual(PreCompiledScripts.CompileCache.defaultCapacity, 256)
+    }
 }

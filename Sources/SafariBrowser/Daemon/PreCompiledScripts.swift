@@ -205,10 +205,23 @@ enum PreCompiledScripts {
     /// `execute(source:)` which returns a `Sendable` `ExecutionResult`, or
     /// through the introspection accessors `cacheCount` / `contains(source:)`.
     @MainActor final class CompileCache {
-        private var cache: [String: NSAppleScript] = [:]
+        /// #170: sources embed window ids, tab indices and JavaScript text,
+        /// so distinct sources are unbounded; a long-lived daemon kept every
+        /// one. The least recently used handle is evicted past this capacity.
+        nonisolated static let defaultCapacity = 256
+
+        private struct Entry {
+            let script: NSAppleScript
+            var lastUse: UInt64
+        }
+        private let capacity: Int
+        private var cache: [String: Entry] = [:]
+        private var useClock: UInt64 = 0
 
         // No NSAppleScript work occurs until an isolated method is called.
-        nonisolated init() {}
+        nonisolated init(capacity: Int = CompileCache.defaultCapacity) {
+            self.capacity = max(1, capacity)
+        }
 
         /// Ensure `source` is compiled and cached. Idempotent: repeated calls
         /// with the same source string re-use the cached `NSAppleScript`.
@@ -241,10 +254,22 @@ enum PreCompiledScripts {
             cache[source] != nil
         }
 
+        private func evictIfOverCapacity() {
+            while cache.count > capacity,
+                  let oldest = cache.min(by: { $0.value.lastUse < $1.value.lastUse })?.key {
+                cache.removeValue(forKey: oldest)
+            }
+        }
+
         // MARK: - Actor-isolated helpers
 
         private func compiledLocked(for source: String) throws -> NSAppleScript {
-            if let existing = cache[source] { return PerformanceTrace.span(.daemonCacheHit) { existing } }
+            useClock &+= 1
+            if var existing = cache[source] {
+                existing.lastUse = useClock
+                cache[source] = existing
+                return PerformanceTrace.span(.daemonCacheHit) { existing.script }
+            }
             return try PerformanceTrace.span(.daemonCompile) {
                 guard let script = NSAppleScript(source: source) else {
                     throw Error.compilationFailed("NSAppleScript init returned nil")
@@ -255,7 +280,8 @@ enum PreCompiledScripts {
                         ?? String(describing: errorInfo)
                     throw Error.compilationFailed(message)
                 }
-                cache[source] = script
+                cache[source] = Entry(script: script, lastUse: useClock)
+                evictIfOverCapacity()
                 return script
             }
         }

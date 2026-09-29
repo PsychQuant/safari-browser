@@ -11,22 +11,36 @@ import Foundation
 /// get text/source) throw `unsupportedInExec` so the client falls
 /// back to the subprocess path. Future iterations expand coverage.
 struct InProcessStepDispatcher: StepDispatcher {
-    /// #170: the shared exec target, resolved once per exec run. A new
-    /// dispatcher is created for every `exec.runScript` request, so this never
-    /// carries Safari state across requests. Before, every step rebuilt and
-    /// re-resolved the shared target — one full window/tab enumeration per step
-    /// for a `--url` target.
+    /// #170: the shared exec target, resolved once per exec run and verified
+    /// before each reuse. A new dispatcher is created for every
+    /// `exec.runScript` request, so this never carries Safari state across
+    /// requests. Before, every step rebuilt and re-resolved the shared target —
+    /// one full window/tab enumeration per step for a `--url` target.
     private let sharedResolution = SharedTargetResolution()
 
+    /// Only a `--url` target is effectively reused: it resolves to a tab that
+    /// can be re-checked by its URL, while `verifyResolvedTab` refuses any
+    /// target with nothing to check by (`--document N`, positional flags), so
+    /// those are resolved afresh every step. Each reuse first checks that the tab still shows
+    /// a URL the pattern accepts; if not, the cache is dropped and the target
+    /// is resolved afresh, exactly as stateless exec does for every step — so
+    /// a navigated, moved or closed tab gives the same result on both paths
+    /// (verify R1: get steps used to read the cached tab unchecked). A change
+    /// between the check and the step itself is not detected; stateless exec
+    /// has the same gap between its resolution and its read.
     final class SharedTargetResolution: @unchecked Sendable {
         private let lock = NSLock()
         private var cached: (args: [String], target: SafariBridge.TargetDocument)?
 
         func resolve(
             args: [String],
+            verify: (SafariBridge.TargetDocument) async throws -> Bool = SafariBridge.verifyResolvedTab,
             _ resolver: () async throws -> SafariBridge.TargetDocument
         ) async throws -> SafariBridge.TargetDocument {
-            if let hit = lock.withLock({ cached }), hit.args == args { return hit.target }
+            if let hit = lock.withLock({ cached }), hit.args == args {
+                if try await verify(hit.target) { return hit.target }
+                lock.withLock { cached = nil }
+            }
             let target = try await resolver()
             lock.withLock { cached = (args, target) }
             return target

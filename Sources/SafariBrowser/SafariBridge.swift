@@ -1406,6 +1406,31 @@ enum SafariBridge {
         """
     }
 
+    /// #170: does an identity-anchored tab still show a URL its matcher
+    /// accepts? One small AppleScript; false when the guard trips or the tab
+    /// or window is gone, and for a target with no matcher to check by.
+    static func verifyResolvedTab(_ target: TargetDocument) async throws -> Bool {
+        guard case .resolvedTab(let windowID, let tab, let matcher?, _) = target else { return false }
+        let reference = "tab \(tab) of window id \(windowID)"
+        do {
+            if let guardClause = urlGuardClause(for: matcher) {
+                _ = try await runAppleScript("""
+                    tell application "Safari"
+                        set _t to \(reference)
+                        \(guardClause)
+                        return "ok"
+                    end tell
+                    """)
+                return true
+            }
+            // A regex matcher has no AppleScript form: check the URL here.
+            let url = try await runAppleScript("tell application \"Safari\" to get URL of \(reference)")
+            return matcher.matches(url)
+        } catch let error as SafariBrowserError where isTargetDangleError(error) {
+            return false
+        }
+    }
+
     /// #79: does this error mean the identity-anchored target dangled
     /// (window closed / tab moved / guard tripped) — i.e. a bounded
     /// re-resolve is worth one attempt? Pure; drives the retry decision.
