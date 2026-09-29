@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Daemon-path AppleScript errors keep their code** (#218): in daemon mode AppleScript runs through `NSAppleScript`, whose error message carries no numeric code and is localized; the code sits in `NSAppleScriptErrorNumber`, which was dropped. Errors now end in ` (<code>)`, as `osascript` prints them, so the #79 bounded retry and the not-found translation recognise a closed tab or window on the daemon path too. The not-found translation also accepts Safari's curly apostrophe (`Can’t get`). Daemon-mode error text gains that suffix.
+
 - **Daemon socket directory validation** (#214): reject non-directory `--socket-dir` and `TMPDIR` values before service launch or dispatch, with a distinct diagnostic. `--allow-unsafe-socket-dir` only bypasses the existing permission check. Symlink lookup continues to follow the target; directory links retain target-permission checks and dangling links remain missing/not statable.
 
 - **Opt-in command pacing** (#184): `SAFARI_BROWSER_PACING=cauchy` adds a bounded jitter wait after each ordinary CLI operation or executed `exec` step, with optional `_MIN_MS`, `_MAX_MS`, `_MEDIAN_MS`, and `_SCALE_MS` parameters. Defaults remain off; explicit `off` ignores inherited pacing parameters. Standalone and both MCP modes share the same boundary, while help, explicit waits, daemon controls, hosts, wrappers and the outer batch do not add a second wait. Paced batches choose the existing per-step path before dispatch and retain per-command daemon routing. Validation occurs before effects; cancellation never replays an operation or extends the existing MCP deadline.

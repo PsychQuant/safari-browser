@@ -127,4 +127,35 @@ final class PreCompiledScriptsTests: XCTestCase {
         let count = await cache.cacheCount
         XCTAssertEqual(count, 1)
     }
+
+    // MARK: - #218: daemon-path errors keep their AppleScript code
+
+    func testExecutionErrorsCarryTheirCodeLikeOsascript() async throws {
+        // NSAppleScript puts the code in NSAppleScriptErrorNumber, not in the
+        // message; osascript appends it. Classifiers read the code.
+        let cache = PreCompiledScripts.CompileCache()
+        for (code, text) in [(-1719, "Can’t get tab 9 of window id 101. Invalid index."), (-1728, "Can’t get window id 999.")] {
+            do {
+                _ = try await DaemonDispatch.Handlers.cachedScriptText(
+                    source: "error \"\(text)\" number \(code)", cache: cache)
+                XCTFail("the script raises")
+            } catch let error as SafariBrowserError {
+                guard case .appleScriptFailed(let message) = error else { return XCTFail("\(error)") }
+                XCTAssertTrue(message.hasSuffix("(\(code))"), message)
+                XCTAssertTrue(message.contains(text), message)
+                XCTAssertTrue(SafariBridge.isTargetDangleError(error), "a dangle on the daemon path must be recognised: \(message)")
+            }
+        }
+    }
+
+    func testCompilationErrorsCarryTheirCode() async {
+        let cache = PreCompiledScripts.CompileCache()
+        do {
+            try await cache.compile(source: "this is not ) applescript (")
+            XCTFail("the source does not compile")
+        } catch PreCompiledScripts.Error.compilationFailed(let message) {
+            XCTAssertNotNil(message.range(of: #"\(-?\d+\)$"#, options: .regularExpression), message)
+        } catch { XCTFail("\(error)") }
+    }
 }
+

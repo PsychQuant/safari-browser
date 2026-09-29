@@ -584,7 +584,7 @@ enum SafariBridge {
                 throw error
             }
             if case .appleScriptFailed(let msg) = error,
-               msg.contains("-1719") || msg.contains("-1728") || msg.contains("Can't get") || msg.contains("無法取得") {
+               msg.contains("-1719") || msg.contains("-1728") || msg.contains("Can't get") || msg.contains("Can’t get") || msg.contains("無法取得") {
                 let docs = (try? await listAllDocuments()) ?? []
                 // #72: carry each tab's coordinates, not just its URL — the
                 // error's hint tells the reader to retarget with

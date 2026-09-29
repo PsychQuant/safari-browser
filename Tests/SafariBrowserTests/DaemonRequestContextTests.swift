@@ -102,7 +102,10 @@ final class DaemonRequestContextTests: XCTestCase {
             _ = try await DaemonDispatch.Handlers.cachedScriptText(source: #"error "broken""#, cache: cache)
             XCTFail("expected AppleScript error")
         } catch SafariBrowserError.appleScriptFailed(let message) {
-            XCTAssertEqual(message, "broken")
+            // #218: standalone osascript prints "…execution error: broken (-2700)";
+            // the cached runner now keeps the code too, since error
+            // classification depends on it.
+            XCTAssertEqual(message, "broken (-2700)")
         }
     }
 
