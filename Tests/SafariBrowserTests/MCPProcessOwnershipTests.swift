@@ -19,33 +19,110 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
     private var binary: URL { Bundle(for: Self.self).bundleURL.deletingLastPathComponent().appendingPathComponent("safari-browser") }
     private func image() throws -> String { try MCPExecutableIdentity.readImage(at: binary, architecture: MCPExecutableIdentity.currentArchitecture()) }
 
-    func testOneShotRetirementKillsARealLateJoiningMemberBeforeReleasingLeader() async throws {
-        final class LateMember: @unchecked Sendable {
-            var member: MCPChildReservation?
-            var joined = false
+    /// What the late-joining fixture established in one attempt (#217). Only
+    /// `.joined` lets the product assertions speak: every other phase means
+    /// the scenario under test never happened, and must not be reported as a
+    /// member the product failed to kill.
+    private enum LateJoinPhase: Equatable {
+        /// The pre-started member never reported ready.
+        case memberNotReady
+        /// The product reaped the leader in the same retirement pass that
+        /// first saw it exit, before the fixture could observe that exit.
+        /// Nothing had joined, so there was nothing to kill: inconclusive.
+        case leaderReapedBeforeExitObserved
+        /// The member answered the join command with an errno.
+        case joinFailed(String)
+        /// The member did not answer the join command.
+        case joinTimedOut
+        case joined
+    }
+
+    private struct LateJoinAttempt {
+        var phase: LateJoinPhase
+        var result: MCPCommandResult
+        var memberExited: Bool
+        var observationFailure: String?
+        var memberCleanup: MCPChildReservation.Retirement?
+        var cleanup: String?
+        var callbackFailure: String?
+    }
+
+    /// One run of the late-joining scenario with a fresh runner. The member is
+    /// started and warmed BEFORE the runner, and joins the leader's group on
+    /// command: #217 measured its interpreter start overrunning the 0.5 s join
+    /// budget under concurrent process spawning when it was started inside the
+    /// retirement callback.
+    private func runLateJoinAttempt() async throws -> LateJoinAttempt {
+        final class Fixture: @unchecked Sendable {
+            let lock = NSLock()
+            var joinRequested = false
+            var phase: LateJoinPhase?
             var failure: String?
         }
-        let state = LateMember()
+        let fixture = Fixture()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let ready = directory.appendingPathComponent("joined")
+        let status = directory.appendingPathComponent("status")
+        var command: [Int32] = [-1, -1]
+        XCTAssertEqual(pipe(&command), 0)
+        defer { close(command[1]) }
+        let script = """
+            import os,signal,sys
+            signal.signal(signal.SIGTERM,signal.SIG_IGN)
+            out=open(sys.argv[1],'w'); out.write('ready\\n'); out.flush()
+            line=sys.stdin.readline()
+            try:
+                os.setpgid(0,int(line)); out.write('joined:%d\\n'%os.getpgrp())
+            except OSError as e:
+                out.write('failed:%d\\n'%e.errno)
+            out.flush(); signal.pause()
+            """
+        let member = try MCPWorkerSpawn.child(executable: URL(fileURLWithPath: "/usr/bin/python3"),
+            arguments: ["-c", script, status.path], environment: [:], descriptors: [0: command[0]], group: .inherit)
+        close(command[0])
+        @Sendable func statusLine(_ prefix: String) -> String? {
+            (try? String(contentsOf: status, encoding: .utf8))?.split(separator: "\n").map(String.init).first { $0.hasPrefix(prefix) }
+        }
+        // Readiness is established outside the product's retirement window, so
+        // this bound is only a failure ceiling, never the pass condition.
+        let readyDeadline = ProcessInfo.processInfo.systemUptime + 10
+        while statusLine("ready") == nil && ProcessInfo.processInfo.systemUptime < readyDeadline { usleep(2_000) }
+        guard statusLine("ready") != nil else {
+            let cleanup = member.retire()
+            return LateJoinAttempt(phase: .memberNotReady, result: MCPCommandResult(), memberExited: false,
+                                   memberCleanup: cleanup)
+        }
+        let commandFD = command[1]
         var lifecycle = MCPProcessRunner.Lifecycle()
         lifecycle.retire = { leader in
             do {
-                if state.member == nil, try leader.observe() == .exited {
+                let requested = fixture.lock.withLock { fixture.joinRequested }
+                if !requested, try leader.observe() == .exited {
                     // The fixture leader ignores TERM and stops itself, so an
-                    // exited leader here proves the first KILL already occurred.
-                    let script = "import os,signal,sys,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); os.setpgid(0,int(sys.argv[1])); pathlib.Path(sys.argv[2]).write_text(str(os.getpgrp())); signal.pause()"
-                    state.member = try MCPWorkerSpawn.child(executable: URL(fileURLWithPath: "/usr/bin/python3"),
-                        arguments: ["-c", script, String(leader.pid), ready.path], environment: [:], descriptors: [:], group: .inherit)
-                    let deadline = ProcessInfo.processInfo.systemUptime + 0.5
-                    while ProcessInfo.processInfo.systemUptime < deadline {
-                        if (try? String(contentsOf: ready, encoding: .utf8)) == String(leader.pid) { state.joined = true; break }
-                        usleep(1_000)
+                    // exited leader here proves the first KILL already occurred
+                    // while its reservation still holds the group.
+                    fixture.lock.withLock { fixture.joinRequested = true }
+                    let line = Array("\(leader.pid)\n".utf8)
+                    let phase: LateJoinPhase
+                    if write(commandFD, line, line.count) != line.count {
+                        phase = .joinFailed("command write errno \(errno)")
+                    } else {
+                        // setpgid in a running interpreter: milliseconds.
+                        let deadline = ProcessInfo.processInfo.systemUptime + 0.5
+                        var answer: LateJoinPhase?
+                        while answer == nil && ProcessInfo.processInfo.systemUptime < deadline {
+                            if let joined = statusLine("joined:") {
+                                answer = joined == "joined:\(leader.pid)" ? .joined : .joinFailed("joined \(joined)")
+                            } else if let failed = statusLine("failed:") {
+                                answer = .joinFailed(failed)
+                            } else { usleep(1_000) }
+                        }
+                        phase = answer ?? .joinTimedOut
                     }
+                    fixture.lock.withLock { fixture.phase = phase }
                 }
-            } catch { state.failure = String(describing: error) }
+            } catch { fixture.lock.withLock { fixture.failure = String(describing: error) } }
             return leader.retire(timeout: 0)
         }
         let python = URL(fileURLWithPath: "/usr/bin/python3")
@@ -53,36 +130,69 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
             timeout: 0.25, cleanupTimeout: 1, lifecycle: lifecycle)
         let result = await runner.run(arguments: ["import os,signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('started',flush=True); os.kill(os.getpid(),signal.SIGSTOP)"],
                                       input: Data(), expectedImage: "fixture")
-        // Member has its own local spawn reservation. Cleanup never uses a PID
-        // obtained from ps or a worker reply, even if the assertion is RED.
-        let member = state.member
+        let (requested, recorded, callbackFailure) = fixture.lock.withLock {
+            (fixture.joinRequested, fixture.phase, fixture.failure)
+        }
+        let phase = recorded ?? (requested ? .joinTimedOut : .leaderReapedBeforeExitObserved)
         // Darwin can remove the process from group/proc snapshots before the
         // parent's WEXITED observation becomes available. Observe boundedly,
         // before sending any fixture cleanup signal, rather than assuming both
         // kernel views become visible in the same scheduler turn.
         var memberExited = false
         var observationFailure: String?
-        let observationDeadline = ProcessInfo.processInfo.systemUptime + 0.3
-        while let member, ProcessInfo.processInfo.systemUptime < observationDeadline {
-            do {
-                if try member.observe() == .exited { memberExited = true; break }
-            } catch { observationFailure = String(describing: error); break }
-            try await Task.sleep(for: .milliseconds(5))
+        if phase == .joined {
+            let observationDeadline = ProcessInfo.processInfo.systemUptime + 0.3
+            while ProcessInfo.processInfo.systemUptime < observationDeadline {
+                do {
+                    if try member.observe() == .exited { memberExited = true; break }
+                } catch { observationFailure = String(describing: error); break }
+                try await Task.sleep(for: .milliseconds(5))
+            }
         }
-        let memberCleanup = member?.retire()
+        // Member has its own local spawn reservation. Cleanup never uses a PID
+        // obtained from ps or a worker reply.
+        let memberCleanup = member.retire()
         let cleanup = await runner.shutdown()
-        XCTAssertNil(state.failure)
-        XCTAssertTrue(state.joined, "Fixture must join the still-reserved group after its first kill")
-        XCTAssertEqual(result.stdout, Data("started\n".utf8))
-        XCTAssertTrue(result.failure?.contains("timed out") == true)
-        XCTAssertFalse(result.failure?.contains("pending") == true)
-        XCTAssertNil(observationFailure)
-        XCTAssertTrue(memberExited, "A late member survived the one-shot runner's retirement")
-        if let memberCleanup {
-            guard case .reaped(let status) = memberCleanup else { return XCTFail("Owned fixture member was not reaped") }
-            XCTAssertEqual(status & 0x7f, SIGKILL, "The late member must have been terminated, not completed naturally")
+        return LateJoinAttempt(phase: phase, result: result, memberExited: memberExited,
+                               observationFailure: observationFailure, memberCleanup: memberCleanup,
+                               cleanup: cleanup, callbackFailure: callbackFailure)
+    }
+
+    func testOneShotRetirementKillsARealLateJoiningMemberBeforeReleasingLeader() async throws {
+        // #217: an attempt in which the product reaped the leader before any
+        // member could join tested nothing; run the scenario again rather than
+        // report a member the product never had to kill.
+        var inconclusive = 0
+        var attempt: LateJoinAttempt?
+        for _ in 1...5 {
+            let next = try await runLateJoinAttempt()
+            attempt = next
+            guard next.phase == .leaderReapedBeforeExitObserved else { break }
+            inconclusive += 1
         }
-        XCTAssertNil(cleanup)
+        let run = try XCTUnwrap(attempt)
+        if inconclusive > 0 { print("[#217] late-join attempts retried as inconclusive: \(inconclusive)") }
+        XCTAssertNil(run.callbackFailure)
+        switch run.phase {
+        case .memberNotReady:
+            return XCTFail("Fixture: the pre-started member never became ready")
+        case .leaderReapedBeforeExitObserved:
+            return XCTFail("Fixture: in \(inconclusive) attempts the leader was reaped before its exit could be observed; no member ever joined")
+        case .joinFailed(let why):
+            return XCTFail("Fixture: the member could not join the still-reserved group (\(why))")
+        case .joinTimedOut:
+            return XCTFail("Fixture: the member did not answer the join command")
+        case .joined:
+            break
+        }
+        XCTAssertEqual(run.result.stdout, Data("started\n".utf8))
+        XCTAssertTrue(run.result.failure?.contains("timed out") == true)
+        XCTAssertFalse(run.result.failure?.contains("pending") == true)
+        XCTAssertNil(run.observationFailure)
+        XCTAssertTrue(run.memberExited, "A late member that joined the reserved group survived the one-shot runner's retirement")
+        guard case .reaped(let status)? = run.memberCleanup else { return XCTFail("Owned fixture member was not reaped") }
+        XCTAssertEqual(status & 0x7f, SIGKILL, "The late member must have been terminated, not completed naturally")
+        XCTAssertNil(run.cleanup)
     }
 
     func testImageRejectionKeepsIntentionalCaptureDistinctionBetweenModes() async {
