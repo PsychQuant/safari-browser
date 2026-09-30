@@ -25,9 +25,11 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
     private enum LateJoinPhase: Equatable {
         /// The pre-started member never reported ready.
         case memberNotReady
-        /// No retirement pass sent the first KILL and left the leader for the
-        /// fixture to observe exiting (runner failure, or a leader that exited
-        /// on its own before the first KILL).
+        /// No retirement pass left the leader exited but still reserved for the
+        /// fixture to observe: the runner failed before a callback ran, the
+        /// leader died on its own, or a pass reaped it in the pass that first
+        /// sent the KILL. Classified by the evidence of pending cleanup, not by
+        /// absence alone: pending cleanup is reported as a product failure.
         case exitNeverObserved
         /// The member answered the join command with an errno.
         case joinFailed(String)
@@ -56,6 +58,19 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
     /// member before handing control back. The previous fixture observed first
     /// and then called retire, and the leader could exit between those two
     /// observations and be reaped before any member existed.
+    ///
+    /// "Due" is judged from a clock read AFTER `leader.retire` returns. The
+    /// product reads its own clock inside `retire`, after this fixture's
+    /// reading of the first pass, so `after - first` is never smaller than the
+    /// product's `now - stopStarted`: whenever the product sends the KILL in a
+    /// pass, the fixture considers that pass due. The converse can fail by
+    /// microseconds, and then the fixture waits for an exit that has not been
+    /// caused yet; that costs one bounded wait and the next pass corrects it.
+    /// A read BEFORE `retire` had neither property (verify R2: about 2% of
+    /// in-process runs under contention missed the pass). As a backstop, a pass
+    /// that starts with the leader already exited and still reserved joins the
+    /// member before calling `retire`, which covers a product whose grace is
+    /// shorter than the 150 ms copied below.
     ///
     /// What this proves from outside: the member joined the leader's group
     /// while the leader was reserved (a reaped leader leaves no group, and
@@ -119,19 +134,58 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
             return LateJoinEvidence(phase: .memberNotReady, events: [], result: MCPCommandResult(), memberExited: false,
                                     memberCleanup: member.retire(), callbackFailures: [])
         }
+        /// Ask the member to join the leader's group and wait for its answer.
+        /// Runs inside the retirement callback, so both waits are bounded.
+        @Sendable func join(_ leader: MCPChildReservation) {
+            let line = Array("\(leader.pid)\n".utf8)
+            // errno is read inside the lock, immediately after `write`.
+            let refusal: String? = fixture.lock.withLock {
+                fixture.joinRequested = true
+                guard fixture.commandFD >= 0 else { return "command pipe already closed" }
+                let count = write(fixture.commandFD, line, line.count)
+                if count == line.count { return nil }
+                return count < 0 ? "command write errno \(errno)" : "short command write (\(count) of \(line.count))"
+            }
+            let phase: LateJoinPhase
+            if let refusal {
+                phase = .joinFailed(refusal)
+            } else {
+                let deadline = ProcessInfo.processInfo.systemUptime + 0.5
+                var answer: LateJoinPhase?
+                while answer == nil && ProcessInfo.processInfo.systemUptime < deadline {
+                    if let joined = statusLine("joined:") {
+                        answer = joined == "joined:\(leader.pid)" ? .joined : .joinFailed("joined \(joined)")
+                    } else if let failed = statusLine("failed:") {
+                        answer = .joinFailed(failed)
+                    } else { usleep(1_000) }
+                }
+                phase = answer ?? .joinTimedOut
+            }
+            fixture.note("member \(phase)")
+            fixture.lock.withLock { fixture.phase = phase }
+        }
         var lifecycle = MCPProcessRunner.Lifecycle()
         lifecycle.retire = { leader in
-            let now = ProcessInfo.processInfo.systemUptime
+            do {
+                // Backstop: an earlier pass sent the KILL and the leader has
+                // exited while still reserved. Join now, before this pass reaps it.
+                let requested = fixture.lock.withLock { fixture.joinRequested }
+                if !requested, try leader.observe() == .exited {
+                    fixture.note("leader exited between passes, still reserved")
+                    join(leader)
+                }
+            } catch { fixture.lock.withLock { fixture.failures.append(String(describing: error)) } }
             let first = fixture.lock.withLock { () -> TimeInterval in
-                if fixture.firstPass == nil { fixture.firstPass = now }
+                if fixture.firstPass == nil { fixture.firstPass = ProcessInfo.processInfo.systemUptime }
                 return fixture.firstPass!
             }
             let retirement = leader.retire(timeout: 0)
-            fixture.note(String(format: "%.3f retire → %@", now - first, String(describing: retirement)))
-            // The first KILL is due 150 ms after the first pass sent TERM. Our
-            // clock starts before the product's, so this never runs late.
+            let after = ProcessInfo.processInfo.systemUptime   // after the product's own clock reads
+            fixture.note(String(format: "%.3f retire → %@", after - first, String(describing: retirement)))
+            // The first KILL is due 150 ms after the first pass sent TERM
+            // (MCPChildReservation.retire, MCPWorkerSupervisor.swift).
             let requested = fixture.lock.withLock { fixture.joinRequested }
-            guard case .pending = retirement, !requested, now - first >= 0.15 else { return retirement }
+            guard case .pending = retirement, !requested, after - first >= 0.15 else { return retirement }
             do {
                 let exitDeadline = ProcessInfo.processInfo.systemUptime + 0.5
                 var exited = false
@@ -141,34 +195,17 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
                 }
                 guard exited else { return retirement }   // KILL not sent yet: try on the next pass
                 fixture.note("leader exited, still reserved")
-                let line = Array("\(leader.pid)\n".utf8)
-                let written: Int = fixture.lock.withLock {
-                    fixture.joinRequested = true
-                    return fixture.commandFD >= 0 ? write(fixture.commandFD, line, line.count) : -1
-                }
-                var phase: LateJoinPhase
-                if written != line.count {
-                    phase = .joinFailed("command write errno \(errno)")
-                } else {
-                    let deadline = ProcessInfo.processInfo.systemUptime + 0.5
-                    var answer: LateJoinPhase?
-                    while answer == nil && ProcessInfo.processInfo.systemUptime < deadline {
-                        if let joined = statusLine("joined:") {
-                            answer = joined == "joined:\(leader.pid)" ? .joined : .joinFailed("joined \(joined)")
-                        } else if let failed = statusLine("failed:") {
-                            answer = .joinFailed(failed)
-                        } else { usleep(1_000) }
-                    }
-                    phase = answer ?? .joinTimedOut
-                }
-                fixture.note("member \(phase)")
-                fixture.lock.withLock { fixture.phase = phase }
+                join(leader)
             } catch { fixture.lock.withLock { fixture.failures.append(String(describing: error)) } }
             return retirement
         }
         let python = URL(fileURLWithPath: "/usr/bin/python3")
+        // cleanupTimeout counts from the start of retirement, and the fixture
+        // blocks the runner's queue for up to 0.5 s twice; 3 s leaves room for
+        // that without relaxing what retirement must achieve (max accepted: 5 s).
+        // The 0.6 s timeout bounds the leader's own interpreter start-up.
         let runner = MCPProcessRunner(executable: python, workerPrefix: ["-c"], supervisorExecutable: python,
-            timeout: 0.25, cleanupTimeout: 1, lifecycle: lifecycle)
+            timeout: 0.6, cleanupTimeout: 3, lifecycle: lifecycle)
         let result = await runner.run(arguments: ["import os,signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('started',flush=True); os.kill(os.getpid(),signal.SIGSTOP)"],
                                       input: Data(), expectedImage: "fixture")
         let phase = fixture.lock.withLock { fixture.phase } ?? .exitNeverObserved
@@ -184,7 +221,9 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
                 do {
                     if try member.observe() == .exited { memberExited = true; break }
                 } catch { observationFailure = String(describing: error); break }
-                try await Task.sleep(for: .milliseconds(5))
+                // Not `try`: a cancelled test must still reach the cleanup below,
+                // or the SIGTERM-ignoring member outlives it.
+                try? await Task.sleep(for: .milliseconds(5))
             }
         }
         // Member has its own local spawn reservation. Cleanup never uses a PID
@@ -199,35 +238,57 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    func testOneShotRetirementKillsARealLateJoiningMemberBeforeReleasingLeader() async throws {
-        let run = try await runLateJoinScenario()
+    /// `SAFARI_BROWSER_LATE_JOIN_REPEAT=N` repeats the scenario N times inside
+    /// this one process (scripts/stress-late-join.sh), which is the form that
+    /// exercises the retirement-pass timing; one process per run does not.
+    func testOneShotRetirementKillsARealLateJoiningMember() async throws {
+        let environment = ProcessInfo.processInfo.environment["SAFARI_BROWSER_LATE_JOIN_REPEAT"]
+        let repeats = max(1, environment.flatMap { Int($0) } ?? 1)
+        for index in 1...repeats {
+            let run = try await runLateJoinScenario()
+            checkLateJoin(run, label: repeats > 1 ? "run \(index)/\(repeats): " : "")
+        }
+    }
+
+    /// The fixture phases speak first; only `.joined` lets the product
+    /// assertions speak. Every message carries the runner's and the member's
+    /// own cleanup evidence, so a fixture stall is not mistaken for the product.
+    private func checkLateJoin(_ run: LateJoinEvidence, label: String) {
         let trace = run.events.joined(separator: "; ")
-        XCTAssertEqual(run.callbackFailures, [], "observe() failed inside retirement: \(trace)")
+        let evidence = "runner failure: \(run.result.failure ?? "none"); runner cleanup: \(run.cleanup ?? "none"); "
+            + "member cleanup: \(run.memberCleanup.map { String(describing: $0) } ?? "none"); trace: \(trace)"
+        XCTAssertEqual(run.callbackFailures, [], "\(label)observe() failed inside retirement: \(trace)")
         switch run.phase {
         case .memberNotReady:
-            return XCTFail("Fixture: the pre-started member never became ready")
+            return XCTFail("\(label)Fixture: the pre-started member never became ready (\(evidence))")
         case .exitNeverObserved:
             // A retirement that never completes is the product's failure, not
             // the fixture's: it never killed the leader it was retiring.
             if run.cleanup != nil || run.result.failure?.contains("pending") == true {
-                return XCTFail("Retirement never killed the leader (runner failure: \(run.result.failure ?? "none"); cleanup: \(run.cleanup ?? "none")): \(trace)")
+                return XCTFail("\(label)Retirement never killed the leader (\(evidence))")
             }
-            return XCTFail("Fixture: no retirement pass left the killed leader for the fixture to observe (runner failure: \(run.result.failure ?? "none")): \(trace)")
+            return XCTFail("\(label)Fixture: no retirement pass left the leader exited but still reserved for the fixture to observe (\(evidence))")
         case .joinFailed(let why):
-            return XCTFail("Fixture: the member could not join the still-reserved group (\(why)): \(trace)")
+            return XCTFail("\(label)Fixture: the member could not join the still-reserved group (\(why)): \(evidence)")
         case .joinTimedOut:
-            return XCTFail("Fixture: the member did not answer the join command: \(trace)")
+            return XCTFail("\(label)Fixture: the member did not answer the join command: \(evidence)")
         case .joined:
             break
         }
-        XCTAssertEqual(run.result.stdout, Data("started\n".utf8), "leader output")
-        XCTAssertTrue(run.result.failure?.contains("timed out") == true, "runner failure: \(run.result.failure ?? "none")")
-        XCTAssertFalse(run.result.failure?.contains("pending") == true, "retirement left pending: \(trace)")
+        // The leader is the runner's own interpreter and cannot be pre-warmed:
+        // one killed before it printed anything is a start-up-time fixture
+        // failure, not a product regression.
+        if run.result.stdout.isEmpty {
+            return XCTFail("\(label)Fixture: the leader was terminated before its interpreter printed 'started' (\(evidence))")
+        }
+        XCTAssertEqual(run.result.stdout, Data("started\n".utf8), "\(label)leader output")
+        XCTAssertTrue(run.result.failure?.contains("timed out") == true, "\(label)runner failure: \(run.result.failure ?? "none")")
+        XCTAssertFalse(run.result.failure?.contains("pending") == true, "\(label)retirement left pending: \(trace)")
         XCTAssertNil(run.observationFailure)
-        XCTAssertTrue(run.memberExited, "A late member that joined the reserved group survived the one-shot runner's retirement: \(trace)")
-        guard case .reaped(let status)? = run.memberCleanup else { return XCTFail("Owned fixture member was not reaped") }
-        XCTAssertEqual(status & 0x7f, SIGKILL, "The late member must have been terminated, not completed naturally")
-        XCTAssertNil(run.cleanup, "runner shutdown left cleanup pending")
+        XCTAssertTrue(run.memberExited, "\(label)A late member that joined the reserved group survived the one-shot runner's retirement: \(trace)")
+        guard case .reaped(let status)? = run.memberCleanup else { return XCTFail("\(label)Owned fixture member was not reaped") }
+        XCTAssertEqual(status & 0x7f, SIGKILL, "\(label)The late member must have been terminated, not completed naturally")
+        XCTAssertNil(run.cleanup, "\(label)runner shutdown left cleanup pending")
     }
 
     func testImageRejectionKeepsIntentionalCaptureDistinctionBetweenModes() async {
