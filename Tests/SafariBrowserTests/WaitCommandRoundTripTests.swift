@@ -245,7 +245,7 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         try await runWait(["--for-url", "w1.example/53", "--timeout", "500", "--url", "w1.example/53"], on: fake)
     }
 
-    // MARK: - #221: `--timeout` bounds when a poll may start, not how long one takes
+    // MARK: - #221: `--timeout` bounds when a poll may start, not how long the command takes
 
     private func elapsed(_ body: () async throws -> Void) async -> (seconds: TimeInterval, error: Error?) {
         let start = Date()
@@ -253,8 +253,9 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         catch { return (Date().timeIntervalSince(start), error) }
     }
 
-    /// A poll already running is not interrupted at the deadline, and what it answers counts:
-    /// the condition held, so the wait succeeds even though the poll took longer than `--timeout`.
+    /// A poll already running is not interrupted at the deadline, and what it answers counts. The
+    /// fake's poll checks, after it has waited, whether its own task was cancelled: elapsed time
+    /// alone cannot tell "not interrupted" from "cancelled, then waited for".
     func testAJSPollThatOutlastsTheTimeoutIsNotInterruptedAndItsAnswerCounts() async {
         let fake = FakeSafari()
         fake.javaScriptDelay = 0.8
@@ -263,6 +264,21 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         XCTAssertNil(result.error, "\(String(describing: result.error))")
         XCTAssertGreaterThanOrEqual(result.seconds, 0.75, "the poll ran to completion")
         XCTAssertEqual(fake.javaScripts.count, 1, fake.transcript)
+        XCTAssertFalse(fake.aPollWasCancelled, "the poll's task was never cancelled")
+    }
+
+    /// The claim is about a poll that STARTED before the deadline, not only the first one (which is
+    /// exempt anyway): poll 1 is quick and false, poll 2 starts before the deadline, outlasts it,
+    /// and its answer counts.
+    func testALaterJSPollThatOutlastsTheTimeoutIsNotInterruptedEither() async {
+        let fake = FakeSafari()
+        fake.waitPollDelays = [0, 0.8]
+        fake.waitConditionHoldsFromPoll = 2
+        let result = await elapsed { try await runWait(["--js", "window.ready", "--timeout", "700"], on: fake) }
+        XCTAssertNil(result.error, "\(String(describing: result.error))")
+        XCTAssertEqual(fake.javaScripts.count, 2, fake.transcript)
+        XCTAssertGreaterThanOrEqual(result.seconds, 1.25, "poll 2 started at about 0.5 s and took 0.8 s")
+        XCTAssertFalse(fake.aPollWasCancelled)
     }
 
     /// The last poll outlasting the deadline ends the wait; no further poll starts.
@@ -272,7 +288,9 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         let result = await elapsed { try await runWait(["--js", "window.ready", "--timeout", "300"], on: fake) }
         guard case SafariBrowserError.timeout? = result.error else { return XCTFail("expected a timeout, got \(String(describing: result.error))") }
         XCTAssertGreaterThanOrEqual(result.seconds, 0.75, "the poll in flight was not interrupted at 300 ms")
+        XCTAssertLessThan(result.seconds, 1.3, "and nothing waited after it")
         XCTAssertEqual(fake.javaScripts.count, 1, "no second poll after the deadline:\n\(fake.transcript)")
+        XCTAssertFalse(fake.aPollWasCancelled)
     }
 
     func testAURLPollThatOutlastsTheTimeoutIsNotInterruptedAndItsAnswerCounts() async {
@@ -295,6 +313,40 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         guard case SafariBrowserError.timeout? = result.error else { return XCTFail("expected a timeout, got \(String(describing: result.error))") }
         XCTAssertGreaterThanOrEqual(result.seconds, 0.75)
         XCTAssertEqual(fake.windowURLReads.count, 1, "no second poll after the deadline:\n\(fake.transcript)")
+    }
+
+    /// A call that reaches its own limit ends the wait with that call's error; the wait does not
+    /// go on polling until `--timeout`, and does not report the `--timeout` error.
+    func testACallThatReachesItsOwnLimitEndsTheWaitWithThatError() async {
+        let fake = FakeSafari(failJSContaining: "window.ready")
+        fake.failWithTimeout = true
+        let result = await elapsed { try await runWait(["--js", "window.ready", "--timeout", "5000"], on: fake) }
+        guard case SafariBrowserError.processTimedOut? = result.error else { return XCTFail("expected the call's own timeout error, got \(String(describing: result.error))") }
+        XCTAssertLessThan(result.seconds, 1.0, "it did not keep polling until --timeout")
+        XCTAssertEqual(fake.javaScripts.count, 1, fake.transcript)
+    }
+
+    /// The deadline is taken before the target is resolved, so a slow resolution counts against
+    /// `--timeout`. Were it taken afterwards, this wait would run for the resolution PLUS the timeout.
+    func testTheDeadlineStartsBeforeTheTargetIsResolved() async {
+        let fake = FakeSafari()
+        fake.enumerationDelay = 0.8
+        let result = await elapsed {
+            try await runWait(["--js", "window.ready", "--timeout", "1000", "--url", "w1.example/53"], on: fake)
+        }
+        guard case SafariBrowserError.timeout? = result.error else { return XCTFail("expected a timeout, got \(String(describing: result.error))") }
+        XCTAssertGreaterThanOrEqual(result.seconds, 0.95)
+        XCTAssertLessThan(result.seconds, 1.5, "0.8 s of resolution plus the 1 s timeout would be 1.8 s")
+    }
+
+    /// Nothing sleeps past the deadline: after an unsatisfied poll the wait sleeps only until the
+    /// deadline (at most the usual 500 ms), so a short timeout ends about when it says.
+    func testTheWaitDoesNotSleepPastTheDeadline() async {
+        let fake = FakeSafari()
+        let result = await elapsed { try await runWait(["--js", "window.ready", "--timeout", "200"], on: fake) }
+        guard case SafariBrowserError.timeout? = result.error else { return XCTFail("expected a timeout, got \(String(describing: result.error))") }
+        XCTAssertGreaterThanOrEqual(result.seconds, 0.18)
+        XCTAssertLessThan(result.seconds, 0.45, "an unconditional 500 ms sleep after the last poll would end it at 0.5 s or later")
     }
 
     func testDefaultTargetWaitNeverEnumerates() async {

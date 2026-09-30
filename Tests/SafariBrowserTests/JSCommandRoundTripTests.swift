@@ -37,6 +37,15 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         var windowURLReadDelay: TimeInterval = 0
         /// #221: what a `wait --js` poll answers (`"true"` makes the condition hold); empty otherwise.
         var waitJavaScriptAnswer = ""
+        /// #221: seconds the Nth `wait --js` poll takes (index 0 is the first poll); polls past the
+        /// end take `javaScriptDelay`.
+        var waitPollDelays: [TimeInterval] = []
+        /// #221: the condition holds from this poll on (1-based); nil leaves it to `waitJavaScriptAnswer`.
+        var waitConditionHoldsFromPoll: Int?
+        private var waitPolls = 0
+        private var cancelledDuringPoll = false
+        /// #221: true when a poll noticed, after it had waited, that its task had been cancelled.
+        var aPollWasCancelled: Bool { lock.withLock { cancelledDuringPoll } }
         var failWithTimeout = false
 
         init(tabCounts: [Int] = [96, 2, 6, 1, 4], failJSContaining: String? = nil) {
@@ -152,7 +161,19 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                 return "\(idBase + n)"
             }
             if script.contains("do JavaScript") {
-                if javaScriptDelay > 0 { Thread.sleep(forTimeInterval: javaScriptDelay) }
+                // #221: a `wait --js` poll (its script ends in `? 'true' : ''`) has its own delay and answer.
+                var waitPollAnswer: String?
+                if script.contains("? 'true' : ''") {
+                    let number = lock.withLock { () -> Int in waitPolls += 1; return waitPolls }
+                    let delay = number <= waitPollDelays.count ? waitPollDelays[number - 1] : javaScriptDelay
+                    if delay > 0 {
+                        Thread.sleep(forTimeInterval: delay)
+                        if Task.isCancelled { lock.withLock { cancelledDuringPoll = true } }
+                    }
+                    waitPollAnswer = waitConditionHoldsFromPoll.map { number >= $0 } == true ? "true" : waitJavaScriptAnswer
+                } else if javaScriptDelay > 0 {
+                    Thread.sleep(forTimeInterval: javaScriptDelay)
+                }
                 if tripGuard, script.contains("index of current tab of _w") {
                     throw SafariBrowserError.appleScriptFailed(
                         "execution error: SB_TARGET_CHANGED: the anchored tab is no longer current (9001)")
@@ -162,7 +183,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                     throw SafariBrowserError.appleScriptFailed(
                         "execution error: Safari got an error: Can’t get tab. Invalid index. (-1719)")
                 }
-                if script.contains("? 'true' : ''") { return waitJavaScriptAnswer }
+                if let waitPollAnswer { return waitPollAnswer }
                 if script.contains("window.__sbResult.substring(") { return "hello" }
                 if script.contains("do JavaScript \"window.__sbResultLen\"") { return "5.0" }
                 if script.contains("'' + window.__sbLen") { return "5.0" }

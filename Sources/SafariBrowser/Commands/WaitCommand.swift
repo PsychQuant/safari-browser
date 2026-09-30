@@ -20,7 +20,7 @@ struct WaitCommand: AsyncParsableCommand {
     var js: String?
 
     @Option(name: .long, help: ArgumentHelp("Timeout in milliseconds (default: 30000)",
-        discussion: "Bounds when the next poll may start, not how long the command takes: target resolution and a poll already running are never interrupted, so the command can end later than --timeout. Each AppleScript call has its own 30 s process timeout. Use timeout(1) around the command for a hard limit."))
+        discussion: "Bounds when the next poll may start, not how long the command takes: target resolution and a poll already running are never interrupted, so the command can end later than --timeout. Each AppleScript call has its own limit (30 s; with the daemon the client waits at most 15 s and a call that gets no answer ends the wait with an error). For a hard limit, run the command under an external timeout."))
     var timeout: Int = 30000
 
     // #182: randomized wait. One duration is drawn from a Cauchy distribution
@@ -328,17 +328,27 @@ struct WaitCommand: AsyncParsableCommand {
     /// condition that already holds into a timeout (#168 verify R1). So
     /// `--timeout 0` polls once, where it used to time out without polling.
     /// Neither resolution nor a poll is interrupted at the deadline (#221): `--timeout`
-    /// bounds when a poll may *start*. Interrupting is not done on purpose — the first poll
-    /// must always run (above), the daemon path cannot interrupt an `NSAppleScript`, and a
-    /// poll's identity check and its read are one AppleScript, so an interrupted poll would
-    /// leave it unknown whether the check happened. Every AppleScript call is bounded by its
-    /// own 30 s process timeout, so the tail is finite.
+    /// bounds when a poll may *start*, and the wait never sleeps past the deadline.
+    ///
+    /// Why not bound each poll by the time that remains (deferred, not impossible): the
+    /// resolution and the first poll — which must run, above — are exempt from any such
+    /// bound and dominate the worst case, so bounding the later polls would not bound the
+    /// command; and passing a timeout down needs `doJavaScript`, `dispatchJS`,
+    /// `getCurrentURL` and `tabURLs` (and the test runner seam) to carry one, in code that
+    /// other work is rewriting. What each call already has is its own limit: 30 s on the
+    /// stateless path, and with the daemon at most 15 s, after which a call that was sent
+    /// and not answered fails with an outcome-unknown error — no retry, no fallback.
+    /// A call that reaches its limit ends the wait with that call's error.
     private func pollUntilDeadline(_ deadline: Date, _ satisfied: () async throws -> Bool) async throws {
         var first = true
         while first || Date() < deadline {
             first = false
             if try await satisfied() { return }
-            try await Task.sleep(nanoseconds: 500_000_000) // 500ms polling
+            // Poll every 500 ms, but never sleep past the deadline (#221): a sleep that runs
+            // out the clock only delays the timeout it is about to report.
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { break }
+            try await Task.sleep(nanoseconds: UInt64(min(0.5, remaining) * 1_000_000_000))
         }
         throw SafariBrowserError.timeout(seconds: timeout / 1000)
     }
