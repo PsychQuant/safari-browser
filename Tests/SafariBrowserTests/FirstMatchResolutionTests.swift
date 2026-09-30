@@ -75,6 +75,10 @@ final class FirstMatchResolutionTests: XCTestCase, @unchecked Sendable {
             ("errors", { try await self.run(ErrorsCommand.self, $1, on: $0) }),
             ("errors --start", { try await self.run(ErrorsCommand.self, ["--start"] + $1, on: $0) }),
             ("errors --clear", { try await self.run(ErrorsCommand.self, ["--clear"] + $1, on: $0) }),
+            // The fake answers with text that is not JSON, which sends `snapshot` down its chunked
+            // retry: the reads after the first are the ones that used to drop the flag (#231).
+            ("snapshot (chunked retry)", { try await self.run(SnapshotCommand.self, $1, on: $0) }),
+            ("snapshot --page (chunked retry)", { try await self.run(SnapshotCommand.self, ["--page"] + $1, on: $0) }),
         ]
     }
 
@@ -102,18 +106,80 @@ final class FirstMatchResolutionTests: XCTestCase, @unchecked Sendable {
                 catch { /* a later failure of the fake's canned answers is fine */ }
             }
             let transcript = fake.scripts.joined(separator: "\n---\n")
-            XCTAssertTrue(fake.scripts.contains { $0.contains("do JavaScript") && $0.contains("tab 1 of window id 101") },
-                          "\(label): the read must go to the first matching tab:\n\(transcript)")
+            let reads = fake.scripts.filter { $0.contains("do JavaScript") }
+            XCTAssertFalse(reads.isEmpty, "\(label): the command read nothing:\n\(transcript)")
+            XCTAssertTrue(reads.allSatisfy { $0.contains("tab 1 of window id 101") },
+                          "\(label): every read must go to the first matching tab:\n\(transcript)")
             XCTAssertEqual(stderr.components(separatedBy: "--first-match resolved").count - 1, 1,
                            "\(label): exactly one multi-match warning on stderr, got:\n\(stderr)")
         }
     }
 
-    /// `get html` end to end: one resolution for the whole command.
+    /// `get html` end to end: one enumeration for this run. The fake answers every read, so the
+    /// command makes one read; the chunked retry is covered by the `snapshot` rows above.
     func testGetHTMLResolvesOnce() async throws {
         let fake = FakeSafari()
         _ = try await capturedStderr { try? await self.run(GetHTML.self, ["#sel", "--url", "w1.example", "--first-match"], on: fake) }
-        XCTAssertEqual(fake.enumerations, 1, "one resolution for the whole command:\n\(fake.scripts.joined(separator: "\n---\n"))")
+        XCTAssertEqual(fake.enumerations, 1, "one enumeration for the run:\n\(fake.scripts.joined(separator: "\n---\n"))")
+    }
+
+    /// `doJavaScriptLarge` is handed a raw `.urlMatch` by `snapshot`, which reads in chunks when the
+    /// result is truncated. It resolves the target once, so every read of the call goes to the
+    /// tab the first one used and the flag's warning is emitted once, by that resolution.
+    func testTheChunkedReadResolvesARawTargetOnce() async throws {
+        let fake = FakeSafari()
+        let warnings = WarningLog()
+        _ = try await inContext(fake) {
+            try await SafariBridge.doJavaScriptLarge("1+1", target: .urlMatch(.contains("w1.example")), firstMatch: true,
+                                                     warnWriter: { warnings.add($0) })
+        }
+        let reads = fake.scripts.filter { $0.contains("do JavaScript") }
+        XCTAssertGreaterThanOrEqual(reads.count, 2, "the result-length read follows the first:\n\(fake.scripts.joined(separator: "\n---\n"))")
+        XCTAssertTrue(reads.allSatisfy { $0.contains("tab 1 of window id 101") }, "\(reads)")
+        XCTAssertEqual(fake.enumerations, 1, "one resolution for the whole call, not one per read")
+        XCTAssertEqual(warnings.all.count, 1, "\(warnings.all)")
+        // Without the flag the ambiguity is raised, as for every other read.
+        do {
+            _ = try await inContext(FakeSafari()) {
+                try await SafariBridge.doJavaScriptLarge("1+1", target: .urlMatch(.contains("w1.example")))
+            }
+            XCTFail("an ambiguous target must fail without the flag")
+        } catch SafariBrowserError.ambiguousWindowMatch {
+        } catch { XCTFail("expected ambiguousWindowMatch, got \(error)") }
+    }
+
+    /// `cookies get`, `console` and `errors` pass `--profile` to the bridge themselves. A profile
+    /// that holds no matching tab must stop the command before any read; were `profile:` dropped
+    /// from a call, the read would go to another profile's tab.
+    func testCookiesConsoleAndErrorsKeepTheProfile() async throws {
+        let commands: [(String, (FakeSafari, [String]) async throws -> Void)] = [
+            ("cookies get NAME", { try await self.run(CookiesGet.self, ["session"] + $1, on: $0) }),
+            ("cookies get --json", { try await self.run(CookiesGet.self, ["--json"] + $1, on: $0) }),
+            ("cookies get", { try await self.run(CookiesGet.self, $1, on: $0) }),
+            ("console", { try await self.run(ConsoleCommand.self, $1, on: $0) }),
+            ("console --start", { try await self.run(ConsoleCommand.self, ["--start"] + $1, on: $0) }),
+            ("console --clear", { try await self.run(ConsoleCommand.self, ["--clear"] + $1, on: $0) }),
+            ("errors", { try await self.run(ErrorsCommand.self, $1, on: $0) }),
+            ("errors --start", { try await self.run(ErrorsCommand.self, ["--start"] + $1, on: $0) }),
+            ("errors --clear", { try await self.run(ErrorsCommand.self, ["--clear"] + $1, on: $0) }),
+        ]
+        for (label, drive) in commands {
+            let other = FakeSafari()
+            do {
+                try await drive(other, ["--url", "w1.example", "--first-match", "--profile", "其他"])
+                XCTFail("\(label): a profile with no window must fail")
+            } catch SafariBrowserError.documentNotFound {
+            } catch { XCTFail("\(label): expected documentNotFound for another profile, got \(error)") }
+            XCTAssertFalse(other.scripts.contains { $0.contains("do JavaScript") }, "\(label): nothing may be read:\n\(other.scripts.joined(separator: "\n---\n"))")
+
+            let own = FakeSafari()
+            _ = try await capturedStderr {
+                do { try await drive(own, ["--url", "w1.example", "--first-match", "--profile", "個人"]) } catch { /* canned answers */ }
+            }
+            let reads = own.scripts.filter { $0.contains("do JavaScript") }
+            XCTAssertFalse(reads.isEmpty, "\(label): the profile that holds the tab must be read:\n\(own.scripts.joined(separator: "\n---\n"))")
+            XCTAssertTrue(reads.allSatisfy { $0.contains("tab 1 of window id 101") }, "\(label): \(reads)")
+        }
     }
 
     // MARK: - The helper

@@ -1597,26 +1597,35 @@ enum SafariBridge {
     /// consistent across multi-document Safari sessions.
     static func doJavaScriptLarge(
         _ code: String,
-        target: TargetDocument = .frontWindow,
+        target initialTarget: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil,
         profile: String? = nil
     ) async throws -> String {
-        // Store result in window variable. Only the first doJavaScript
-        // call forwards the warnWriter — subsequent chunked reads reuse
-        // the already-resolved tab, so re-emitting the multi-match
-        // warning each chunk would spam the caller. profile likewise
-        // only on the first call (filter validates once at resolution).
+        // #231: a raw `.urlMatch` / `.documentIndex` is resolved ONCE here, as `doJavaScript` does at
+        // its own boundary, so the reads that follow address the tab the first read used. Left raw,
+        // each follow-up read re-resolved without `firstMatch` and an ambiguous `--url` failed on
+        // the second read (`snapshot --first-match` on a page large enough to be read in chunks).
+        // The warning is emitted by this one resolution, not by the reads.
+        var target = initialTarget
+        switch target {
+        case .urlMatch, .documentIndex:
+            target = try await resolveToConcreteTarget(
+                target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+        default:
+            break
+        }
+
+        // Store result in window variable. The profile is validated at the resolution above.
         _ = try await doJavaScript(
             "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()",
             target: target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter,
             profile: profile
         )
 
         // Get total length
-        let lenStr = try await doJavaScript("window.__sbResultLen", target: target)
+        let lenStr = try await doJavaScript("window.__sbResultLen", target: target, firstMatch: firstMatch)
         // AppleScript returns numbers as "9.0" — parse via Double then truncate.
         // Mirrors the non-large path in JSCommand.swift; #74. Int("5489.0")
         // returns nil → length parses to 0 → the whole chunked read returns ""
@@ -1639,14 +1648,15 @@ enum SafariBridge {
             let end = min(offset + chunkSize, totalLen)
             let chunk = try await doJavaScript(
                 "window.__sbResult.substring(\(offset), \(end))",
-                target: target
+                target: target,
+                firstMatch: firstMatch
             )
             result += chunk
             offset = end
         }
 
         // Cleanup
-        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen", target: target)
+        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen", target: target, firstMatch: firstMatch)
 
         return result
     }
