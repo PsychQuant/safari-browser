@@ -11,9 +11,10 @@ WebKit 網路快取在 `~/Library/Containers/com.apple.Safari/Data/Library/Cache
 5. **對應是精確字串相等。** 分頁網址去掉 fragment 後與識別字比對，不做正規化（不補斜線、不排序 query）。對應不到時不猜，列出去掉 query 的候選，要求 `--key`。多個分區各存一份同一網址的情況一樣停止。
 6. **URL 一律去掉 query 與 fragment 再顯示**（列表、JSON、錯誤訊息），因為簽章網址的 query 可能是憑證。比對用完整字串，顯示用去掉的版本。
 7. **`--key` 是 record 檔名（40 個十六進位字元）的唯一前綴，至少 8 個字元。** 不唯一就停止。
-8. **輸出：** 目的地資料夾內建 `O_EXCL` 暫存檔（`0600`），串流複製，驗證後 `renamex_np(RENAME_EXCL)`（`--force` 時 `rename`）。來源以唯讀開啟，不修改。驗證用 `CGPDFDocument`（`numberOfPages > 0`），不新增 framework。
-9. **版本目錄：** 只接受 `Version 17`。看到其他版本時明確失敗並列出看到的目錄名，不猜測相容。
-10. **錯誤處理：** 權限錯誤走既有 `SafariDataStore.ioError`（保留 errno、依簽章狀態給 FDA 指引）。快取資料夾不存在視為錯誤（Safari 一定有這個資料夾），不像 `CloudTabs.db` 那樣是正常狀態。
+8. **威脅模型：** 這是以使用者身分、對使用者自己的資料夾執行的 CLI。它防的是錯誤與過時狀態（忘了 `--force`、把快取檔當成目的地、複製到一半失敗），不防另一個同 UID 行程在執行期間改寫目的地資料夾——那種行程本來就能直接讀寫同一批檔案。便宜而且與 PDF 匯出路徑一致的部分照做：目的地資料夾只開一次，暫存檔建立、驗證、發布與清理都相對於那個 fd，驗證讀的是寫入時的那個 fd（不再按路徑重開），發布前確認暫存名仍指向該 inode。快取資料夾內部的 symlink 不防（同 UID 寫入 Safari 容器才布置得出來，而那本來就能直接改檔案）。
+9. **輸出：** 目的地資料夾內建 `O_EXCL` 暫存檔（`0600`），串流複製，驗證後 `renamex_np(RENAME_EXCL)`（`--force` 時 `rename`）。來源以唯讀開啟，不修改。驗證用 `CGPDFDocument`（`numberOfPages > 0`），不新增 framework。
+10. **版本目錄：** 只接受 `Version 17`。看到其他版本時明確失敗並列出看到的目錄名，不猜測相容。
+11. **錯誤處理：** 權限錯誤走既有 `SafariDataStore.ioError`（保留 errno、依簽章狀態給 FDA 指引）。快取資料夾不存在視為錯誤（Safari 一定有這個資料夾），不像 `CloudTabs.db` 那樣是正常狀態。
 
 ## Risks / Trade-offs
 

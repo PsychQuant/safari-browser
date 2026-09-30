@@ -15,6 +15,7 @@
 - [x] 2.4 測試先失敗：寫出（`%PDF-` 驗證、可讀且至少一頁、`0600`、已存在拒絕、`--force`、失敗不留目的檔與暫存檔、來源不被修改）（Requirement: Retrieval writes a verified copy atomically）
 - [x] 2.5 實作 `PDFCacheOutput`
 - [x] 2.6 `--force` 不得替換來源檔（同路徑、symlink、hard link 以 device 與 inode 比對），暫存檔名固定長度（Requirement: Retrieval writes a verified copy atomically）
+- [x] 2.7 目的地資料夾只開一次，暫存檔、驗證（讀寫入時的 fd）、發布與清理都相對於它；發布前確認暫存名仍是被驗證的 inode；以 `beforePublish` 挂鉤測試「目的地在早期檢查之後才出現」與「暫存檔被換掉」；symlink 目的地被當成目錄項替換（Requirement: Retrieval writes a verified copy atomically）
 
 ## 3. 指令
 

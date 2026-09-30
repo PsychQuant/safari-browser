@@ -265,6 +265,8 @@ enum WebKitCacheReader {
     private static func readEntry(
         key: String, partitionDirectory: String, recordURL: URL, bodyURL: URL, reader: WebKitCacheFileReading
     ) throws -> EntryOutcome {
+        // Same rule as the body: a folder or symlink is not a record.
+        guard (try? recordURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return .unreadable }
         let head: Data
         do {
             head = try reader.readPrefix(at: recordURL, maxBytes: recordHeadLimit)

@@ -279,6 +279,20 @@ final class WebKitCacheReaderTests: XCTestCase {
         XCTAssertEqual(scan.unreadableKeys, [], "not PDF bodies, so not unreadable PDF records either")
     }
 
+    /// A record is a regular file, like a body: a symlink named like one is not trusted, even
+    /// when it points at something that would parse.
+    func testARecordThatIsASymlinkIsUnreadable() throws {
+        try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: Self.pdfBody)
+        let dir = try addRecord(key: "BBBB2222", identifier: "https://e.org/b.pdf", body: Self.pdfBody)
+        let name = Self.fullKey("BBBB2222")
+        let elsewhere = root.appendingPathComponent("elsewhere-record")
+        try FileManager.default.moveItem(at: dir.appendingPathComponent(name), to: elsewhere)
+        try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent(name), withDestinationURL: elsewhere)
+        let scan = try WebKitCacheReader.scan(cacheRoot: root)
+        XCTAssertEqual(scan.pdfs.map(\.key), [Self.fullKey("AAAA1111")])
+        XCTAssertEqual(scan.unreadableKeys, [name])
+    }
+
     func testEveryPDFRecordUnreadableIsAnUnsupportedLayoutNotAnEmptyCache() throws {
         try addRecord(key: "AAAA1111", identifier: "x", body: Self.pdfBody, recordBytes: Data(repeating: 0, count: 40))
         XCTAssertThrowsError(try WebKitCacheReader.scan(cacheRoot: root)) {

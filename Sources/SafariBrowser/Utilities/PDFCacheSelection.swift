@@ -102,13 +102,18 @@ enum PDFCacheSelection {
         let prefix = keyPrefix.uppercased()
         let matches = scan.pdfs.filter { $0.key.uppercased().hasPrefix(prefix) }
         let unreadable = scan.unreadableKeys.filter { $0.uppercased().hasPrefix(prefix) }
+        let partial = scan.partialKeys.filter { $0.uppercased().hasPrefix(prefix) }
         let subject = "key prefix \(keyPrefix)"
-        if matches.isEmpty, unreadable.count == 1 {
+        if matches.isEmpty, unreadable.isEmpty, partial.count == 1 {
+            throw SafariBrowserError.pdfCache(.partialBody(key: partial[0]))
+        }
+        if matches.isEmpty, partial.isEmpty, unreadable.count == 1 {
             throw SafariBrowserError.pdfCache(.unreadableRecord(key: unreadable[0]))
         }
-        if matches.count + unreadable.count > 1 {
+        if matches.count + unreadable.count + partial.count > 1 {
             let lines = matches.map { PDFCacheFormat.candidateLine($0) }
                 + unreadable.map { "\($0.prefix(12))  (record unreadable)" }
+                + partial.map { "\($0.prefix(12))  (byte range only, cannot be copied)" }
             throw SafariBrowserError.pdfCache(.ambiguous(subject: subject, candidates: lines))
         }
         return try single(matches, subject: subject)

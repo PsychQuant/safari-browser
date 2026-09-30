@@ -438,7 +438,8 @@ used to read the target tab's URL when a tab flag is given).
 - **URLs are shown without query or fragment** (`PDFCacheURL.redact`); matching uses the full string.
   The tests plant a `SECRET` query and assert it appears in no row, JSON, or error message of this
   command. The shared tab-resolution errors (`documentNotFound`, `ambiguousWindowMatch`) list open tabs'
-  URLs unredacted for every command; they are outside this guarantee (#227).
+  URLs unredacted for every command; they are outside this guarantee (#227). `--file` names and filesystem paths are
+  printed as given (they are the caller's own or Safari's own file names, not URLs).
 - **The record format is WebKit-private.** Observed 2026-09-30 and pinned by a byte-literal test:
   `uint32 version (17)`, then three strings — partition, `"Resource"`, identifier (= request URL) —
   each `uint32 length`, one `is8Bit` byte, the characters, **no alignment padding**; then the range
@@ -451,14 +452,20 @@ used to read the target tab's URL when a tab flag is given).
   never listed. Any departure (other `Version N`, no `Records`, PDF bodies whose records all fail to
   parse) is an error that names what was seen — never an empty result. Small bodies stored inside the
   record (no `-blob`) are not covered; the eviction rules and private-browsing behaviour are unverified.
-- **Copy**: `PDFCacheOutput.copyVerified` — source opened read-only, exclusive `0600` temp file next to
-  the destination (fixed-length name), `%PDF-` check on the first chunk, `CGPDFDocument` opens and every
-  page's entry in the page tree reads (CoreGraphics is lazy: content streams are not decoded, so a
-  document with an intact page tree and damaged content passes), then `renamex_np(RENAME_EXCL)` (`rename`
-  with `--force`). The early "destination exists" refusal comes before the source is read, and a
-  destination that is the source (same path, symlink or hard link, by device and inode) is refused even
-  with `--force` — the real cache bodies are hard-linked into `Blobs/`. The `RENAME_EXCL` guard against a
-  destination appearing mid-copy is not covered by a test (it needs a race).
+- **Copy**: `PDFCacheOutput.copyVerified` — the destination folder is opened **once** and everything
+  after names entries relative to that fd (`fstatat`/`openat`/`renameatx_np`/`unlinkat`); source opened
+  read-only; exclusive `0600` temp file (fixed-length name); `%PDF-` check on the first chunk;
+  `CGPDFDocument` reads **the fd the copy was written with** (not the path) and every page's entry in the
+  page tree must read (CoreGraphics is lazy: content streams and images are not decoded, so a document
+  with an intact page tree and damaged content passes); the staging name must still be the verified inode;
+  then `renameatx_np(RENAME_EXCL)` (`renameat` with `--force`). The early "destination exists" refusal
+  comes before the source is read, and a destination that is the source (same path, symlink or hard link,
+  by device and inode) is refused even with `--force` — the real cache bodies are hard-linked into
+  `Blobs/`. A symlink destination is replaced as an entry; its target is never touched. The
+  `beforePublish` parameter is a test seam that lets `PDFCacheTests` create the two races (destination
+  appears after the early check; staged file replaced). **Threat model**: mistakes and stale state, not
+  another same-user process rewriting the destination folder mid-run (it could read and write those
+  files directly); symlinks *inside* Safari's cache folder are not defended against for the same reason.
 - `--source webkit-pdfs` reads `WebKitPDFs-*` under the container's `tmp`. Those folders appeared after
   "Open with Preview" was pressed (one observation, no controlled experiment); the command never
   creates them or presses anything.

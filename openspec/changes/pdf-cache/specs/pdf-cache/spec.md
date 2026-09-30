@@ -76,7 +76,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 ### Requirement: Retrieval writes a verified copy atomically
 
-`pdf-cache get` SHALL open the source read-only and SHALL NOT modify it. It SHALL require the source's first five bytes to be `%PDF-`. It SHALL write the bytes to a temporary file created exclusively, with mode `0600`, in the destination's directory; verify that CoreGraphics opens it as a PDF with at least one page and that every page's entry in the page tree can be read (content streams and images are not decoded, so a document whose page tree is intact but whose content is damaged passes); and then publish it by renaming it onto the destination path. The command SHALL NOT replace the file it is copying from: when the destination is that file, whether by the same path, a symbolic link, or a hard link (the same device and inode), it SHALL fail before writing. When the destination exists, the command SHALL fail unless `--force` is given. On any failure the command SHALL leave no file at the destination that it created and no temporary file. The destination's directory SHALL already exist. On success it SHALL print one line, or with `--json` one object, giving the destination path, the size, the page count, and where the PDF came from (the key and the URL shown as required by "URLs are shown without query or fragment", or the folder and file name).
+`pdf-cache get` SHALL open the source read-only and SHALL NOT modify it. It SHALL require the source's first five bytes to be `%PDF-`. It SHALL write the bytes to a temporary file created exclusively, with mode `0600`, in the destination's directory; verify that CoreGraphics opens it as a PDF with at least one page and that every page's entry in the page tree can be read (content streams and images are not decoded, so a document whose page tree is intact but whose content is damaged passes); and then publish it by renaming it onto the destination path. The command SHALL NOT replace the file it is copying from: when the destination is that file, whether by the same path, a symbolic link, or a hard link (the same device and inode), it SHALL fail before writing. When the destination exists, the command SHALL fail unless `--force` is given. On any failure the command SHALL leave no file at the destination that it created and no temporary file. The destination's directory SHALL already exist. It SHALL be opened once, and the temporary file, the verification, the publication, and the cleanup SHALL all refer to that opened folder and to the file that was written, not to paths resolved again; the verification SHALL read the file that was written, and the publication SHALL fail when the staging name no longer refers to it. (The command defends against mistakes and stale state, not against another process of the same user rewriting the destination folder while it runs.) On success it SHALL print one line, or with `--json` one object, giving the destination path, the size, the page count, and where the PDF came from (the key and the URL shown as required by "URLs are shown without query or fragment", or the folder and file name).
 
 #### Scenario: verified copy published
 
@@ -103,6 +103,22 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 - **WHEN** the destination already exists and `--force` is not given
 - **THEN** the command fails and the existing file is unchanged
 
+#### Scenario: a destination that appears while verifying
+
+- **WHEN** without `--force`, the destination is created by another process after the early existence check and before publication
+- **THEN** the command fails with the destination-exists error, the other process's file is unchanged, and no temporary file remains
+
+#### Scenario: the staged copy is replaced
+
+- **WHEN** the staging name is pointed at another file after verification and before publication
+- **THEN** nothing is published and neither the destination nor a temporary file remains
+
+#### Scenario: a symbolic link as the destination
+
+- **WHEN** the destination is a symbolic link (to a file, to a folder, or dangling) and `--force` is given
+- **THEN** the symbolic link itself is replaced and what it pointed at is unchanged
+- **AND** without `--force` the destination is reported as existing
+
 #### Scenario: force replaces
 
 - **WHEN** the destination exists and `--force` is given and the copy verifies
@@ -110,7 +126,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 ### Requirement: The listing shows PDFs only
 
-`pdf-cache list` SHALL list only records whose body is a regular file that starts with `%PDF-`, and SHALL decide that by reading no more than the first five bytes of each body. A body file that is not a regular file (a folder, or a symbolic link) SHALL be skipped without failing the scan. A record whose key carries a byte range holds part of a resource, not a document: it SHALL NOT be listed or selected, and `list` SHALL note their number on stderr. Each row SHALL show the first 12 characters of the record key, the partition (or `-` when empty), the request URL as required by "URLs are shown without query or fragment", the body size, and the record's modification time in local time. Rows SHALL be ordered newest first and limited by `--limit` (default 50, a positive integer). `--json` SHALL print an array whose objects carry the full `key`, `partition`, `url`, `has_query`, `size`, and `modified` (ISO 8601); with `--source webkit-pdfs` the objects carry `file`, `folder`, `size`, and `modified`. Explanatory text SHALL go to stderr and rows to stdout. When no PDF is cached, the command SHALL exit successfully with an explanatory note on stderr and, with `--json`, `[]` on stdout.
+`pdf-cache list` SHALL list only records whose body is a regular file that starts with `%PDF-`, and SHALL decide that by reading no more than the first five bytes of each body. A body file or record file that is not a regular file (a folder, or a symbolic link) SHALL NOT be used: a body is skipped without failing the scan, and a record is unreadable. A record whose key carries a byte range holds part of a resource, not a document: it SHALL NOT be listed or selected, `list` SHALL note their number on stderr, and `get --key` naming one SHALL say that it holds only a byte range. Each row SHALL show the first 12 characters of the record key, the partition (or `-` when empty), the request URL as required by "URLs are shown without query or fragment", the body size, and the record's modification time in local time. Rows SHALL be ordered newest first and limited by `--limit` (default 50, a positive integer). `--json` SHALL print an array whose objects carry the full `key`, `partition`, `url`, `has_query`, `size`, and `modified` (ISO 8601); with `--source webkit-pdfs` the objects carry `file`, `folder`, `size`, and `modified`. Explanatory text SHALL go to stderr and rows to stdout. When no PDF is cached, the command SHALL exit successfully with an explanatory note on stderr and, with `--json`, `[]` on stdout.
 
 #### Scenario: default limit
 

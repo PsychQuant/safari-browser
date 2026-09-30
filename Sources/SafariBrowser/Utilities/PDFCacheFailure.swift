@@ -22,6 +22,8 @@ enum PDFCacheFailure: Equatable, Sendable {
     case ambiguous(subject: String, candidates: [String])
     /// `--key` named a body whose record cannot be read.
     case unreadableRecord(key: String)
+    /// `--key` named a body that is only a byte range of a resource, not a document.
+    case partialBody(key: String)
     /// The selected body does not start with `%PDF-`.
     case notAPDF(name: String)
     /// The copy starts with `%PDF-` but CoreGraphics cannot read a page from it.
@@ -72,6 +74,8 @@ enum PDFCacheFailure: Equatable, Sendable {
                 """
         case .unreadableRecord(let key):
             return "The record for cached PDF '\(t(key))' cannot be read as the 'Version 17' layout, so it cannot be selected."
+        case .partialBody(let key):
+            return "The cached body for '\(t(key))' holds only a byte range of a resource, not a whole document, so it cannot be copied."
         case .notAPDF(let name):
             return "'\(t(name))' does not start with %PDF-, so it is not copied."
         case .unreadablePDF(let detail):

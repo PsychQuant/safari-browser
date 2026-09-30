@@ -162,6 +162,23 @@ final class PDFCacheTests: XCTestCase {
         }
     }
 
+    func testAKeyPrefixThatNamesOnlyAPartialBodySaysSoInsteadOfNotFound() throws {
+        let scan = WebKitCacheReader.Scan(
+            pdfs: [pdf(key: "AAAA1111EEEE", url: "https://e.org/a.pdf")], unreadableKeys: [],
+            partialKeys: ["BBBB2222FFFF", "AAAA1111999"])
+        XCTAssertThrowsError(try PDFCacheSelection.select(keyPrefix: "BBBB2222", scan: scan)) {
+            guard case SafariBrowserError.pdfCache(.partialBody(let key)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertEqual(key, "BBBB2222FFFF")
+            XCTAssertTrue($0.localizedDescription.contains("byte range"))
+        }
+        // A prefix shared by a whole body and a partial one is ambiguous, and both are shown.
+        XCTAssertThrowsError(try PDFCacheSelection.select(keyPrefix: "AAAA1111", scan: scan)) {
+            guard case SafariBrowserError.pdfCache(.ambiguous(_, let candidates)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertEqual(candidates.count, 2)
+            XCTAssertTrue(candidates.contains { $0.contains("byte range only") })
+        }
+    }
+
     // MARK: - Verified atomic copy
 
     func source(_ name: String, _ bytes: Data, mode: Int = 0o400) throws -> URL {
@@ -317,6 +334,102 @@ final class PDFCacheTests: XCTestCase {
             from: try source("body-blob", Self.makePDF(pages: 1)), to: out.appendingPathComponent(name).path, force: false)
         XCTAssertEqual(result.pages, 1)
         XCTAssertEqual(try names(in: out), [name])
+    }
+
+    /// `rename` replaces a directory entry. A destination that is a symlink is replaced as a
+    /// symlink; what it points at is not touched.
+    func testForceOnASymlinkDestinationReplacesTheSymlinkNotItsTarget() throws {
+        let out = try outDir()
+        let target = out.appendingPathComponent("target.txt")
+        try Data("keep me".utf8).write(to: target)
+        let link = out.appendingPathComponent("link.pdf")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        let bytes = Self.makePDF(pages: 1)
+        _ = try PDFCacheOutput.copyVerified(from: try source("body-blob", bytes), to: link.path, force: true)
+        XCTAssertEqual(try Data(contentsOf: target), Data("keep me".utf8))
+        XCTAssertEqual(try Data(contentsOf: link), bytes)
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path), "the symlink itself was replaced")
+        XCTAssertEqual(try names(in: out), ["link.pdf", "target.txt"])
+    }
+
+    /// The destination folder is resolved once; a symlinked folder is an ordinary way to name
+    /// a folder and still works.
+    func testADestinationThroughASymlinkedFolderIsWrittenIntoThatFolder() throws {
+        let real = try outDir()
+        let alias = dir.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: real)
+        let result = try PDFCacheOutput.copyVerified(
+            from: try source("body-blob", Self.makePDF(pages: 1)), to: alias.appendingPathComponent("a.pdf").path, force: false)
+        XCTAssertEqual(result.pages, 1)
+        XCTAssertEqual(try names(in: real), ["a.pdf"])
+    }
+
+    /// Not being able to tell whether the destination is the source is a refusal, not a pass.
+    func testADestinationThatCannotBeLookedUpIsRefusedNotSilentlyReplaced() throws {
+        let out = try outDir()
+        let loop = out.appendingPathComponent("loop.pdf")
+        try FileManager.default.createSymbolicLink(atPath: loop.path, withDestinationPath: "loop.pdf")
+        XCTAssertThrowsError(try PDFCacheOutput.copyVerified(from: try source("body-blob", Self.makePDF(pages: 1)), to: loop.path, force: true)) {
+            guard case SafariBrowserError.pdfCache(.destinationWriteFailed) = $0 else { return XCTFail("\($0)") }
+        }
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: loop.path), "loop.pdf")
+        XCTAssertEqual(try names(in: out), ["loop.pdf"])
+        // A dangling symlink is only an entry that can be replaced.
+        let dangling = out.appendingPathComponent("dangling.pdf")
+        try FileManager.default.createSymbolicLink(atPath: dangling.path, withDestinationPath: "nowhere.pdf")
+        XCTAssertNoThrow(try PDFCacheOutput.copyVerified(from: try source("body2-blob", Self.makePDF(pages: 1)), to: dangling.path, force: true))
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: dangling.path))
+    }
+
+    /// The early "exists" check is only a fast refusal. What actually keeps a destination that
+    /// appears while the copy is being verified is the exclusive rename.
+    func testADestinationThatAppearsAfterTheEarlyCheckIsNotOverwritten() throws {
+        let out = try outDir()
+        let target = out.appendingPathComponent("a.pdf")
+        XCTAssertThrowsError(try PDFCacheOutput.copyVerified(
+            from: try source("body-blob", Self.makePDF(pages: 1)), to: target.path, force: false,
+            beforePublish: { _ in try? Data("raced in".utf8).write(to: target) })
+        ) {
+            guard case SafariBrowserError.pdfCache(.destinationExists) = $0 else { return XCTFail("\($0)") }
+        }
+        XCTAssertEqual(try Data(contentsOf: target), Data("raced in".utf8))
+        XCTAssertEqual(try names(in: out), ["a.pdf"], "no temporary file remains")
+    }
+
+    /// Verification read the inode that was written. If the staging name has since been pointed
+    /// at another file, publishing it would publish something that was never verified.
+    func testAStagedCopyThatIsReplacedBeforePublishingIsNotPublished() throws {
+        let out = try outDir()
+        XCTAssertThrowsError(try PDFCacheOutput.copyVerified(
+            from: try source("body-blob", Self.makePDF(pages: 1)), to: out.appendingPathComponent("a.pdf").path, force: false,
+            beforePublish: { name in
+                let staged = out.appendingPathComponent(name)
+                try? FileManager.default.removeItem(at: staged)
+                try? Data("%PDF-1.7 impostor".utf8).write(to: staged)
+            })
+        ) {
+            guard case SafariBrowserError.pdfCache(.destinationWriteFailed(_, let detail)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertTrue(detail.contains("replaced"), detail)
+        }
+        XCTAssertEqual(try names(in: out), [], "neither the destination nor the impostor remains")
+    }
+
+    /// A symlink to a folder is a directory entry like any other: without `--force` it exists,
+    /// with `--force` it is replaced as a symlink and the folder it named is untouched.
+    func testASymlinkToAFolderAsDestinationIsAnEntryNotAFolder() throws {
+        let out = try outDir()
+        let folder = out.appendingPathComponent("folder", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try Data("inside".utf8).write(to: folder.appendingPathComponent("keep.txt"))
+        let link = out.appendingPathComponent("link.pdf")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: folder)
+        let src = try source("body-blob", Self.makePDF(pages: 1))
+        XCTAssertThrowsError(try PDFCacheOutput.copyVerified(from: src, to: link.path, force: false)) {
+            guard case SafariBrowserError.pdfCache(.destinationExists) = $0 else { return XCTFail("\($0)") }
+        }
+        _ = try PDFCacheOutput.copyVerified(from: src, to: link.path, force: true)
+        XCTAssertNil(try? FileManager.default.destinationOfSymbolicLink(atPath: link.path))
+        XCTAssertEqual(try names(in: folder), ["keep.txt"])
     }
 
     func testAnUnreadableSourceKeepsItsCauseAndCreatesNothing() throws {
