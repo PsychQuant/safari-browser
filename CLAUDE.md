@@ -327,7 +327,7 @@ Multi-step automation in single invocation。Agents 用 JSON 描述 step sequenc
 
 ### Error codes
 
-`invalidScriptFormat` `invalidStepSchema` `undefinedVariable` `invalidCondition` `maxStepsExceeded` `unsupportedInExec` — 加上每 step 自己 dispatch 出來的標準 error codes（`elementNotFound`, `documentNotFound`, `ambiguousWindowMatch`, ...）。
+`invalidScriptFormat` `invalidStepSchema` `undefinedVariable` `invalidCondition` `maxStepsExceeded` `unsupportedInExec` `unsupportedArguments`（#220：指令 in-process 支援、但參數不是它認得的形狀，含沒有程式碼的 `js`；daemon 端的 dispatcher 才會丟，client 預檢會先把這樣的腳本送到 subprocess 路徑）— 加上每 step 自己 dispatch 出來的標準 error codes（`elementNotFound`, `documentNotFound`, `ambiguousWindowMatch`, ...）。
 
 ### v1 implementation note
 

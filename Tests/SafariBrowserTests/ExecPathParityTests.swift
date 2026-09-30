@@ -58,25 +58,64 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(InProcessStepDispatcher.runsInProcess(cmd: "get url", args: ["--url", "plaud"]))
     }
 
-    /// A step whose arguments name a variable has no shape until it runs. Judged on the text as
-    /// written, `$n * 2` looks like ordinary code and passes; the daemon substitutes `-4 * 2`, the
-    /// dispatcher refuses it — after earlier steps have already run, with no way back. So a step
-    /// that references a variable is not sent to the daemon.
-    func testAStepThatReferencesAVariableIsNotSentToTheDaemon() throws {
+    /// A flag that is followed by another option is a flag with no value to a child's parser, while
+    /// `stripTargetFlags` would take the option for the value: `--url --first-match` looks like
+    /// `get url` with nothing else. Not just the last argument counts.
+    func testATargetFlagWhoseValueIsAnOptionIsNotARunnableShape() {
+        for args in [["--url", "--first-match"], ["--url", "--url", "x"], ["--window", "-1"], ["--profile", "-x", "--url", "plaud"],
+                     ["--first-match", "--url", "--window", "2"]] {
+            XCTAssertFalse(InProcessStepDispatcher.runsInProcess(cmd: "get url", args: args), "\(args)")
+        }
+        XCTAssertTrue(InProcessStepDispatcher.runsInProcess(cmd: "get url", args: ["--url", "plaud", "--window", "2"]))
+    }
+
+    /// The closed list at its edges: nothing that merely resembles a shape is one.
+    func testTheClosedShapeListAtItsEdges() {
+        XCTAssertFalse(InProcessStepDispatcher.runsInProcess(cmd: "documents", args: ["--json", "--json"]), "a repeated flag is not `--json`")
+        XCTAssertFalse(InProcessStepDispatcher.runsInProcess(cmd: "documents", args: ["--json", "--profile"]), "the profile flag lost its value")
+        XCTAssertTrue(InProcessStepDispatcher.runsInProcess(cmd: "documents", args: ["--json", "--profile", "Work"]))
+        XCTAssertFalse(InProcessStepDispatcher.runsInProcess(cmd: "js", args: ["-"]))
+        XCTAssertFalse(InProcessStepDispatcher.runsInProcess(cmd: "js", args: ["--", "1"]))
+        XCTAssertTrue(InProcessStepDispatcher.runsInProcess(cmd: "js", args: ["a -b"]), "a `-` inside the code is not a prefix")
+    }
+
+    /// A step with an argument that BEGINS with a variable has no shape until it runs: `$n * 2` looks
+    /// like ordinary code as written, the daemon substitutes `-4 * 2`, the dispatcher refuses it —
+    /// after earlier steps have already run, with no way back. A reference after the first
+    /// character cannot change the shape (the first character stays what it is), so it does not
+    /// keep a script off the daemon.
+    func testAStepWithAnArgumentThatBeginsWithAVariableIsNotSentToTheDaemon() throws {
         let cases: [(String, Bool)] = [
             (##"[{"cmd":"js","args":["1-5"],"var":"n"},{"cmd":"js","args":["$n * 2"]}]"##, false),
             (##"[{"cmd":"get url","var":"u"},{"cmd":"js","args":["$u.length"]}]"##, false),
             (##"[{"cmd":"js","args":["1"]},{"cmd":"get url","args":["--url","$target"]}]"##, false),
+            (##"[{"cmd":"js","args":["1"]},{"cmd":"get url","args":["$flag","plaud"]}]"##, false),
+            (##"[{"cmd":"js","args":["document.title + '$u'"]}]"##, true),
+            (##"[{"cmd":"get url","args":["--url","https://$host/x"]}]"##, true),
             (##"[{"cmd":"js","args":["'\\$5'"]}]"##, true),
+            (##"[{"cmd":"js","args":["\\$n"]}]"##, true),
             (##"[{"cmd":"js","args":["a $1 b $% c"]}]"##, true),
         ]
         for (source, expected) in cases {
             let steps = try ScriptInterpreter.parseScript(source: source, maxSteps: 10)
             XCTAssertEqual(ExecCommand.allStepsRunInProcess(steps), expected, source)
         }
-        XCTAssertTrue(VariableStore.hasReference("a $name b"))
-        XCTAssertFalse(VariableStore.hasReference("a \\$name b"), "an escaped dollar is literal")
-        XCTAssertFalse(VariableStore.hasReference("$1 $% $"))
+    }
+
+    /// `beginsWithReference` and `substitute` share one scanner (`VariableStore.reference(in:at:)`), so
+    /// the pre-flight cannot disagree with what the daemon will substitute. Checked over a corpus:
+    /// with every name bound to a marker, the substituted text starts with the marker exactly when the
+    /// argument begins with a reference.
+    func testTheReferenceTheClientSeesIsTheOneTheDaemonSubstitutes() async throws {
+        let store = VariableStore()
+        for name in ["n", "_x", "Ünï", "a1", "x_y2", "name", "名字"] { await store.bind(name: name, value: "@@") }
+        let corpus = ["$n", "$n * 2", "x $n", "$_x", "$Ünï", "$a1.b", "$x_y2!", "\\$n", "\\$n $n", "$1", "$%", "$", "$$n", "${n}", "$ n", "", "n",
+                      "a$n", "$name$n", "  $n", "$名字"]
+        for text in corpus {
+            let substituted = try await store.substitute(text)
+            XCTAssertEqual(VariableStore.beginsWithReference(text), substituted.hasPrefix("@@"),
+                           "\(text.debugDescription) -> \(substituted.debugDescription)")
+        }
     }
 
     // MARK: - The decision `ExecCommand.run` makes
@@ -120,11 +159,15 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(viaDaemon.sent.map { $0.map(\.cmd) }, [["get url", "js"]])
         XCTAssertTrue(viaDaemon.printed.contains("FROM-DAEMON"), viaDaemon.printed)
 
-        for (label, result) in [("one step the dispatcher cannot honour", try await run(selectorAndSkipped)),
-                                ("pacing on", try await run(honouredButSkipped, pacing: true)),
-                                ("daemon not opted in", try await run(honouredButSkipped, daemon: false))] {
+        // Every local route RAN the interpreter: each step is a `skipped` row (their `if` is false),
+        // so an implementation that returned without running or printing anything would fail here.
+        for (label, result, rows) in [("one step the dispatcher cannot honour", try await run(selectorAndSkipped), 1),
+                                      ("pacing on", try await run(honouredButSkipped, pacing: true), 2),
+                                      ("daemon not opted in", try await run(honouredButSkipped, daemon: false), 2)] {
             XCTAssertEqual(result.sent.count, 0, "\(label): the script must not be sent to the daemon")
             XCTAssertFalse(result.printed.contains("FROM-DAEMON"), label)
+            let parsed = try JSONSerialization.jsonObject(with: Data(result.printed.utf8)) as? [[String: Any]]
+            XCTAssertEqual(parsed?.map { $0["status"] as? String }, Array(repeating: "skipped", count: rows), "\(label): \(result.printed)")
         }
 
         // A daemon that cannot take the request (`nil`) sends the script to the local interpreter.
@@ -132,6 +175,52 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(unavailable.sent.count, 1)
         XCTAssertEqual(unavailable.printed.trimmingCharacters(in: .whitespacesAndNewlines), "[]",
                        "the local interpreter ran the (empty) script and printed its results")
+    }
+
+    /// The tab-ownership marker is applied only when the daemon runs the whole script; a script that
+    /// runs step by step and was asked to mark says so instead of leaving the flag silently dead.
+    func testAMarkerThatCannotBeAppliedIsSaidSo() async throws {
+        final class Notes: @unchecked Sendable {
+            private let lock = NSLock(); private var items: [String] = []
+            func add(_ s: String) { lock.withLock { items.append(s) } }
+            var all: [String] { lock.withLock { items } }
+        }
+        let skipped = ##"[{"cmd":"get url","if":"$never exists"}]"##
+        func notes(_ args: [String], daemonAnswer: String? = "FROM-DAEMON", daemon: Bool = true) async throws -> [String] {
+            let notes = Notes()
+            _ = try await printed {
+                try await ExecCommand.parse(args).execute(source: skipped, pacingEnabled: false, daemonOptedIn: daemon,
+                                                          viaDaemon: { _ in daemonAnswer }, note: { notes.add($0) })
+            }
+            return notes.all
+        }
+        let unmarked = try await notes([], daemonAnswer: nil)
+        XCTAssertEqual(unmarked, [], "no marker asked for: nothing to say")
+        let onDaemon = try await notes(["--mark-tab"])
+        XCTAssertEqual(onDaemon, [], "the daemon applies the marker")
+        for args in [["--mark-tab"], ["--mark-tab-persist"]] {
+            let local = try await notes(args, daemonAnswer: nil)
+            XCTAssertEqual(local.count, 1, "\(args): \(local)")
+            XCTAssertTrue(local.first?.contains("the tab is not marked") == true, "\(local)")
+            let notOptedIn = try await notes(args, daemon: false)
+            XCTAssertEqual(notOptedIn.count, 1, "\(args) with the daemon off: \(notOptedIn)")
+        }
+    }
+
+    /// A supported command whose arguments are not a runnable shape is refused with the code the
+    /// spec names — a `js` step with no code included; an unsupported command keeps its own code.
+    func testTheDispatcherRefusesWithTheCodeTheSpecNames() async {
+        let dispatcher = InProcessStepDispatcher()
+        for (cmd, args, code) in [("js", [String](), "unsupportedArguments"), ("get text", ["#sel"], "unsupportedArguments"),
+                                  ("click", ["#x"], "unsupportedInExec")] {
+            do {
+                _ = try await dispatcher.dispatch(cmd: cmd, args: args, sharedTargetArgs: [])
+                XCTFail("\(cmd) \(args) must be refused")
+            } catch let error as ScriptDispatchError {
+                XCTAssertEqual(error.code, code, "\(cmd) \(args)")
+            } catch { XCTFail("\(cmd) \(args): \(error)") }
+        }
+        XCTAssertEqual(ScriptDispatchError.unsupportedArguments("js").code, "unsupportedArguments")
     }
 
     // MARK: - What the subprocess path actually launches
