@@ -44,6 +44,9 @@ enum PDFCacheOutput {
         let destinationURL = URL(fileURLWithPath: destination).standardizedFileURL
         let parentURL = destinationURL.deletingLastPathComponent()
         let name = destinationURL.lastPathComponent
+        // A constant, so that `writeFailure(destinationPath, errno)` evaluates nothing but
+        // a local between the failing call and the read of errno.
+        let destinationPath = destinationURL.path
 
         // The one place the destination folder is resolved by path.
         let parentFD = open(parentURL.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
@@ -52,31 +55,31 @@ enum PDFCacheOutput {
             if code == ENOENT || code == ENOTDIR {
                 throw SafariBrowserError.pdfCache(.destinationDirectoryMissing(path: parentURL.path))
             }
-            throw writeFailure(destinationURL.path, code)
+            throw writeFailure(destinationPath, code)
         }
         defer { close(parentFD) }
 
         var existing = stat()
         if fstatat(parentFD, name, &existing, AT_SYMLINK_NOFOLLOW) == 0 {
             if existing.st_mode & S_IFMT == S_IFDIR {
-                throw SafariBrowserError.pdfCache(.destinationWriteFailed(path: destinationURL.path, detail: "it is a folder"))
+                throw SafariBrowserError.pdfCache(.destinationWriteFailed(path: destinationPath, detail: "it is a folder"))
             }
-            if !force { throw SafariBrowserError.pdfCache(.destinationExists(path: destinationURL.path)) }
+            if !force { throw SafariBrowserError.pdfCache(.destinationExists(path: destinationPath)) }
         }
 
         let sourceFD = try SafariDataStore.openSource(source)
         defer { close(sourceFD) }
-        try refuseIfSameFile(sourceFD: sourceFD, parentFD: parentFD, name: name, destination: destinationURL.path)
+        try refuseIfSameFile(sourceFD: sourceFD, parentFD: parentFD, name: name, destination: destinationPath)
 
         // Fixed length: a name derived from the destination's could exceed NAME_MAX.
         let temporaryName = ".pdf-cache-\(UUID().uuidString).tmp"
         let temporaryFD = openat(parentFD, temporaryName, O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard temporaryFD >= 0 else { throw writeFailure(destinationURL.path, errno) }
+        guard temporaryFD >= 0 else { throw writeFailure(destinationPath, errno) }
         var temporaryOpen = true
         var published = false
         do {
-            let size = try copy(from: sourceFD, to: temporaryFD, sourceName: source.lastPathComponent, destination: destinationURL.path)
-            guard fsync(temporaryFD) == 0 else { throw writeFailure(destinationURL.path, errno) }
+            let size = try copy(from: sourceFD, to: temporaryFD, sourceName: source.lastPathComponent, destination: destinationPath)
+            guard fsync(temporaryFD) == 0 else { throw writeFailure(destinationPath, errno) }
             let pages = try verifiedPageCount(fd: temporaryFD, size: size)
             beforePublish(temporaryName)
 
@@ -87,7 +90,7 @@ enum PDFCacheOutput {
                 written.st_dev == named.st_dev, written.st_ino == named.st_ino
             else {
                 throw SafariBrowserError.pdfCache(.destinationWriteFailed(
-                    path: destinationURL.path, detail: "the staged copy was replaced before it could be published"))
+                    path: destinationPath, detail: "the staged copy was replaced before it could be published"))
             }
 
             // Darwin releases the descriptor even when close() reports an error, so it
@@ -95,17 +98,17 @@ enum PDFCacheOutput {
             // someone else). EINTR is not a failure here: fsync has made the data
             // durable and nothing was left unwritten.
             temporaryOpen = false
-            if close(temporaryFD) != 0, errno != EINTR { throw writeFailure(destinationURL.path, errno) }
+            if close(temporaryFD) != 0, errno != EINTR { throw writeFailure(destinationPath, errno) }
 
             let renamed = force
                 ? renameat(parentFD, temporaryName, parentFD, name)
                 : renameatx_np(parentFD, temporaryName, parentFD, name, UInt32(RENAME_EXCL))
             guard renamed == 0 else {
-                if errno == EEXIST { throw SafariBrowserError.pdfCache(.destinationExists(path: destinationURL.path)) }
-                throw writeFailure(destinationURL.path, errno)
+                if errno == EEXIST { throw SafariBrowserError.pdfCache(.destinationExists(path: destinationPath)) }
+                throw writeFailure(destinationPath, errno)
             }
             published = true
-            return Result(path: destinationURL.path, size: size, pages: pages)
+            return Result(path: destinationPath, size: size, pages: pages)
         } catch {
             if temporaryOpen { close(temporaryFD) }
             // A folder can allow creating a file and deny removing it (an ACL with
@@ -115,7 +118,7 @@ enum PDFCacheOutput {
                 let code = errno
                 let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 throw writeFailure(
-                    destinationURL.path, code, prefix: "\(reason) The staged copy \(temporaryName) could not be removed and was left in \(parentURL.path):")
+                    destinationPath, code, prefix: "\(reason) The staged copy \(temporaryName) could not be removed and was left in \(parentURL.path):")
             }
             throw error
         }
@@ -185,10 +188,19 @@ enum PDFCacheOutput {
     ///
     /// CoreGraphics reads the descriptor the copy was written with, by
     /// position, so it verifies that inode and not whatever a path names later.
-    private static func verifiedPageCount(fd: Int32, size: Int64) throws -> Int {
-        func fail(_ detail: String) -> SafariBrowserError { .pdfCache(.unreadablePDF(detail: detail)) }
-        guard size <= Int64(Int.max) else { throw fail("it is too large") }
+    ///
+    /// A failed `pread` is not an end of file. The provider records the first such
+    /// failure, and it decides the verdict: CoreGraphics would otherwise see a short
+    /// read and report "could not open", or worse, verify a file it only half read.
+    static func verifiedPageCount(fd: Int32, size: Int64) throws -> Int {
         let reader = PDFCacheDescriptorReader(fd: fd)
+        func fail(_ detail: String) -> SafariBrowserError {
+            if reader.failure != 0 {
+                return .pdfCache(.unreadablePDF(detail: "reading the copy back failed: \(String(cString: strerror(reader.failure))) (errno \(reader.failure))"))
+            }
+            return .pdfCache(.unreadablePDF(detail: detail))
+        }
+        guard size <= Int64(Int.max) else { throw fail("it is too large") }
         var callbacks = CGDataProviderDirectCallbacks(
             version: 0, getBytePointer: nil, releaseBytePointer: nil,
             getBytesAtPosition: { info, buffer, position, count in
@@ -197,8 +209,13 @@ enum PDFCacheOutput {
                 var received = 0
                 while received < count {
                     let result = pread(reader.fd, buffer.advanced(by: received), count - received, position + off_t(received))
-                    if result < 0, errno == EINTR { continue }
-                    if result <= 0 { break }
+                    if result < 0 {
+                        let code = errno
+                        if code == EINTR { continue }
+                        if reader.failure == 0 { reader.failure = code }
+                        break
+                    }
+                    if result == 0 { break }
                     received += result
                 }
                 return received
@@ -218,6 +235,8 @@ enum PDFCacheOutput {
         for number in 1...document.numberOfPages where document.page(at: number) == nil {
             throw fail("page \(number) cannot be read")
         }
+        // Pages that read fine from a copy that could not be read to the end are not a pass.
+        if reader.failure != 0 { throw fail("") }
         return document.numberOfPages
     }
 
@@ -230,5 +249,7 @@ enum PDFCacheOutput {
 /// Lets CoreGraphics read the staged copy through the descriptor that wrote it.
 private final class PDFCacheDescriptorReader {
     let fd: Int32
+    /// The first `pread` errno that was not EINTR; 0 when every read succeeded.
+    var failure: Int32 = 0
     init(fd: Int32) { self.fd = fd }
 }

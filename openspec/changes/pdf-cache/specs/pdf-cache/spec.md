@@ -145,7 +145,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 ### Requirement: URLs are shown without query or fragment
 
-The query and fragment SHALL be located among Unicode scalars, so that a combining mark after `?` or `#` cannot hide them. Every URL the command itself prints — in list rows, JSON, `get` output, and its own error messages — SHALL be shown with its query and fragment removed. Errors raised by the shared tab resolution when a tab flag matches no tab or several tabs (`documentNotFound`, `ambiguousWindowMatch`) list the URLs of open tabs as they do for every command; they are not produced by this command and are outside this requirement. Matching SHALL use the complete URL as specified in "A tab selection maps to a record by exact URL"; only display is reduced. The JSON field `has_query` SHALL say whether a query was removed.
+The query and fragment SHALL be located among Unicode scalars, so that a combining mark after `?` or `#` cannot hide them. Every URL the command itself prints — in list rows, JSON, `get` output, and its own error messages — SHALL be shown with its query and fragment removed. File names inside the `WebKitPDFs-*` folders and filesystem paths are printed as they are (they are local file names, and `--file` needs the exact name); they are not URLs. Errors raised by the shared tab resolution when a tab flag matches no tab or several tabs (`documentNotFound`, `ambiguousWindowMatch`) list the URLs of open tabs as they do for every command; they are not produced by this command and are outside this requirement. Matching SHALL use the complete URL as specified in "A tab selection maps to a record by exact URL"; only display is reduced. The JSON field `has_query` SHALL say whether a query was removed.
 
 #### Scenario: a signed URL is listed
 
@@ -164,7 +164,7 @@ The command SHALL accept only the cache version directory `Version 17`. The fail
 
 1. the WebKit cache folder does not exist;
 2. no `Version 17` directory exists (the message lists the `Version *` directories that do);
-3. a record selected for use does not begin with `uint32 version 17`, then the strings partition, `Resource`, and identifier, then the range (`0xFFFFFFFF` for none, otherwise a string) and a 20-byte hash whose hexadecimal form equals the record's file name (case-insensitive), each string being `uint32 length`, one byte `is8Bit`, and the characters (UTF-16LE when `is8Bit` is 0), with each string at most 65536 characters, or it is truncated;
+3. a record selected for use does not begin with `uint32 version 17`, then the strings partition, `Resource`, and identifier, then the range (`0xFFFFFFFF` for none, otherwise a string) and a 20-byte hash whose hexadecimal form equals the record's file name (case-insensitive) where that name is exactly 40 ASCII hexadecimal characters, each string being `uint32 length`, one byte `is8Bit`, and the characters (UTF-16LE when `is8Bit` is 0), with each string at most 65536 characters and no unpaired surrogate in a 16-bit string, or it is truncated;
 4. PDF bodies exist and none of their records parse under class 3;
 5. the `Version 17` folder has no `Records` folder (the message lists what it does hold).
 
@@ -185,6 +185,12 @@ A record that fails class 3 while others parse SHALL be left out of `list` outpu
 - **WHEN** the `Version 17` folder holds no `Records` folder
 - **THEN** the command fails as an unsupported layout and lists what the folder does hold
 - **AND** it does not report that no PDF is cached
+
+#### Scenario: a body whose name is not a cache key
+
+- **WHEN** a body that starts with `%PDF-` has a file name that is not exactly 40 ASCII hexadecimal characters (for example one carrying `?sig=…`, or a ligature that upper-cases to hexadecimal letters)
+- **THEN** it is counted with the unreadable records, its name is not printed anywhere, and it cannot be selected
+- **AND** when no PDF body has a valid name and record, the command fails as an unsupported layout
 
 #### Scenario: a hash that is not the file name
 
@@ -218,7 +224,7 @@ A record that fails class 3 while others parse SHALL be left out of `list` outpu
 
 ### Requirement: Access failures keep their cause
 
-Reading the cache folder SHALL preserve the failing call's errno, for the open and for every lookup inside it; a folder that can be listed but not searched is a permission failure and never an empty listing. `EACCES` and `EPERM` SHALL be reported as a Full Disk Access requirement with the guidance the other local-data commands give for the binary's signing state; other errors SHALL be reported with their own errno text and SHALL NOT be reported as a permission problem or as a missing PDF.
+Reading the cache folder SHALL preserve the failing call's errno, for the open and for every lookup inside it; a folder that can be listed but not searched is a permission failure and never an empty listing. Sizes and times come from the same lookup that decided the entry is a regular file; a failed lookup is never replaced by a size of zero or a missing date. `EACCES` and `EPERM` SHALL be reported as a Full Disk Access requirement with the guidance the other local-data commands give for the binary's signing state; other errors SHALL be reported with their own errno text and SHALL NOT be reported as a permission problem or as a missing PDF.
 
 #### Scenario: no Full Disk Access
 

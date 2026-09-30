@@ -442,7 +442,10 @@ used to read the target tab's URL when a tab flag is given).
   The tests plant a `SECRET` query and assert it appears in no row, JSON, or error message of this
   command. The shared tab-resolution errors (`documentNotFound`, `ambiguousWindowMatch`) list open tabs'
   URLs unredacted for every command; they are outside this guarantee (#227). `--file` names and filesystem paths are
-  printed as given (they are the caller's own or Safari's own file names, not URLs).
+  printed as given (`--file` needs the exact name; they are local file names, not URLs). Sizes and times come
+  from the `lstat` that decided the entry is regular, never invented when a later lookup fails; the
+  `readdir` loop clears errno before each call and reads it right after; the verification provider latches
+  the first non-EINTR `pread` error so a read failure is never taken for end of file.
 - **The record format is WebKit-private.** Observed 2026-09-30 and pinned by a byte-literal test:
   `uint32 version (17)`, then three strings — partition, `"Resource"`, identifier (= request URL) —
   each `uint32 length`, one `is8Bit` byte, the characters, **no alignment padding**; then the range
@@ -450,7 +453,9 @@ used to read the target tab's URL when a tab flag is given).
   last equality is the drift detector: if WebKit reshapes the key the bytes read as the hash stop being
   the name and the record is rejected, not trusted. All 9221 records of the cache it was observed on fit
   (8-bit 8572, 16-bit 649, non-empty partition 658, every range null, every hash = file name). Nothing
-  after the hash is parsed. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
+  after the hash is parsed. The file name must be **exactly 40 ASCII hex characters** (checked before any
+  case-folding: `uppercased()` turns `ﬀ` into `FF`); a PDF body with any other name is only *counted*, its
+  name never printed. 16-bit strings with an unpaired surrogate are rejected, not repaired to U+FFFD. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
   and is judged a PDF by its first five bytes; a record with a range holds part of a resource and is
   never listed. Any departure (other `Version N`, no `Records`, PDF bodies whose records all fail to
   parse) is an error that names what was seen — never an empty result. Small bodies stored inside the

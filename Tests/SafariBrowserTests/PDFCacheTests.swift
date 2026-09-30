@@ -495,6 +495,16 @@ final class PDFCacheTests: XCTestCase {
         try XCTSkipUnless(denied, "this volume did not accept the ACL used to make removal fail")
     }
 
+    /// A `pread` that fails is not an end of file. Verification must report that, not decide from
+    /// whatever short read CoreGraphics happened to get.
+    func testAReadFailureWhileVerifyingIsReportedAsSuch() throws {
+        XCTAssertThrowsError(try PDFCacheOutput.verifiedPageCount(fd: -1, size: 4096)) {
+            guard case SafariBrowserError.pdfCache(.unreadablePDF(let detail)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertTrue(detail.contains("reading the copy back failed"), detail)
+            XCTAssertTrue(detail.contains("errno \(EBADF)"), detail)
+        }
+    }
+
     func testAnUnreadableSourceKeepsItsCauseAndCreatesNothing() throws {
         let out = try outDir()
         let src = try source("locked-blob", Self.makePDF(pages: 1), mode: 0o000)
@@ -532,6 +542,19 @@ final class PDFCacheTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: out.appendingPathComponent("a.pdf")), bytes)
         XCTAssertEqual(retrieved.result.pages, 2)
         XCTAssertEqual(retrieved.origin, .networkCache(key: WebKitCacheReaderTests.fullKey("AAAA1111AAAA"), displayURL: "https://example.org/a.pdf"))
+    }
+
+    /// What `get` prints on success — the row and the JSON — carries the redacted URL too.
+    func testWhatGetPrintsOnSuccessNeverCarriesTheQuery() throws {
+        let paths = try makeCache([(key: "AAAA1111AAAA", url: "https://example.org/a.pdf?sig=SECRET", body: Self.makePDF(pages: 1), partition: "P1")])
+        let out = try outDir()
+        let retrieved = try PDFCacheService.retrieve(
+            form: .tab, tabURL: "https://example.org/a.pdf?sig=SECRET", paths: paths,
+            destination: out.appendingPathComponent("a.pdf").path, force: false)
+        XCTAssertFalse(PDFCacheFormat.retrievedRow(retrieved).contains("SECRET"))
+        let json = String(decoding: try PDFCacheFormat.retrievedJSON(retrieved), as: UTF8.self)
+        XCTAssertFalse(json.contains("SECRET"))
+        XCTAssertTrue(json.contains("https:\\/\\/example.org\\/a.pdf") || json.contains("https://example.org/a.pdf"), json)
     }
 
     func testRetrieveByKeyAndTheTabFormNeedsAURL() throws {

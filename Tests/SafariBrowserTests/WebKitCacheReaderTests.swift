@@ -317,6 +317,68 @@ final class WebKitCacheReaderTests: XCTestCase {
         }
     }
 
+    /// A cache key is exactly 40 ASCII hex characters. A PDF body named anything else is counted,
+    /// never named: the name is disk-derived text that could carry anything, and one that only
+    /// looks like a key (a ligature that `uppercased()` turns into two letters) must not pass.
+    func testAPDFBodyWhoseNameIsNotACacheKeyIsCountedAndNeverNamed() throws {
+        let dir = try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: Self.pdfBody)
+        let signed = "ABCDEF12?sig=SECRET"
+        try Self.pdfBody.write(to: dir.appendingPathComponent("\(signed)-blob"))
+        try Self.record(identifier: "https://e.org/b.pdf").write(to: dir.appendingPathComponent(signed))
+        // "ﬀ" + 38 × "A" uppercases to 40 hex characters; as a name it is 39 characters and not ASCII.
+        let ligature = "\u{FB00}" + String(repeating: "A", count: 38)
+        XCTAssertEqual(ligature.uppercased().count, 40)
+        try Self.pdfBody.write(to: dir.appendingPathComponent("\(ligature)-blob"))
+        try Self.record(identifier: "https://e.org/c.pdf", hash: Data([0xFF] + [UInt8](repeating: 0xAA, count: 19)))
+            .write(to: dir.appendingPathComponent(ligature))
+
+        let scan = try WebKitCacheReader.scan(cacheRoot: root)
+        XCTAssertEqual(scan.pdfs.map(\.key), [Self.fullKey("AAAA1111")])
+        XCTAssertEqual(scan.malformedNames, 2)
+        XCTAssertEqual(scan.unreadableRecords, 2)
+        XCTAssertEqual(scan.unreadableKeys, [], "a malformed name is never kept, so it can never be printed")
+        XCTAssertThrowsError(try PDFCacheSelection.select(keyPrefix: "ABCDEF12", scan: scan)) {
+            guard case SafariBrowserError.pdfCache(.noMatch) = $0 else { return XCTFail("\($0)") }
+            XCTAssertFalse($0.localizedDescription.contains("SECRET"))
+        }
+        XCTAssertTrue(WebKitCacheReader.isCacheKey(String(repeating: "aB0", count: 13) + "f"))
+        for bad in ["", String(repeating: "A", count: 39), String(repeating: "A", count: 41), String(repeating: "G", count: 40),
+                    ligature, String(repeating: "A", count: 39) + "\u{0301}"] {
+            XCTAssertFalse(WebKitCacheReader.isCacheKey(bad), bad)
+        }
+    }
+
+    func testOnlyMalformedNamesIsAnUnsupportedLayoutNotAnEmptyCache() throws {
+        let dir = try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: nil)
+        try Self.pdfBody.write(to: dir.appendingPathComponent("not-a-key-blob"))
+        XCTAssertThrowsError(try WebKitCacheReader.scan(cacheRoot: root)) {
+            guard case SafariBrowserError.pdfCache(.recordLayoutUnsupported(let detail)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertFalse(detail.contains("not-a-key"))
+        }
+    }
+
+    /// `String(decoding:as:UTF16.self)` repairs an unpaired surrogate to U+FFFD, which would turn a
+    /// broken record into a valid-looking URL. It is rejected instead.
+    func testAnUnpairedSurrogateInASixteenBitStringIsRejectedNotRepaired() throws {
+        func record(units: [UInt16]) -> Data {
+            var out = Data(withUnsafeBytes(of: UInt32(17).littleEndian, Array.init))
+            out.append(Self.string(""))
+            out.append(Self.string("Resource"))
+            out.append(contentsOf: withUnsafeBytes(of: UInt32(units.count).littleEndian, Array.init))
+            out.append(0)
+            for unit in units { out.append(contentsOf: withUnsafeBytes(of: unit.littleEndian, Array.init)) }
+            out.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])
+            out.append(Data(repeating: 0x11, count: 20))
+            return out
+        }
+        for units in [[0x0061, 0xD800], [0xDC00, 0x0061], [0xD800, 0x0061], [0xD800, 0xD800]] as [[UInt16]] {
+            XCTAssertThrowsError(try WebKitCacheReader.parseRecordKey(record(units: units)), "\(units)") {
+                XCTAssertEqual($0 as? WebKitCacheReader.RecordError, .malformedText)
+            }
+        }
+        XCTAssertEqual(try WebKitCacheReader.parseRecordKey(record(units: Array("a😀b".utf16))).identifier, "a😀b")
+    }
+
     func testEveryPDFRecordUnreadableIsAnUnsupportedLayoutNotAnEmptyCache() throws {
         try addRecord(key: "AAAA1111", identifier: "x", body: Self.pdfBody, recordBytes: Data(repeating: 0, count: 40))
         XCTAssertThrowsError(try WebKitCacheReader.scan(cacheRoot: root)) {

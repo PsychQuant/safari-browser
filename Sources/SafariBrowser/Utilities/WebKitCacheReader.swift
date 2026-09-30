@@ -111,6 +111,9 @@ enum WebKitCacheReader {
         case invalidStringFlag(UInt8)
         case nullString
         case stringTooLong(Int)
+        /// A 16-bit string with an unpaired surrogate. Decoding it would silently
+        /// replace it with U+FFFD and turn a broken record into a valid-looking URL.
+        case malformedText
     }
 
     static let hashLength = 20
@@ -165,11 +168,28 @@ enum WebKitCacheReader {
             case 0:
                 let raw = Array(try take(Int(length) * 2))
                 let units = stride(from: 0, to: raw.count, by: 2).map { UInt16(raw[$0]) | UInt16(raw[$0 + 1]) << 8 }
+                guard isWellFormedUTF16(units) else { throw RecordError.malformedText }
                 return String(decoding: units, as: UTF16.self)
             default:
                 throw RecordError.invalidStringFlag(flag)
             }
         }
+    }
+
+    static func isWellFormedUTF16(_ units: [UInt16]) -> Bool {
+        var index = 0
+        while index < units.count {
+            switch units[index] {
+            case 0xD800...0xDBFF:
+                guard index + 1 < units.count, (0xDC00...0xDFFF).contains(units[index + 1]) else { return false }
+                index += 2
+            case 0xDC00...0xDFFF:
+                return false
+            default:
+                index += 1
+            }
+        }
+        return true
     }
 
     // MARK: - Scan
@@ -181,12 +201,16 @@ enum WebKitCacheReader {
         let unreadableKeys: [String]
         /// Bodies that start with `%PDF-` but belong to a range request: part of a resource, not a document.
         let partialKeys: [String]
-        var unreadableRecords: Int { unreadableKeys.count }
+        /// PDF bodies whose file name is not a cache key at all. Counted, never named: a disk-derived
+        /// name outside the key grammar is not safe to print.
+        let malformedNames: Int
+        var unreadableRecords: Int { unreadableKeys.count + malformedNames }
 
-        init(pdfs: [WebKitCachedPDF], unreadableKeys: [String], partialKeys: [String] = []) {
+        init(pdfs: [WebKitCachedPDF], unreadableKeys: [String], partialKeys: [String] = [], malformedNames: Int = 0) {
             self.pdfs = pdfs
             self.unreadableKeys = unreadableKeys
             self.partialKeys = partialKeys
+            self.malformedNames = malformedNames
         }
     }
 
@@ -207,6 +231,7 @@ enum WebKitCacheReader {
         var pdfs: [WebKitCachedPDF] = []
         var unreadable: [String] = []
         var partial: [String] = []
+        var malformed = 0
         for partitionDirectory in partitions {
             let resources = records
                 .appendingPathComponent(partitionDirectory, isDirectory: true)
@@ -215,11 +240,15 @@ enum WebKitCacheReader {
             for name in names where name.hasSuffix("-blob") {
                 let key = String(name.dropLast("-blob".count))
                 let bodyURL = resources.appendingPathComponent(name)
-                guard try startsWithPDFMagic(bodyURL, reader: reader) else { continue }
+                // Regular file and PDF magic first: only a PDF body is worth a verdict on its name.
+                guard let bodyInfo = try regularFileInfo(bodyURL),
+                    try startsWithPDFMagic(bodyURL, reader: reader)
+                else { continue }
+                guard isCacheKey(key) else { malformed += 1; continue }
                 let recordURL = resources.appendingPathComponent(key)
                 switch try readEntry(
                     key: key, partitionDirectory: partitionDirectory,
-                    recordURL: recordURL, bodyURL: bodyURL, reader: reader)
+                    recordURL: recordURL, bodyURL: bodyURL, bodySize: bodyInfo.size, reader: reader)
                 {
                 case .pdf(let entry): pdfs.append(entry)
                 case .partial: partial.append(key)
@@ -227,9 +256,9 @@ enum WebKitCacheReader {
                 }
             }
         }
-        if pdfs.isEmpty && partial.isEmpty && !unreadable.isEmpty {
+        if pdfs.isEmpty && partial.isEmpty && (!unreadable.isEmpty || malformed > 0) {
             throw SafariBrowserError.pdfCache(.recordLayoutUnsupported(
-                detail: "\(unreadable.count) PDF body file(s) have no record that parses as version \(supportedVersion) with a 'Resource' key and a hash equal to its file name"))
+                detail: "\(unreadable.count + malformed) PDF body file(s) have no record that parses as version \(supportedVersion) with a 'Resource' key and a hash equal to its file name"))
         }
         pdfs.sort { lhs, rhs in
             switch (lhs.modified, rhs.modified) {
@@ -239,16 +268,13 @@ enum WebKitCacheReader {
             default: return lhs.key < rhs.key
             }
         }
-        return Scan(pdfs: pdfs, unreadableKeys: unreadable.sorted(), partialKeys: partial.sorted())
+        return Scan(pdfs: pdfs, unreadableKeys: unreadable.sorted(), partialKeys: partial.sorted(), malformedNames: malformed)
     }
 
-    /// Only a regular file can be a cached body: a directory, or a symlink that
-    /// could lead outside the cache, is not one and is skipped rather than
-    /// failing the whole scan. A body that vanished between listing and reading
-    /// (the cache evicts while Safari runs) is skipped too. Every other
-    /// failure — permission included — propagates with its cause.
+    /// A body that vanished between listing and reading (the cache evicts while
+    /// Safari runs) is not a PDF body. Every other failure — permission included —
+    /// propagates with its cause.
     private static func startsWithPDFMagic(_ url: URL, reader: WebKitCacheFileReading) throws -> Bool {
-        guard try isRegularFile(url) else { return false }
         do {
             return try reader.readPrefix(at: url, maxBytes: pdfMagic.count) == pdfMagic
         } catch SafariBrowserError.safariDataFileNotFound {
@@ -263,10 +289,10 @@ enum WebKitCacheReader {
     }
 
     private static func readEntry(
-        key: String, partitionDirectory: String, recordURL: URL, bodyURL: URL, reader: WebKitCacheFileReading
+        key: String, partitionDirectory: String, recordURL: URL, bodyURL: URL, bodySize: Int64, reader: WebKitCacheFileReading
     ) throws -> EntryOutcome {
         // Same rule as the body: a folder or symlink is not a record.
-        guard try isRegularFile(recordURL) else { return .unreadable }
+        guard let recordInfo = try regularFileInfo(recordURL) else { return .unreadable }
         let head: Data
         do {
             head = try reader.readPrefix(at: recordURL, maxBytes: recordHeadLimit)
@@ -277,26 +303,44 @@ enum WebKitCacheReader {
             parsed.hash.map({ String(format: "%02X", $0) }).joined() == key.uppercased()
         else { return .unreadable }
         guard parsed.range == nil else { return .partial }
-        let bodyValues = try? bodyURL.resourceValues(forKeys: [.fileSizeKey])
-        let recordValues = try? recordURL.resourceValues(forKeys: [.contentModificationDateKey])
         return .pdf(WebKitCachedPDF(
             key: key, partitionDirectory: partitionDirectory, partition: parsed.partition,
             requestURL: parsed.identifier, bodyURL: bodyURL, recordURL: recordURL,
-            size: Int64(bodyValues?.fileSize ?? 0), modified: recordValues?.contentModificationDate))
+            size: bodySize, modified: recordInfo.modified))
     }
 
-    /// `lstat`, so a symlink is not a regular file. An entry that is gone is not
-    /// one either (the cache evicts while Safari runs), but any other failure — a
-    /// folder that can be listed and not searched, say — keeps its cause: it must
-    /// not turn into "no PDFs here".
-    static func isRegularFile(_ url: URL) throws -> Bool {
+    /// A record's file name is the SHA-1 of its key: exactly 40 ASCII hexadecimal
+    /// characters. Checked before the name is case-folded, printed or compared,
+    /// so a name that only looks like one (`uppercased()` turns one ligature into
+    /// two letters) or carries text a person would not expect is never trusted.
+    static func isCacheKey(_ name: String) -> Bool {
+        name.utf8.count == 40 && name.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x46) || ($0 >= 0x61 && $0 <= 0x66) }
+    }
+
+    struct FileInfo {
+        let size: Int64
+        let modified: Date
+        /// `nil` when the file system reports no birth time.
+        let created: Date?
+    }
+
+    /// `lstat`, so a symlink is not a regular file: `nil` for anything that is not
+    /// one, and for an entry that is gone (the cache evicts while Safari runs).
+    /// Any other failure — a folder that can be listed and not searched, say —
+    /// keeps its cause: it must not turn into "no PDFs here". Size and times come
+    /// from the same call, so nothing is invented when a later lookup would fail.
+    static func regularFileInfo(_ url: URL) throws -> FileInfo? {
         var info = stat()
         guard lstat(url.path, &info) == 0 else {
             let code = errno
-            if code == ENOENT || code == ENOTDIR { return false }
+            if code == ENOENT || code == ENOTDIR { return nil }
             throw SafariDataStore.ioError(path: url.path, code: code)
         }
-        return info.st_mode & S_IFMT == S_IFREG
+        guard info.st_mode & S_IFMT == S_IFREG else { return nil }
+        func date(_ spec: timespec) -> Date { Date(timeIntervalSince1970: TimeInterval(spec.tv_sec) + TimeInterval(spec.tv_nsec) / 1e9) }
+        return FileInfo(
+            size: Int64(info.st_size), modified: date(info.st_mtimespec),
+            created: info.st_birthtimespec.tv_sec > 0 ? date(info.st_birthtimespec) : nil)
     }
 
     // MARK: - Folders
@@ -332,14 +376,19 @@ enum WebKitCacheReader {
         }
         defer { closedir(directory) }
         var names: [String] = []
-        errno = 0
-        while let entry = readdir(directory) {
+        while true {
+            // readdir returns nil at the end and on error, and only errno tells them
+            // apart: clear it right before the call and read it right after, with
+            // nothing in between that could change it.
+            errno = 0
+            guard let entry = readdir(directory) else { break }
             let name = withUnsafePointer(to: &entry.pointee.d_name) {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(cString: $0) }
             }
             if name != "." && name != ".." { names.append(name) }
         }
-        if errno != 0 { throw SafariDataStore.ioError(path: url.path, code: errno) }
+        let code = errno
+        if code != 0 { throw SafariDataStore.ioError(path: url.path, code: code) }
         return names.sorted()
     }
 }

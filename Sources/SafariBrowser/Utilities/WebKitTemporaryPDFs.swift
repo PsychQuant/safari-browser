@@ -38,16 +38,14 @@ enum WebKitTemporaryPDFs {
             guard let names = try WebKitCacheReader.listDirectoryIfPresent(folderURL) else { continue }
             for name in names {
                 let url = folderURL.appendingPathComponent(name)
-                guard try WebKitCacheReader.isRegularFile(url) else { continue }
-                let values = try? url.resourceValues(forKeys: [.fileSizeKey, .creationDateKey, .contentModificationDateKey])
+                guard let info = try WebKitCacheReader.regularFileInfo(url) else { continue }
                 do {
                     guard try reader.readPrefix(at: url, maxBytes: WebKitCacheReader.pdfMagic.count) == WebKitCacheReader.pdfMagic else { continue }
                 } catch SafariBrowserError.safariDataFileNotFound {
                     continue
                 }
                 found.append(TemporaryPDF(
-                    folder: folder, name: name, url: url, size: Int64(values?.fileSize ?? 0),
-                    date: values?.creationDate ?? values?.contentModificationDate))
+                    folder: folder, name: name, url: url, size: info.size, date: info.created ?? info.modified))
             }
         }
         return found.sorted { lhs, rhs in
