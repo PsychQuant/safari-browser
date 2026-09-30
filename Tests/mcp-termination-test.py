@@ -5,10 +5,13 @@ import os
 from pathlib import Path
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 
+# Loading Tests/mcp-stdio.py must not leave Tests/__pycache__ in the working tree.
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 BIN = str(Path(os.environ.get('SAFARI_BROWSER_BIN', ROOT / '.build/debug/safari-browser')).resolve())
 spec = importlib.util.spec_from_file_location('mcp_fixture', ROOT / 'Tests/mcp-stdio.py')
