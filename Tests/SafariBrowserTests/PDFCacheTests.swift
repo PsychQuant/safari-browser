@@ -46,6 +46,35 @@ final class PDFCacheTests: XCTestCase {
         XCTAssertEqual(PDFCacheURL.removingFragment("https://e.org/a.pdf?x=1#p=2"), "https://e.org/a.pdf?x=1")
     }
 
+    /// `String.firstIndex(of: "?")` compares grapheme clusters, so `?` followed by a combining mark
+    /// is a different Character and the query behind it would have been kept.
+    func testRedactionFindsDelimitersEvenWhenACombiningMarkFollowsThem() {
+        XCTAssertEqual(PDFCacheURL.redact("https://e.org/a.pdf?\u{0301}sig=SECRET"),
+                       .init(display: "https://e.org/a.pdf", hadQuery: true))
+        XCTAssertEqual(PDFCacheURL.redact("https://e.org/a.pdf#\u{0301}frag?x=1"),
+                       .init(display: "https://e.org/a.pdf", hadQuery: false))
+        XCTAssertEqual(PDFCacheURL.redact("https://e.org/a.pdf?x=1#\u{0301}frag"),
+                       .init(display: "https://e.org/a.pdf", hadQuery: true))
+        XCTAssertEqual(PDFCacheURL.removingFragment("https://e.org/a.pdf?x=1#\u{0301}p=2"), "https://e.org/a.pdf?x=1")
+        let entries = [pdf(key: "AAAA1111AAAA", url: "https://e.org/a.pdf?\u{0301}sig=SECRET")]
+        let rows = PDFCacheFormat.cacheListing(entries, limit: 50, timeZone: .current).rows.joined()
+        XCTAssertFalse(rows.contains("SECRET"))
+        let json = String(decoding: (try? PDFCacheFormat.cacheListingJSON(entries, limit: 50)) ?? Data(), as: UTF8.self)
+        XCTAssertFalse(json.contains("SECRET"))
+    }
+
+    /// Swift treats canonically equivalent text as equal; a URL is matched by its bytes.
+    func testAURLIsMatchedByBytesNotByCanonicalEquivalence() {
+        let composed = "https://e.org/caf\u{00E9}.pdf"
+        let decomposed = "https://e.org/cafe\u{0301}.pdf"
+        XCTAssertTrue(composed == decomposed, "premise: Swift String equality ignores the difference")
+        XCTAssertFalse(PDFCacheURL.isSame(composed, decomposed))
+        XCTAssertThrowsError(try PDFCacheSelection.select(tabURL: decomposed, from: [pdf(key: "AAAA1111AAAA", url: composed)])) {
+            guard case SafariBrowserError.pdfCache(.noMatch) = $0 else { return XCTFail("\($0)") }
+        }
+        XCTAssertEqual(try PDFCacheSelection.select(tabURL: composed, from: [pdf(key: "AAAA1111AAAA", url: composed)]).key, "AAAA1111AAAA")
+    }
+
     // MARK: - Selection form
 
     func testNothingSelectedIsRefusedAndAProfileOrFirstMatchAloneIsNotASelection() {
@@ -432,6 +461,40 @@ final class PDFCacheTests: XCTestCase {
         XCTAssertEqual(try names(in: folder), ["keep.txt"])
     }
 
+    /// A folder can allow creating a file and deny removing it. When the copy then fails, the error
+    /// must say a staged file was left behind rather than claim nothing was written.
+    func testAStagingFileThatCannotBeRemovedIsReportedWithTheOriginalError() throws {
+        let out = try outDir()
+        let user = NSUserName()
+        func chmod(_ args: [String]) throws -> Bool {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+            process.arguments = args
+            process.standardError = FileHandle.nullDevice
+            try process.run(); process.waitUntilExit()
+            return process.terminationStatus == 0
+        }
+        var denied = false
+        defer { if denied { _ = try? chmod(["-N", out.path]) } }
+        XCTAssertThrowsError(try PDFCacheOutput.copyVerified(
+            from: try source("body-blob", Self.makePDF(pages: 1)), to: out.appendingPathComponent("a.pdf").path, force: false,
+            beforePublish: { name in
+                // Make the publish fail (staged file replaced) and removal impossible.
+                let staged = out.appendingPathComponent(name)
+                try? FileManager.default.removeItem(at: staged)
+                try? Data("%PDF-1.7 impostor".utf8).write(to: staged)
+                denied = (try? chmod(["+a", "user:\(user) deny delete_child", out.path])) ?? false
+            })
+        ) {
+            guard case SafariBrowserError.pdfCache(.destinationWriteFailed(_, let detail)) = $0 else { return XCTFail("\($0)") }
+            if denied {
+                XCTAssertTrue(detail.contains("replaced"), "keeps the original reason: \(detail)")
+                XCTAssertTrue(detail.contains("could not be removed") && detail.contains(".pdf-cache-"), detail)
+            }
+        }
+        try XCTSkipUnless(denied, "this volume did not accept the ACL used to make removal fail")
+    }
+
     func testAnUnreadableSourceKeepsItsCauseAndCreatesNothing() throws {
         let out = try outDir()
         let src = try source("locked-blob", Self.makePDF(pages: 1), mode: 0o000)
@@ -558,6 +621,19 @@ final class PDFCacheTests: XCTestCase {
                                                               destination: out.appendingPathComponent("x.pdf").path, force: false), name)
         }
         XCTAssertEqual(try names(in: out), [])
+    }
+
+    /// A folder that can be listed but not searched fails every lookup inside it. That is a
+    /// permission problem to report, not an empty folder.
+    func testAnUnsearchableWebKitPDFsFolderIsAPermissionErrorNotAnEmptyListing() throws {
+        let tmp = dir.appendingPathComponent("tmp", isDirectory: true)
+        let folder = tmp.appendingPathComponent("WebKitPDFs-x", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Self.makePDF(pages: 1).write(to: folder.appendingPathComponent("a.pdf"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: folder.path)
+        XCTAssertThrowsError(try WebKitTemporaryPDFs.scan(temporaryRoot: tmp)) {
+            guard case SafariBrowserError.fullDiskAccessRequired = $0 else { return XCTFail("\($0)") }
+        }
     }
 
     func testAMissingTemporaryRootIsAnEmptyListingNotAnError() throws {

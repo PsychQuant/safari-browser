@@ -74,42 +74,51 @@ enum PDFCacheOutput {
         guard temporaryFD >= 0 else { throw writeFailure(destinationURL.path, errno) }
         var temporaryOpen = true
         var published = false
-        defer {
+        do {
+            let size = try copy(from: sourceFD, to: temporaryFD, sourceName: source.lastPathComponent, destination: destinationURL.path)
+            guard fsync(temporaryFD) == 0 else { throw writeFailure(destinationURL.path, errno) }
+            let pages = try verifiedPageCount(fd: temporaryFD, size: size)
+            beforePublish(temporaryName)
+
+            // The name must still be the file that was written and verified.
+            var written = stat(), named = stat()
+            guard fstat(temporaryFD, &written) == 0,
+                fstatat(parentFD, temporaryName, &named, AT_SYMLINK_NOFOLLOW) == 0,
+                written.st_dev == named.st_dev, written.st_ino == named.st_ino
+            else {
+                throw SafariBrowserError.pdfCache(.destinationWriteFailed(
+                    path: destinationURL.path, detail: "the staged copy was replaced before it could be published"))
+            }
+
+            // Darwin releases the descriptor even when close() reports an error, so it
+            // is never closed again or retried (the number may already belong to
+            // someone else). EINTR is not a failure here: fsync has made the data
+            // durable and nothing was left unwritten.
+            temporaryOpen = false
+            if close(temporaryFD) != 0, errno != EINTR { throw writeFailure(destinationURL.path, errno) }
+
+            let renamed = force
+                ? renameat(parentFD, temporaryName, parentFD, name)
+                : renameatx_np(parentFD, temporaryName, parentFD, name, UInt32(RENAME_EXCL))
+            guard renamed == 0 else {
+                if errno == EEXIST { throw SafariBrowserError.pdfCache(.destinationExists(path: destinationURL.path)) }
+                throw writeFailure(destinationURL.path, errno)
+            }
+            published = true
+            return Result(path: destinationURL.path, size: size, pages: pages)
+        } catch {
             if temporaryOpen { close(temporaryFD) }
-            if !published { unlinkat(parentFD, temporaryName, 0) }
+            // A folder can allow creating a file and deny removing it (an ACL with
+            // delete_child denied). The original error must not claim that nothing
+            // was left behind when something was.
+            if !published, unlinkat(parentFD, temporaryName, 0) != 0, errno != ENOENT {
+                let code = errno
+                let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                throw writeFailure(
+                    destinationURL.path, code, prefix: "\(reason) The staged copy \(temporaryName) could not be removed and was left in \(parentURL.path):")
+            }
+            throw error
         }
-
-        let size = try copy(from: sourceFD, to: temporaryFD, sourceName: source.lastPathComponent, destination: destinationURL.path)
-        guard fsync(temporaryFD) == 0 else { throw writeFailure(destinationURL.path, errno) }
-        let pages = try verifiedPageCount(fd: temporaryFD, size: size)
-        beforePublish(temporaryName)
-
-        // The name must still be the file that was written and verified.
-        var written = stat(), named = stat()
-        guard fstat(temporaryFD, &written) == 0,
-            fstatat(parentFD, temporaryName, &named, AT_SYMLINK_NOFOLLOW) == 0,
-            written.st_dev == named.st_dev, written.st_ino == named.st_ino
-        else {
-            throw SafariBrowserError.pdfCache(.destinationWriteFailed(
-                path: destinationURL.path, detail: "the staged copy was replaced before it could be published"))
-        }
-
-        // Darwin releases the descriptor even when close() reports an error, so it
-        // is never closed again or retried (the number may already belong to
-        // someone else). EINTR is not a failure here: fsync has made the data
-        // durable and nothing was left unwritten.
-        temporaryOpen = false
-        if close(temporaryFD) != 0, errno != EINTR { throw writeFailure(destinationURL.path, errno) }
-
-        let renamed = force
-            ? renameat(parentFD, temporaryName, parentFD, name)
-            : renameatx_np(parentFD, temporaryName, parentFD, name, UInt32(RENAME_EXCL))
-        guard renamed == 0 else {
-            if errno == EEXIST { throw SafariBrowserError.pdfCache(.destinationExists(path: destinationURL.path)) }
-            throw writeFailure(destinationURL.path, errno)
-        }
-        published = true
-        return Result(path: destinationURL.path, size: size, pages: pages)
     }
 
     /// The source belongs to Safari and is never modified. Publishing over it —
@@ -212,8 +221,9 @@ enum PDFCacheOutput {
         return document.numberOfPages
     }
 
-    private static func writeFailure(_ path: String, _ code: Int32) -> SafariBrowserError {
-        .pdfCache(.destinationWriteFailed(path: path, detail: "\(String(cString: strerror(code))) (errno \(code))"))
+    private static func writeFailure(_ path: String, _ code: Int32, prefix: String? = nil) -> SafariBrowserError {
+        let cause = "\(String(cString: strerror(code))) (errno \(code))"
+        return .pdfCache(.destinationWriteFailed(path: path, detail: prefix.map { "\($0) \(cause)" } ?? cause))
     }
 }
 

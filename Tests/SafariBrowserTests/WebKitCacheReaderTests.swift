@@ -293,6 +293,30 @@ final class WebKitCacheReaderTests: XCTestCase {
         XCTAssertEqual(scan.unreadableKeys, [name])
     }
 
+    /// A folder that can be listed and not searched fails every lookup inside it with EACCES. The
+    /// scan used to read that as "not a regular file" and answer "no PDFs" with exit 0.
+    func testAnUnsearchableResourceFolderIsAPermissionErrorNotAnEmptyScan() throws {
+        let dir = try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: Self.pdfBody)
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: dir.path)
+        XCTAssertThrowsError(try WebKitCacheReader.scan(cacheRoot: root)) {
+            guard case SafariBrowserError.fullDiskAccessRequired = $0 else { return XCTFail("\($0)") }
+        }
+    }
+
+    /// A partial body that parsed fine is evidence the layout is understood; one unreadable record
+    /// beside it is not "nothing parses", and `get --key` on the partial must reach its own message.
+    func testAPartialRecordBesideAnUnreadableOneIsNotALayoutError() throws {
+        try addRecord(key: "AAAA1111", identifier: "https://e.org/big.pdf", body: Self.pdfBody, range: "bytes=0-99")
+        try addRecord(key: "BBBB2222", identifier: "x", body: Self.pdfBody, recordBytes: Data(repeating: 0, count: 40))
+        let scan = try WebKitCacheReader.scan(cacheRoot: root)
+        XCTAssertEqual(scan.pdfs, [])
+        XCTAssertEqual(scan.partialKeys, [Self.fullKey("AAAA1111")])
+        XCTAssertEqual(scan.unreadableKeys, [Self.fullKey("BBBB2222")])
+        XCTAssertThrowsError(try PDFCacheSelection.select(keyPrefix: "AAAA1111", scan: scan)) {
+            guard case SafariBrowserError.pdfCache(.partialBody) = $0 else { return XCTFail("\($0)") }
+        }
+    }
+
     func testEveryPDFRecordUnreadableIsAnUnsupportedLayoutNotAnEmptyCache() throws {
         try addRecord(key: "AAAA1111", identifier: "x", body: Self.pdfBody, recordBytes: Data(repeating: 0, count: 40))
         XCTAssertThrowsError(try WebKitCacheReader.scan(cacheRoot: root)) {

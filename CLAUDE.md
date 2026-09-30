@@ -432,10 +432,13 @@ used to read the target tab's URL when a tab flag is given).
   selection is refused before anything is read; two forms is a usage error; `--profile` and
   `--first-match` alone are not a selection (`TargetOptions.hasExplicitTarget`). Never "newest" or
   "the only one".
-- **Matching is exact string equality** of the tab URL (fragment removed) with the record's request URL.
+- **Matching is byte equality** (UTF-8, not Swift's canonical-equivalence `==`) of the tab URL (fragment removed)
+  with the record's request URL.
   Zero or several matches stop and list candidates; there is no near-match fallback and no fallback
   between the two sources.
-- **URLs are shown without query or fragment** (`PDFCacheURL.redact`); matching uses the full string.
+- **URLs are shown without query or fragment** (`PDFCacheURL.redact`, delimiters found among Unicode
+  *scalars* — `String.firstIndex(of: "?")` compares grapheme clusters and misses a `?` followed by a
+  combining mark); matching uses the full string.
   The tests plant a `SECRET` query and assert it appears in no row, JSON, or error message of this
   command. The shared tab-resolution errors (`documentNotFound`, `ambiguousWindowMatch`) list open tabs'
   URLs unredacted for every command; they are outside this guarantee (#227). `--file` names and filesystem paths are
@@ -461,7 +464,8 @@ used to read the target tab's URL when a tab flag is given).
   then `renameatx_np(RENAME_EXCL)` (`renameat` with `--force`). The early "destination exists" refusal
   comes before the source is read, and a destination that is the source (same path, symlink or hard link,
   by device and inode) is refused even with `--force` — the real cache bodies are hard-linked into
-  `Blobs/`. A symlink destination is replaced as an entry; its target is never touched. The
+  `Blobs/`. A symlink destination is replaced as an entry; its target is never touched. If the staged file cannot be
+  removed after a failure (an ACL can allow creating and deny removing), the error says it was left and where. The
   `beforePublish` parameter is a test seam that lets `PDFCacheTests` create the two races (destination
   appears after the early check; staged file replaced). **Threat model**: mistakes and stale state, not
   another same-user process rewriting the destination folder mid-run (it could read and write those

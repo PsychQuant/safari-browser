@@ -18,16 +18,28 @@ enum PDFCacheURL {
         let hadQuery: Bool
     }
 
+    /// Delimiters are found among Unicode scalars, not `Character`s: a combining
+    /// mark after `?` makes one grapheme cluster that is not equal to `?`, and a
+    /// search by `Character` would then miss the query it was meant to cut.
     static func removingFragment(_ url: String) -> String {
-        url.firstIndex(of: "#").map { String(url[..<$0]) } ?? url
+        let scalars = url.unicodeScalars
+        guard let hash = scalars.firstIndex(of: "#") else { return url }
+        return String(scalars[..<hash])
     }
 
     static func redact(_ url: String) -> Redacted {
         let withoutFragment = removingFragment(url)
-        guard let query = withoutFragment.firstIndex(of: "?") else {
+        let scalars = withoutFragment.unicodeScalars
+        guard let query = scalars.firstIndex(of: "?") else {
             return Redacted(display: withoutFragment, hadQuery: false)
         }
-        return Redacted(display: String(withoutFragment[..<query]), hadQuery: true)
+        return Redacted(display: String(scalars[..<query]), hadQuery: true)
+    }
+
+    /// Swift's `==` on strings treats canonically equivalent text as equal; a
+    /// URL match is by bytes.
+    static func isSame(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.utf8.elementsEqual(rhs.utf8)
     }
 }
 
@@ -93,7 +105,7 @@ enum PDFCacheSelection {
     static func select(tabURL: String, from pdfs: [WebKitCachedPDF]) throws -> WebKitCachedPDF {
         let wanted = PDFCacheURL.removingFragment(tabURL)
         let subject = "the tab's URL \(PDFCacheURL.redact(tabURL).display)"
-        return try single(pdfs.filter { $0.requestURL == wanted }, subject: subject)
+        return try single(pdfs.filter { PDFCacheURL.isSame($0.requestURL, wanted) }, subject: subject)
     }
 
     /// Case-insensitive prefix of the record key. A body whose record cannot be

@@ -227,7 +227,7 @@ enum WebKitCacheReader {
                 }
             }
         }
-        if pdfs.isEmpty && !unreadable.isEmpty {
+        if pdfs.isEmpty && partial.isEmpty && !unreadable.isEmpty {
             throw SafariBrowserError.pdfCache(.recordLayoutUnsupported(
                 detail: "\(unreadable.count) PDF body file(s) have no record that parses as version \(supportedVersion) with a 'Resource' key and a hash equal to its file name"))
         }
@@ -248,7 +248,7 @@ enum WebKitCacheReader {
     /// (the cache evicts while Safari runs) is skipped too. Every other
     /// failure — permission included — propagates with its cause.
     private static func startsWithPDFMagic(_ url: URL, reader: WebKitCacheFileReading) throws -> Bool {
-        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return false }
+        guard try isRegularFile(url) else { return false }
         do {
             return try reader.readPrefix(at: url, maxBytes: pdfMagic.count) == pdfMagic
         } catch SafariBrowserError.safariDataFileNotFound {
@@ -266,7 +266,7 @@ enum WebKitCacheReader {
         key: String, partitionDirectory: String, recordURL: URL, bodyURL: URL, reader: WebKitCacheFileReading
     ) throws -> EntryOutcome {
         // Same rule as the body: a folder or symlink is not a record.
-        guard (try? recordURL.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return .unreadable }
+        guard try isRegularFile(recordURL) else { return .unreadable }
         let head: Data
         do {
             head = try reader.readPrefix(at: recordURL, maxBytes: recordHeadLimit)
@@ -283,6 +283,20 @@ enum WebKitCacheReader {
             key: key, partitionDirectory: partitionDirectory, partition: parsed.partition,
             requestURL: parsed.identifier, bodyURL: bodyURL, recordURL: recordURL,
             size: Int64(bodyValues?.fileSize ?? 0), modified: recordValues?.contentModificationDate))
+    }
+
+    /// `lstat`, so a symlink is not a regular file. An entry that is gone is not
+    /// one either (the cache evicts while Safari runs), but any other failure — a
+    /// folder that can be listed and not searched, say — keeps its cause: it must
+    /// not turn into "no PDFs here".
+    static func isRegularFile(_ url: URL) throws -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else {
+            let code = errno
+            if code == ENOENT || code == ENOTDIR { return false }
+            throw SafariDataStore.ioError(path: url.path, code: code)
+        }
+        return info.st_mode & S_IFMT == S_IFREG
     }
 
     // MARK: - Folders
