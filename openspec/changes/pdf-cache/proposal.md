@@ -12,7 +12,7 @@
   - `pdf-cache list`：列出快取中的 PDF（key 前綴、分區、去掉 query 與 fragment 的網址、大小、時間）。預設上限 50 筆、`--json`；`--source webkit-pdfs` 改列 `WebKitPDFs-*` 內的 PDF。
   - `pdf-cache get <path>`：依明確指定取出一份，指定形式只有三種（封閉列舉）：分頁定位旗標、`--key`、`--source webkit-pdfs --file`。沒有指定就拒絕。分頁定位以該分頁網址（去 fragment）與 record 的請求 URL **精確比對**；0 份或多份都停止並列出候選。
 - 取出的副本：先驗檔頭 `%PDF-`，寫入目的地資料夾的暫存檔（mode `0600`），以 CoreGraphics 驗證可讀且至少一頁，再以 rename 原子發佈；目的地已存在則拒絕，除非 `--force`。任何一步失敗都不留下目的檔與暫存檔。
-- 快取版本與 record 格式是 WebKit 私有格式：只支援已驗證的版本目錄；record 前四個欄位不符就明確失敗（fail closed），並說明看到了什麼。
+- 快取版本與 record 格式是 WebKit 私有格式：只支援已驗證的版本目錄；record 的 key 區段（版本、分區、type、識別字、range、與檔名相符的 hash）不符就明確失敗（fail closed），並說明看到了什麼；帶 range 的 record 是部分本體，不列出。
 - `non-interference`：新增兩個子指令的分級（Non-interfering）與資料敏感度記載。
 
 ## Capabilities

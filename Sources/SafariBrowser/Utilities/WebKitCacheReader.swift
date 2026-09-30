@@ -57,11 +57,22 @@ struct POSIXFilePrefixReader: WebKitCacheFileReading {
 ///                                                            /<key>-blob    response body
 ///
 /// A record begins `uint32 version (17)`, then three strings — partition,
-/// type (`"Resource"`), identifier — where the identifier is the request URL.
-/// A string is `uint32 length`, one `is8Bit` byte, then the characters, with no
-/// alignment padding. Nothing after the identifier is parsed: the response
-/// headers' encoding is more involved and whether a body is a PDF is decided
-/// from the body's own first bytes.
+/// type (`"Resource"`), identifier — where the identifier is the request URL,
+/// then the range (`0xFFFFFFFF` for none, otherwise a string) and a 20-byte
+/// SHA-1 that equals the record's file name. A string is `uint32 length`, one
+/// `is8Bit` byte, then the characters, with no alignment padding. All 9221
+/// records in the cache it was observed on parsed this way, 649 with a 16-bit
+/// identifier and 658 with a non-empty partition, every one with no range and
+/// a hash equal to its file name. Nothing after the hash is parsed: the
+/// response headers' encoding is more involved and whether a body is a PDF is
+/// decided from the body's own first bytes.
+///
+/// The hash equalling the file name is what makes a wrong parse visible: if
+/// WebKit reshaped the key, the 20 bytes read here would no longer be the
+/// name, and the record is rejected instead of trusted.
+///
+/// A record whose key carries a range holds a *part* of a resource; its body
+/// may start with `%PDF-` and still not be a document, so it is never listed.
 ///
 /// This is WebKit's private format with no stability promise, so every
 /// departure from what was observed is an error that says what was seen —
@@ -87,6 +98,10 @@ enum WebKitCacheReader {
         let partition: String
         let type: String
         let identifier: String
+        /// `nil` when the key names the whole resource.
+        let range: String?
+        /// 20 bytes; equals the record's file name in hex.
+        let hash: Data
     }
 
     enum RecordError: Error, Equatable {
@@ -98,6 +113,8 @@ enum WebKitCacheReader {
         case stringTooLong(Int)
     }
 
+    static let hashLength = 20
+
     static func parseRecordKey(_ data: Data) throws -> RecordKey {
         var cursor = Cursor(bytes: Array(data))
         let version = try cursor.uint32()
@@ -106,7 +123,10 @@ enum WebKitCacheReader {
         let type = try cursor.string()
         guard type == "Resource" else { throw RecordError.unexpectedType(type) }
         let identifier = try cursor.string()
-        return RecordKey(version: version, partition: partition, type: type, identifier: identifier)
+        let range = try cursor.optionalString()
+        let hash = Data(try cursor.take(hashLength))
+        return RecordKey(
+            version: version, partition: partition, type: type, identifier: identifier, range: range, hash: hash)
     }
 
     private struct Cursor {
@@ -126,8 +146,17 @@ enum WebKitCacheReader {
         }
 
         mutating func string() throws -> String {
+            guard let value = try optionalString(nullAllowed: false) else { throw RecordError.nullString }
+            return value
+        }
+
+        /// A string whose length field may be `0xFFFFFFFF`, WebKit's null string.
+        mutating func optionalString(nullAllowed: Bool = true) throws -> String? {
             let length = try uint32()
-            if length == UInt32.max { throw RecordError.nullString }
+            if length == UInt32.max {
+                if nullAllowed { return nil }
+                throw RecordError.nullString
+            }
             guard length <= UInt32(maximumStringLength) else { throw RecordError.stringTooLong(Int(length)) }
             let flag = try take(1).first!
             switch flag {
@@ -150,7 +179,15 @@ enum WebKitCacheReader {
         let pdfs: [WebKitCachedPDF]
         /// Bodies that start with `%PDF-` whose record could not be read.
         let unreadableKeys: [String]
+        /// Bodies that start with `%PDF-` but belong to a range request: part of a resource, not a document.
+        let partialKeys: [String]
         var unreadableRecords: Int { unreadableKeys.count }
+
+        init(pdfs: [WebKitCachedPDF], unreadableKeys: [String], partialKeys: [String] = []) {
+            self.pdfs = pdfs
+            self.unreadableKeys = unreadableKeys
+            self.partialKeys = partialKeys
+        }
     }
 
     /// Lists the PDFs in the cache. Looks at five bytes of each body and opens
@@ -169,6 +206,7 @@ enum WebKitCacheReader {
 
         var pdfs: [WebKitCachedPDF] = []
         var unreadable: [String] = []
+        var partial: [String] = []
         for partitionDirectory in partitions {
             let resources = records
                 .appendingPathComponent(partitionDirectory, isDirectory: true)
@@ -179,19 +217,19 @@ enum WebKitCacheReader {
                 let bodyURL = resources.appendingPathComponent(name)
                 guard try startsWithPDFMagic(bodyURL, reader: reader) else { continue }
                 let recordURL = resources.appendingPathComponent(key)
-                guard let entry = try readEntry(
+                switch try readEntry(
                     key: key, partitionDirectory: partitionDirectory,
                     recordURL: recordURL, bodyURL: bodyURL, reader: reader)
-                else {
-                    unreadable.append(key)
-                    continue
+                {
+                case .pdf(let entry): pdfs.append(entry)
+                case .partial: partial.append(key)
+                case .unreadable: unreadable.append(key)
                 }
-                pdfs.append(entry)
             }
         }
         if pdfs.isEmpty && !unreadable.isEmpty {
             throw SafariBrowserError.pdfCache(.recordLayoutUnsupported(
-                detail: "\(unreadable.count) PDF body file(s) have no record that parses as version \(supportedVersion) with a 'Resource' key"))
+                detail: "\(unreadable.count) PDF body file(s) have no record that parses as version \(supportedVersion) with a 'Resource' key and a hash equal to its file name"))
         }
         pdfs.sort { lhs, rhs in
             switch (lhs.modified, rhs.modified) {
@@ -201,13 +239,16 @@ enum WebKitCacheReader {
             default: return lhs.key < rhs.key
             }
         }
-        return Scan(pdfs: pdfs, unreadableKeys: unreadable.sorted())
+        return Scan(pdfs: pdfs, unreadableKeys: unreadable.sorted(), partialKeys: partial.sorted())
     }
 
-    /// `nil` when the body vanished between listing and reading (the cache
-    /// evicts while Safari runs). Every other failure — permission included —
-    /// propagates with its cause.
+    /// Only a regular file can be a cached body: a directory, or a symlink that
+    /// could lead outside the cache, is not one and is skipped rather than
+    /// failing the whole scan. A body that vanished between listing and reading
+    /// (the cache evicts while Safari runs) is skipped too. Every other
+    /// failure — permission included — propagates with its cause.
     private static func startsWithPDFMagic(_ url: URL, reader: WebKitCacheFileReading) throws -> Bool {
+        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else { return false }
         do {
             return try reader.readPrefix(at: url, maxBytes: pdfMagic.count) == pdfMagic
         } catch SafariBrowserError.safariDataFileNotFound {
@@ -215,22 +256,31 @@ enum WebKitCacheReader {
         }
     }
 
+    private enum EntryOutcome {
+        case pdf(WebKitCachedPDF)
+        case partial
+        case unreadable
+    }
+
     private static func readEntry(
         key: String, partitionDirectory: String, recordURL: URL, bodyURL: URL, reader: WebKitCacheFileReading
-    ) throws -> WebKitCachedPDF? {
+    ) throws -> EntryOutcome {
         let head: Data
         do {
             head = try reader.readPrefix(at: recordURL, maxBytes: recordHeadLimit)
         } catch SafariBrowserError.safariDataFileNotFound {
-            return nil
+            return .unreadable
         }
-        guard let parsed = try? parseRecordKey(head) else { return nil }
+        guard let parsed = try? parseRecordKey(head),
+            parsed.hash.map({ String(format: "%02X", $0) }).joined() == key.uppercased()
+        else { return .unreadable }
+        guard parsed.range == nil else { return .partial }
         let bodyValues = try? bodyURL.resourceValues(forKeys: [.fileSizeKey])
         let recordValues = try? recordURL.resourceValues(forKeys: [.contentModificationDateKey])
-        return WebKitCachedPDF(
+        return .pdf(WebKitCachedPDF(
             key: key, partitionDirectory: partitionDirectory, partition: parsed.partition,
             requestURL: parsed.identifier, bodyURL: bodyURL, recordURL: recordURL,
-            size: Int64(bodyValues?.fileSize ?? 0), modified: recordValues?.contentModificationDate)
+            size: Int64(bodyValues?.fileSize ?? 0), modified: recordValues?.contentModificationDate))
     }
 
     // MARK: - Folders

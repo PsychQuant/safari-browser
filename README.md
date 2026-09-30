@@ -749,14 +749,18 @@ safari-browser pdf-cache get paper.pdf --source webkit-pdfs --file paper.pdf
 one is cached. A tab is matched by its **exact URL** (fragment removed); a URL
 with no cached record, or one cached in several partitions, stops and lists the
 candidates rather than guessing. The copy is written `0600`, only after it opens
-as a PDF with every page readable, and is renamed into place, so a truncated file
-never appears under your name. An existing destination is kept unless `--force`.
+as a PDF whose pages can all be found in its page tree (content streams are not
+decoded), and is renamed into place, so a truncated file never appears under your
+name. An existing destination is kept unless `--force`, and Safari's own cache file
+is never replaced, even with `--force`.
 
 URLs are always shown without their query and fragment, because the query of a
 signed URL can be a credential. `list` defaults to 50 rows (`--limit`).
 
 The record layout is WebKit's private format; only `Version 17` is understood, and
-anything else fails with what was seen instead of reporting an empty cache.
+anything else fails with what was seen instead of reporting an empty cache. Each
+record must name itself (an embedded hash equal to its file name), and a record
+for a byte range — part of a resource — is never listed.
 Responses small enough to be stored inside the record itself (no `-blob` file)
 are not covered. The `WebKitPDFs-*` folders appear only after someone presses
 "Open with Preview" in Safari's PDF viewer, so that source is opt-in and the

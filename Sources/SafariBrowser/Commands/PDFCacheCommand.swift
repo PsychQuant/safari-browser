@@ -52,6 +52,10 @@ struct PDFCacheList: ParsableCommand {
                 LocalDataOutput.writeStderr(
                     "pdf-cache: \(scan.unreadableRecords) cached PDF(s) have a record this command cannot read and are not listed.\n")
             }
+            if !scan.partialKeys.isEmpty {
+                LocalDataOutput.writeStderr(
+                    "pdf-cache: \(scan.partialKeys.count) cached PDF body(ies) hold only a byte range and are not listed.\n")
+            }
             rendered = PDFCacheFormat.cacheListing(scan.pdfs, limit: limit, timeZone: timeZone)
             jsonData = { try PDFCacheFormat.cacheListingJSON(scan.pdfs, limit: limit) }
             if scan.pdfs.isEmpty { LocalDataOutput.writeStderr("pdf-cache: no PDF found in the network cache.\n") }

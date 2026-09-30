@@ -2,6 +2,8 @@
 
 - [x] 1.1 測試先失敗：record 前四個欄位解析（8-bit 與 16-bit 字元、空分區、非空分區）、截斷／長度超限／type 不是 Resource／版本不符一律失敗（Requirement: The cache layout is validated and unsupported layouts fail closed）
 - [x] 1.2 實作 `WebKitCacheReader`：版本目錄（只接受 Version 17）、列舉分區、以 `-blob` 前 5 位元組篩 PDF、解析 record
+- [x] 1.5 range 與 hash：解析 range（null 或字串）與 20 位元組 hash；hash 不等於檔名的 record 不被信任；帶 range 的 record 不列出、不算不可讀（Requirement: The cache layout is validated and unsupported layouts fail closed）
+- [x] 1.6 `-blob` 必須是一般檔案：資料夾與 symlink 略過，不使整個掃描失敗（Requirement: The listing shows PDFs only）
 - [x] 1.3 測試：沒有 Version 目錄、只有不支援的版本、Version 17 底下沒有 Records、PDF blob 存在但全部無法解析（版式漂移）
 - [x] 1.4 權限與 I/O 錯誤保留 errno：`EACCES`／`EPERM` 走 Full Disk Access 指引，其他錯誤不被說成權限問題或找不到（Requirement: Access failures keep their cause）
 
@@ -12,6 +14,7 @@
 - [x] 2.3 實作 `PDFCacheSelection`（純函式）與 `TargetOptions.hasExplicitTarget`
 - [x] 2.4 測試先失敗：寫出（`%PDF-` 驗證、可讀且至少一頁、`0600`、已存在拒絕、`--force`、失敗不留目的檔與暫存檔、來源不被修改）（Requirement: Retrieval writes a verified copy atomically）
 - [x] 2.5 實作 `PDFCacheOutput`
+- [x] 2.6 `--force` 不得替換來源檔（同路徑、symlink、hard link 以 device 與 inode 比對），暫存檔名固定長度（Requirement: Retrieval writes a verified copy atomically）
 
 ## 3. 指令
 

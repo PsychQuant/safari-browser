@@ -39,8 +39,10 @@ enum PDFCacheOutput {
 
         let sourceFD = try SafariDataStore.openSource(source)
         defer { close(sourceFD) }
+        try refuseIfSameFile(sourceFD: sourceFD, destination: destinationURL.path)
 
-        let temporary = parent.appendingPathComponent(".\(destinationURL.lastPathComponent).pdf-cache-\(UUID().uuidString).tmp").path
+        // Fixed length: a name derived from the destination's could exceed NAME_MAX.
+        let temporary = parent.appendingPathComponent(".pdf-cache-\(UUID().uuidString).tmp").path
         let temporaryFD = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard temporaryFD >= 0 else { throw writeFailure(destinationURL.path, errno) }
         var temporaryOpen = true
@@ -52,8 +54,12 @@ enum PDFCacheOutput {
 
         let size = try copy(from: sourceFD, to: temporaryFD, sourceName: source.lastPathComponent, destination: destinationURL.path)
         guard fsync(temporaryFD) == 0 else { throw writeFailure(destinationURL.path, errno) }
+        // Darwin releases the descriptor even when close() reports an error, so it
+        // is never closed again or retried (the number may already belong to
+        // someone else). EINTR is not a failure here: fsync has made the data
+        // durable and nothing was left unwritten.
         temporaryOpen = false
-        guard close(temporaryFD) == 0 else { throw writeFailure(destinationURL.path, errno) }
+        if close(temporaryFD) != 0, errno != EINTR { throw writeFailure(destinationURL.path, errno) }
 
         let pages = try verifiedPageCount(at: temporary)
 
@@ -66,6 +72,20 @@ enum PDFCacheOutput {
         }
         published = true
         return Result(path: destinationURL.path, size: size, pages: pages)
+    }
+
+    /// The source belongs to Safari and is never modified. Publishing over it —
+    /// `--force` with the cache file itself, a symlink or a hard link to it as
+    /// the destination — would replace its directory entry and permissions even
+    /// though the bytes are the same. Compared by device and inode, not by path.
+    private static func refuseIfSameFile(sourceFD: Int32, destination: String) throws {
+        var sourceInfo = stat()
+        var destinationInfo = stat()
+        guard fstat(sourceFD, &sourceInfo) == 0, stat(destination, &destinationInfo) == 0 else { return }
+        if sourceInfo.st_dev == destinationInfo.st_dev, sourceInfo.st_ino == destinationInfo.st_ino {
+            throw SafariBrowserError.pdfCache(.destinationWriteFailed(
+                path: destination, detail: "it is the cached file this copy is read from"))
+        }
     }
 
     /// Streams the source into the temporary file, refusing as soon as the
@@ -103,8 +123,11 @@ enum PDFCacheOutput {
         return total
     }
 
-    /// Every page must be readable, the same standard the PDF-export path
-    /// applies: a PDF cut short loses its page tree and fails here.
+    /// Every page's entry in the page tree must be readable, the same standard
+    /// the PDF-export path applies: a PDF cut short loses its page tree and
+    /// fails here. CoreGraphics parses lazily, so this does not decode content
+    /// streams or images — a document whose page tree is intact but whose
+    /// content is damaged passes.
     private static func verifiedPageCount(at path: String) throws -> Int {
         func fail(_ detail: String) -> SafariBrowserError { .pdfCache(.unreadablePDF(detail: detail)) }
         guard let document = CGPDFDocument(URL(fileURLWithPath: path) as CFURL) else {

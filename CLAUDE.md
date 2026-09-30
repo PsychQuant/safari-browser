@@ -436,19 +436,29 @@ used to read the target tab's URL when a tab flag is given).
   Zero or several matches stop and list candidates; there is no near-match fallback and no fallback
   between the two sources.
 - **URLs are shown without query or fragment** (`PDFCacheURL.redact`); matching uses the full string.
-  The tests plant a `SECRET` query and assert it appears in no row, JSON, or error message.
+  The tests plant a `SECRET` query and assert it appears in no row, JSON, or error message of this
+  command. The shared tab-resolution errors (`documentNotFound`, `ambiguousWindowMatch`) list open tabs'
+  URLs unredacted for every command; they are outside this guarantee (#227).
 - **The record format is WebKit-private.** Observed 2026-09-30 and pinned by a byte-literal test:
   `uint32 version (17)`, then three strings — partition, `"Resource"`, identifier (= request URL) —
-  each `uint32 length`, one `is8Bit` byte, the characters, **no alignment padding**. Nothing after the
-  identifier is parsed. The body is `<key>-blob` and is judged a PDF by its first five bytes. Any
-  departure (other `Version N`, no `Records`, PDF bodies whose records all fail to parse) is an error
-  that names what was seen — never an empty result. Small bodies stored inside the record (no `-blob`)
-  are not covered; the eviction rules and private-browsing behaviour are unverified.
+  each `uint32 length`, one `is8Bit` byte, the characters, **no alignment padding**; then the range
+  (`0xFFFFFFFF` = none, else a string) and a 20-byte SHA-1 that **equals the record's file name**. That
+  last equality is the drift detector: if WebKit reshapes the key the bytes read as the hash stop being
+  the name and the record is rejected, not trusted. All 9221 records of the cache it was observed on fit
+  (8-bit 8572, 16-bit 649, non-empty partition 658, every range null, every hash = file name). Nothing
+  after the hash is parsed. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
+  and is judged a PDF by its first five bytes; a record with a range holds part of a resource and is
+  never listed. Any departure (other `Version N`, no `Records`, PDF bodies whose records all fail to
+  parse) is an error that names what was seen — never an empty result. Small bodies stored inside the
+  record (no `-blob`) are not covered; the eviction rules and private-browsing behaviour are unverified.
 - **Copy**: `PDFCacheOutput.copyVerified` — source opened read-only, exclusive `0600` temp file next to
-  the destination, `%PDF-` check on the first chunk, `CGPDFDocument` with every page readable, then
-  `renamex_np(RENAME_EXCL)` (`rename` with `--force`). The early "destination exists" refusal comes
-  before the source is read. The `RENAME_EXCL` guard against a destination appearing mid-copy is not
-  covered by a test (it needs a race).
+  the destination (fixed-length name), `%PDF-` check on the first chunk, `CGPDFDocument` opens and every
+  page's entry in the page tree reads (CoreGraphics is lazy: content streams are not decoded, so a
+  document with an intact page tree and damaged content passes), then `renamex_np(RENAME_EXCL)` (`rename`
+  with `--force`). The early "destination exists" refusal comes before the source is read, and a
+  destination that is the source (same path, symlink or hard link, by device and inode) is refused even
+  with `--force` — the real cache bodies are hard-linked into `Blobs/`. The `RENAME_EXCL` guard against a
+  destination appearing mid-copy is not covered by a test (it needs a race).
 - `--source webkit-pdfs` reads `WebKitPDFs-*` under the container's `tmp`. Those folders appeared after
   "Open with Preview" was pressed (one observation, no controlled experiment); the command never
   creates them or presses anything.

@@ -76,7 +76,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 ### Requirement: Retrieval writes a verified copy atomically
 
-`pdf-cache get` SHALL open the source read-only and SHALL NOT modify it. It SHALL require the source's first five bytes to be `%PDF-`. It SHALL write the bytes to a temporary file created exclusively, with mode `0600`, in the destination's directory; verify that CoreGraphics reads it as a PDF with at least one page; and then publish it by renaming it onto the destination path. When the destination exists, the command SHALL fail unless `--force` is given. On any failure the command SHALL leave no file at the destination that it created and no temporary file. The destination's directory SHALL already exist. On success it SHALL print one line, or with `--json` one object, giving the destination path, the size, the page count, and where the PDF came from (the key and the URL shown as required by "URLs are shown without query or fragment", or the folder and file name).
+`pdf-cache get` SHALL open the source read-only and SHALL NOT modify it. It SHALL require the source's first five bytes to be `%PDF-`. It SHALL write the bytes to a temporary file created exclusively, with mode `0600`, in the destination's directory; verify that CoreGraphics opens it as a PDF with at least one page and that every page's entry in the page tree can be read (content streams and images are not decoded, so a document whose page tree is intact but whose content is damaged passes); and then publish it by renaming it onto the destination path. The command SHALL NOT replace the file it is copying from: when the destination is that file, whether by the same path, a symbolic link, or a hard link (the same device and inode), it SHALL fail before writing. When the destination exists, the command SHALL fail unless `--force` is given. On any failure the command SHALL leave no file at the destination that it created and no temporary file. The destination's directory SHALL already exist. On success it SHALL print one line, or with `--json` one object, giving the destination path, the size, the page count, and where the PDF came from (the key and the URL shown as required by "URLs are shown without query or fragment", or the folder and file name).
 
 #### Scenario: verified copy published
 
@@ -93,6 +93,11 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 - **WHEN** the body starts with `%PDF-` but CoreGraphics cannot read a page from it
 - **THEN** the command fails, the destination is unchanged, and no temporary file remains
 
+#### Scenario: the destination is the source
+
+- **WHEN** `--force` is given and the destination is the cached file being copied, or a symbolic link or hard link to it
+- **THEN** the command fails and the cached file keeps its content, inode, and permissions
+
 #### Scenario: destination exists
 
 - **WHEN** the destination already exists and `--force` is not given
@@ -105,7 +110,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 ### Requirement: The listing shows PDFs only
 
-`pdf-cache list` SHALL list only records whose body starts with `%PDF-`, and SHALL decide that by reading no more than the first five bytes of each body. Each row SHALL show the first 12 characters of the record key, the partition (or `-` when empty), the request URL as required by "URLs are shown without query or fragment", the body size, and the record's modification time in local time. Rows SHALL be ordered newest first and limited by `--limit` (default 50, a positive integer). `--json` SHALL print an array whose objects carry the full `key`, `partition`, `url`, `has_query`, `size`, and `modified` (ISO 8601); with `--source webkit-pdfs` the objects carry `file`, `folder`, `size`, and `modified`. Explanatory text SHALL go to stderr and rows to stdout. When no PDF is cached, the command SHALL exit successfully with an explanatory note on stderr and, with `--json`, `[]` on stdout.
+`pdf-cache list` SHALL list only records whose body is a regular file that starts with `%PDF-`, and SHALL decide that by reading no more than the first five bytes of each body. A body file that is not a regular file (a folder, or a symbolic link) SHALL be skipped without failing the scan. A record whose key carries a byte range holds part of a resource, not a document: it SHALL NOT be listed or selected, and `list` SHALL note their number on stderr. Each row SHALL show the first 12 characters of the record key, the partition (or `-` when empty), the request URL as required by "URLs are shown without query or fragment", the body size, and the record's modification time in local time. Rows SHALL be ordered newest first and limited by `--limit` (default 50, a positive integer). `--json` SHALL print an array whose objects carry the full `key`, `partition`, `url`, `has_query`, `size`, and `modified` (ISO 8601); with `--source webkit-pdfs` the objects carry `file`, `folder`, `size`, and `modified`. Explanatory text SHALL go to stderr and rows to stdout. When no PDF is cached, the command SHALL exit successfully with an explanatory note on stderr and, with `--json`, `[]` on stdout.
 
 #### Scenario: default limit
 
@@ -124,7 +129,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 ### Requirement: URLs are shown without query or fragment
 
-Every URL the command prints — in list rows, JSON, `get` output, and error messages — SHALL be shown with its query and fragment removed. Matching SHALL use the complete URL as specified in "A tab selection maps to a record by exact URL"; only display is reduced. The JSON field `has_query` SHALL say whether a query was removed.
+Every URL the command itself prints — in list rows, JSON, `get` output, and its own error messages — SHALL be shown with its query and fragment removed. Errors raised by the shared tab resolution when a tab flag matches no tab or several tabs (`documentNotFound`, `ambiguousWindowMatch`) list the URLs of open tabs as they do for every command; they are not produced by this command and are outside this requirement. Matching SHALL use the complete URL as specified in "A tab selection maps to a record by exact URL"; only display is reduced. The JSON field `has_query` SHALL say whether a query was removed.
 
 #### Scenario: a signed URL is listed
 
@@ -143,7 +148,7 @@ The command SHALL accept only the cache version directory `Version 17`. The fail
 
 1. the WebKit cache folder does not exist;
 2. no `Version 17` directory exists (the message lists the `Version *` directories that do);
-3. a record selected for use does not begin with `uint32 version 17`, then the strings partition, `Resource`, and identifier, each string being `uint32 length`, one byte `is8Bit`, and the characters (UTF-16LE when `is8Bit` is 0), with the identifier at most 65536 characters, or it is truncated;
+3. a record selected for use does not begin with `uint32 version 17`, then the strings partition, `Resource`, and identifier, then the range (`0xFFFFFFFF` for none, otherwise a string) and a 20-byte hash whose hexadecimal form equals the record's file name (case-insensitive), each string being `uint32 length`, one byte `is8Bit`, and the characters (UTF-16LE when `is8Bit` is 0), with each string at most 65536 characters, or it is truncated;
 4. PDF bodies exist and none of their records parse under class 3;
 5. the `Version 17` folder has no `Records` folder (the message lists what it does hold).
 
@@ -164,6 +169,17 @@ A record that fails class 3 while others parse SHALL be left out of `list` outpu
 - **WHEN** the `Version 17` folder holds no `Records` folder
 - **THEN** the command fails as an unsupported layout and lists what the folder does hold
 - **AND** it does not report that no PDF is cached
+
+#### Scenario: a hash that is not the file name
+
+- **WHEN** a record's bytes after the range do not equal its own file name
+- **THEN** the record is treated as unreadable under class 3 and is not trusted
+
+#### Scenario: a partial body
+
+- **WHEN** a record whose key carries a byte range has a body that starts with `%PDF-`
+- **THEN** it is not listed and not selectable, and `list` notes on stderr how many such bodies it left out
+- **AND** when it is the only PDF body in the cache, the listing is empty rather than a layout error
 
 #### Scenario: one unreadable record
 

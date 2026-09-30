@@ -45,37 +45,65 @@ final class WebKitCacheReaderTests: XCTestCase {
         return out
     }
 
+    /// The record's file name is the SHA-1 of its key, in upper-case hex. Test keys are
+    /// short labels; this pads them to a full name.
+    static func fullKey(_ label: String) -> String {
+        label.uppercased().padding(toLength: 40, withPad: "0", startingAt: 0)
+    }
+
+    static func hashBytes(forKey key: String) -> Data {
+        let hex = Array(key)
+        return Data(stride(from: 0, to: 40, by: 2).map { UInt8(String(hex[$0...$0 + 1]), radix: 16)! })
+    }
+
+    /// `range` nil encodes WebKit's null string (`0xFFFFFFFF`), as every observed record does.
     static func record(
         version: UInt32 = 17, partition: String = "", type: String = "Resource",
-        identifier: String, is8Bit: Bool = true, trailer: Data = Data(repeating: 0xAB, count: 64)
+        identifier: String, is8Bit: Bool = true, range: String? = nil,
+        hash: Data = Data(repeating: 0x11, count: 20), trailer: Data = Data(repeating: 0xAB, count: 64)
     ) -> Data {
         var out = Data(withUnsafeBytes(of: version.littleEndian, Array.init))
         out.append(string(partition))
         out.append(string(type))
         out.append(string(identifier, is8Bit: is8Bit))
+        if let range { out.append(string(range)) } else { out.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF]) }
+        out.append(hash)
         out.append(trailer)
         return out
     }
 
     // MARK: - parseRecordKey
 
-    /// The leading bytes of the real Springer record observed on 2026-09-30:
-    /// `11000000 00000000 01 08000000 01 "Resource" 3c000000 01 <60 chars>`.
+    /// The leading bytes of a real record, observed on 2026-09-30:
+    /// `11000000 00000000 01 08000000 01 "Resource" 3c000000 01 <60 chars> ffffffff <20-byte hash>`.
     /// Pins the layout to what was actually seen, not to a helper that could
-    /// share the same misunderstanding.
+    /// share the same misunderstanding. The URL and hash here are synthetic; only
+    /// the structure and the lengths are the observed ones.
     func testParsesTheLeadingBytesObservedInARealRecord() throws {
-        let url = "https://link.springer.com/content/pdf/10.3758/BF03208840.pdf"
+        let url = "https://example.org/content/pdf/10.0000/EXAMPLE000000000.pdf"
         XCTAssertEqual(url.utf8.count, 0x3c)
+        let hash = Array(0..<20).map { UInt8(0xA0 + $0) }
         var bytes: [UInt8] = [0x11, 0, 0, 0, 0, 0, 0, 0, 0x01, 0x08, 0, 0, 0, 0x01]
         bytes += Array("Resource".utf8)
         bytes += [0x3c, 0, 0, 0, 0x01]
         bytes += Array(url.utf8)
+        bytes += [0xFF, 0xFF, 0xFF, 0xFF]
+        bytes += hash
         bytes += [UInt8](repeating: 0x55, count: 100)
         let key = try WebKitCacheReader.parseRecordKey(Data(bytes))
         XCTAssertEqual(key.version, 17)
         XCTAssertEqual(key.partition, "")
         XCTAssertEqual(key.type, "Resource")
         XCTAssertEqual(key.identifier, url)
+        XCTAssertNil(key.range)
+        XCTAssertEqual(key.hash, Data(hash))
+    }
+
+    func testARangeStringIsParsedAndDistinctFromNone() throws {
+        let ranged = try WebKitCacheReader.parseRecordKey(Self.record(identifier: "https://e.org/a.pdf", range: "bytes=0-99"))
+        XCTAssertEqual(ranged.range, "bytes=0-99")
+        XCTAssertEqual(ranged.hash, Data(repeating: 0x11, count: 20))
+        XCTAssertNil(try WebKitCacheReader.parseRecordKey(Self.record(identifier: "https://e.org/a.pdf")).range)
     }
 
     func testParsesNonEmptyPartitionAndSixteenBitIdentifier() throws {
@@ -130,20 +158,26 @@ final class WebKitCacheReaderTests: XCTestCase {
         atLimit.append(Self.string(""))
         atLimit.append(Self.string("Resource"))
         atLimit.append(Self.string(String(repeating: "a", count: 65_536)))
+        atLimit.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])
+        atLimit.append(Data(repeating: 0x11, count: 20))
         XCTAssertEqual(try WebKitCacheReader.parseRecordKey(atLimit).identifier.count, 65_536)
     }
 
     // MARK: - Fixture cache tree
 
+    /// `key` is a short hex label; the file is named by its padded 40-character form and the
+    /// record's hash is that name's bytes, as in a real cache.
     @discardableResult
     func addRecord(
         version: String = "Version 17", partition: String = "PARTITIONHASH1",
-        key: String, identifier: String, body: Data?, recordBytes: Data? = nil
+        key: String, identifier: String, body: Data?, recordBytes: Data? = nil, range: String? = nil
     ) throws -> URL {
+        let name = Self.fullKey(key)
         let dir = root.appendingPathComponent("\(version)/Records/\(partition)/Resource", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try (recordBytes ?? Self.record(identifier: identifier)).write(to: dir.appendingPathComponent(key))
-        if let body { try body.write(to: dir.appendingPathComponent("\(key)-blob")) }
+        let bytes = recordBytes ?? Self.record(identifier: identifier, range: range, hash: Self.hashBytes(forKey: name))
+        try bytes.write(to: dir.appendingPathComponent(name))
+        if let body { try body.write(to: dir.appendingPathComponent("\(name)-blob")) }
         return dir
     }
 
@@ -157,14 +191,14 @@ final class WebKitCacheReaderTests: XCTestCase {
 
         let scan = try WebKitCacheReader.scan(cacheRoot: root)
         XCTAssertEqual(scan.unreadableRecords, 0)
-        XCTAssertEqual(scan.pdfs.map(\.key).sorted(), ["AAAA1111", "DDDD4444"])
-        let first = try XCTUnwrap(scan.pdfs.first { $0.key == "AAAA1111" })
+        XCTAssertEqual(scan.pdfs.map(\.key).sorted(), [Self.fullKey("AAAA1111"), Self.fullKey("DDDD4444")])
+        let first = try XCTUnwrap(scan.pdfs.first { $0.key == Self.fullKey("AAAA1111") })
         XCTAssertEqual(first.requestURL, "https://example.org/a.pdf?sig=SECRET")
         XCTAssertEqual(first.size, Int64(Self.pdfBody.count))
         XCTAssertEqual(first.partitionDirectory, "PARTITIONHASH1")
         XCTAssertEqual(first.partition, "")
         XCTAssertNotNil(first.modified)
-        XCTAssertEqual(first.bodyURL.lastPathComponent, "AAAA1111-blob")
+        XCTAssertEqual(first.bodyURL.lastPathComponent, "\(Self.fullKey("AAAA1111"))-blob")
     }
 
     /// The cache holds thousands of bodies from every site the user visited.
@@ -185,21 +219,64 @@ final class WebKitCacheReaderTests: XCTestCase {
         _ = try WebKitCacheReader.scan(cacheRoot: root, reader: recorder)
 
         let bodyReads = recorder.reads.filter { $0.name.hasSuffix("-blob") }
-        XCTAssertEqual(bodyReads.map(\.name).sorted(), ["AAAA1111-blob", "BBBB2222-blob"])
+        XCTAssertEqual(bodyReads.map(\.name).sorted(), ["\(Self.fullKey("AAAA1111"))-blob", "\(Self.fullKey("BBBB2222"))-blob"])
         XCTAssertTrue(bodyReads.allSatisfy { $0.maxBytes <= 5 }, "\(bodyReads)")
-        XCTAssertEqual(recorder.reads.filter { $0.name == "BBBB2222" }.count, 0, "a non-PDF record was opened")
-        XCTAssertEqual(recorder.reads.filter { $0.name == "AAAA1111" }.count, 1)
+        XCTAssertEqual(recorder.reads.filter { $0.name == Self.fullKey("BBBB2222") }.count, 0, "a non-PDF record was opened")
+        XCTAssertEqual(recorder.reads.filter { $0.name == Self.fullKey("AAAA1111") }.count, 1)
     }
 
     func testAPDFBodyWithoutARecordAndAGarbageRecordAreCountedNotSilentlyDropped() throws {
         try addRecord(key: "AAAA1111", identifier: "https://example.org/a.pdf", body: Self.pdfBody)
         let dir = try addRecord(key: "BBBB2222", identifier: "x", body: Self.pdfBody, recordBytes: Data(repeating: 0x00, count: 40))
-        try Self.pdfBody.write(to: dir.appendingPathComponent("EEEE5555-blob"))   // no record file
+        try Self.pdfBody.write(to: dir.appendingPathComponent("\(Self.fullKey("EEEE5555"))-blob"))   // no record file
 
         let scan = try WebKitCacheReader.scan(cacheRoot: root)
-        XCTAssertEqual(scan.pdfs.map(\.key), ["AAAA1111"])
+        XCTAssertEqual(scan.pdfs.map(\.key), [Self.fullKey("AAAA1111")])
         XCTAssertEqual(scan.unreadableRecords, 2)
-        XCTAssertEqual(Set(scan.unreadableKeys), ["BBBB2222", "EEEE5555"])
+        XCTAssertEqual(Set(scan.unreadableKeys), [Self.fullKey("BBBB2222"), Self.fullKey("EEEE5555")])
+    }
+
+    /// The hash inside a record is its file name. If WebKit reshaped the key, the bytes read as
+    /// the hash would stop matching, so a record that does not name itself is not trusted.
+    func testARecordWhoseHashIsNotItsFileNameIsUnreadableNotTrusted() throws {
+        try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: Self.pdfBody)
+        let wrong = Self.record(identifier: "https://e.org/b.pdf", hash: Data(repeating: 0x22, count: 20))
+        try addRecord(key: "BBBB2222", identifier: "x", body: Self.pdfBody, recordBytes: wrong)
+        let scan = try WebKitCacheReader.scan(cacheRoot: root)
+        XCTAssertEqual(scan.pdfs.map(\.key), [Self.fullKey("AAAA1111")])
+        XCTAssertEqual(scan.unreadableKeys, [Self.fullKey("BBBB2222")])
+    }
+
+    /// A record whose key carries a range holds part of a resource. Its body can begin with
+    /// `%PDF-` and still not be a document, so it is counted, never listed or selectable.
+    func testARangedRecordIsNeitherListedNorUnreadable() throws {
+        try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: Self.pdfBody)
+        try addRecord(key: "BBBB2222", identifier: "https://e.org/big.pdf", body: Self.pdfBody, range: "bytes=0-99")
+        let scan = try WebKitCacheReader.scan(cacheRoot: root)
+        XCTAssertEqual(scan.pdfs.map(\.key), [Self.fullKey("AAAA1111")])
+        XCTAssertEqual(scan.partialKeys, [Self.fullKey("BBBB2222")])
+        XCTAssertEqual(scan.unreadableKeys, [])
+        // Only a partial body in the cache is an empty listing, not a layout error.
+        let resources = root.appendingPathComponent("Version 17/Records/PARTITIONHASH1/Resource")
+        for suffix in ["", "-blob"] {
+            try FileManager.default.removeItem(at: resources.appendingPathComponent(Self.fullKey("AAAA1111") + suffix))
+        }
+        XCTAssertEqual(try WebKitCacheReader.scan(cacheRoot: root).pdfs, [])
+    }
+
+    /// A `-blob` that is a directory, or a symlink that could lead outside the cache, is not a
+    /// cached body: it is skipped, and it does not fail the scan of everything else.
+    func testADirectoryOrSymlinkNamedLikeABodyIsSkippedNotFatal() throws {
+        let dir = try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: Self.pdfBody)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("\(Self.fullKey("BBBB2222"))-blob"), withIntermediateDirectories: false)
+        let outside = root.appendingPathComponent("outside.pdf")
+        try Self.pdfBody.write(to: outside)
+        try FileManager.default.createSymbolicLink(at: dir.appendingPathComponent("\(Self.fullKey("CCCC3333"))-blob"), withDestinationURL: outside)
+        try Self.record(identifier: "https://e.org/c.pdf", hash: Self.hashBytes(forKey: Self.fullKey("CCCC3333")))
+            .write(to: dir.appendingPathComponent(Self.fullKey("CCCC3333")))
+        let scan = try WebKitCacheReader.scan(cacheRoot: root)
+        XCTAssertEqual(scan.pdfs.map(\.key), [Self.fullKey("AAAA1111")])
+        XCTAssertEqual(scan.unreadableKeys, [], "not PDF bodies, so not unreadable PDF records either")
     }
 
     func testEveryPDFRecordUnreadableIsAnUnsupportedLayoutNotAnEmptyCache() throws {
@@ -249,7 +326,7 @@ final class WebKitCacheReaderTests: XCTestCase {
     func testSupportedVersionIsUsedEvenWhenAnotherVersionIsPresent() throws {
         try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: Self.pdfBody)
         try addRecord(version: "Version 18", key: "FFFF6666", identifier: "https://e.org/z.pdf", body: Self.pdfBody)
-        XCTAssertEqual(try WebKitCacheReader.scan(cacheRoot: root).pdfs.map(\.key), ["AAAA1111"])
+        XCTAssertEqual(try WebKitCacheReader.scan(cacheRoot: root).pdfs.map(\.key), [Self.fullKey("AAAA1111")])
     }
 
     // MARK: - Access errors keep their cause

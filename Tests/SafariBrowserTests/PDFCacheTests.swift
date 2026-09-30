@@ -283,6 +283,42 @@ final class PDFCacheTests: XCTestCase {
         }
     }
 
+    /// The source is Safari's file. `--force` must not replace it, however the destination
+    /// names it: the same path, a symlink to it, or a hard link to it.
+    func testForceNeverPublishesOverTheSourceItself() throws {
+        let bytes = Self.makePDF(pages: 1)
+        let src = try source("cached-blob", bytes)
+        let before = try FileManager.default.attributesOfItem(atPath: src.path)
+        var inode = stat(); XCTAssertEqual(stat(src.path, &inode), 0)
+        let out = try outDir()
+        let symlink = out.appendingPathComponent("link.pdf")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: src)
+        let hardlink = out.appendingPathComponent("hard.pdf")
+        XCTAssertEqual(link(src.path, hardlink.path), 0)
+        for (label, destination) in [("same path", src.path), ("symlink", symlink.path), ("hard link", hardlink.path)] {
+            XCTAssertThrowsError(try PDFCacheOutput.copyVerified(from: src, to: destination, force: true), label) {
+                guard case SafariBrowserError.pdfCache(.destinationWriteFailed(_, let detail)) = $0 else { return XCTFail("\(label): \($0)") }
+                XCTAssertTrue(detail.contains("read from"), detail)
+            }
+        }
+        var after = stat(); XCTAssertEqual(stat(src.path, &after), 0)
+        XCTAssertEqual(after.st_ino, inode.st_ino, "the source keeps its inode")
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: src.path)[.posixPermissions] as? Int, before[.posixPermissions] as? Int)
+        XCTAssertEqual(try Data(contentsOf: src), bytes)
+        XCTAssertEqual(try names(in: out).sorted(), ["hard.pdf", "link.pdf"], "no temporary file remains")
+    }
+
+    /// The temporary name is fixed-length. One derived from the destination's would push a
+    /// legal 254-character name past the 255-byte limit.
+    func testALongDestinationNameStillWorks() throws {
+        let out = try outDir()
+        let name = String(repeating: "a", count: 250) + ".pdf"
+        let result = try PDFCacheOutput.copyVerified(
+            from: try source("body-blob", Self.makePDF(pages: 1)), to: out.appendingPathComponent(name).path, force: false)
+        XCTAssertEqual(result.pages, 1)
+        XCTAssertEqual(try names(in: out), [name])
+    }
+
     func testAnUnreadableSourceKeepsItsCauseAndCreatesNothing() throws {
         let out = try outDir()
         let src = try source("locked-blob", Self.makePDF(pages: 1), mode: 0o000)
@@ -297,10 +333,12 @@ final class PDFCacheTests: XCTestCase {
     func makeCache(_ entries: [(key: String, url: String, body: Data?, partition: String)]) throws -> PDFCachePaths {
         let root = dir.appendingPathComponent("WebKitCache", isDirectory: true)
         for entry in entries {
+            let name = WebKitCacheReaderTests.fullKey(entry.key)
             let resources = root.appendingPathComponent("Version 17/Records/\(entry.partition)/Resource", isDirectory: true)
             try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
-            try WebKitCacheReaderTests.record(identifier: entry.url).write(to: resources.appendingPathComponent(entry.key))
-            if let body = entry.body { try body.write(to: resources.appendingPathComponent("\(entry.key)-blob")) }
+            try WebKitCacheReaderTests.record(identifier: entry.url, hash: WebKitCacheReaderTests.hashBytes(forKey: name))
+                .write(to: resources.appendingPathComponent(name))
+            if let body = entry.body { try body.write(to: resources.appendingPathComponent("\(name)-blob")) }
         }
         return PDFCachePaths(cacheRoot: root, temporaryRoot: dir.appendingPathComponent("tmp", isDirectory: true))
     }
@@ -317,7 +355,7 @@ final class PDFCacheTests: XCTestCase {
             destination: out.appendingPathComponent("a.pdf").path, force: false)
         XCTAssertEqual(try Data(contentsOf: out.appendingPathComponent("a.pdf")), bytes)
         XCTAssertEqual(retrieved.result.pages, 2)
-        XCTAssertEqual(retrieved.origin, .networkCache(key: "AAAA1111AAAA", displayURL: "https://example.org/a.pdf"))
+        XCTAssertEqual(retrieved.origin, .networkCache(key: WebKitCacheReaderTests.fullKey("AAAA1111AAAA"), displayURL: "https://example.org/a.pdf"))
     }
 
     func testRetrieveByKeyAndTheTabFormNeedsAURL() throws {
@@ -489,10 +527,10 @@ final class PDFCacheTests: XCTestCase {
 
     // MARK: - Structure: no request, no script, no control
 
-    /// The command exists so that nothing reaches the publisher. This pins that
-    /// structurally: the files that implement it name no network, script or UI
-    /// automation API, and the command file reaches Safari for exactly one
-    /// passive read — the target tab's URL.
+    /// The command exists so that nothing reaches the publisher. This is a tripwire, not a
+    /// proof: it fails when one of these files names a network, script or UI-automation API,
+    /// so adding one has to be a visible decision. It cannot see an API it does not list.
+    /// The command file reaches Safari for exactly one passive read — the target tab's URL.
     func testTheImplementationNamesNoNetworkScriptOrControlAPI() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -500,9 +538,11 @@ final class PDFCacheTests: XCTestCase {
         let files = ["Utilities/WebKitCacheReader.swift", "Utilities/PDFCacheSelection.swift", "Utilities/PDFCacheOutput.swift",
                      "Utilities/PDFCacheService.swift", "Utilities/PDFCacheFormat.swift", "Utilities/WebKitTemporaryPDFs.swift",
                      "Commands/PDFCacheCommand.swift"]
-        let forbidden = ["URLSession", "URLRequest", "NSURLConnection", "CFNetwork", "Network.framework", "import Network", "fetch(",
-                         "doJavaScript", "NSAppleScript", "osascript", "AXUIElement", "AXPress", "CGEvent", "Process(", "NSWorkspace",
-                         "SafariBridge.open", "SafariBridge.click", "reload"]
+        let forbidden = ["URLSession", "URLRequest", "NSURLConnection", "CFNetwork", "Network.framework", "import Network", "NWConnection",
+                         "CFReadStream", "CFHost", "getaddrinfo", "socket(", "connect(", "Data(contentsOf", "NSData(contentsOf", "String(contentsOf",
+                         "NSString(contentsOf", "URL(string:", "fetch(",
+                         "doJavaScript", "NSAppleScript", "osascript", "AXUIElement", "AXPress", "CGEvent", "Process(", "posix_spawn",
+                         "system(", "execv", "NSWorkspace", "WKWebView", "SafariBridge.open", "SafariBridge.click", "reload"]
         for file in files {
             let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
             let code = text.split(separator: "\n", omittingEmptySubsequences: false)
