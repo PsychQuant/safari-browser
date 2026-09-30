@@ -155,6 +155,12 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                                   containing: "document 5")
     }
 
+    func testWaitForJSOnAVanishedWindowTabNamesTheTargetInsteadOfListingEveryTab() async {
+        let fake = FakeSafari(failJSContaining: "window.ready")
+        await expectTargetChanged(["--js", "window.ready", "--timeout", "2000", "--window", "1", "--tab-in-window", "5"],
+                                  on: fake, containing: "window 1 tab 5")
+    }
+
     func testURLWaitsKeepProbingForABlockingDialog() async {
         // Verify R2: the default target's URL read skipped the probe entirely,
         // and a --url wait probed only at resolution. The gate caches 2 s, so
@@ -305,6 +311,101 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         // unchanged for a position showing another URL to count as a navigation).
         var anchor = try follow(3, in: [51, 52, 53, 54])
         XCTAssertThrowsError(try anchor.url(in: urls([51, 52, 99, 54, 55])))
+    }
+
+    func testAWindowThatShrinksByMoreThanOneTabFailsClosedInsteadOfTrapping() throws {
+        // Codex, round 3: the right-shift comparison sliced the new list with the
+        // old list's bound, so a window that lost the target and several tabs to
+        // its right in one interval crashed the process (array bounds).
+        var anchor = try follow(2, in: [51, 52, 53, 54, 55])
+        XCTAssertThrowsError(try anchor.url(in: urls([51])), "only tab 1 is left")
+        var toTwo = try follow(2, in: [51, 52, 53, 54, 55])
+        XCTAssertThrowsError(try toTwo.url(in: urls([51, 99])))
+        var toZero = try follow(3, in: [51, 52, 53])
+        XCTAssertThrowsError(try toZero.url(in: []), "the window has no tabs")
+    }
+
+    func testANavigationWithRepeatedURLsAndAnUnchangedLeftIsFollowed() throws {
+        // Tab 3 and tab 5 show the same page. Tab 3 navigates and nothing else
+        // changes, so it is the navigation; the copy at tab 5 does not matter.
+        var anchor = try follow(3, in: [51, 52, 53, 54, 53])
+        XCTAssertEqual(try anchor.url(in: ["https://w1.example/51", "https://w1.example/52", "https://w1.example/done",
+                                           "https://w1.example/54", "https://w1.example/53"]), "https://w1.example/done")
+    }
+
+    func testARepeatedURLDoesNotBypassTheLeftCheck() throws {
+        // Codex and haiku, round 3, read `a, b, c, d || e` as `(a && b && c && d) || e`.
+        // Commas separate conditions, so `||` applies to the last one only; this pins
+        // that a non-unique old URL still needs an unchanged left and an unchanged count.
+        var leftChanged = try follow(3, in: [51, 52, 53, 54, 53])
+        XCTAssertThrowsError(try leftChanged.url(in: ["https://w1.example/50", "https://w1.example/52", "https://w1.example/done",
+                                                      "https://w1.example/54", "https://w1.example/53"]))
+        var countChanged = try follow(3, in: [51, 52, 53, 54, 53])
+        XCTAssertThrowsError(try countChanged.url(in: ["https://w1.example/51", "https://w1.example/52", "https://w1.example/done",
+                                                       "https://w1.example/54", "https://w1.example/53", "https://w1.example/new"]))
+    }
+
+    func testEveryPairOfSmallWindowListsEitherThrowsOrReturnsAURLThatExists() throws {
+        // Exhaustive over small windows: 0-4 tabs, URLs drawn from {a, b, c, ""}
+        // (an empty string is what a tab without a URL reads as). For every
+        // previous list, every tracked position and every current list, the
+        // anchor must neither trap nor return a URL that is not in the current
+        // list. This is what the hand-picked cases missed (the shrink trap).
+        let alphabet = ["https://w1.example/a", "https://w1.example/b", "https://w1.example/c", ""]
+        func lists(upTo n: Int) -> [[String]] {
+            var out: [[String]] = [[]]
+            var level: [[String]] = [[]]
+            for _ in 0..<n {
+                level = level.flatMap { prefix in alphabet.map { prefix + [$0] } }
+                out += level
+            }
+            return out
+        }
+        let all = lists(upTo: 4)
+        var checked = 0, followed = 0
+        for previous in all where !previous.isEmpty {
+            for tab in 1...previous.count {
+                for current in all {
+                    var anchor = try XCTUnwrap(WaitURLAnchor(following: tab, in: previous))
+                    checked += 1
+                    if let url = try? anchor.url(in: current) {
+                        followed += 1
+                        XCTAssertTrue(current.contains(url), "returned \(url) not in \(current) (was \(previous), tab \(tab))")
+                    }
+                }
+            }
+        }
+        XCTAssertGreaterThan(checked, 10_000)
+        XCTAssertGreaterThan(followed, 0)
+    }
+
+    func testAUniqueURLThatStaysUniqueIsFollowedToItsNewPositionOrNotAtAll() throws {
+        // The property behind "found by its URL": when the tracked URL was shown by
+        // exactly one tab and is shown by exactly one tab now, the anchor either
+        // returns it or fails closed because the tab itself navigated at the same
+        // time; it never returns a different URL.
+        let alphabet = ["https://w1.example/a", "https://w1.example/b", "https://w1.example/c", "https://w1.example/d"]
+        func lists(upTo n: Int) -> [[String]] {
+            var out: [[String]] = [[]]
+            var level: [[String]] = [[]]
+            for _ in 0..<n { level = level.flatMap { prefix in alphabet.map { prefix + [$0] } }; out += level }
+            return out
+        }
+        let all = lists(upTo: 4)
+        var confirmed = 0
+        for previous in all where !previous.isEmpty {
+            for tab in 1...previous.count {
+                let last = previous[tab - 1]
+                guard previous.filter({ $0 == last }).count == 1 else { continue }
+                for current in all where current.filter({ $0 == last }).count == 1 {
+                    var anchor = try XCTUnwrap(WaitURLAnchor(following: tab, in: previous))
+                    let url = try anchor.url(in: current)
+                    XCTAssertEqual(url, last, "unique \(last) in \(previous) at \(tab), now \(current)")
+                    confirmed += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(confirmed, 100)
     }
 
     func testAClosedTargetFailsClosed() throws {

@@ -432,11 +432,16 @@ struct WaitURLAnchor {
             self.previous = urls
             return last
         }
-        let rightMovedLeft = i + 1 < previous.count
-            && urls[i..<(previous.count - 1)].elementsEqual(previous[(i + 1)...])
-        if leftUnchanged, urls.count == previous.count, !rightMovedLeft, shownAt.isEmpty || !wasUnique {
-            self.previous = urls
-            return urls[i]
+        // Navigation needs the count unchanged: only then is the right-shift
+        // comparison in bounds (verify R3: it sliced the new list with the old
+        // list's bound and trapped when the window had shrunk).
+        if leftUnchanged, urls.count == previous.count {
+            let rightMovedLeft = i + 1 < previous.count
+                && urls[i..<(previous.count - 1)].elementsEqual(previous[(i + 1)...])
+            if !rightMovedLeft, shownAt.isEmpty || !wasUnique {
+                self.previous = urls
+                return urls[i]
+            }
         }
         throw Changed()
     }
