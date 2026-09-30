@@ -15,9 +15,9 @@
 
 ## 4. `--timeout` 的意義（#221）
 
-- [x] 4.1 測試先失敗：輪詢超過 deadline 不被中斷且答案算數、deadline 後不再開始輪詢、睡眠不超過 deadline、呼叫逾時與 daemon 未回覆的錯誤原樣結束 wait、預設逾時 30 s
-- [x] 4.2 實作 `pollUntilDeadline(_:sleep:_:)` 與 `--help` 說明
+- [x] 4.1 測試（行為多半原本就成立，只有睡眠的要求量是這次改的，其餘測試是把它釘住）：輪詢超過 deadline 不被中斷且答案算數、deadline 後不再開始輪詢、睡眠不超過 deadline、呼叫逾時與 daemon 未回覆的錯誤原樣結束 wait、預設逾時 30 s
+- [x] 4.2 實作 `pollUntilDeadline(_:sleep:now:_:)`（睡眠與時鐘可注入） 與 `--help` 說明
 
 ## 5. 文件
 
-- [x] 5.1 CHANGELOG、README 與 docs/performance.md
+- [x] 5.1 CHANGELOG 與 README

@@ -39,14 +39,18 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
 
     /// Runs the wait on a virtual clock and returns what it asked to sleep for. The error, if any,
     /// is the wait's own (a timeout, for a condition that never holds).
-    private func virtualRun(_ args: [String], on fake: FakeSafari) async -> (requests: [UInt64], error: Error?) {
+    private func virtualRun(_ args: [String], on fake: FakeSafari, pollCost: UInt64 = 0) async -> (requests: [UInt64], error: Error?) {
         let requests = SleepRequests()
         let clock = VirtualClock()
         let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         do {
             let command = try WaitCommand.parse(args)
             try await DaemonRequestContext.$current.withValue(context) {
-                try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+                    // A poll that takes `pollCost` of the virtual clock: what a slow poll does to the deadline.
+                    if pollCost > 0, source.contains("window.ready") { clock.advance(nanoseconds: pollCost) }
+                    return try fake.respond(source)
+                }) {
                     try await command.run(sleep: { requests.add($0); clock.advance(nanoseconds: $0) }, now: { clock.now })
                 }
             }
@@ -511,6 +515,26 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             guard case SafariBrowserError.timeout? = currentRun.error else { XCTFail("default target \(timeout): \(String(describing: currentRun.error))"); continue }
             XCTAssertEqual(currentRun.requests, sleeps, "--for-url on the default target, --timeout \(timeout)")
         }
+    }
+
+    /// A poll that runs past the deadline is not followed by a sleep, and no further poll starts:
+    /// the time left is read AFTER the poll, not before it. A poll of 0.75 s against a 0.25 s
+    /// timeout asks for no sleep at all; against a 1.25 s timeout it is followed by a sleep of
+    /// what is left of the deadline and by one more poll.
+    func testAPollThatRunsPastTheDeadlineIsNotFollowedByASleep() async {
+        let ms: UInt64 = 1_000_000
+        let slow = FakeSafari()
+        let past = await virtualRun(["--js", "window.ready", "--timeout", "250"], on: slow, pollCost: 750 * ms)
+        guard case SafariBrowserError.timeout? = past.error else { return XCTFail("expected a timeout, got \(String(describing: past.error))") }
+        XCTAssertEqual(past.requests, [], "the deadline passed during the poll: nothing to sleep for")
+        XCTAssertEqual(slow.javaScripts.count, 1, slow.transcript)
+
+        let inside = FakeSafari()
+        let partly = await virtualRun(["--js", "window.ready", "--timeout", "1250"], on: inside, pollCost: 750 * ms)
+        guard case SafariBrowserError.timeout? = partly.error else { return XCTFail("expected a timeout, got \(String(describing: partly.error))") }
+        // poll 1 ends at 0.75 s: sleep 0.5 s (to 1.25 s, the deadline); no poll starts at the deadline.
+        XCTAssertEqual(partly.requests, [500 * ms], "the time left after the poll, not before it")
+        XCTAssertEqual(inside.javaScripts.count, 1, inside.transcript)
     }
 
     /// The default is stated in the help and in the `Default timeout` requirement.

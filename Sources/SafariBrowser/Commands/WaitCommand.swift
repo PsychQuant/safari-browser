@@ -20,7 +20,7 @@ struct WaitCommand: AsyncParsableCommand {
     var js: String?
 
     @Option(name: .long, help: ArgumentHelp("Timeout in milliseconds (default: 30000)",
-        discussion: "Bounds when a poll after the first may start, not how long the command takes: resolving the target and a poll that has started are not cut short by --timeout, and the first poll always runs, so the command can end later than --timeout. For a hard limit, run the command under an external timeout."))
+        discussion: "Bounds when a poll after the first may start, not how long the command takes: resolving the target and a poll that has started are not cut short by --timeout, and the first poll runs even when resolution used up the timeout, so the command can end later than --timeout. For a hard limit, run the command under an external timeout."))
     var timeout: Int = 30000
 
     // #182: randomized wait. One duration is drawn from a Cauchy distribution
@@ -324,13 +324,14 @@ struct WaitCommand: AsyncParsableCommand {
         }
     }
 
-    /// Polls every 500 ms until `satisfied` returns true or the deadline
-    /// passes. The first poll always runs: the deadline starts before target
-    /// resolution, and a resolution that used up the timeout must not turn a
-    /// condition that already holds into a timeout (#168 verify R1). So
-    /// `--timeout 0` polls once, where it used to time out without polling.
+    /// Polls, sleeping 500 ms between polls, until `satisfied` returns true or the deadline
+    /// passes. The first poll runs even when resolution used up the timeout: the deadline starts
+    /// before target resolution, and a resolution that used up the timeout must not turn a
+    /// condition that already holds into a timeout (#168 verify R1). So `--timeout 0` polls
+    /// once, where it used to time out without polling.
     /// Neither resolution nor a poll is interrupted at the deadline (#221): `--timeout`
-    /// bounds when a poll may *start*, and the wait never asks to sleep past the deadline.
+    /// bounds when a poll after the first may *start*, and the wait never asks to sleep past the
+    /// deadline.
     ///
     /// Why not bound each poll by the time that remains (deferred, not ruled out): the resolution
     /// and the first poll — which must run, above — cannot be bounded that way, so the command
