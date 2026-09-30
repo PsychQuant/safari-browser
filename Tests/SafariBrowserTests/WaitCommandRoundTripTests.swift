@@ -11,8 +11,9 @@ import XCTest
 final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
     typealias FakeSafari = JSCommandRoundTripTests.FakeSafari
 
-    private func runWait(_ args: [String], on fake: FakeSafari) async throws {
-        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+    private func runWait(_ args: [String], on fake: FakeSafari,
+                         probe: @escaping @Sendable (BlockingDialogGate.WindowKey) -> BlockingDialogState = { _ in .clear }) async throws {
+        let context = DaemonRequestContext(probe: probe, environment: [:])
         let command = try WaitCommand.parse(args)
         try await DaemonRequestContext.$current.withValue(context) {
             try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
@@ -26,8 +27,9 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         do {
             try await runWait(["--js", "window.ready", "--timeout", "1200", "--url", "w1.example/53"], on: fake)
             XCTFail("the condition never becomes true, so the wait must time out")
+        } catch SafariBrowserError.timeout {
         } catch {
-            // expected: timeout
+            XCTFail("expected a timeout, got \(error)")
         }
         XCTAssertGreaterThanOrEqual(fake.javaScripts.count, 2, "several polls ran:\n\(fake.transcript)")
         XCTAssertEqual(fake.enumerations, 1, "one enumeration for the whole wait, not one per poll:\n\(fake.transcript)")
@@ -71,24 +73,147 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         do {
             try await runWait(["--for-url", "/never", "--timeout", "1200", "--url", "w1.example/53"], on: fake)
             XCTFail("expected a timeout")
-        } catch {}
+        } catch SafariBrowserError.timeout {
+        } catch {
+            XCTFail("expected a timeout, got \(error)")
+        }
         XCTAssertGreaterThanOrEqual(fake.windowURLReads.count, 2, fake.transcript)
         XCTAssertTrue(fake.windowURLReads.allSatisfy { $0.contains("window id 101") }, fake.transcript)
         XCTAssertEqual(fake.enumerations, 1, fake.transcript)
     }
 
-    func testWaitForURLFailsClosedWhenATabToTheLeftClosesBeforeTheTargetNavigates() async {
-        // Tab 53 is still on its original page when tab 1 closes: position 53
-        // now holds the old tab 54. Reading it would wait on the wrong tab.
-        let fake = FakeSafari()
-        fake.closeWindow1Tab1AfterFirstWindowRead = true
+    private func expectTimeout(_ args: [String], on fake: FakeSafari, _ why: String) async {
         do {
-            try await runWait(["--for-url", "/never", "--timeout", "3000", "--url", "w1.example/53"], on: fake)
-            XCTFail("a shifted tab must fail the wait")
+            try await runWait(args, on: fake)
+            XCTFail(why + "\n" + fake.transcript)
+        } catch SafariBrowserError.timeout {
+        } catch {
+            XCTFail("expected a timeout, got \(error)")
+        }
+    }
+
+    private func expectTargetChanged(_ args: [String], on fake: FakeSafari, containing text: String) async {
+        do {
+            try await runWait(args, on: fake)
+            XCTFail("the wait must fail closed\n" + fake.transcript)
         } catch SafariBrowserError.anchoredTargetChanged(let target) {
-            XCTAssertTrue(target.contains("w1.example/53"), target)
+            XCTAssertTrue(target.contains(text), target)
         } catch {
             XCTFail("expected anchoredTargetChanged, got \(error)")
+        }
+    }
+
+    func testWaitForURLFollowsTheTargetWhenATabToTheLeftCloses() async {
+        // Verify R2: tab 53 is still on its page when tab 1 closes, so position
+        // 53 now holds the old tab 54. The tab is found by its URL at 52; the
+        // old tab 54 must never satisfy the wait.
+        let fake = FakeSafari()
+        fake.closeWindow1Tab1AfterFirstWindowRead = true
+        await expectTimeout(["--for-url", "w1.example/54", "--timeout", "1500", "--url", "w1.example/53"], on: fake,
+                            "the target never showed /54")
+    }
+
+    func testAShiftBetweenResolutionAndTheFirstPollIsNotTakenForTheNavigation() async {
+        // Verify R2 (devil's advocate): with no baseline, the first poll saw
+        // /54 at position 53, took it for the target's navigation and reported
+        // success. The resolving enumeration is now the baseline.
+        let fake = FakeSafari()
+        fake.closeWindow1Tab1AfterEnumeration = true
+        await expectTimeout(["--for-url", "w1.example/54", "--timeout", "1500", "--url", "w1.example/53"], on: fake,
+                            "the target never showed /54")
+    }
+
+    func testATabToTheLeftClosingWhileTheTargetNavigatesFailsClosed() async {
+        let fake = FakeSafari()
+        fake.closeWindow1Tab1AfterFirstWindowRead = true
+        fake.navigateTab53AfterFirstURLRead = true
+        await expectTargetChanged(["--for-url", "/never", "--timeout", "3000", "--url", "w1.example/53"], on: fake,
+                                  containing: "w1.example/53")
+    }
+
+    func testAClosedWindowFailsTheURLWaitWithTheTargetChangedError() async {
+        // Verify R2: the fake answered an empty list for a missing window, so
+        // Safari's own -1728 was never exercised.
+        let fake = FakeSafari()
+        fake.closeWindow1AfterFirstWindowRead = true
+        await expectTargetChanged(["--for-url", "/never", "--timeout", "3000", "--url", "w1.example/53"], on: fake,
+                                  containing: "w1.example/53")
+    }
+
+    func testWaitForJSOnTheDefaultTargetFailsClosedWhenAnotherTabBecomesCurrent() async {
+        let fake = FakeSafari()
+        fake.tripGuard = true
+        await expectTargetChanged(["--js", "window.ready", "--timeout", "2000"], on: fake,
+                                  containing: "front window's current tab")
+    }
+
+    func testWaitForJSOnAVanishedDocumentNamesTheTargetInsteadOfListingEveryTab() async {
+        // Verify R2: the not-found translation lists every profile's tabs;
+        // `--document N` was not mapped, so all of them reached the user.
+        let fake = FakeSafari(failJSContaining: "window.ready")
+        await expectTargetChanged(["--js", "window.ready", "--timeout", "2000", "--document", "5"], on: fake,
+                                  containing: "document 5")
+    }
+
+    func testURLWaitsKeepProbingForABlockingDialog() async {
+        // Verify R2: the default target's URL read skipped the probe entirely,
+        // and a --url wait probed only at resolution. The gate caches 2 s, so
+        // a 2.6 s wait probes twice when every poll asks.
+        for args in [["--for-url", "/never", "--timeout", "2600"],
+                     ["--for-url", "/never", "--timeout", "2600", "--window", "2"],
+                     ["--for-url", "/never", "--timeout", "2600", "--url", "w1.example/53"]] {
+            let fake = FakeSafari()
+            let probes = JSCommandRoundTripTests.ProbeCounter()
+            do {
+                try await runWait(args, on: fake, probe: { _ in probes.hit(); return .clear })
+                XCTFail("\(args): expected a timeout")
+            } catch SafariBrowserError.timeout {
+            } catch {
+                XCTFail("\(args): expected a timeout, got \(error)")
+            }
+            XCTAssertGreaterThanOrEqual(probes.count, 2, "\(args): \(probes.count) probes")
+        }
+    }
+
+    func testPositionNamedTargetsAreReadAtTheirPosition() async {
+        for (args, window) in [(["--document", "5"], "window id 101"),
+                               (["--window", "1", "--tab-in-window", "53"], "window id 101")] {
+            let fake = FakeSafari()
+            await expectTimeout(["--for-url", "/never", "--timeout", "1200"] + args, on: fake, "\(args)")
+            XCTAssertEqual(fake.enumerations, 1, "\(args): one resolution\n\(fake.transcript)")
+            XCTAssertGreaterThanOrEqual(fake.windowURLReads.count, 2, "\(args)")
+            XCTAssertTrue(fake.windowURLReads.allSatisfy { $0.contains(window) }, fake.transcript)
+        }
+    }
+
+    func testTheSecondWindowsCurrentTabIsReadWithoutEnumerating() async {
+        let fake = FakeSafari()
+        await expectTimeout(["--for-url", "/never", "--timeout", "1200", "--window", "2"], on: fake, "never matches")
+        XCTAssertEqual(fake.enumerations, 0, fake.transcript)
+        XCTAssertTrue(fake.scripts.contains { $0.contains("set _w to window id 102") }, fake.transcript)
+    }
+
+    func testAnAmbiguousPatternIsRejectedAtResolution() async {
+        let fake = FakeSafari()
+        do {
+            try await runWait(["--for-url", "/never", "--timeout", "1200", "--url", "example"], on: fake)
+            XCTFail("every tab matches 'example'")
+        } catch SafariBrowserError.ambiguousWindowMatch {
+        } catch {
+            XCTFail("expected ambiguousWindowMatch, got \(error)")
+        }
+        XCTAssertEqual(fake.windowURLReads.count, 0, "no poll after a failed resolution")
+    }
+
+    func testTheBaselineResolutionMatchesTheAnchoredOne() async throws {
+        let fake = FakeSafari()
+        try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+            let target = SafariBridge.TargetDocument.urlMatch(.contains("w1.example/53"))
+            let anchored = try await SafariBridge.resolveToAnchoredTarget(target)
+            let (withBaseline, urls) = try await SafariBridge.resolveURLTargetWithWindowURLs(target)
+            XCTAssertEqual(String(describing: withBaseline), String(describing: anchored))
+            XCTAssertEqual(urls?.count, 96)
+            XCTAssertEqual(urls?[52], "https://w1.example/53")
         }
     }
 
@@ -119,44 +244,99 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         do {
             try await runWait(["--js", "window.ready", "--timeout", "1200"], on: fake)
             XCTFail("expected a timeout")
-        } catch {}
+        } catch SafariBrowserError.timeout {
+        } catch {
+            XCTFail("expected a timeout, got \(error)")
+        }
         XCTAssertEqual(fake.enumerations, 0, fake.transcript)
         XCTAssertEqual(fake.anchors.count, 1, "one anchor for the whole wait:\n\(fake.transcript)")
     }
 
     // MARK: - WaitURLAnchor (pure)
 
-    private let matcher = SafariBridge.UrlMatcher.contains("example/53")
     private func urls(_ list: [Int]) -> [String] { list.map { "https://w1.example/\($0)" } }
-
-    func testAnchorReadsItsTabWhileItStillShowsTheOriginalPage() throws {
-        var anchor = WaitURLAnchor(tab: 3, matcher: matcher)
-        XCTAssertEqual(try anchor.url(in: urls([51, 52, 53, 54])), "https://w1.example/53")
-        XCTAssertEqual(try anchor.url(in: urls([51, 52, 53, 54, 55])), "https://w1.example/53", "a tab opened on the right is fine")
+    private func follow(_ tab: Int, in list: [Int]) throws -> WaitURLAnchor {
+        try XCTUnwrap(WaitURLAnchor(following: tab, in: urls(list)))
     }
 
-    func testLeavingTheOriginalURLWithAnUnchangedTabListIsTheNavigation() throws {
-        var anchor = WaitURLAnchor(tab: 3, matcher: matcher)
-        _ = try anchor.url(in: urls([51, 52, 53, 54]))
+    func testTheSameTabIsReadWhileNothingToItsLeftChanges() throws {
+        var anchor = try follow(3, in: [51, 52, 53, 54])
+        XCTAssertEqual(try anchor.url(in: urls([51, 52, 53, 54])), "https://w1.example/53")
+        XCTAssertEqual(try anchor.url(in: urls([51, 52, 53, 54, 55])), "https://w1.example/53", "a tab opened on the right")
+        XCTAssertEqual(try anchor.url(in: urls([51, 52, 53])), "https://w1.example/53", "a tab closed on the right")
+    }
+
+    func testTheFirstReadIsComparedWithTheResolvingEnumeration() throws {
+        // Tab 51 closed between resolution and the first poll: position 3 is
+        // now tab 54. The tab is found at 2 by its URL.
+        var anchor = try follow(3, in: [51, 52, 53, 54])
+        XCTAssertEqual(try anchor.url(in: urls([52, 53, 54])), "https://w1.example/53")
+        XCTAssertEqual(try anchor.url(in: urls([52, 53, 54])), "https://w1.example/53")
+    }
+
+    func testAMovedTabIsFoundByItsURL() throws {
+        var opened = try follow(3, in: [51, 52, 53, 54])
+        XCTAssertEqual(try opened.url(in: urls([50, 51, 52, 53, 54])), "https://w1.example/53", "a tab opened on the left")
+        var dragged = try follow(3, in: [51, 52, 53, 54])
+        XCTAssertEqual(try dragged.url(in: urls([53, 51, 52, 54])), "https://w1.example/53", "dragged to the front")
+        var besides = try follow(3, in: [51, 52, 53, 54])
+        XCTAssertEqual(try besides.url(in: urls([51, 52, 99, 53, 54])), "https://w1.example/53", "a tab opened right before it")
+    }
+
+    func testANavigationWithEverythingElseInPlaceIsFollowed() throws {
+        var anchor = try follow(3, in: [51, 52, 53, 54])
         let navigated = ["https://w1.example/51", "https://w1.example/52", "https://w1.example/done", "https://w1.example/54"]
         XCTAssertEqual(try anchor.url(in: navigated), "https://w1.example/done")
-        XCTAssertEqual(try anchor.url(in: navigated + ["https://w1.example/new"]), "https://w1.example/done")
+        // After it, the navigated tab is followed like any other (the #188 case).
+        XCTAssertEqual(try anchor.url(in: ["https://w1.example/new"] + navigated), "https://w1.example/done")
     }
 
-    func testLeavingTheOriginalURLWhileTheTabListChangedFailsClosed() {
-        var anchor = WaitURLAnchor(tab: 3, matcher: matcher)
-        _ = try? anchor.url(in: urls([51, 52, 53, 54]))
-        XCTAssertThrowsError(try anchor.url(in: urls([52, 53, 54])), "tab 51 closed: position 3 is now tab 54")
+    func testANavigationWhileTabsToItsLeftChangedFailsClosed() throws {
+        var anchor = try follow(3, in: [51, 52, 53, 54])
+        XCTAssertThrowsError(try anchor.url(in: ["https://w1.example/52", "https://w1.example/done", "https://w1.example/54"]))
+        var sameCount = try follow(3, in: [51, 52, 53, 54])
+        XCTAssertThrowsError(try sameCount.url(in: urls([50, 52, 99, 54])), "a left tab changed too: it may have been a move")
     }
 
-    func testAfterTheNavigationAShrinkingTabListFailsClosed() throws {
-        var anchor = WaitURLAnchor(tab: 3, matcher: nil)
-        _ = try anchor.url(in: urls([51, 52, 53, 54]))
-        XCTAssertThrowsError(try anchor.url(in: urls([52, 53, 54])))
+    func testANavigationWhileTheTabCountChangedFailsClosed() throws {
+        // The same observation is a navigation plus a tab opened on the right, or
+        // the target closing and another tab taking its place: it cannot be told
+        // apart, so the wait fails closed, as the spec says (the tab count must be
+        // unchanged for a position showing another URL to count as a navigation).
+        var anchor = try follow(3, in: [51, 52, 53, 54])
+        XCTAssertThrowsError(try anchor.url(in: urls([51, 52, 99, 54, 55])))
     }
 
-    func testAPositionPastTheEndFailsClosed() {
-        var anchor = WaitURLAnchor(tab: 5, matcher: nil)
-        XCTAssertThrowsError(try anchor.url(in: urls([51, 52, 53])))
+    func testAClosedTargetFailsClosed() throws {
+        var closed = try follow(3, in: [51, 52, 53, 54, 55])
+        XCTAssertThrowsError(try closed.url(in: urls([51, 52, 54, 55])), "it closed: the tabs to its right moved left")
+        var replaced = try follow(3, in: [51, 52, 53, 54, 55])
+        XCTAssertThrowsError(try replaced.url(in: urls([51, 52, 54, 55, 99])), "it closed and a tab opened at the end")
+        var gone = try follow(4, in: [51, 52, 53, 54])
+        XCTAssertThrowsError(try gone.url(in: urls([51, 52, 53])), "the last tab closed")
+    }
+
+    func testATabWhoseURLAnotherTabSharesIsNotFollowedByThatURL() throws {
+        // Tab 3 and tab 5 both show /53. After tab 51 closes, /53 shows twice:
+        // which one is the target cannot be told.
+        var anchor = try follow(3, in: [51, 52, 53, 54, 53])
+        XCTAssertThrowsError(try anchor.url(in: urls([52, 53, 54, 53])))
+        // With nothing to its left changed, it is still read in place, and its
+        // navigation is still seen.
+        var inPlace = try follow(3, in: [51, 52, 53, 54, 53])
+        XCTAssertEqual(try inPlace.url(in: urls([51, 52, 53, 54, 53])), "https://w1.example/53")
+        XCTAssertEqual(try inPlace.url(in: urls([51, 52, 99, 54, 53])), "https://w1.example/99")
+    }
+
+    func testAPositionNamedTabIsReadAtItsPosition() throws {
+        var anchor = WaitURLAnchor(position: 3)
+        XCTAssertEqual(try anchor.url(in: urls([51, 52, 53, 54])), "https://w1.example/53")
+        XCTAssertEqual(try anchor.url(in: urls([51, 52, 53])), "https://w1.example/53", "a tab closed on the right")
+        XCTAssertThrowsError(try anchor.url(in: urls([51, 52])), "the position ran past the end")
+    }
+
+    func testAnAnchorOutsideItsWindowIsRefused() {
+        XCTAssertNil(WaitURLAnchor(following: 5, in: urls([51, 52, 53])))
+        XCTAssertNil(WaitURLAnchor(following: 0, in: urls([51])))
     }
 }

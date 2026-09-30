@@ -57,6 +57,13 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         /// #168 verify R1: after the first whole-window URL read, tab 1 of
         /// window 1 closes, so every later tab of that window moves left.
         var closeWindow1Tab1AfterFirstWindowRead = false
+        /// #168 verify R2: tab 1 of window 1 closes as soon as the resolving
+        /// enumeration has read the window — before the first poll.
+        var closeWindow1Tab1AfterEnumeration = false
+        /// #168 verify R2: window 1 closes after the first whole-window URL
+        /// read; later reads fail as Safari fails them (-1728).
+        var closeWindow1AfterFirstWindowRead = false
+        private var window1Closed = false
         private var window1Tab1Closed = false
         private var windowReads = 0
         var windowURLReads: [String] { scripts.filter { $0.contains("URL of every tab of window id ") } }
@@ -103,10 +110,15 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                let id = Self.firstInt(after: "URL of every tab of window id ", in: script) {
                 lock.lock(); defer { lock.unlock() }
                 windowReads += 1
+                if window1Closed, id == idBase + 1 {
+                    throw SafariBrowserError.appleScriptFailed(
+                        "execution error: Safari got an error: Can’t get window id \(id). (-1728)")
+                }
                 let answer = urls(ofWindow: id - idBase).map { $0 + "\u{1D}" }.joined()
                 if windowReads == 1 {
                     if navigateTab53AfterFirstURLRead { tab53Navigated = true }
                     if closeWindow1Tab1AfterFirstWindowRead { window1Tab1Closed = true }
+                    if closeWindow1AfterFirstWindowRead { window1Closed = true }
                 }
                 return answer
             }
@@ -122,7 +134,9 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             }
             if script.contains("set windowCount to count of windows") {
                 if enumerationDelay > 0 { Thread.sleep(forTimeInterval: enumerationDelay) }
-                return enumeration
+                let answer = enumeration
+                if closeWindow1Tab1AfterEnumeration { lock.withLock { window1Tab1Closed = true } }
+                return answer
             }
             if script.contains("index of current tab of window id _id") {
                 if let n = Self.firstInt(after: "set _id to id of window ", in: script) { return "\(idBase + n)\u{1D}1" }

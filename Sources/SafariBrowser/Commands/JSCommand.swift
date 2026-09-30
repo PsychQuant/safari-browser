@@ -118,10 +118,19 @@ struct JSCommand: AsyncParsableCommand {
             default:
                 return .anchoredTargetChanged(target: "the front window's current tab (\(anchor))")
             }
-        case .resolvedTab(let windowID, _, .none, _):
-            guard case .documentNotFound = error,
-                  case .windowTab(let w, let t) = original else { return error }
-            return .anchoredTargetChanged(target: "window \(w) tab \(t) (window id \(windowID))")
+        case .resolvedTab(let windowID, let tab, .none, _):
+            // A position-named tab that vanished: the translated not-found
+            // error lists every profile's tabs; name the target instead
+            // (`--document N` too, #168 verify R2).
+            guard case .documentNotFound = error else { return error }
+            switch original {
+            case .windowTab(let w, let t):
+                return .anchoredTargetChanged(target: "window \(w) tab \(t) (window id \(windowID))")
+            case .documentIndex(let n):
+                return .anchoredTargetChanged(target: "document \(n) (window id \(windowID) tab \(tab) at command start)")
+            default:
+                return error
+            }
         default:
             return error
         }

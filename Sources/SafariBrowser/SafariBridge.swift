@@ -103,7 +103,7 @@ enum SafariBridge {
         /// STILL that window's current tab, so a tab closing to its left (the
         /// index then names the next tab), a reorder, or the user switching
         /// tabs fails closed instead of silently running in another tab.
-        /// Produced only by `resolveToAnchoredTarget` (i.e. by `js`).
+        /// Produced only by `resolveToAnchoredTarget` (i.e. by `js` and `wait`).
         case anchoredCurrentTab(windowID: Int, tabInWindow: Int, profile: String?)
         /// Composite target: the tab-in-window-th tab of the window-th
         /// window. Addresses same-URL duplicate tabs that `.urlMatch`
@@ -1841,7 +1841,10 @@ enum SafariBridge {
         // #168: an anchored current tab is read with the same current-tab
         // check `dispatchJS` gives `js` (#180), in the same AppleScript. A bare
         // `tab T of window id W` would read whatever tab slid into position T.
+        // The dialog probe `resolveScriptTarget` ran for this target still runs
+        // (verify R2): a wait stuck behind a dialog must keep warning.
         if case .anchoredCurrentTab(let windowID, let tab, _) = target {
+            BlockingDialogGate.shared.check(.id(windowID))
             return try await runTargetedAppleScript("""
                 tell application "Safari"
                     set _w to window id \(windowID)
@@ -1863,8 +1866,31 @@ enum SafariBridge {
             """, target: target)
     }
 
+    /// #168 verify R2: a URL-pattern target resolved exactly as
+    /// `resolveToAnchoredTarget` resolves it — one enumeration, the pattern
+    /// picked in it, the dialog probe, the identity-anchored tab — together
+    /// with the resolved window's tab URLs from that same enumeration. `wait`
+    /// follows its tab from that list; reading it again afterwards would miss
+    /// a tab that moved in between.
+    static func resolveURLTargetWithWindowURLs(
+        _ target: TargetDocument,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
+    ) async throws -> (target: TargetDocument, windowURLs: [String]?) {
+        try await PerformanceTrace.spanAsync(.nativeTarget) {
+            let windows = try await listAllWindows()
+            let resolved = try resolveNativeTargetInWindows(target, windows: windows, firstMatch: firstMatch,
+                                                            warnWriter: warnWriter, profile: profile)
+            BlockingDialogGate.shared.check(windowKey(for: resolved))
+            let window = resolved.windowID.flatMap { id in windows.first { $0.windowID == id } }
+            let urls = window?.tabs.sorted { $0.tabIndex < $1.tabIndex }.map(\.url)
+            return (concreteTarget(from: resolved, original: target, profile: profile), urls)
+        }
+    }
+
     /// #168: the URLs of every tab of one window, in tab order, in one Apple
-    /// event. A tab without a URL reads as "".
+    /// event. A tab without a URL reads as "", as in `listAllWindows`.
     static func tabURLs(windowID: Int) async throws -> [String] {
         let raw = try await runAppleScript("""
             tell application "Safari"

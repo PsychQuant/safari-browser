@@ -254,32 +254,51 @@ struct WaitCommand: AsyncParsableCommand {
     /// poll, because the old URL no longer matched anything. Anchored the same
     /// way `js` is (#180): a `--url` / `--document` target is pinned to its tab
     /// by window id, and the default target / `--window N` to the window's
-    /// current tab. The deadline starts before resolution, so resolution stays
-    /// inside the caller's timeout. The multi-match warning (#59) fires once,
-    /// at this single resolution.
+    /// current tab. Resolution time counts against `--timeout` but is not
+    /// interrupted by it. The multi-match warning (#59) fires once, at this
+    /// single resolution. A URL-pattern target also returns its window's tab
+    /// URLs from the resolving enumeration, the baseline `WaitURLAnchor`
+    /// follows the tab from (verify R2).
     private func resolveOnce() async throws -> (
-        original: SafariBridge.TargetDocument, anchored: SafariBridge.TargetDocument, firstMatch: Bool
+        original: SafariBridge.TargetDocument, anchored: SafariBridge.TargetDocument,
+        firstMatch: Bool, windowURLs: [String]?
     ) {
         let (initial, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let profile = target.resolveProfile()
+        if case .urlMatch = initial {
+            let (anchored, urls) = try await SafariBridge.resolveURLTargetWithWindowURLs(
+                initial, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+            return (initial, anchored, firstMatch, urls)
+        }
         let anchored = try await SafariBridge.resolveToAnchoredTarget(
-            initial, firstMatch: firstMatch, warnWriter: warnWriter, profile: target.resolveProfile())
-        return (initial, anchored, firstMatch)
+            initial, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+        return (initial, anchored, firstMatch, nil)
     }
 
     private func waitForURL(pattern: String) async throws {
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
-        let (original, anchored, firstMatch) = try await resolveOnce()
-        // #168 verify R1: `getCurrentURL` on a bare `tab T of window id W` had
-        // no identity check. A `--url` / `--document` target is now followed
-        // through its whole window's URL list (one Apple event per poll); the
-        // anchored current tab is read with the current-tab check.
+        let (original, anchored, firstMatch, windowURLs) = try await resolveOnce()
+        // #168 verify R1/R2: `getCurrentURL` on a bare `tab T of window id W`
+        // has no identity check. A tab resolved by URL pattern is followed
+        // through its window's URL list (one Apple event per poll); a tab named
+        // by position is read at that position; the anchored current tab is
+        // read with the current-tab check. Each window read probes for a
+        // blocking dialog first, as every other URL read does.
         var windowAnchor: (windowID: Int, anchor: WaitURLAnchor)?
-        if case .resolvedTab(let windowID, let tab, let matcher, _) = anchored {
-            windowAnchor = (windowID, WaitURLAnchor(tab: tab, matcher: matcher))
+        if case .resolvedTab(let windowID, let tab, _, _) = anchored {
+            if let windowURLs {
+                guard let anchor = WaitURLAnchor(following: tab, in: windowURLs) else {
+                    throw SafariBrowserError.anchoredTargetChanged(target: Self.describe(original, anchored))
+                }
+                windowAnchor = (windowID, anchor)
+            } else {
+                windowAnchor = (windowID, WaitURLAnchor(position: tab))
+            }
         }
         try await pollUntilDeadline(deadline) {
             do {
                 if var tracked = windowAnchor {
+                    BlockingDialogGate.shared.check(.id(tracked.windowID))
                     let urls = try await SafariBridge.tabURLs(windowID: tracked.windowID)
                     defer { windowAnchor = tracked }
                     return try tracked.anchor.url(in: urls).contains(pattern)
@@ -301,7 +320,9 @@ struct WaitCommand: AsyncParsableCommand {
     /// Polls every 500 ms until `satisfied` returns true or the deadline
     /// passes. The first poll always runs: the deadline starts before target
     /// resolution, and a resolution that used up the timeout must not turn a
-    /// condition that already holds into a timeout (#168 verify R1).
+    /// condition that already holds into a timeout (#168 verify R1). So
+    /// `--timeout 0` polls once, where it used to time out without polling.
+    /// Neither resolution nor a poll is interrupted at the deadline.
     private func pollUntilDeadline(_ deadline: Date, _ satisfied: () async throws -> Bool) async throws {
         var first = true
         while first || Date() < deadline {
@@ -330,7 +351,7 @@ struct WaitCommand: AsyncParsableCommand {
 
     private func waitForJS(expression: String) async throws {
         let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
-        let (original, anchored, firstMatch) = try await resolveOnce()
+        let (original, anchored, firstMatch, _) = try await resolveOnce()
         try await pollUntilDeadline(deadline) {
             let result: String
             do {
@@ -346,43 +367,77 @@ struct WaitCommand: AsyncParsableCommand {
     }
 }
 
-/// #168 verify R1: which tab a `wait --for-url` on a `--url`, `--document` or
-/// `--window N --tab-in-window M` target reads, poll after poll. Safari has no
-/// tab id, so identity is inferred from what one whole-window URL read shows:
+/// #168 verify R2: which tab a `wait --for-url` reads, poll after poll.
 ///
-/// - While the tab still shows a URL its original matcher accepts, it is the
-///   target, wherever other tabs open.
-/// - When it stops matching and the window's tab count is unchanged since the
-///   last poll, the tab navigated — the event being waited for — and it is
-///   followed by position from then on.
-/// - When it stops matching while the tab count changed, or once followed by
-///   position the count shrinks, or the position runs past the end, the tab
-///   may have moved or closed: the wait fails closed.
+/// A tab named by position (`--document N`, `--window N --tab-in-window M`)
+/// is read at that position, as `js` reads it (#79); the wait fails only when
+/// the position runs past the end of the window.
 ///
-/// A tab opened to the left after the navigation is not detected (#188).
+/// A tab resolved by URL pattern is followed by what its window shows, since
+/// Safari has no tab id. Each poll compares the window's URLs with the
+/// previous read — for the first poll, with the enumeration that resolved the
+/// target, so a change between resolution and the first poll is seen like any
+/// other. `last` is the URL the tab showed at the previous read:
+///
+/// 1. The tabs to its left are unchanged and its position still shows `last`:
+///    the same tab.
+/// 2. `last` was shown by no other tab and now shows in exactly one tab: the
+///    tab moved there (a tab opened, closed or was dragged) without navigating.
+/// 3. Its position no longer shows `last`, the tabs to its left and the tab
+///    count are unchanged, and the tabs to its right did not all move one place
+///    left: it navigated — the event being waited for — and its new URL
+///    becomes `last`.
+/// 4. Anything else fails closed: it closed, moved while navigating, or tabs
+///    to its left changed while it navigated.
+///
+/// This is a closed list. Not detected: a tab showing the same URL opened
+/// right before it (the copy is read from then on), and the tab closing while
+/// a new tab opens at the same position within one poll interval.
 struct WaitURLAnchor {
     struct Changed: Error {}
 
-    private let tab: Int
-    private var matcher: SafariBridge.UrlMatcher?
-    private var tabCount: Int?
+    private var tab: Int
+    /// The window's URLs at the previous read; nil for a position-only target.
+    private var previous: [String]?
 
-    init(tab: Int, matcher: SafariBridge.UrlMatcher?) {
+    /// Follow the tab at `tab` (1-based) of a window that showed `windowURLs`.
+    init?(following tab: Int, in windowURLs: [String]) {
+        guard tab >= 1, tab <= windowURLs.count else { return nil }
         self.tab = tab
-        self.matcher = matcher
+        self.previous = windowURLs
+    }
+
+    /// Read whatever tab is at `tab` (1-based).
+    init(position tab: Int) {
+        self.tab = tab
+        self.previous = nil
     }
 
     mutating func url(in urls: [String]) throws -> String {
-        defer { tabCount = urls.count }
-        guard tab >= 1, tab <= urls.count else { throw Changed() }
-        let current = urls[tab - 1]
-        if let matcher {
-            if matcher.matches(current) { return current }
-            if let tabCount, tabCount != urls.count { throw Changed() }
-            self.matcher = nil
-            return current
+        guard let previous else {
+            guard tab >= 1, tab <= urls.count else { throw Changed() }
+            return urls[tab - 1]
         }
-        if let tabCount, urls.count < tabCount { throw Changed() }
-        return current
+        let i = tab - 1
+        let last = previous[i]
+        let leftUnchanged = urls.count > i && urls[..<i].elementsEqual(previous[..<i])
+        if leftUnchanged, urls[i] == last {
+            self.previous = urls
+            return last
+        }
+        let wasUnique = previous.filter { $0 == last }.count == 1
+        let shownAt = urls.indices.filter { urls[$0] == last }
+        if wasUnique, shownAt.count == 1 {
+            tab = shownAt[0] + 1
+            self.previous = urls
+            return last
+        }
+        let rightMovedLeft = i + 1 < previous.count
+            && urls[i..<(previous.count - 1)].elementsEqual(previous[(i + 1)...])
+        if leftUnchanged, urls.count == previous.count, !rightMovedLeft, shownAt.isEmpty || !wasUnique {
+            self.previous = urls
+            return urls[i]
+        }
+        throw Changed()
     }
 }
