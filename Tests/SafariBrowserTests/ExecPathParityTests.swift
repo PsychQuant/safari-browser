@@ -46,6 +46,11 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
             ("js", ["1+1", "--first-match"], "step-level --first-match with no target flag is dropped in-process"),
             ("get text", ["--mark-tab"], "a flag the in-process dispatcher does not read"),
             ("click", ["#x"], "not an in-process command"),
+            // Not in-process whatever the arguments: the command gate, not the shape rules, decides.
+            ("snapshot", [], "not an in-process command, no arguments"),
+            ("wait", [], "not an in-process command, no arguments"),
+            ("click", [], "not an in-process command, no arguments"),
+            ("type", [], "not an in-process command, no arguments"),
         ]
         for (cmd, args, why) in cases {
             XCTAssertFalse(InProcessStepDispatcher.runsInProcess(cmd: cmd, args: args), "\(cmd) \(args): \(why)")
@@ -118,6 +123,24 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    /// The grammar, pinned on its own so that a change to the scanner that both sides share cannot
+    /// pass the differential test above: a `$` then a letter or `_`, then letters, digits or `_`
+    /// (Unicode letters included); `\\$` is a literal; everything else is left alone.
+    func testTheReferenceGrammarIsPinnedIndependently() async throws {
+        let store = VariableStore()
+        for name in ["n", "_x", "Ünï", "名字", "a1"] { await store.bind(name: name, value: "@@") }
+        let corpus: [(text: String, begins: Bool, substituted: String)] = [
+            ("$n", true, "@@"), ("$_x", true, "@@"), ("$Ünï!", true, "@@!"), ("$名字", true, "@@"), ("$a1.b", true, "@@.b"),
+            ("a$n", false, "a@@"), ("\\$n", false, "$n"), ("$1", false, "$1"), ("$%", false, "$%"), ("$", false, "$"),
+            ("${n}", false, "${n}"), ("$ n", false, "$ n"), ("", false, ""),
+        ]
+        for (text, begins, substituted) in corpus {
+            XCTAssertEqual(VariableStore.beginsWithReference(text), begins, text.debugDescription)
+            let actual = try await store.substitute(text)
+            XCTAssertEqual(actual, substituted, text.debugDescription)
+        }
+    }
+
     // MARK: - The decision `ExecCommand.run` makes
 
     func testTheRouteSendsAScriptToTheDaemonOnlyWhenEverythingAgrees() {
@@ -131,6 +154,30 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(route(honoured, pacing: true), .subprocess)
         XCTAssertEqual(route(honoured, daemon: false), .subprocess)
         XCTAssertEqual(route("not json"), .subprocess)
+        XCTAssertEqual(route(##"[{"cmd":"get url"},{"cmd":"snapshot"}]"##), .subprocess, "a command outside the in-process set, with no arguments")
+        XCTAssertEqual(route(##"[{"cmd":"get url"},{"cmd":"wait"}]"##), .subprocess)
+    }
+
+    /// `--max-steps` reaches the route: a script over the limit does not parse, is not sent, and
+    /// fails locally with the limit's own error (the default of 1000 would have sent it).
+    func testExecPassesItsStepLimitToTheRoute() async throws {
+        final class Sent: @unchecked Sendable {
+            private let lock = NSLock(); private var n = 0
+            func add() { lock.withLock { n += 1 } }
+            var count: Int { lock.withLock { n } }
+        }
+        let sent = Sent()
+        let two = ##"[{"cmd":"get url","if":"$never exists"},{"cmd":"get url","if":"$never exists"}]"##
+        do {
+            _ = try await printed {
+                try await ExecCommand.parse(["--max-steps", "1"]).execute(source: two, pacingEnabled: false, daemonOptedIn: true,
+                                                                          viaDaemon: { _ in sent.add(); return "X" })
+            }
+            XCTFail("two steps with a limit of one must fail")
+        } catch ScriptParseError.maxStepsExceeded(let actual, let cap) {
+            XCTAssertEqual(actual, 2); XCTAssertEqual(cap, 1)
+        } catch { XCTFail("expected the step-limit error, got \(error)") }
+        XCTAssertEqual(sent.count, 0, "a script over the limit is not sent to the daemon")
     }
 
     /// `run()` hands the decision to `execute`, which asks `route`: the daemon request is made for a
@@ -186,11 +233,13 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
             var all: [String] { lock.withLock { items } }
         }
         let skipped = ##"[{"cmd":"get url","if":"$never exists"}]"##
-        func notes(_ args: [String], daemonAnswer: String? = "FROM-DAEMON", daemon: Bool = true) async throws -> [String] {
+        func notes(_ args: [String], daemonAnswer: String? = "FROM-DAEMON", daemon: Bool = true,
+                   environment: [String: String] = [:], source: String? = nil) async throws -> [String] {
             let notes = Notes()
-            _ = try await printed {
-                try await ExecCommand.parse(args).execute(source: skipped, pacingEnabled: false, daemonOptedIn: daemon,
-                                                          viaDaemon: { _ in daemonAnswer }, note: { notes.add($0) })
+            _ = try? await printed {
+                try await ExecCommand.parse(args).execute(source: source ?? skipped, pacingEnabled: false, daemonOptedIn: daemon,
+                                                          viaDaemon: { _ in daemonAnswer }, note: { notes.add($0) },
+                                                          environment: environment)
             }
             return notes.all
         }
@@ -201,10 +250,20 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         for args in [["--mark-tab"], ["--mark-tab-persist"]] {
             let local = try await notes(args, daemonAnswer: nil)
             XCTAssertEqual(local.count, 1, "\(args): \(local)")
-            XCTAssertTrue(local.first?.contains("the tab is not marked") == true, "\(local)")
+            XCTAssertTrue(local.first?.contains("no marker is applied around the run") == true, "\(local)")
             let notOptedIn = try await notes(args, daemon: false)
             XCTAssertEqual(notOptedIn.count, 1, "\(args) with the daemon off: \(notOptedIn)")
         }
+        // The environment variable asks for a marker too, and the environment is an input.
+        for value in ["1", "2", "persist"] {
+            let local = try await notes([], daemonAnswer: nil, environment: ["SAFARI_BROWSER_MARK_TAB": value])
+            XCTAssertEqual(local.count, 1, "SAFARI_BROWSER_MARK_TAB=\(value): \(local)")
+        }
+        let none = try await notes([], daemonAnswer: nil, environment: ["SAFARI_BROWSER_MARK_TAB": "0"])
+        XCTAssertEqual(none, [], "a value that does not ask for a marker")
+        // A script that does not parse never runs, so there is nothing to say about how it runs.
+        let broken = try await notes(["--mark-tab"], daemonAnswer: nil, source: "not json")
+        XCTAssertEqual(broken, [])
     }
 
     /// A supported command whose arguments are not a runnable shape is refused with the code the
@@ -255,7 +314,9 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
     func testTheDispatcherRefusesAShapeItDoesNotHonourBeforeResolvingAnything() async {
         let fake = FakeSafari()
         let dispatcher = InProcessStepDispatcher()
-        for (cmd, args) in [("get text", ["#sel"]), ("js", ["--file", "x.js"]), ("get url", ["stray"]), ("documents", ["stray"])] {
+        for (cmd, args) in [("get text", ["#sel"]), ("js", ["--file", "x.js"]), ("get url", ["stray"]), ("documents", ["stray"]),
+                            ("get url", ["--first-match"]), ("get url", ["--url"]), ("get url", ["--url", "--first-match"]),
+                            ("js", ["1+1", "--window"]), ("js", ["-1"])] {
             do {
                 _ = try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
                     try await dispatcher.dispatch(cmd: cmd, args: args, sharedTargetArgs: ["--url", "w1.example/53"])
@@ -402,6 +463,34 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(scripts.contains { $0.contains("document.body.innerText") }, scripts.joined(separator: "\n---\n"))
     }
 
+    /// The innerText fallback reads the tab the step resolved, not whatever is in front: with an
+    /// exec-level `--url` the native read and the fallback must address the same tab.
+    func testTheInnerTextFallbackReadsTheResolvedTab() async throws {
+        final class Log: @unchecked Sendable {
+            let lock = NSLock(); private var items: [String] = []
+            func add(_ s: String) { lock.withLock { items.append(s) } }
+            var all: [String] { lock.withLock { items } }
+        }
+        let fake = FakeSafari()
+        let log = Log()
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        let text = try await DaemonRequestContext.$current.withValue(context) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+                log.add(source)
+                if source.contains("get text of") { return "" }
+                if source.contains("window.__sbResultLen") && !source.contains("window.__sbResult =") { return "5.0" }
+                if source.contains("window.__sbResult.substring(") { return "hello" }
+                return try fake.respond(source)
+            }) {
+                try await InProcessStepDispatcher().dispatch(cmd: "get text", args: [], sharedTargetArgs: ["--url", "w2.example/2"])
+            }
+        }
+        XCTAssertEqual(text, "hello")
+        let reads = log.all.filter { $0.contains("do JavaScript") }
+        XCTAssertFalse(reads.isEmpty, log.all.joined(separator: "\n---\n"))
+        XCTAssertTrue(reads.allSatisfy { $0.contains("window id 102") }, "every fallback read addresses the resolved tab:\n\(reads.joined(separator: "\n---\n"))")
+    }
+
     // MARK: - `get text --first-match` is honoured by the CLI command
 
     private func runGetTextCommand(_ args: [String], on fake: FakeSafari) async throws {
@@ -426,5 +515,39 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         let second = FakeSafari()
         try await runGetTextCommand(["--url", "w1.example", "--first-match"], on: second)
         XCTAssertEqual(second.enumerations, 1, "one resolution for the whole command:\n\(second.scripts.joined(separator: "\n---\n"))")
+    }
+
+    /// What the body writes to standard error through the process's real descriptor.
+    private func capturedStderr(_ body: () async -> Void) async throws -> String {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("stderr-\(UUID().uuidString)")
+        let fd = open(url.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { close(fd); try? FileManager.default.removeItem(at: url) }
+        fflush(nil)
+        let saved = dup(STDERR_FILENO)
+        defer { close(saved) }
+        dup2(fd, STDERR_FILENO)
+        await body()
+        fflush(nil)
+        dup2(saved, STDERR_FILENO)
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// `get text --first-match` writes the multi-match warning once, and does not let the flag
+    /// take the target out of the `--profile` the person named: a profile that holds no matching
+    /// tab stops the command before any read.
+    func testGetTextFirstMatchWarnsOnceAndKeepsTheProfile() async throws {
+        let first = FakeSafari()
+        let stderr = try await capturedStderr { try? await self.runGetTextCommand(["--url", "w1.example", "--first-match"], on: first) }
+        XCTAssertEqual(stderr.components(separatedBy: "--first-match resolved").count - 1, 1, stderr)
+
+        let other = FakeSafari()
+        do {
+            try await runGetTextCommand(["--url", "w1.example", "--first-match", "--profile", "其他"], on: other)
+            XCTFail("a profile with no window must fail")
+        } catch SafariBrowserError.documentNotFound {
+        } catch { XCTFail("expected documentNotFound for another profile, got \(error)") }
+        XCTAssertFalse(other.scripts.contains { $0.contains("do JavaScript") || $0.contains("get text of") },
+                       "nothing may be read:\n\(other.scripts.joined(separator: "\n---\n"))")
     }
 }

@@ -51,7 +51,7 @@ struct ExecCommand: AsyncParsableCommand {
     ///
     /// Section 10 v2 of `script-exec-command`: when daemon is opt-in active AND every step in the
     /// script can run in-process — its command is supported and its arguments are a shape the
-    /// dispatcher honours exactly, with no variable reference — send the entire script as a single
+    /// dispatcher honours exactly, with no argument that begins with a variable reference — send the entire script as a single
     /// `exec.runScript` request. This eliminates per-step subprocess + socket-handshake overhead
     /// from the client path. Otherwise (daemon off, or any step cannot run in-process) fall through
     /// to the local interpreter which uses the SubprocessStepDispatcher.
@@ -60,7 +60,8 @@ struct ExecCommand: AsyncParsableCommand {
     func execute(
         source: String, pacingEnabled: Bool, daemonOptedIn: Bool,
         viaDaemon: ([ScriptStep]) async throws -> String?,
-        note: (String) -> Void = { FileHandle.standardError.write(Data($0.utf8)) }
+        note: (String) -> Void = { FileHandle.standardError.write(Data($0.utf8)) },
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) async throws {
         if case .daemon(let parsed) = Self.route(
             source: source, maxSteps: maxSteps, pacingEnabled: pacingEnabled, daemonOptedIn: daemonOptedIn),
@@ -69,10 +70,15 @@ struct ExecCommand: AsyncParsableCommand {
             return
         }
 
-        // Only the daemon wraps a run in the tab-ownership marker; a script that runs step by step
-        // does not mark the tab, and a marker that was asked for must not fail without a word (#220).
-        if target.markTabResolved() != .off {
-            note("note: the tab-ownership marker (--mark-tab, --mark-tab-persist or SAFARI_BROWSER_MARK_TAB) is applied only when the daemon runs the whole script; this script runs each step as its own command (a step is outside the shapes the daemon runs in-process, pacing is on, or the daemon is not in use), so the tab is not marked.\n")
+        // Only the daemon wraps a whole run in the tab-ownership marker. A script that runs step by
+        // step gets none around the run (the flags are not forwarded to a step's command; the
+        // environment variable is inherited by each step's own process, so a step that marks the
+        // tab marks it for its own duration), and a marker that was asked for must not fail
+        // without a word (#220). Said only for a script that parses, because one that does not
+        // never runs.
+        if target.markTabResolved(env: environment) != .off,
+           (try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps)) != nil {
+            note("note: the tab-ownership marker (--mark-tab, --mark-tab-persist or SAFARI_BROWSER_MARK_TAB) is applied around a whole run only when the daemon runs the whole script; this script runs each step as its own command (a step is outside the shapes the daemon runs in-process, pacing is on, or the daemon is not in use), so no marker is applied around the run.\n")
         }
         let interpreter = ScriptInterpreter(maxSteps: maxSteps)
         let results = try await interpreter.run(source: source, target: target)

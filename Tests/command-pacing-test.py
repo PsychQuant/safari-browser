@@ -135,6 +135,18 @@ class CommandPacingTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr.decode())
                     self.assertEqual([row['status'] for row in json.loads(result.stdout)], ['skipped'] * 3)
                     self.assertEqual(len(daemon.requests) - before, 0, 'Paced exec must not send batch RPC')
+                with self.subTest(mode='cauchy, the marker was asked for'):
+                    # The note goes to standard error, not standard output, and only when a marker
+                    # was asked for; the results on standard output are unchanged.
+                    result = subprocess.run([BIN, 'exec', '--mark-tab', '--script', str(guarded)], env=env,
+                                            capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    self.assertEqual([row['status'] for row in json.loads(result.stdout)], ['skipped'] * 3)
+                    self.assertIn(b'tab-ownership marker', result.stderr)
+                    self.assertNotIn(b'tab-ownership marker', result.stdout)
+                    plain = subprocess.run([BIN, 'exec', '--script', str(guarded)], env=env,
+                                           capture_output=True, timeout=5)
+                    self.assertNotIn(b'tab-ownership marker', plain.stderr)
                 with self.subTest(mode='no daemon signal at all'):
                     # `run()` must read the daemon opt-in: with none of the three signals set, nothing
                     # connects and nothing says `daemon fallback` (a `daemonOptedIn: true` would try).

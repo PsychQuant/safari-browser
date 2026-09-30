@@ -26,12 +26,11 @@ actor VariableStore {
         return false
     }
 
-    /// Resolves `$name` references in a string. Single dollar followed by
-    /// `[A-Za-z_][A-Za-z0-9_]*` is a substitution; `\\$` is a literal `$`.
-    /// Anything else (e.g., `$1`, `$%`) is left untouched so legitimate
-    /// dollar usage in shell-like contexts isn't mangled. (Letters are Unicode
-    /// letters; the reference grammar lives in `reference(in:at:)`, the one scanner
-    /// that both this and the exec pre-flight use.)
+    /// Resolves `$name` references in a string. A `$` followed by a letter or `_`, then letters,
+    /// digits or `_` (letters and digits as `Character.isLetter` and `isNumber` define them, so
+    /// not only ASCII), is a substitution; `\\$` is a literal `$`. Anything else (e.g., `$1`, `$%`)
+    /// is left untouched so legitimate dollar usage in shell-like contexts isn't mangled. The
+    /// grammar lives in `reference(in:at:)`, which this and the exec pre-flight both use.
     ///
     /// Throws `ScriptDispatchError.undefinedVariable` when a reference is
     /// well-formed but the name is not bound.
@@ -63,7 +62,8 @@ actor VariableStore {
     }
 
     /// The `$name` reference that starts at `index`, if there is one: its name and the index
-    /// after it. The single definition of what a reference is.
+    /// after it. The scanner `substitute` and the exec pre-flight share. (The expression
+    /// evaluator of an `if:` condition has a scanner of its own for the name it reads.)
     static func reference(in chars: [Character], at index: Int) -> (name: String, end: Int)? {
         guard index < chars.count, chars[index] == "$", index + 1 < chars.count, isIdentStart(chars[index + 1]) else { return nil }
         var j = index + 1
@@ -116,7 +116,7 @@ enum ScriptDispatchError: Error, Equatable {
         case .unsupportedInExec(let cmd):
             return "command '\(cmd)' is not yet available in exec scripts"
         case .unsupportedArguments(let cmd):
-            return "step '\(cmd)' has arguments the in-process dispatcher does not run exactly as the CLI command would; "
+            return "step '\(cmd)' is not one the in-process dispatcher runs exactly as the CLI command would (its arguments are not a shape it honours); "
                 + "run the script without the daemon (the same script then runs each step as its own command)"
         }
     }

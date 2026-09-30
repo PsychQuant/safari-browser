@@ -10,6 +10,7 @@
 
 - [x] 1.7 #220：`InProcessStepDispatcher.runsInProcess` 的封閉形狀表，client 預檢與 dispatcher 共用；subprocess 的 `documents` 步驟補 `--json`；in-process `get text` 的 innerText 後備；`GetText` 遵守 `--first-match`；以變數開頭的參數不送 daemon（變數在中間不影響形狀）、`unsupportedArguments`、剩餘五項已知差異記入規格；pacing 的 Python 測試改用兩份腳本（Requirement: Daemon-routed execution when available）
 - [x] 1.8 #220 R1：`ExecCommand.route` 與 `execute`（daemon 請求可注入）讓「送 daemon 或本機執行」的決定可測，`run()` 只負責讀腳本；差異測試以固定的 dialog observation 在同一個假 Safari 上比對兩條路徑的 `documents` 與 `get text`；子行程的實際 argv 由可注入的 runner 斷言；`documents` 的 `--json` 以與 `dispatch` 相同的方式切分指令；變異檢查（引用變數、缺值旗標、pacing／opt-in、`execute` 不用 `route`、daemon 答 nil 後不本機執行、`--json` 與 `invocation` 的接線、dispatcher 拒絕、step 層 `--first-match`、`GetText`、innerText 後備）全數被殺
+- [x] 1.9 #220 R2：`hasReference` 改為 `beginsWithReference`，與 `substitute` 共用同一個掃描器 `VariableStore.reference(in:at:)`（differential 測試）；目標旗標的值不得以 `-` 開頭；`js` 沒有程式碼也走 `unsupportedArguments`；`--mark-tab` 要了卻走逐步路徑時在 stderr 說明；變數的文法在 `Variable capture and substitution` 寫明（與程式碼一致：字母或 `_` 起頭）；pacing 與 daemon opt-in 的 `run()` 接線由 Python 測試守住
 
 ## 2. 編譯快取上限
 
@@ -20,4 +21,3 @@
 
 - [x] 3.1 同工作負載前後量測，記錄於 docs/performance.md
 - [x] 3.2 CHANGELOG
-- [x] 1.9 #220 R2：`hasReference` 改為 `beginsWithReference`，與 `substitute` 共用同一個掃描器 `VariableStore.reference(in:at:)`（differential 測試）；目標旗標的值不得以 `-` 開頭；`js` 沒有程式碼也走 `unsupportedArguments`；`--mark-tab` 要了卻走逐步路徑時在 stderr 說明；變數的文法在 `Variable capture and substitution` 寫明（與程式碼一致：字母或 `_` 起頭）；pacing 與 daemon opt-in 的 `run()` 接線由 Python 測試守住
