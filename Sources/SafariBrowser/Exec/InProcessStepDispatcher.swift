@@ -167,10 +167,10 @@ struct InProcessStepDispatcher: StepDispatcher {
 
         switch cmd {
         case "js":
+            // `runsInProcess` has already required exactly one argument; this stays a refusal with
+            // the same code as every other shape the dispatcher does not run, were that list loosened.
             guard let code = cmdArgs.first else {
-                throw ScriptDispatchError.unsupportedInExec(
-                    "js: missing code argument"
-                )
+                throw ScriptDispatchError.unsupportedArguments(cmd)
             }
             return try await SafariBridge.doJavaScript(
                 code,
