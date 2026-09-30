@@ -303,6 +303,10 @@ struct WaitCommand: AsyncParsableCommand {
                     defer { windowAnchor = tracked }
                     return try tracked.anchor.url(in: urls).contains(pattern)
                 }
+                // The default target and `--window N` come here: the current-tab
+                // check and the dialog probe are `getCurrentURL`'s anchored-tab
+                // branch, pinned by `testWaitForURLOnTheDefaultTargetFailsClosed…`
+                // and `testURLWaitsKeepProbingForABlockingDialog`.
                 return try await SafariBridge.getCurrentURL(
                     target: anchored, firstMatch: firstMatch, warnWriter: nil,
                     profile: target.resolveProfile()).contains(pattern)

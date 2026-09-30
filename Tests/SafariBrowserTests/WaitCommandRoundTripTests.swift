@@ -408,6 +408,14 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         XCTAssertGreaterThan(confirmed, 100)
     }
 
+    func testNavigatingToTheRightNeighboursURLIsIndistinguishableFromAClosureAndFailsClosed() throws {
+        // [A, B, C] -> [A, C, C]: tab 2 navigated to C, or tab 2 closed and a tab
+        // showing C opened at the end. The observation is the same, so the wait
+        // fails closed (it is documented in the spec) rather than guessing.
+        var anchor = try follow(2, in: [1, 2, 3])
+        XCTAssertThrowsError(try anchor.url(in: ["https://w1.example/1", "https://w1.example/3", "https://w1.example/3"]))
+    }
+
     func testAClosedTargetFailsClosed() throws {
         var closed = try follow(3, in: [51, 52, 53, 54, 55])
         XCTAssertThrowsError(try closed.url(in: urls([51, 52, 54, 55])), "it closed: the tabs to its right moved left")
