@@ -20,7 +20,7 @@ struct WaitCommand: AsyncParsableCommand {
     var js: String?
 
     @Option(name: .long, help: ArgumentHelp("Timeout in milliseconds (default: 30000)",
-        discussion: "Bounds when the next poll may start, not how long the command takes: target resolution and a poll already running are never interrupted, and the first poll always runs, so the command can end later than --timeout. Each AppleScript call is limited on its own (30 s on the stateless path; with the daemon at most 15 s once its request is sent, and a request that could not be sent may then be retried on the stateless path), and a poll whose call reaches its limit ends the wait with an error. For a hard limit, run the command under an external timeout."))
+        discussion: "Bounds when a poll after the first may start, not how long the command takes: resolving the target and a poll that has started are not cut short by --timeout, and the first poll always runs, so the command can end later than --timeout. For a hard limit, run the command under an external timeout."))
     var timeout: Int = 30000
 
     // #182: randomized wait. One duration is drawn from a Cauchy distribution
@@ -333,19 +333,11 @@ struct WaitCommand: AsyncParsableCommand {
     /// Why not bound each poll by the time that remains (deferred, not ruled out): the resolution
     /// and the first poll — which must run, above — cannot be bounded that way, so the command
     /// could still end after the deadline; what bounding the later polls would change is what a
-    /// stall that begins mid-wait costs. It needs `doJavaScript`, `dispatchJS`, `getCurrentURL`
-    /// and `tabURLs` (and the test runner seam) to carry a timeout, in code that other work
-    /// (#189, #224, #225) is rewriting.
+    /// stall that begins mid-wait costs. It needs a timeout to be carried into the calls a
+    /// poll makes, in code that other work (#189, #224, #225) is rewriting.
     ///
-    /// Each AppleScript call has its own limit: 30 s on the stateless path (the process is
-    /// terminated, then killed after a further 1 s); with the daemon the client waits at most
-    /// 15 s for the answer to a request it has sent, an unanswered request fails with an
-    /// outcome-unknown error (no retry), and a request that could not be sent may fall back to
-    /// the stateless call. A poll can make more than one call, and a poll's call that reaches its
-    /// limit ends the wait with an error: the call's own, or for a `--js` poll the blocking-dialog
-    /// error when a dialog is found on the window. The read of the current tab that anchors the
-    /// default target and `--window N` has a 2 s limit and, if it fails, leaves the target
-    /// unanchored; resolving any other target is one enumeration under the full limit.
+    /// The calls a poll makes have limits of their own, which this wait does not change: when the
+    /// call that evaluates the expression or reads the URL fails, the wait ends with its error.
     ///
     /// `sleep` is a seam: a test records what is asked for.
     private func pollUntilDeadline(

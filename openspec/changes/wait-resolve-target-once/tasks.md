@@ -13,6 +13,11 @@
 - [x] 3.1 測試先失敗：視窗關閉、`wait --js --document` 分頁消失、每輪 dialog probe（Requirement: Wait for JS condition）
 - [x] 3.2 實作 dangling 對應與 `getCurrentURL` 錨定分支的 probe
 
-## 4. 文件
+## 4. `--timeout` 的意義（#221）
 
-- [x] 4.1 CHANGELOG 與 docs/performance.md
+- [x] 4.1 測試先失敗：輪詢超過 deadline 不被中斷且答案算數、deadline 後不再開始輪詢、睡眠不超過 deadline、呼叫失敗即結束、預設逾時 30 s
+- [x] 4.2 實作 `pollUntilDeadline(_:sleep:_:)` 與 `--help` 說明
+
+## 5. 文件
+
+- [x] 5.1 CHANGELOG、README 與 docs/performance.md
