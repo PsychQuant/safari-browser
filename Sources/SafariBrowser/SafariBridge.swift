@@ -556,7 +556,7 @@ enum SafariBridge {
     /// errors from `.urlContains` / `.windowIndex` / `.documentIndex` into
     /// the user-friendly `documentNotFound` error that lists all available
     /// Safari documents. Without this wrapper, the user would see a raw
-    /// AppleScript error like "Can't get first document whose URL contains...".
+    /// AppleScript error whose text ends in its error number (-1719 / -1728).
     private static func runTargetedAppleScript(
         _ script: String,
         target: TargetDocument,
@@ -577,8 +577,9 @@ enum SafariBridge {
             }
             // Only translate when the error is "document not found" from a
             // non-default target: AppleScript error -1719 (invalid index) or
-            // -1728 (object not found). The code, not the localized message,
-            // decides (#218): both runners now end the text with it.
+            // -1728 (object not found). The trailing code, not the localized
+            // message, decides (#218): `osascript` always ends its text with
+            // it, the daemon runner when NSAppleScript supplies a number.
             if case .frontWindow = target {
                 // Default target: propagate as-is (backward compat).
                 throw error
