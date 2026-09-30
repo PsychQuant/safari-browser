@@ -22,6 +22,23 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    /// What the wait asks its sleep for, in nanoseconds; the sleep itself is the real one.
+    final class SleepRequests: @unchecked Sendable {
+        private let lock = NSLock(); private var items: [UInt64] = []
+        func add(_ ns: UInt64) { lock.withLock { items.append(ns) } }
+        var all: [UInt64] { lock.withLock { items } }
+    }
+
+    private func runWait(_ args: [String], on fake: FakeSafari, recording requests: SleepRequests) async throws {
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        let command = try WaitCommand.parse(args)
+        try await DaemonRequestContext.$current.withValue(context) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                try await command.run(sleep: { requests.add($0); try await Task.sleep(nanoseconds: $0) })
+            }
+        }
+    }
+
     func testWaitForJSResolvesAURLTargetOnceAcrossPolls() async {
         let fake = FakeSafari()
         do {
@@ -397,6 +414,66 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         slow.waitJavaScriptAnswer = "true"
         try await runWait(["--js", "window.ready", "--timeout", "300", "--url", "w1.example/53"], on: slow)
         XCTAssertEqual(slow.javaScripts.count, 1, "the resolution used up the timeout and the condition held")
+    }
+
+    /// The limit of a `--js` poll's call ends the wait with the blocking-dialog error when a
+    /// dialog is found after the timeout; the same limit of a `--for-url` poll ends it with the
+    /// call's own error, because the dialog check runs only for the JS read.
+    func testTheDialogErrorAfterALimitIsForJSPollsOnly() async {
+        let dialog = SafariBridge.BlockingDialog(message: "owned", buttons: ["OK"])
+        let js = FakeSafari(failJSContaining: "window.ready")
+        js.failWithTimeout = true
+        do {
+            try await runWait(["--js", "window.ready", "--timeout", "5000"], on: js,
+                              probe: { _ in js.scripts.contains { $0.contains("window.ready") } ? .present(dialog) : .clear })
+            XCTFail("--js: expected an error")
+        } catch SafariBrowserError.javaScriptDialogBlocking {
+        } catch { XCTFail("--js: expected the blocking-dialog error, got \(error)") }
+
+        let url = FakeSafari()
+        url.windowURLReadError = SafariBrowserError.processTimedOut(command: "owned-url-fixture", seconds: 30)
+        do {
+            try await runWait(["--for-url", "never-matches", "--timeout", "5000", "--url", "w1.example/53"], on: url,
+                              probe: { _ in url.windowURLReads.isEmpty ? .clear : .present(dialog) })
+            XCTFail("--for-url: expected an error")
+        } catch SafariBrowserError.processTimedOut {
+        } catch { XCTFail("--for-url: expected the call's own error, got \(error)") }
+    }
+
+    /// `resolution time counts against --timeout` for a `--for-url` wait too: were the deadline taken
+    /// after the resolution, this wait would run for the resolution PLUS the timeout.
+    func testTheDeadlineStartsBeforeTheTargetIsResolvedForAURLWaitToo() async {
+        let fake = FakeSafari()
+        fake.enumerationDelay = 0.8
+        let result = await elapsed {
+            try await runWait(["--for-url", "never-matches", "--timeout", "1000", "--url", "w1.example/53"], on: fake)
+        }
+        guard case SafariBrowserError.timeout? = result.error else { return XCTFail("expected a timeout, got \(String(describing: result.error))") }
+        XCTAssertGreaterThanOrEqual(result.seconds, 0.95)
+        XCTAssertLessThan(result.seconds, 1.5, "0.8 s of resolution plus the 1 s timeout would be 1.8 s")
+    }
+
+    /// The sleep the wait ASKS for, not how long it took: never more than the usual 500 ms, and
+    /// after an unsatisfied poll never more than what is left until the deadline. (A mutant that asks
+    /// for a little more than the time left is caught here without measuring a wall clock.)
+    func testTheSleepThatIsAskedForNeverPassesTheDeadline() async {
+        let short = SleepRequests()
+        _ = await elapsed { try await runWait(["--js", "window.ready", "--timeout", "200"], on: FakeSafari(), recording: short) }
+        XCTAssertFalse(short.all.isEmpty)
+        XCTAssertLessThanOrEqual(short.all[0], 200_000_000, "at most what is left of a 200 ms timeout: \(short.all)")
+        XCTAssertGreaterThan(short.all[0], 0)
+
+        let long = SleepRequests()
+        _ = await elapsed { try await runWait(["--js", "window.ready", "--timeout", "1200"], on: FakeSafari(), recording: long) }
+        XCTAssertTrue(long.all.allSatisfy { $0 <= 500_000_000 }, "never more than the polling interval: \(long.all)")
+        XCTAssertEqual(long.all.first, 500_000_000, "an ordinary poll sleeps the full interval: \(long.all)")
+        XCTAssertLessThanOrEqual(long.all.reduce(0, +), 1_200_000_000, "the requests together stay within the timeout: \(long.all)")
+    }
+
+    /// The default is stated in the help and in the `Default timeout` requirement.
+    func testTheDefaultTimeoutIsThirtySeconds() throws {
+        XCTAssertEqual(try WaitCommand.parse(["--js", "x"]).timeout, 30000)
+        XCTAssertEqual(try WaitCommand.parse(["--for-url", "x"]).timeout, 30000)
     }
 
     /// The help sentence the spec requires. ArgumentParser wraps help at the terminal width, so a
