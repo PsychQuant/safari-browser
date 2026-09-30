@@ -326,6 +326,13 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(fake.javaScripts.count, 1, fake.transcript)
     }
 
+    /// The spec says the command's help says so; a sentence that is required should be pinned.
+    func testTheHelpSaysTheCommandCanEndLaterThanTheTimeout() {
+        let help = WaitCommand.helpMessage()
+        XCTAssertTrue(help.contains("can end later than --timeout"), help)
+        XCTAssertTrue(help.contains("never interrupted"), help)
+    }
+
     /// The deadline is taken before the target is resolved, so a slow resolution counts against
     /// `--timeout`. Were it taken afterwards, this wait would run for the resolution PLUS the timeout.
     func testTheDeadlineStartsBeforeTheTargetIsResolved() async {
