@@ -149,4 +149,17 @@ final class PreCompiledScriptsTests: XCTestCase {
     func testDefaultCompileCacheCapacityIsBounded() {
         XCTAssertEqual(PreCompiledScripts.CompileCache.defaultCapacity, 256)
     }
+
+    func testTheDaemonsDefaultCacheEvictsAtTheBound() async throws {
+        // The daemon builds `CompileCache()`; the constant alone would pass with
+        // an initializer that ignored it. 257 distinct sources: the first goes.
+        let cache = PreCompiledScripts.CompileCache()
+        for index in 0...256 { try await cache.compile(source: "return \(index)") }
+        let count = await cache.cacheCount
+        let oldest = await cache.contains(source: "return 0")
+        let newest = await cache.contains(source: "return 256")
+        XCTAssertEqual(count, 256)
+        XCTAssertFalse(oldest)
+        XCTAssertTrue(newest)
+    }
 }

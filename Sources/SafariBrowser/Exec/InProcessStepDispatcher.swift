@@ -25,12 +25,13 @@ struct InProcessStepDispatcher: StepDispatcher {
     /// (`--document N`, positional flags, `--profile` alone), so those are
     /// resolved afresh every step. Each reuse first checks that the tab still
     /// shows a URL the pattern accepts; if not, the cache is dropped and the
-    /// target is resolved afresh, exactly as stateless exec does for every
-    /// step — so a navigated, moved or closed tab gives the same result on
-    /// both paths (verify R1: get steps used to read the cached tab
-    /// unchecked). A failed resolution leaves nothing cached. A change between
-    /// the check and the step itself is not detected; stateless exec has the
-    /// same gap between its resolution and its read.
+    /// target is resolved afresh, as each step of the subprocess path does
+    /// for itself — so a navigated, moved or closed tab gives the same
+    /// found / not-found outcome on both paths (verify R1: get steps used to
+    /// read the cached tab unchecked). A failed resolution leaves nothing
+    /// cached. A change between the check and the step itself is not
+    /// detected; the subprocess path has the same gap between its resolution
+    /// and its read.
     final class SharedTargetResolution: @unchecked Sendable {
         private let lock = NSLock()
         private var cached: (args: [String], target: SafariBridge.TargetDocument)?

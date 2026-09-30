@@ -131,10 +131,10 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(fake.verifications, 2, "steps 2 and 3 check the cached tab before using it")
     }
 
-    func testAfterTheTargetNavigatesAwayAStepFailsLikeStatelessExec() async throws {
+    func testAfterTheTargetNavigatesAwayAStepReportsWhatAFreshResolutionReports() async throws {
         // Verify R1: a get step read the cached tab with no guard, so after a
-        // navigation it returned the new page's URL, where stateless exec (one
-        // fresh resolution per step) reports that nothing matches.
+        // navigation it returned the new page's URL, where a subprocess step
+        // (its own fresh resolution) reports that nothing matches.
         let fake = Fake()
         do {
             _ = try await run([("get url", []), ("get url", [])], shared: ["--url", "w1.example/2"], on: fake) { i in
@@ -256,8 +256,8 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
     }
 
     func testADocumentIndexTargetIsNotCached() async throws {
-        // `--document N` names a position with no URL to verify by; stateless
-        // exec re-resolves it every step, so the daemon path does too.
+        // `--document N` names a position with no URL to verify by; every
+        // subprocess step re-resolves it, so the daemon path does too.
         let fake = Fake()
         _ = try await run([("get url", []), ("get url", []), ("get url", [])], shared: ["--document", "2"], on: fake)
         XCTAssertEqual(fake.enumerations, 3)
@@ -489,5 +489,100 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
                 XCTAssertEqual(fake.enumerations, 3, "\(shared): resolved afresh for each of the 3 steps")
             }
         }
+    }
+
+
+    // MARK: - Verify R5: real comparison semantics, step-level profile, mark-tab
+
+    /// Run the guard clause `verifyResolvedTab` builds in real AppleScript, on a
+    /// synthetic record with a `URL` property (no Safari is involved), and say
+    /// whether it tripped.
+    private func guardTrips(_ matcher: SafariBridge.UrlMatcher, url: String) throws -> Bool {
+        let clause = try XCTUnwrap(SafariBridge.urlGuardClause(for: matcher))
+        let script = "set _t to {URL:\"\(url.escapedForAppleScript)\"}\n\(clause)\nreturn \"ok\""
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out; process.standardError = err
+        try process.run()
+        process.waitUntilExit()
+        let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        if stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" { return false }
+        XCTAssertTrue(stderr.contains("SB_TARGET_CHANGED"), "neither ok nor the guard's own error:\n\(stderr)")
+        return true
+    }
+
+    func testTheGuardClauseComparesCaseSensitivelyInRealAppleScript() throws {
+        // AppleScript compares strings case-insensitively unless told otherwise,
+        // and the matcher the target was resolved with is case-sensitive. The
+        // fake cannot show the difference; `osascript` can.
+        let cases: [(SafariBridge.UrlMatcher, same: String, other: String)] = [
+            (.contains("Foo"), "https://x.example/Foo", "https://x.example/foo"),
+            (.exact("https://x.example/Foo"), "https://x.example/Foo", "https://x.example/foo"),
+            (.endsWith("Foo"), "https://x.example/Foo", "https://x.example/foo"),
+            (.contains("日本語é"), "https://x.example/日本語é", "https://x.example/日本語É"),
+        ]
+        for (matcher, same, other) in cases {
+            XCTAssertFalse(try guardTrips(matcher, url: same), "\(matcher): the same text must pass")
+            XCTAssertTrue(try guardTrips(matcher, url: other), "\(matcher): a different case must trip the guard")
+        }
+    }
+
+    func testAStepsOwnProfileRestrictsItsResolution() async throws {
+        // A step that carries its own `--profile` was parsed and dropped before.
+        let fake = Fake()
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        try await DaemonRequestContext.$current.withValue(context) {
+            try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                let dispatcher = InProcessStepDispatcher()
+                let own = try await dispatcher.dispatch(
+                    cmd: "get url", args: ["--url", "w1.example/2", "--profile", "個人"], sharedTargetArgs: [])
+                XCTAssertEqual(own, "https://w1.example/2")
+                do {
+                    _ = try await dispatcher.dispatch(
+                        cmd: "get url", args: ["--url", "w1.example/2", "--profile", "nobody"], sharedTargetArgs: [])
+                    XCTFail("no window belongs to profile 'nobody'")
+                } catch SafariBrowserError.documentNotFound {}
+            }
+        }
+    }
+
+    func testADocumentsStepWithItsOwnProfileListsOnlyThatProfile() async throws {
+        let fake = Fake()
+        let count = { (args: [String]) async throws -> Int in
+            let out = try await WindowDialogObservation.$provider.withValue({ .unavailable(reason: "disabled") }) {
+                try await self.run([("documents", args)], shared: [], on: fake)[0]
+            }
+            return (try JSONSerialization.jsonObject(with: Data(out.utf8)) as? [Any])?.count ?? -1
+        }
+        let mine = try await count(["--profile", "個人"])
+        let nobody = try await count(["--profile", "nobody"])
+        XCTAssertEqual(mine, 6)
+        XCTAssertEqual(nobody, 0)
+    }
+
+    func testTheTabMarkerRespectsTheExecLevelProfile() async {
+        // `--mark-tab` wraps the whole run and reads and rewrites the target's
+        // title before the first step. It resolved the target without the
+        // profile, so it could mark a tab of another profile.
+        let fake = Fake()
+        let envelope = try! JSONSerialization.data(withJSONObject: [
+            "steps": [], "targetArgs": ["--url", "w1.example/2", "--profile", "nobody"], "markTab": "ephemeral",
+        ])
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        do {
+            _ = try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                    try await DaemonDispatch.Handlers.execRunScript(paramsData: envelope)
+                }
+            }
+            XCTFail("no window belongs to profile 'nobody'")
+        } catch SafariBrowserError.documentNotFound {
+        } catch {
+            XCTFail("expected documentNotFound, got \(error)")
+        }
+        XCTAssertFalse(fake.scripts.contains { $0.contains("do JavaScript") }, "no title may be read or written:\n\(fake.scripts.joined(separator: "\n---\n"))")
     }
 }
