@@ -459,7 +459,7 @@ struct UploadCommand: AsyncParsableCommand {
                 if currentURL != initialURL {
                     _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
                     throw SafariBrowserError.appleScriptFailed(
-                        "Page navigated away during upload (was: \(URLText.redactURL(initialURL)), now: \(URLText.redactURL(currentURL))). Upload aborted."
+                        Self.navigatedAwayMessage(initialURL: initialURL, currentURL: currentURL)
                     )
                 }
             }
@@ -505,6 +505,16 @@ struct UploadCommand: AsyncParsableCommand {
             _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
             throw SafariBrowserError.appleScriptFailed("JS file injection failed: \(jsResult)")
         }
+    }
+
+    /// #227: the two URLs are shown without their queries, so a page that only changed its query
+    /// (or something else that is not shown) would print the same text twice. Say so, instead of
+    /// leaving a message that reads as if nothing changed.
+    static func navigatedAwayMessage(initialURL: String, currentURL: String) -> String {
+        let was = URLText.redactURL(initialURL)
+        let now = URLText.redactURL(currentURL)
+        let unseen = was == now ? " — they differ in a part that is not shown here" : ""
+        return "Page navigated away during upload (was: \(was), now: \(now)\(unseen)). Upload aborted."
     }
 
     private func guessMimeType(for filename: String) -> String {

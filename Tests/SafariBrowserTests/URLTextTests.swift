@@ -27,7 +27,6 @@ final class URLTextTests: XCTestCase {
     /// No requirement that the text look like `scheme://…`: `about:` and `data:` URLs carry secrets too.
     func testTheCutDoesNotDependOnTheSchemeLookingHierarchical() {
         XCTAssertEqual(URLText.redactURL("about:blank#SECRET"), "about:blank#…")
-        XCTAssertEqual(URLText.redactURL("data:text/plain,a?SECRET"), "data:text/plain,a?…")
         XCTAssertEqual(URLText.redactURL("mailto:a@b.example?subject=SECRET"), "mailto:a@b.example?…")
         XCTAssertEqual(URLText.redactURL("file:///tmp/x.html?SECRET"), "file:///tmp/x.html?…")
     }
@@ -54,8 +53,54 @@ final class URLTextTests: XCTestCase {
         XCTAssertEqual(URLText.redactURL("https://a.example/p?to=x@y.example"), "https://a.example/p?…")
     }
 
+    /// A `data:` or `javascript:` URL is a payload, not an address: what follows the colon is all
+    /// content, and it can be unbounded and secret whether or not it has a `?` in it.
+    func testPayloadSchemesShowNothingAfterTheColon() {
+        XCTAssertEqual(URLText.redactURL("data:text/plain,a?SECRET"), "data:…")
+        XCTAssertEqual(URLText.redactURL("data:text/html;base64,U0VDUkVU"), "data:…")
+        XCTAssertEqual(URLText.redactURL("javascript:fetch('/x?t=SECRET')"), "javascript:…")
+        XCTAssertEqual(URLText.redactURL("DATA:text/plain,SECRET"), "DATA:…", "scheme names are case-insensitive")
+        // Only these two: any other scheme is an address and keeps its path.
+        XCTAssertEqual(URLText.redactURL("blob:https://a.example/0b6c-1"), "blob:https://a.example/0b6c-1")
+        XCTAssertEqual(URLText.redactURL("view-source:https://a.example/p?x=1"), "view-source:https://a.example/p?…")
+        // A path that merely starts with the word is not a scheme.
+        XCTAssertEqual(URLText.redactURL("https://a.example/data:x"), "https://a.example/data:x")
+        XCTAssertEqual(URLText.redactURL("data"), "data")
+    }
+
+    /// `;jsessionid=…` and similar path parameters are recognisable and often a session credential.
+    func testPathParametersAreReplacedUpToTheNextSlash() {
+        XCTAssertEqual(URLText.redactURL("https://a.example/app/page;jsessionid=SECRET"), "https://a.example/app/page;…")
+        XCTAssertEqual(URLText.redactURL("https://a.example/app;jsessionid=SECRET/next?x=1"), "https://a.example/app;…/next?…")
+        XCTAssertEqual(URLText.redactURL("https://a.example/a;x=1/b;y=2"), "https://a.example/a;…/b;…")
+        XCTAssertEqual(URLText.redactURL("https://a.example/p"), "https://a.example/p")
+    }
+
+    /// A URL inside the path (a proxy, a redirect target) is an authority of its own.
+    func testCredentialsOfAURLInsideThePathAreReplacedToo() {
+        XCTAssertEqual(URLText.redactURL("https://proxy.example/fetch/https://user:SECRET@host.example/x"), "https://proxy.example/fetch/https://…@host.example/x")
+        XCTAssertEqual(URLText.redactURL("https://u:SECRET@proxy.example/https://v:SECRET@host.example/"), "https://…@proxy.example/https://…@host.example/")
+        XCTAssertEqual(URLText.redactURL("https://a.example/redirect/https://b.example/users/@me"), "https://a.example/redirect/https://b.example/users/@me")
+    }
+
+    func testALongURLIsCutAtTheCapAndNeverGrows() {
+        let long = "https://a.example/" + String(repeating: "p", count: 500)
+        let shown = URLText.redactURL(long)
+        XCTAssertEqual(shown.unicodeScalars.count, URLText.maxLength)
+        XCTAssertTrue(shown.hasPrefix("https://a.example/ppp") && shown.hasSuffix("…"), shown)
+        // The marker comes after the cut body and is not counted in the cap.
+        let withQuery = URLText.redactURL(long + "?sig=SECRET")
+        XCTAssertEqual(withQuery, shown + "?…")
+        let atTheCap = "https://a.example/" + String(repeating: "p", count: URLText.maxLength - "https://a.example/".count)
+        XCTAssertEqual(URLText.redactURL(atTheCap), atTheCap, "a URL of exactly the cap is shown whole")
+    }
+
     func testRedactionIsIdempotent() {
-        for url in ["https://a.example/p?sig=SECRET", "https://u:p@a.example/x#f", "about:blank#x", "https://a.example/p"] {
+        let long = "https://a.example/" + String(repeating: "p", count: 500)
+        for url in ["https://a.example/p?sig=SECRET", "https://u:p@a.example/x#f", "about:blank#x", "https://a.example/p",
+                    "data:text/plain,a?SECRET", "DATA:x", "javascript:alert(1)", "https://a.example/a;x=1/b;y=2?z",
+                    "https://proxy.example/https://u:p@h.example/x;s=1", long, long + "?q=1", long + ";x=1/y#f",
+                    "https://a.example/p?\u{0301}sig=SECRET", ""] {
             let once = URLText.redactURL(url)
             XCTAssertEqual(URLText.redactURL(once), once, url)
         }
@@ -171,10 +216,27 @@ final class URLTextTests: XCTestCase {
 
     // MARK: - Notes and the one structured field left
 
-    func testTheNavigationNoteAndTheUploadWordingCarryNoQueryOrFragment() {
+    func testTheNavigationNoteCarriesNoQueryOrFragment() {
         let note = JSCommand.navigationNote(for: "https://app.example/cb?code=\(secret)#access_token=\(secret)")
         XCTAssertFalse(note.contains(secret), note)
         XCTAssertTrue(note.contains("now at https://app.example/cb?…)"), note)
+    }
+
+    /// The upload error is built from two page URLs that were already stripped of their fragment,
+    /// so what differs between them is usually the query, which is not shown.
+    func testTheUploadNavigatedAwayErrorCarriesNoQueryAndSaysWhenTheTwoLookAlike() {
+        let moved = UploadCommand.navigatedAwayMessage(
+            initialURL: "https://app.example/a?token=\(secret)", currentURL: "https://app.example/b?token=\(secret)")
+        XCTAssertFalse(moved.contains(secret), moved)
+        XCTAssertTrue(moved.contains("was: https://app.example/a?…, now: https://app.example/b?…)"), moved)
+        XCTAssertFalse(moved.contains("not shown"), "the two differ visibly, so there is nothing to explain: \(moved)")
+
+        let sameLooking = UploadCommand.navigatedAwayMessage(
+            initialURL: "https://app.example/a?token=A\(secret)", currentURL: "https://app.example/a?token=B\(secret)")
+        XCTAssertFalse(sameLooking.contains(secret), sameLooking)
+        XCTAssertTrue(sameLooking.contains("was: https://app.example/a?…, now: https://app.example/a?…"), sameLooking)
+        XCTAssertTrue(sameLooking.contains("they differ in a part that is not shown here"), sameLooking)
+        XCTAssertTrue(sameLooking.hasSuffix("Upload aborted."), sameLooking)
     }
 
     func testTargetTabChangedRedactsItsURLAtRenderingToo() {
@@ -183,6 +245,45 @@ final class URLTextTests: XCTestCase {
         XCTAssertTrue(text.contains("Target position now shows: https://cdn.example.org/f.pdf?…"), text)
         XCTAssertTrue(text.contains("url contains \"cdn\""), "the expectation is the person's own pattern: \(text)")
         XCTAssertNoThrow(SafariBrowserError.targetTabChanged(expected: "x", actualURL: nil).errorDescription)
+    }
+
+    /// The `-1719` / `-1728` translation in `runTargetedAppleScript` is its own producer of the
+    /// listing, reached only when Safari itself reports the target missing.
+    func testTheTranslatedAppleScriptFailureListsTabsWithoutTheirQuery() async {
+        let record = ["1", "1", "1", "https://cdn.example.org/a.pdf?X-Signature=\(secret)", "T", "", "71"].joined(separator: "\u{1D}") + "\u{1E}"
+        // A context with a probe that answers, so the dialog gate does not scan the real Safari.
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        do {
+            _ = try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+                    if source.contains("get URL of") { throw SafariBrowserError.appleScriptFailed("Safari got an error: Can't get window 7. (-1728)") }
+                    return record
+                }) { try await SafariBridge.getCurrentURL(target: .windowIndex(7)) }
+            }
+            XCTFail("expected the translated miss")
+        } catch SafariBrowserError.documentNotFound(_, let listing) {
+            XCTAssertEqual(listing, ["window 1 tab 1: https://cdn.example.org/a.pdf?…"])
+        } catch {
+            XCTFail("unexpected \(error)")
+        }
+    }
+
+    /// The note that URLs are shortened is on every listing, including a positional miss, whose
+    /// listing is the one a person is most likely to act on by copying a URL.
+    func testEveryNotFoundListingSaysThatURLsAreShownShortened() throws {
+        for (label, target) in [("url miss", SafariBridge.TargetDocument.urlMatch(.contains("nothing"))),
+                                ("window miss", .windowIndex(9)), ("window+tab miss", .windowTab(window: 1, tabInWindow: 9))] {
+            do {
+                _ = try SafariBridge.pickNativeTarget(target, in: signedWindows)
+                XCTFail("\(label): expected a miss")
+            } catch SafariBrowserError.documentNotFound(let pattern, let listing) {
+                let text = SafariBrowserError.documentNotFound(pattern: pattern, availableDocuments: listing).errorDescription ?? ""
+                XCTAssertTrue(text.contains("URLs are shown without their query or fragment"), "\(label): \(text)")
+            }
+        }
+        // Nothing listed, nothing shortened.
+        let empty = SafariBrowserError.documentNotFound(pattern: "x", availableDocuments: []).errorDescription ?? ""
+        XCTAssertFalse(empty.contains("URLs are shown without"), empty)
     }
 
     func testURLsWithoutAQueryAreRenderedAsBefore() {
@@ -198,7 +299,8 @@ final class URLTextTests: XCTestCase {
             index: 1, window: 1, tabInWindow: 1, title: "T", url: "https://cdn.example.org/f.pdf?X-Signature=\(secret)#frag",
             isCurrent: true, profile: nil)
         XCTAssertTrue(DocumentsCommand.formatText([doc]).joined().contains("?X-Signature=\(secret)#frag"))
-        let rows = DocumentsCommand.jsonRows([doc], observation: WindowDialogObservation.capture())
+        // Not `capture()`: that scans the developer's real Safari through Accessibility.
+        let rows = DocumentsCommand.jsonRows([doc], observation: WindowDialogObservation.unavailable(reason: "test"))
         XCTAssertEqual(rows.first?["url"] as? String, "https://cdn.example.org/f.pdf?X-Signature=\(secret)#frag")
     }
 
@@ -206,23 +308,74 @@ final class URLTextTests: XCTestCase {
         let hint = SafariBrowserError.targetingHint(for: "some-substring")
         XCTAssertTrue(hint.contains("safari-browser documents"), hint)
         XCTAssertTrue(hint.contains("without"), hint)
+        // A copied entry with its marker fails every URL matcher, not only --url-exact.
+        let flat = hint.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        XCTAssertTrue(flat.contains("`?…` or `#…` marker matches none of --url, --url-exact or --url-endswith"), hint)
     }
 
-    // MARK: - Tripwire: a place that builds a tab listing must redact
-
-    /// Not a proof: it fails when someone adds a line that puts a tab URL into a "window …" listing
-    /// without going through `URLText`, so the omission has to be a visible decision.
-    func testEveryListingLineInTheBridgeGoesThroughTheRedaction() throws {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let source = try String(contentsOf: root.appendingPathComponent("Sources/SafariBrowser/SafariBridge.swift"), encoding: .utf8)
-        let upload = try String(contentsOf: root.appendingPathComponent("Sources/SafariBrowser/Commands/UploadCommand.swift"), encoding: .utf8)
-        let navigated = try XCTUnwrap(upload.split(separator: "\n").first { $0.contains("Page navigated away during upload") }, "the upload error moved")
-        XCTAssertTrue(navigated.contains("URLText.redactURL(initialURL)") && navigated.contains("URLText.redactURL(currentURL)"), String(navigated))
-        for (number, line) in source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
-            let text = String(line)
-            guard text.contains("\"window "), text.contains(".url)") || text.contains("?.url") else { continue }
-            XCTAssertTrue(text.contains("URLText.redactURL"), "SafariBridge.swift:\(number + 1) lists a tab URL without redacting it: \(text)")
+    /// `--window N` counts the windows of the `--profile` when there is one, while the listings
+    /// show Safari's own window numbers, so "the numbers listed" is only true without it.
+    func testTheNumbersToRetargetWithAreNotPromisedUnderAProfile() {
+        func flat(_ text: String) -> String { text.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased() }
+        let ambiguous = SafariBrowserError.ambiguousWindowMatch(pattern: "cdn", matches: [(windowIndex: 3, tabIndex: 1, url: "https://a.example/")]).errorDescription ?? ""
+        XCTAssertTrue(flat(ambiguous).contains("with --profile, n counts only that profile's windows"), ambiguous)
+        for pattern in ["some-substring", "window 9"] {
+            let hint = SafariBrowserError.targetingHint(for: pattern)
+            XCTAssertTrue(flat(hint).contains("with --profile, n counts only that profile's windows"), "\(pattern): \(hint)")
         }
+    }
+
+    // MARK: - Tripwires: a place that shows a tab URL must redact
+
+    private var sourcesRoot: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/SafariBrowser")
+    }
+
+    private func source(_ relative: String) throws -> String {
+        try String(contentsOf: sourcesRoot.appendingPathComponent(relative), encoding: .utf8)
+    }
+
+    /// Not a proof: it fails when someone interpolates a tab's `.url` into text in one of the
+    /// files that build these errors, warnings and notes without going through `URLText`, so the
+    /// omission has to be a visible decision. Comment lines are skipped.
+    func testEveryInterpolationOfATabURLInTheErrorBuildingFilesGoesThroughTheRedaction() throws {
+        let interpolatedURL = try NSRegularExpression(pattern: #"\\\([^)]*\.url\b"#)
+        for file in ["SafariBridge.swift", "Commands/JSCommand.swift", "Commands/UploadCommand.swift", "Utilities/Errors.swift"] {
+            for (number, line) in try source(file).split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                let text = String(line)
+                if text.trimmingCharacters(in: .whitespaces).hasPrefix("//") { continue }
+                let range = NSRange(text.startIndex..., in: text)
+                guard interpolatedURL.firstMatch(in: text, range: range) != nil else { continue }
+                XCTAssertTrue(text.contains("URLText.redactURL"), "\(file):\(number + 1) interpolates a tab URL without redacting it: \(text)")
+            }
+        }
+    }
+
+    /// The count is the number of places that show a tab URL, so removing one is a failure too.
+    func testTheNumberOfRedactionSitesIsWhatWasReviewed() throws {
+        let counts = [("SafariBridge.swift", 11), ("Commands/JSCommand.swift", 1), ("Commands/UploadCommand.swift", 2), ("Utilities/Errors.swift", 2)]
+        for (file, expected) in counts {
+            let found = try source(file).components(separatedBy: "URLText.redactURL(").count - 1
+            XCTAssertEqual(found, expected, "\(file): a redaction site was added or removed — decide it, then update this count")
+        }
+    }
+
+    /// `targetTabChanged` carries a URL in its payload, and a daemon prints the payload. Every
+    /// producer passes none today; one that passes one must redact it where it builds it.
+    func testEveryTargetTabChangedProducerPassesNoURLOrARedactedOne() throws {
+        let producer = try NSRegularExpression(pattern: #"SafariBrowserError\.targetTabChanged\(\s*expected:[^,]+,\s*actualURL:\s*([^\s)]+)"#)
+        var found = 0
+        let files = try XCTUnwrap(FileManager.default.enumerator(at: sourcesRoot, includingPropertiesForKeys: nil))
+        for case let file as URL in files where file.pathExtension == "swift" {
+            let text = try String(contentsOf: file, encoding: .utf8)
+            for match in producer.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                found += 1
+                let argument = String(text[try XCTUnwrap(Range(match.range(at: 1), in: text))])
+                XCTAssertTrue(argument == "nil" || argument.hasPrefix("URLText.redactURL"), "\(file.lastPathComponent): actualURL: \(argument)")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(found, 3, "the scan found no producers — the pattern no longer matches the code")
     }
 }

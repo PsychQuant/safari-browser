@@ -13,37 +13,108 @@ import Foundation
 /// redaction in the rendering would leave the payload — and everything that prints it — carrying
 /// the full URL. It is idempotent, so applying it again at a rendering is harmless.
 enum URLText {
-    /// Shows scheme, host and path: everything from the first `?` or `#` is cut, leaving `?…`
-    /// when a query was removed and `#…` when only a fragment was (a `?` after the `#` belongs to
-    /// the fragment), and the credentials of an authority (`user:pass@`) are replaced by `…@`.
+    /// The most scalars of scheme, host and path that are shown (a `?…` or `#…` marker comes after
+    /// them). A tab URL is unbounded and a listing has one line per tab, so what is kept is a
+    /// bounded prefix, ending in `…` when it was cut.
+    static let maxLength = 200
+
+    /// Schemes whose URL is a payload, not an address: everything after the colon is shown as `…`.
+    private static let payloadSchemes: Set<String> = ["data", "javascript"]
+
+    /// Shows scheme, host and path, with these removed, each marked where it was:
+    ///
+    /// - everything from the first `?` or `#` (`?…` when a query was removed, `#…` when only a
+    ///   fragment was; a `?` after the `#` belongs to the fragment);
+    /// - the credentials of an authority, `user:pass@` → `…@`, including one inside the path
+    ///   (`https://proxy.example/https://user:pass@host/`);
+    /// - path parameters, `;jsessionid=…` → `;…`, up to the next `/`;
+    /// - the whole content of a `data:` or `javascript:` URL (`data:…`);
+    /// - whatever follows the first `maxLength` scalars.
     ///
     /// Delimiters are found among Unicode scalars, not `Character`s: a combining mark after `?`
     /// makes one grapheme cluster that is not equal to `?`, and a search by `Character` would
     /// miss the query it was meant to cut. There is no requirement that the text look like a
-    /// hierarchical URL, so `about:blank#x` and `data:text/plain,a?b` are cut the same way.
+    /// hierarchical URL, so `about:blank#x` is cut the same way.
+    ///
+    /// What is NOT recognisable as a secret stays: a token that is a path segment
+    /// (`/reset/<token>`) is indistinguishable from a path that identifies the tab.
     static func redactURL(_ url: String) -> String {
         var scalars = Array(url.unicodeScalars)
+        if let scheme = scheme(of: scalars), payloadSchemes.contains(scheme.lowercased()) {
+            return scheme + ":…"
+        }
         var marker = ""
         if let cut = scalars.firstIndex(where: { $0 == "?" || $0 == "#" }) {
             marker = scalars[cut] == "?" ? "?…" : "#…"
             scalars.removeSubrange(cut...)
         }
-        return String(String.UnicodeScalarView(removingUserinfo(scalars))) + marker
+        scalars = removingPathParameters(removingUserinfo(scalars))
+        if scalars.count > maxLength {
+            scalars = Array(scalars[..<(maxLength - 1)]) + ["…"]
+        }
+        return String(String.UnicodeScalarView(scalars)) + marker
     }
 
-    /// `scheme://user:pass@host/path` → `scheme://…@host/path`. The authority ends at the first
-    /// `/` after `://`; the credentials end at its last `@`.
+    /// The leading run of a URL up to its first `:`, when it is shaped like a scheme.
+    private static func scheme(of scalars: [Unicode.Scalar]) -> String? {
+        guard let colon = scalars.firstIndex(of: ":"), colon > 0 else { return nil }
+        let head = scalars[..<colon]
+        guard let first = head.first, first.properties.isAlphabetic, first.isASCII,
+              head.allSatisfy({ $0.isASCII && ($0.properties.isAlphabetic || ("0"..."9").contains($0) || $0 == "+" || $0 == "-" || $0 == ".") })
+        else { return nil }
+        return String(String.UnicodeScalarView(head))
+    }
+
+    /// `scheme://user:pass@host/path` → `scheme://…@host/path`, for every `://` in the text. An
+    /// authority ends at the first `/` after its `://`; its credentials end at its last `@`.
     private static func removingUserinfo(_ scalars: [Unicode.Scalar]) -> [Unicode.Scalar] {
-        guard scalars.count >= 3 else { return scalars }
-        var separator: Int?
-        for index in 0...(scalars.count - 3) where scalars[index] == ":" && scalars[index + 1] == "/" && scalars[index + 2] == "/" {
-            separator = index
-            break
+        var output: [Unicode.Scalar] = []
+        var position = 0
+        while position < scalars.count {
+            guard let separator = nextSchemeSeparator(in: scalars, from: position) else {
+                output += scalars[position...]
+                break
+            }
+            let authorityStart = separator + 3
+            output += scalars[position..<authorityStart]
+            let authorityEnd = scalars[authorityStart...].firstIndex(of: "/") ?? scalars.count
+            if let at = scalars[authorityStart..<authorityEnd].lastIndex(of: "@") {
+                output += ["…", "@"]
+                position = at + 1
+            } else {
+                position = authorityStart
+            }
         }
-        guard let separator else { return scalars }
-        let authorityStart = separator + 3
-        let authorityEnd = scalars[authorityStart...].firstIndex(of: "/") ?? scalars.count
-        guard let at = scalars[authorityStart..<authorityEnd].lastIndex(of: "@") else { return scalars }
-        return Array(scalars[..<authorityStart]) + Array("…@".unicodeScalars) + Array(scalars[(at + 1)...])
+        return output
+    }
+
+    private static func nextSchemeSeparator(in scalars: [Unicode.Scalar], from start: Int) -> Int? {
+        guard scalars.count - start >= 3 else { return nil }
+        for index in start...(scalars.count - 3) where scalars[index] == ":" && scalars[index + 1] == "/" && scalars[index + 2] == "/" {
+            return index
+        }
+        return nil
+    }
+
+    /// `/app/page;jsessionid=ABC/next` → `/app/page;…/next`: a `;` in the path starts a parameter
+    /// that runs to the next `/`. The authority is left alone; a text without one is all path.
+    private static func removingPathParameters(_ scalars: [Unicode.Scalar]) -> [Unicode.Scalar] {
+        var start = 0
+        if let separator = nextSchemeSeparator(in: scalars, from: 0) {
+            start = scalars[(separator + 3)...].firstIndex(of: "/") ?? scalars.count
+        }
+        var output = Array(scalars[..<start])
+        var index = start
+        while index < scalars.count {
+            output.append(scalars[index])
+            if scalars[index] == ";" {
+                output.append("…")
+                index += 1
+                while index < scalars.count, scalars[index] != "/" { index += 1 }
+            } else {
+                index += 1
+            }
+        }
+        return output
     }
 }

@@ -163,7 +163,7 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
 
 **注意**：`documents` subcommand 列出 Safari `document` collection 的 MRU 順序，但 `--document N` 在 native path（#26）被解讀成「spatial window-major 第 N 個 tab」— 兩者在單視窗單 tab 等價，多 tab 情境下略有差異。JS path 保留 Safari 的 document-index semantics。
 
-**錯誤、警告與註記裡的分頁 URL 不含 query／fragment／帳密（#227）**：六個位置（`documentNotFound` 清單、`ambiguousWindowMatch` 候選、`targetTabChanged` 的「Target position now shows」、`--first-match` 警告與其 no-match 清單、`js` 導頁註記、`upload` 導走錯誤）以 `URLText.redactURL` 顯示 scheme／host／path，query 以 `?…`、只有 fragment 以 `#…`、authority 帳密以 `…@` 代替；不要求 URL 是階層式，分隔符在 Unicode scalar 上找（組合符藏不住）。**在建構 payload 的地方套用，不是在 `errorDescription` 渲染**：daemon 的 wire error 與 log 印的是 payload（`"\(error)"`），不經 `errorDescription`；`URLTextTests` 的 tripwire 要求 `SafariBridge.swift` 中每一行把分頁 URL 放進「window …」清單的都經過 `URLText`。`ambiguousWindowMatch` 帶 `tabIndex`（脫敏後，只差 query 的候選靠序號區分，也是 `--window N --tab-in-window M` 要的）。使用者自己輸入的 pattern、`documents`／`tabs`／`cloud-tabs`（明確要求的輸出）、頁面載入的資源網址（`save-image` 下載錯誤，另案）不在範圍內；`targetTabChanged` 目前的建構點都傳 nil，其渲染只是防禦。
+**錯誤、警告與註記裡的分頁 URL 不含 query／fragment／帳密（#227）**：六個位置（`documentNotFound` 清單、`ambiguousWindowMatch` 候選、`targetTabChanged` 的「Target position now shows」、`--first-match` 警告與其 no-match 清單、`js` 導頁註記、`upload` 導走錯誤）以 `URLText.redactURL` 顯示 scheme／host／path；認得出的秘密被去掉並留標記：`?` 起的 query 與 fragment（`?…`／只有 fragment 時 `#…`）、authority 帳密（`…@`，含路徑裡另一個 URL 的帳密）、路徑參數（`;jsessionid=…` → `;…`）、`data:`／`javascript:` 的內容（`data:…`）、超過 200 個 scalar 的尾巴。`?`／`#` 的切割不要求 URL 是階層式，分隔符在 Unicode scalar 上找（組合符藏不住）；路徑本身的秘密（`/reset/<token>`）認不出來，照原樣顯示。**在建構 payload 的地方套用，不是在 `errorDescription` 渲染**：daemon 的 wire error 與 log 的 `error` 欄位印的是 payload（`"\(error)"`），不經 `errorDescription`（log 的 `result` 欄位記指令回傳的內容，不在範圍，另案 #230）。`URLTextTests` 有三個 tripwire：`SafariBridge.swift`／`JSCommand.swift`／`UploadCommand.swift`／`Errors.swift` 中每一行內插分頁 `.url` 的都經過 `URLText`；各檔 `URLText.redactURL(` 的處數固定（11／1／2／2，增減都要有人決定）；`targetTabChanged` 的每個 producer 傳 `nil` 或已脫敏的值（現有的都傳 `nil`，其渲染另外脫敏）。`ambiguousWindowMatch` 帶 `tabIndex`（脫敏後，只差 query 的候選靠序號區分，也是 `--window N --tab-in-window M` 要的；用了 `--profile` 時 `--window` 只數該 profile 的視窗，列出的是 Safari 自己的視窗編號，訊息會說明）。使用者自己輸入的 pattern、`documents`／`tabs`／`cloud-tabs`（明確要求的輸出）、頁面載入的資源網址（`save-image` 下載錯誤，另案 #229）不在範圍內。
 
 AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪些 documents，然後用 `--url <substring>` 明確指定。避免靠 `front window` 的 z-order 猜測。
 
@@ -177,7 +177,7 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 - `SafariBridge.ResolvedWindowTarget` / `WindowInfo` / `TabInWindow` structs（#26）
 - `TargetOptions` ParsableArguments — 全域 CLI flags via `@OptionGroup`（#23，#26 擴展到 window-only primitives）
 - `SafariBrowserError.documentNotFound(pattern:availableDocuments:)` — 錯誤路徑含 discovery（#23）
-- `SafariBrowserError.ambiguousWindowMatch(pattern:matches:)` — 多 match 錯誤含 window + URL 列表（#26）
+- `SafariBrowserError.ambiguousWindowMatch(pattern:matches:)` — 多 match 錯誤含 window + tab + 脫敏後 URL 的列表（#26；tab 與脫敏見 #227）
 
 完整 spec 見：
 - `openspec/specs/document-targeting/spec.md`

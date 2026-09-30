@@ -243,7 +243,7 @@ enum SafariBrowserError: LocalizedError {
                 (URLs are shown without their query or fragment; `safari-browser documents` prints them in full.)
                 Disambiguate by:
                   1. Use a more specific --url substring (e.g., "plaud.ai/file/abc" instead of "plaud"); the part that differs may be in the query, which `safari-browser documents` shows.
-                  2. Use --window N --tab-in-window M, with the window and tab numbers listed above, to target a specific tab by position.
+                  2. Use --window N --tab-in-window M, with the window and tab numbers listed above, to target a specific tab by position (with --profile, N counts only that profile's windows, whatever number is listed).
                   3. Pass --first-match to accept the first match (with a stderr warning listing all candidates).
                 """
         case .guiSessionLocked:
@@ -684,15 +684,18 @@ extension SafariBrowserError {
             return """
                 Hint: each entry above shows its own coordinates — target one with
                       --window N --tab-in-window M, or --document N for the [N] index.
+                      (With --profile, N counts only that profile's windows.)
                 """
         }
         return """
             Hint: --url matches a *substring* of the URL, not the whole URL, and not the title —
                   no tab's URL contained this text. Refine it against the URLs above (shown without
-                  their query or fragment — `safari-browser documents` prints them in full, and a
-                  copy of a shortened entry will not match --url-exact), or target positionally with
-                  --window N --tab-in-window M (coordinates are shown per entry), or --document N
-                  for the [N] index. For stricter matching see --url-exact / --url-endswith / --url-regex.
+                  their query or fragment — `safari-browser documents` prints them in full, and an
+                  entry copied with its `?…` or `#…` marker matches none of --url, --url-exact or
+                  --url-endswith), or target positionally with --window N --tab-in-window M
+                  (coordinates are shown per entry; with --profile, N counts only that profile's
+                  windows), or --document N for the [N] index. For stricter matching see
+                  --url-exact / --url-endswith / --url-regex.
             """
     }
 }
