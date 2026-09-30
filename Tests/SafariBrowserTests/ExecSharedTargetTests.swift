@@ -169,7 +169,7 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(fake.enumerations, 2)
     }
 
-    func testAClosedWindowOnTheDaemonPathFailsLikeStatelessAndDoesNotPoisonTheCache() async throws {
+    func testAClosedWindowOnTheDaemonPathReportsNotFoundAndDoesNotPoisonTheCache() async throws {
         // A check that threw never cleared the cache, so every later step
         // failed too, even after the page reappeared in another window.
         let fake = Fake()
@@ -330,7 +330,7 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
 
     func testAfterAFailedResolutionAnAmbiguousMatchIsReportedNotHidden() async throws {
         // The resolved tab navigates away (step 2 finds nothing), then comes
-        // back while a second tab also matches. Stateless exec reports the
+        // back while a second tab also matches. A subprocess step reports the
         // ambiguity at step 3; the daemon path must not reuse the old tab.
         let fake = Fake()
         fake.navigate(window: 1, tab: 2, to: "https://target.example/a")
@@ -395,7 +395,7 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
     }
 
     func testADocumentsStepHonoursTheProfileFilter() async throws {
-        // Stateless `documents --profile X` lists only X's tabs; the daemon
+        // `documents --profile X` lists only X's tabs; the daemon
         // exec step listed every profile.
         let fake = Fake()
         let rows = { (shared: [String]) -> Int in
@@ -496,25 +496,25 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
 
     /// Run the guard clause `verifyResolvedTab` builds in real AppleScript, on a
     /// synthetic record with a `URL` property (no Safari is involved), and say
-    /// whether it tripped.
-    private func guardTrips(_ matcher: SafariBridge.UrlMatcher, url: String) throws -> Bool {
+    /// whether it tripped. Bounded by a timeout, like the repo's other
+    /// osascript tests.
+    private func guardTrips(_ matcher: SafariBridge.UrlMatcher, url: String) async throws -> Bool {
         let clause = try XCTUnwrap(SafariBridge.urlGuardClause(for: matcher))
         let script = "set _t to {URL:\"\(url.escapedForAppleScript)\"}\n\(clause)\nreturn \"ok\""
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script]
-        let out = Pipe(), err = Pipe()
-        process.standardOutput = out; process.standardError = err
-        try process.run()
-        process.waitUntilExit()
-        let stdout = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let stderr = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        if stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "ok" { return false }
-        XCTAssertTrue(stderr.contains("SB_TARGET_CHANGED"), "neither ok nor the guard's own error:\n\(stderr)")
-        return true
+        do {
+            let out = try await SafariBridge.runShell("/usr/bin/osascript", ["-e", script], timeout: 10)
+            XCTAssertEqual(out.trimmingCharacters(in: .whitespacesAndNewlines), "ok")
+            return false
+        } catch SafariBrowserError.appleScriptFailed(let message) {
+            XCTAssertTrue(message.contains("SB_TARGET_CHANGED"), "neither ok nor the guard's own error:\n\(message)")
+            return true
+        }
     }
 
-    func testTheGuardClauseComparesCaseSensitivelyInRealAppleScript() throws {
+    func testTheGuardClauseComparesCaseSensitivelyInRealAppleScript() async throws {
+        // Runners without osascript skip rather than fail or hang.
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: "/usr/bin/osascript"),
+                          "osascript not available")
         // AppleScript compares strings case-insensitively unless told otherwise,
         // and the matcher the target was resolved with is case-sensitive. The
         // fake cannot show the difference; `osascript` can.
@@ -525,8 +525,10 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
             (.contains("日本語é"), "https://x.example/日本語é", "https://x.example/日本語É"),
         ]
         for (matcher, same, other) in cases {
-            XCTAssertFalse(try guardTrips(matcher, url: same), "\(matcher): the same text must pass")
-            XCTAssertTrue(try guardTrips(matcher, url: other), "\(matcher): a different case must trip the guard")
+            let sameTrips = try await guardTrips(matcher, url: same)
+            let otherTrips = try await guardTrips(matcher, url: other)
+            XCTAssertFalse(sameTrips, "\(matcher): the same text must pass")
+            XCTAssertTrue(otherTrips, "\(matcher): a different case must trip the guard")
         }
     }
 
@@ -584,5 +586,79 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
             XCTFail("expected documentNotFound, got \(error)")
         }
         XCTAssertFalse(fake.scripts.contains { $0.contains("do JavaScript") }, "no title may be read or written:\n\(fake.scripts.joined(separator: "\n---\n"))")
+    }
+
+
+    // MARK: - Verify R6: what reuse means for the position, cancellation, forms that must succeed
+
+    func testASecondMatchingTabDoesNotStopTheResolvedPositionBeingUsed() async throws {
+        // The daemon path resolved exactly one tab; a second tab starts matching
+        // before step 2 while the first still does. The position is reused with
+        // no further enumeration and no ambiguity error, where a subprocess step
+        // would resolve afresh and report the ambiguity (the spec says so).
+        let fake = Fake()
+        fake.navigate(window: 1, tab: 2, to: "https://target.example/a")
+        let urls = try await run([("get url", []), ("get url", [])], shared: ["--url", "target.example"], on: fake) { i in
+            if i == 1 { fake.navigate(window: 2, tab: 3, to: "https://target.example/b") }
+        }
+        XCTAssertEqual(urls, ["https://target.example/a", "https://target.example/a"])
+        XCTAssertEqual(fake.enumerations, 1)
+    }
+
+    func testTheResolvedPositionIsUsedEvenWhenItNowHoldsAnotherMatchingTab() async throws {
+        // The consequence the spec states: with no stable tab id, a tab to the
+        // left closing shifts the resolved tab and another matching tab takes its
+        // position. The URL check still passes, so the step reads that tab.
+        let fake = Fake()
+        fake.navigate(window: 1, tab: 2, to: "https://target.example/a")
+        let urls = try await run([("get url", []), ("get url", [])], shared: ["--url", "target.example"], on: fake) { i in
+            if i == 1 {
+                fake.close(window: 1, tab: 1)                                        // target/a is now tab 1
+                fake.navigate(window: 1, tab: 2, to: "https://target.example/b")     // tab 2 now matches too
+            }
+        }
+        XCTAssertEqual(urls, ["https://target.example/a", "https://target.example/b"])
+        XCTAssertEqual(fake.enumerations, 1)
+    }
+
+    func testTheFormsThatCanRunHereSucceedWithoutACheck() async throws {
+        // The forms whose steps the fake can answer with a URL carry a success
+        // assertion; `testNoCheckIsMadeForTargetFormsWithNothingToCheckBy` ignores
+        // errors and covers the rest (the fake answers a bare `--profile` read with
+        // a generic "ok", so only its enumeration count is asserted there).
+        for shared in [["--document", "2"], ["--tab", "2"]] {
+            let fake = Fake()
+            let urls = try await run([("get url", []), ("get url", []), ("get url", [])], shared: shared, on: fake)
+            XCTAssertEqual(urls.count, 3, "\(shared)")
+            XCTAssertTrue(urls.allSatisfy { $0.hasPrefix("https://") }, "\(shared): \(urls)")
+            XCTAssertEqual(fake.verifications, 0, "\(shared)")
+            XCTAssertEqual(fake.enumerations, 3, "\(shared): resolved for each of the 3 steps")
+        }
+    }
+
+    func testACancelledRequestDoesNotStartAResolutionWhateverTheCheckRaised() async {
+        // Only CancellationError was recognised; any error raised while the task
+        // is cancelled must also end in cancellation, never in a fresh resolution.
+        final class Counts: @unchecked Sendable { var resolutions = 0 }
+        struct Odd: Error {}
+        let counts = Counts()
+        let resolution = InProcessStepDispatcher.SharedTargetResolution()
+        let args = ["--url", "x"]
+        let tab = SafariBridge.TargetDocument.resolvedTab(windowID: 101, tabInWindow: 2, rematch: .contains("x"), profile: nil)
+        _ = try? await resolution.resolve(args: args, verify: { _ in true }) { counts.resolutions += 1; return tab }
+        let task = Task {
+            try await resolution.resolve(args: args, verify: { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+                throw Odd()
+            }) { counts.resolutions += 1; return tab }
+        }
+        do {
+            _ = try await task.value
+            XCTFail("the request was cancelled")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        XCTAssertEqual(counts.resolutions, 1, "a cancelled request must not resolve afresh")
     }
 }

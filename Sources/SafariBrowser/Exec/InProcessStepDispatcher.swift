@@ -49,9 +49,12 @@ struct InProcessStepDispatcher: StepDispatcher {
                 // this reset and leave every later step failing.
                 do {
                     if try await verify(hit.target) { return hit.target }
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {}
+                } catch {
+                    // A cancelled request must not start a resolution, whatever
+                    // the check raised (verify R6: only CancellationError was
+                    // recognised).
+                    if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                }
                 lock.withLock { cached = nil }
             }
             let target = try await resolver()
