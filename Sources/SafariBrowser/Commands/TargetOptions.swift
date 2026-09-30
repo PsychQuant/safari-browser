@@ -364,6 +364,19 @@ struct TargetOptions: ParsableArguments {
         )
     }
 
+    /// `resolveProfileScoped`, and `--first-match` honoured (#220, #231). `resolveProfileScoped`
+    /// resolves to a concrete tab only for `--profile`; for a command whose reads take no
+    /// `firstMatch`, an ambiguous `--url` therefore threw although the flag was given. Given
+    /// `--first-match` and no `--profile`, resolve once to a concrete tab here — one
+    /// enumeration, one warning — and let every later read follow that tab.
+    func resolveFirstMatchOnce() async throws -> SafariBridge.TargetDocument {
+        if firstMatch, profile == nil {
+            return try await SafariBridge.resolveToConcreteTarget(
+                resolve(), firstMatch: true, warnWriter: Self.stderrWarnWriter, profile: nil)
+        }
+        return try await resolveProfileScoped()
+    }
+
     /// Convenience wrapper that bundles the resolved `TargetDocument`
     /// with the `firstMatch` opt-in flag and a stderr-backed
     /// `warnWriter`. Commands should prefer this over `resolve()` when

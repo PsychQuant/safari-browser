@@ -66,18 +66,9 @@ struct GetText: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        // #220: `--first-match` used to be dropped here — `resolveProfileScoped` resolves only
-        // for `--profile`, and the reads below take no `firstMatch` — so an ambiguous target
-        // threw although the flag was given. `get value|attr|count|box` honour it; `get html`
-        // has the same defect as this command had (its own issue). Resolve once to a concrete
-        // tab (one warning, one enumeration) when it is given without a profile.
-        let documentTarget: SafariBridge.TargetDocument
-        if target.firstMatch, target.profile == nil {
-            documentTarget = try await SafariBridge.resolveToConcreteTarget(
-                target.resolve(), firstMatch: true, warnWriter: TargetOptions.stderrWarnWriter, profile: nil)
-        } else {
-            documentTarget = try await target.resolveProfileScoped()
-        }
+        // #220: `--first-match` used to be dropped here, so an ambiguous target threw although the
+        // flag was given (`resolveFirstMatchOnce` says why, and `get html` had the same, #231).
+        let documentTarget = try await target.resolveFirstMatchOnce()
         if let selector {
             let result = try await SafariBridge.doJavaScript(
                 "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.textContent; })()",
@@ -144,7 +135,7 @@ struct GetHTML: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        let documentTarget = try await target.resolveProfileScoped()
+        let documentTarget = try await target.resolveFirstMatchOnce()
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return '\\0NOT_FOUND'; return el.innerHTML; })()",
             target: documentTarget
