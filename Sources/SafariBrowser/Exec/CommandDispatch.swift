@@ -33,7 +33,8 @@ enum CommandDispatch {
     static func dispatch(
         cmd: String,
         args: [String],
-        sharedTargetArgs: [String]
+        sharedTargetArgs: [String],
+        runner: (_ executable: String, _ arguments: [String]) async throws -> String = { try await runSubprocess(executable: $0, arguments: $1) }
     ) async throws -> String {
         let cmdParts = cmd.split(separator: " ").map(String.init)
         let head = cmdParts.first ?? ""
@@ -46,7 +47,7 @@ enum CommandDispatch {
         }
 
         let invocation = invocation(cmd: cmd, args: args, sharedTargetArgs: sharedTargetArgs)
-        return try await runSubprocess(executable: currentExecutablePath(), arguments: invocation)
+        return try await runner(currentExecutablePath(), invocation)
     }
 
     /// The argument list of the child that runs one step. Pure, so the shape is testable.
@@ -61,7 +62,7 @@ enum CommandDispatch {
         let stepHasTargetFlag = args.contains { TargetOptions.targetFlagNames.contains($0) }
         let targetArgs = stepHasTargetFlag ? [] : sharedTargetArgs
         var stepArgs = args
-        if cmd == "documents", !stepArgs.contains("--json") { stepArgs.append("--json") }
+        if cmdParts == ["documents"], !stepArgs.contains("--json") { stepArgs.append("--json") }
         return cmdParts + stepArgs + targetArgs
     }
 

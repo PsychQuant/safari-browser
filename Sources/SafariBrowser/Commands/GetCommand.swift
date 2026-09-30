@@ -68,8 +68,9 @@ struct GetText: AsyncParsableCommand {
     func run() async throws {
         // #220: `--first-match` used to be dropped here — `resolveProfileScoped` resolves only
         // for `--profile`, and the reads below take no `firstMatch` — so an ambiguous target
-        // threw although the flag was given, unlike every other `get`. Resolve once to a
-        // concrete tab (one warning, one enumeration) when it is given without a profile.
+        // threw although the flag was given. `get value|attr|count|box` honour it; `get html`
+        // has the same defect as this command had (its own issue). Resolve once to a concrete
+        // tab (one warning, one enumeration) when it is given without a profile.
         let documentTarget: SafariBridge.TargetDocument
         if target.firstMatch, target.profile == nil {
             documentTarget = try await SafariBridge.resolveToConcreteTarget(

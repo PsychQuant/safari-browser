@@ -65,6 +65,20 @@ actor VariableStore {
         return result
     }
 
+    /// Whether `input` holds a `$name` reference that `substitute` would replace (a `\\$` is a
+    /// literal). Used by the exec pre-flight (#220): the arguments it judges are the ones written
+    /// in the script, and a step whose arguments depend on a variable has no shape until it runs.
+    static func hasReference(_ input: String) -> Bool {
+        let chars = Array(input)
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "\\", i + 1 < chars.count, chars[i + 1] == "$" { i += 2; continue }
+            if chars[i] == "$", i + 1 < chars.count, chars[i + 1].isLetter || chars[i + 1] == "_" { return true }
+            i += 1
+        }
+        return false
+    }
+
     private func isIdentStart(_ c: Character) -> Bool {
         c.isLetter || c == "_"
     }
@@ -80,12 +94,16 @@ enum ScriptDispatchError: Error, Equatable {
     case undefinedVariable(String)
     case invalidCondition(String)
     case unsupportedInExec(String)
+    /// #220: the command is supported in-process, but the step's arguments are not a shape the
+    /// in-process dispatcher runs exactly as the CLI command would.
+    case unsupportedArguments(String)
 
     var code: String {
         switch self {
         case .undefinedVariable: return "undefinedVariable"
         case .invalidCondition: return "invalidCondition"
         case .unsupportedInExec: return "unsupportedInExec"
+        case .unsupportedArguments: return "unsupportedArguments"
         }
     }
 
@@ -95,6 +113,9 @@ enum ScriptDispatchError: Error, Equatable {
         case .invalidCondition(let msg): return msg
         case .unsupportedInExec(let cmd):
             return "command '\(cmd)' is not yet available in exec scripts"
+        case .unsupportedArguments(let cmd):
+            return "step '\(cmd)' has arguments the in-process dispatcher does not run exactly as the CLI command would; "
+                + "run the script without the daemon (the same script then runs each step as its own command)"
         }
     }
 }

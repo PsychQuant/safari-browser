@@ -40,28 +40,52 @@ struct ExecCommand: AsyncParsableCommand {
                 source = readStdinAsString()
             }
 
-            // Section 10 v2 of `script-exec-command`: when daemon is opt-in
-            // active AND every step in the script uses an in-process-supported
-            // command, send the entire script as a single `exec.runScript`
-            // request. This eliminates per-step subprocess + socket-handshake
-            // overhead from the client path. Otherwise (daemon off, or any
-            // step uses an unsupported command) fall through to the local
-            // interpreter which uses the SubprocessStepDispatcher.
-            // An older daemon cannot pace in-process steps. Choose the known
-            // per-step CLI boundary before sending any batch; each child can
-            // still use the ordinary daemon router and its compiled cache.
-            if !pacingEnabled, SafariBridge.shouldUseDaemonAuto(),
-               let parsed = try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps),
-               Self.allStepsRunInProcess(parsed),
-               let results = try await runViaDaemon(steps: parsed) {
-                print(results)
-                return
-            }
-
-            let interpreter = ScriptInterpreter(maxSteps: maxSteps)
-            let results = try await interpreter.run(source: source, target: target)
-            printResults(results)
+            try await execute(
+                source: source, pacingEnabled: pacingEnabled, daemonOptedIn: SafariBridge.shouldUseDaemonAuto(),
+                viaDaemon: { try await runViaDaemon(steps: $0) })
         }
+    }
+
+    /// The part of `run()` after the script is read (#220). `viaDaemon` is the daemon request,
+    /// injected so a test can see whether `run()` sends a script there or runs it locally.
+    ///
+    /// Section 10 v2 of `script-exec-command`: when daemon is opt-in active AND every step in the
+    /// script can run in-process — its command is supported and its arguments are a shape the
+    /// dispatcher honours exactly, with no variable reference — send the entire script as a single
+    /// `exec.runScript` request. This eliminates per-step subprocess + socket-handshake overhead
+    /// from the client path. Otherwise (daemon off, or any step cannot run in-process) fall through
+    /// to the local interpreter which uses the SubprocessStepDispatcher.
+    /// An older daemon cannot pace in-process steps. Choose the known per-step CLI boundary before
+    /// sending any batch; each child can still use the ordinary daemon router and its compiled cache.
+    func execute(
+        source: String, pacingEnabled: Bool, daemonOptedIn: Bool,
+        viaDaemon: ([ScriptStep]) async throws -> String?
+    ) async throws {
+        if case .daemon(let parsed) = Self.route(
+            source: source, maxSteps: maxSteps, pacingEnabled: pacingEnabled, daemonOptedIn: daemonOptedIn),
+           let results = try await viaDaemon(parsed) {
+            print(results)
+            return
+        }
+
+        let interpreter = ScriptInterpreter(maxSteps: maxSteps)
+        let results = try await interpreter.run(source: source, target: target)
+        printResults(results)
+    }
+
+    /// Where a script runs (#220). Pure, so the decision `run()` makes is testable: the whole
+    /// script goes to the daemon only when pacing is off, the daemon is opted in, the script
+    /// parses, and every step can run in-process.
+    enum Route: Equatable {
+        case daemon([ScriptStep])
+        case subprocess
+    }
+
+    static func route(source: String, maxSteps: Int, pacingEnabled: Bool, daemonOptedIn: Bool) -> Route {
+        guard !pacingEnabled, daemonOptedIn,
+              let parsed = try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps),
+              allStepsRunInProcess(parsed) else { return .subprocess }
+        return .daemon(parsed)
     }
 
     /// Returns true when every step is one the in-process dispatcher runs exactly as
@@ -71,6 +95,10 @@ struct ExecCommand: AsyncParsableCommand {
     /// script whose steps would partially fail, or quietly differ, in the daemon path.
     static func allStepsRunInProcess(_ steps: [ScriptStep]) -> Bool {
         for step in steps {
+            // A step whose arguments name a variable has no shape until it runs (`$code` may
+            // become `-1`), and a refusal at run time comes after earlier steps have already run
+            // and cannot fall back — so such a step is not sent to the daemon (#220).
+            if step.args.contains(where: VariableStore.hasReference) { return false }
             if !InProcessStepDispatcher.runsInProcess(cmd: step.cmd, args: step.args) {
                 return false
             }

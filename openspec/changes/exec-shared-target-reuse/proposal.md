@@ -25,4 +25,4 @@
 ## Impact
 
 - `InProcessStepDispatcher.swift`、`SafariBridge.swift`（`verifyResolvedTab`）、`DaemonDispatch.swift`（`--mark-tab` 的解析帶 profile）、`PreCompiledScripts.swift` 及測試。
-- subprocess 路徑（每步一個子行程）不變。
+- subprocess 路徑（每步一個子行程）：#220 之後有更多腳本走這條路（任何步驟不是 in-process 認得的形狀，或參數引用變數），且 `documents` 步驟改跑 `documents --json`（原本是文字清單；空清單原本輸出空字串，現在是 `[]`）。

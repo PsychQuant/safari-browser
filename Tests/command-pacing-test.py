@@ -98,6 +98,9 @@ class CommandPacingTests(unittest.TestCase):
     def test_paced_exec_selects_steps_before_any_batch_rpc(self):
         with tempfile.TemporaryDirectory(prefix='sb-pace-', dir='/tmp') as directory:
             missing = str(Path(directory, 'owned-does-not-exist.js'))
+            # `js --file` is not a shape the in-process dispatcher runs exactly as the CLI does
+            # (#220), so this script always runs as children; each child fails at the missing
+            # file before it could touch Safari. That makes it the fixture for the paced mode.
             steps = [
                 {'cmd': 'js', 'args': ['--file', missing], 'onError': 'continue'},
                 {'cmd': 'js', 'args': ['--file', missing], 'onError': 'continue'},
@@ -105,28 +108,49 @@ class CommandPacingTests(unittest.TestCase):
             ]
             source = Path(directory, 'steps.json')
             source.write_text(json.dumps(steps))
+            # Every step has a shape the in-process dispatcher honours, so with pacing off the whole
+            # script is one batch RPC; nothing runs as a child, so Safari is never touched.
+            batchable = Path(directory, 'batchable.json')
+            batchable.write_text(json.dumps([
+                {'cmd': 'get url'}, {'cmd': 'get title'}, {'cmd': 'get url', 'if': '$absent exists'},
+            ]))
             daemon = OwnedBatchDaemon(directory)
             try:
-                for mode in ['cauchy', 'off']:
-                    with self.subTest(mode=mode):
-                        env = environment(directory, mode)
-                        env['SAFARI_BROWSER_DAEMON'] = '1'
-                        before = len(daemon.requests)
-                        start = time.monotonic()
-                        result = subprocess.run([BIN, 'exec', '--script', str(source)], env=env,
-                                                capture_output=True, timeout=5)
-                        elapsed = time.monotonic() - start
-                        self.assertEqual(result.returncode, 0, result.stderr.decode())
-                        output = json.loads(result.stdout)
-                        if mode == 'cauchy':
-                            self.assertEqual(len(daemon.requests) - before, 0, 'Paced exec must not send batch RPC')
-                            self.assertEqual([row['status'] for row in output], ['error', 'error', 'skipped'])
-                            self.assertGreaterEqual(elapsed, .14, 'Two eligible child commands must each wait')
-                            self.assertNotIn(b'daemon fallback', result.stderr)
-                        else:
-                            self.assertEqual(len(daemon.requests) - before, 1)
-                            self.assertEqual(daemon.requests[-1]['method'], 'exec.runScript')
-                            self.assertEqual([row['value'] for row in output], ['owned-batch'] * 3)
+                env = environment(directory, 'cauchy')
+                env['SAFARI_BROWSER_DAEMON'] = '1'
+                with self.subTest(mode='cauchy'):
+                    before = len(daemon.requests)
+                    start = time.monotonic()
+                    result = subprocess.run([BIN, 'exec', '--script', str(source)], env=env,
+                                            capture_output=True, timeout=5)
+                    elapsed = time.monotonic() - start
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    output = json.loads(result.stdout)
+                    self.assertEqual(len(daemon.requests) - before, 0, 'Paced exec must not send batch RPC')
+                    self.assertEqual([row['status'] for row in output], ['error', 'error', 'skipped'])
+                    self.assertGreaterEqual(elapsed, .14, 'Two eligible child commands must each wait')
+                    self.assertNotIn(b'daemon fallback', result.stderr)
+                env = environment(directory, 'off')
+                env['SAFARI_BROWSER_DAEMON'] = '1'
+                with self.subTest(mode='off, batchable script'):
+                    before = len(daemon.requests)
+                    result = subprocess.run([BIN, 'exec', '--script', str(batchable)], env=env,
+                                            capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    output = json.loads(result.stdout)
+                    self.assertEqual(len(daemon.requests) - before, 1)
+                    self.assertEqual(daemon.requests[-1]['method'], 'exec.runScript')
+                    self.assertEqual([row['value'] for row in output[:2]], ['owned-batch'] * 2)
+                with self.subTest(mode='off, a step the dispatcher would misread'):
+                    # The pre-flight looks at the arguments, not just the command (#220): one
+                    # step it cannot honour sends the whole script to the subprocess path.
+                    before = len(daemon.requests)
+                    result = subprocess.run([BIN, 'exec', '--script', str(source)], env=env,
+                                            capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    output = json.loads(result.stdout)
+                    self.assertEqual(len(daemon.requests) - before, 0, 'no batch RPC for a script with `js --file`')
+                    self.assertEqual([row['status'] for row in output], ['error', 'error', 'skipped'])
             finally:
                 daemon.close()
 

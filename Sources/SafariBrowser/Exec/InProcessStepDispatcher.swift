@@ -6,11 +6,12 @@ import Foundation
 /// handler so the entire client-daemon interaction is one socket round
 /// trip; per-step subprocess overhead is eliminated.
 ///
-/// In-process: `js`, `documents`, `get url`, `get title`, `get text`,
+/// In-process (only for the argument shapes `runsInProcess` accepts, #220): `js`, `documents`, `get url`, `get title`, `get text`,
 /// `get source` (`supportedCommands`). Any other command throws
-/// `unsupportedInExec`, and the client runs a script containing one through
-/// the subprocess path; `screenshot` / `pdf` / `upload` are unsupported on
-/// that path too.
+/// `unsupportedInExec`, and a supported command with arguments outside those
+/// shapes throws `unsupportedArguments`; the client runs a script containing
+/// either through the subprocess path (`screenshot` / `pdf` / `upload` are
+/// unsupported on that path too).
 struct InProcessStepDispatcher: StepDispatcher {
     /// #170: the shared exec target, resolved once per exec run and verified
     /// before each reuse. A new dispatcher is created for every
@@ -83,8 +84,8 @@ struct InProcessStepDispatcher: StepDispatcher {
         "get source",
     ]
 
-    /// Returns true when `cmd` is in `supportedCommands` so callers can
-    /// pre-flight a script before sending to the daemon.
+    /// Whether `cmd` is one of the in-process commands. Not enough to run a step in-process:
+    /// see `runsInProcess`, which also looks at the arguments (#220).
     static func isSupported(_ cmd: String) -> Bool {
         supportedCommands.contains(cmd)
     }
@@ -98,6 +99,9 @@ struct InProcessStepDispatcher: StepDispatcher {
     /// (the client pre-flights with this; the dispatcher enforces it too, before resolving).
     static func runsInProcess(cmd: String, args: [String]) -> Bool {
         guard supportedCommands.contains(cmd) else { return false }
+        // A target flag with no value after it is a parse error in a child and would be
+        // skipped over by `stripTargetFlags` here.
+        if let last = args.last, TargetOptions.targetFlagNames.contains(last) { return false }
         let hasTargetFlag = args.contains { TargetOptions.targetFlagNames.contains($0) }
         if args.contains("--first-match"), !hasTargetFlag { return false }
         let rest = stripTargetFlags(args)
@@ -137,7 +141,7 @@ struct InProcessStepDispatcher: StepDispatcher {
             throw ScriptDispatchError.unsupportedInExec("js: missing code argument")
         }
         guard Self.runsInProcess(cmd: cmd, args: args) else {
-            throw ScriptDispatchError.unsupportedInExec("\(cmd): arguments this dispatcher does not honour")
+            throw ScriptDispatchError.unsupportedArguments(cmd)
         }
 
         let target = try Self.parseTargetOptions(from: effectiveTargetArgs)
