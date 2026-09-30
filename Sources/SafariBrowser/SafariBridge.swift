@@ -1405,11 +1405,12 @@ enum SafariBridge {
         """
     }
 
-    /// #79: does this error mean the identity-anchored target dangled
-    /// (window closed / tab moved / guard tripped) — i.e. a bounded
-    /// re-resolve is worth one attempt? Pure; drives the retry decision.
-    /// The AppleScript error number at the end of an error text, as both
-    /// runners print it: `… (-1728)` (#218). Nil when there is none.
+    /// The AppleScript error number at the end of an error text, as the runners
+    /// print it: `… (-1728)` (#218). `osascript` always ends its text with it;
+    /// the daemon's `CompileCache.describe` appends it when `NSAppleScript`
+    /// supplies one. Nil when there is none. The one definition of "the code"
+    /// that every classifier below uses, so a body that merely mentions a
+    /// number (a URL, a page title) cannot pass for one.
     static func appleScriptErrorCode(in message: String) -> Int? {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasSuffix(")"), let open = trimmed.lastIndex(of: "(") else { return nil }
@@ -1422,6 +1423,9 @@ enum SafariBridge {
         return code == -1719 || code == -1728
     }
 
+    /// #79: does this error mean the identity-anchored target dangled
+    /// (window closed / tab moved / guard tripped) — i.e. a bounded
+    /// re-resolve is worth one attempt? Pure; drives the retry decision.
     static func isTargetDangleError(_ error: SafariBrowserError) -> Bool {
         switch error {
         case .appleScriptFailed(let msg):
@@ -1433,8 +1437,12 @@ enum SafariBridge {
             // scope — JSCommand throws them after readback — so this is
             // defense in depth, keeping the predicate safe for any caller.)
             if msg.contains("JavaScript error:") { return false }
-            // Guard trip (our sentinel) or invalid-index on a dangled ref.
-            return msg.contains("SB_TARGET_CHANGED") || msg.contains("-1719") || msg.contains("-1728")
+            // Guard trip (our sentinel; the regex pre-check throws it from
+            // Swift with no code) or invalid-index / object-not-found on a
+            // dangled ref, decided by the trailing code like the not-found
+            // translation (#218 verify R2: two definitions of "the code" gave
+            // different answers on the same text).
+            return msg.contains("SB_TARGET_CHANGED") || isObjectNotFound(msg)
         case .documentNotFound:
             // runTargetedAppleScript translates -1719/-1728 on non-default
             // targets into documentNotFound before we see it.

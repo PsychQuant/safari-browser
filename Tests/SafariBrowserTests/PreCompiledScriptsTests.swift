@@ -174,8 +174,8 @@ final class PreCompiledScriptsTests: XCTestCase {
     }
 
     func testNotFoundIsDecidedByTheCodeAlone() {
-        for text in ["6:14: execution error: Safari發生錯誤：無法取得「window 2」。 (-1728)",   // osascript, zh-TW
-                     "Safari got an error: Can’t get tab 9 of window id 101. Invalid index. (-1719)"] {
+        for text in ["6:14: execution error: Safari發生錯誤：無法取得「window 2」。 (-1728)",   // constructed: osascript prefix, zh-TW body
+                     "Safari got an error: Can’t get tab 9 of window id 101. Invalid index. (-1719)"] {   // daemon shape
             XCTAssertTrue(SafariBridge.isObjectNotFound(text), text)
         }
         for text in ["Can’t get window 2.", "無法取得「window 2」。", "Can't get it (-2700)", "broken (-2700)"] {
@@ -183,20 +183,46 @@ final class PreCompiledScriptsTests: XCTestCase {
         }
     }
 
+    func testOnlyTheTrailingCodeCounts() {
+        // A body that mentions -1728 or -1719 but ends in another code is not
+        // "not found": the number in the text is content (a URL, a title), not
+        // the error number. Both classifiers must agree on every one of these.
+        let mentionsButEndsElsewhere = ["body -1728 text (-10006)",
+                                        "Can’t make -1719 into type text (-1700)",
+                                        "x -1728 y (-2700)",
+                                        "Can’t get https://example.com/item-1728. (-1700)"]
+        for text in mentionsButEndsElsewhere {
+            XCTAssertFalse(SafariBridge.isObjectNotFound(text), text)
+            XCTAssertFalse(SafariBridge.isTargetDangleError(.appleScriptFailed(text)), text)
+        }
+        let endsWithTheCode = ["Can’t get window id 5. (-1728)", "6:14: execution error: Invalid index. (-1719)\n",
+                               "Safari發生錯誤：無法取得「window id 999999」。 (-1728)"]
+        for text in endsWithTheCode {
+            XCTAssertTrue(SafariBridge.isObjectNotFound(text), text)
+            XCTAssertTrue(SafariBridge.isTargetDangleError(.appleScriptFailed(text)), text)
+        }
+        // The guard sentinel has no code by design and still counts as a dangle.
+        XCTAssertTrue(SafariBridge.isTargetDangleError(.appleScriptFailed("SB_TARGET_CHANGED")))
+    }
+
     func testADaemonShapedMissingWindowIsTranslatedToDocumentNotFound() async throws {
         // End to end through the bridge: the cached runner's error for a
         // missing window reaches runTargetedAppleScript's translation.
         let cache = PreCompiledScripts.CompileCache()
+        // A request context of its own: without one the process-wide dialog
+        // probe runs, which inspects the user's live Safari from a unit test.
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         do {
-            _ = try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
-                if source.contains("set windowCount to count of windows") { return "" }
-                return try await DaemonDispatch.Handlers.cachedScriptText(
-                    source: #"error "Can’t get window 2." number -1728"#, cache: cache)
-            }) {
-                try await SafariBridge.getCurrentURL(target: .windowIndex(2))
+            _ = try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+                    if source.contains("set windowCount to count of windows") { return "" }
+                    return try await DaemonDispatch.Handlers.cachedScriptText(
+                        source: #"error "Can’t get window 2." number -1728"#, cache: cache)
+                }) {
+                    try await SafariBridge.getCurrentURL(target: .windowIndex(2))
+                }
             }
             XCTFail("the window does not exist")
         } catch SafariBrowserError.documentNotFound {}
     }
 }
-
