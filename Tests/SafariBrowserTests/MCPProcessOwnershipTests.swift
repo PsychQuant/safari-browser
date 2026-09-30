@@ -66,11 +66,24 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
     /// pass, the fixture considers that pass due. The converse can fail by
     /// microseconds, and then the fixture waits for an exit that has not been
     /// caused yet; that costs one bounded wait and the next pass corrects it.
-    /// A read BEFORE `retire` had neither property (verify R2: about 2% of
-    /// in-process runs under contention missed the pass). As a backstop, a pass
-    /// that starts with the leader already exited and still reserved joins the
-    /// member before calling `retire`, which covers a product whose grace is
-    /// shorter than the 150 ms copied below.
+    /// A read BEFORE `retire` had neither property (a reviewer saw 6 misses in
+    /// 300 in-process runs; two later attempts on other loads saw 0 in 300 and
+    /// 0 in 750). As a backstop, a pass that starts with the leader already
+    /// exited and still reserved joins the member before calling `retire`. The
+    /// backstop narrows the window but does not close it: it is a check
+    /// followed by `retire`'s own observation, and the exit can become visible
+    /// between the two. With the product's grace shortened to 0.10 s or less a
+    /// reviewer measured 2 to 4 misses in 150 runs, reported as a `Fixture:`
+    /// failure. The 150 ms below is a hand-copied fact about the product
+    /// (MCPWorkerSupervisor.swift); if that grace changes, this fixture is the
+    /// place to update. Closing the window needs the product to expose whether
+    /// the first KILL was sent; the product is not changed here.
+    ///
+    /// The property this test cannot observe from outside, that one retirement
+    /// pass kills a late member before it releases the leader, is not
+    /// asserted here. The step-driven `MCPWorkerSupervisorTests`
+    /// `testRetirementKillsAnOwnedMemberThatJoinsAfterTheFirstKill` covers the
+    /// staging deterministically: no runner callback, no fixture race.
     ///
     /// What this proves from outside: the member joined the leader's group
     /// while the leader was reserved (a reaped leader leaves no group, and
@@ -169,8 +182,11 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
             do {
                 // Backstop: an earlier pass sent the KILL and the leader has
                 // exited while still reserved. Join now, before this pass reaps it.
-                let requested = fixture.lock.withLock { fixture.joinRequested }
-                if !requested, try leader.observe() == .exited {
+                // Only after a product pass has run: a leader that died before any
+                // signal was not killed by the product, and joining it would blur
+                // a fixture premise into a product assertion.
+                let (requested, productPassRan) = fixture.lock.withLock { (fixture.joinRequested, fixture.firstPass != nil) }
+                if !requested, productPassRan, try leader.observe() == .exited {
                     fixture.note("leader exited between passes, still reserved")
                     join(leader)
                 }
@@ -202,8 +218,12 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
         let python = URL(fileURLWithPath: "/usr/bin/python3")
         // cleanupTimeout counts from the start of retirement, and the fixture
         // blocks the runner's queue for up to 0.5 s twice; 3 s leaves room for
-        // that without relaxing what retirement must achieve (max accepted: 5 s).
-        // The 0.6 s timeout bounds the leader's own interpreter start-up.
+        // that. This loosens the time bound this test enforces (it was 1 s), so
+        // a retirement that takes up to 3 s passes here; the criteria retirement
+        // must meet are unchanged (Sources/ is identical to main), and the time
+        // bound is held by `MCPProcessRunnerTests.testTimeoutAndCancellationKillOwnedDescendants`
+        // and the `MCPWorkerSupervisorTests`. The 0.6 s timeout bounds the
+        // leader's own interpreter start-up.
         let runner = MCPProcessRunner(executable: python, workerPrefix: ["-c"], supervisorExecutable: python,
             timeout: 0.6, cleanupTimeout: 3, lifecycle: lifecycle)
         let result = await runner.run(arguments: ["import os,signal; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('started',flush=True); os.kill(os.getpid(),signal.SIGSTOP)"],
@@ -239,8 +259,9 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
     }
 
     /// `SAFARI_BROWSER_LATE_JOIN_REPEAT=N` repeats the scenario N times inside
-    /// this one process (scripts/stress-late-join.sh), which is the form that
-    /// exercises the retirement-pass timing; one process per run does not.
+    /// this one process (scripts/stress-late-join.sh). Whether that mode
+    /// discriminates depends on the machine: one reviewer saw misses of the
+    /// old fixture in it, two other attempts did not.
     func testOneShotRetirementKillsARealLateJoiningMember() async throws {
         let environment = ProcessInfo.processInfo.environment["SAFARI_BROWSER_LATE_JOIN_REPEAT"]
         let repeats = max(1, environment.flatMap { Int($0) } ?? 1)
@@ -267,6 +288,9 @@ final class MCPProcessOwnershipTests: XCTestCase, @unchecked Sendable {
             if run.cleanup != nil || run.result.failure?.contains("pending") == true {
                 return XCTFail("\(label)Retirement never killed the leader (\(evidence))")
             }
+            // This also reports a product that stopped keeping its reservation in the
+            // pass that first sends the KILL; `MCPWorkerSupervisorTests` (the
+            // step-driven `…JoinsAfterTheFirstKill`) fails first in that case.
             return XCTFail("\(label)Fixture: no retirement pass left the leader exited but still reserved for the fixture to observe (\(evidence))")
         case .joinFailed(let why):
             return XCTFail("\(label)Fixture: the member could not join the still-reserved group (\(why)): \(evidence)")
