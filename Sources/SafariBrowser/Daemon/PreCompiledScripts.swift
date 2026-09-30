@@ -1,10 +1,11 @@
 import Foundation
 
 /// Catalog of AppleScript source blocks that the daemon pre-compiles into
-/// `NSAppleScript` objects and holds in memory for the lifetime of the
-/// daemon process. This is the main latency win of the persistent-daemon
-/// change: a warm request path reuses the already-compiled handle instead
-/// of spawning a fresh `osascript` subprocess.
+/// `NSAppleScript` objects and holds in memory, up to `CompileCache`'s bound
+/// (256 sources, least recently used evicted; #170). This is the main latency
+/// win of the persistent-daemon change: a warm request path reuses the
+/// already-compiled handle instead of spawning a fresh `osascript`
+/// subprocess.
 ///
 /// Task 3.1 scope (infrastructure + seed templates):
 ///
@@ -13,7 +14,8 @@ import Foundation
 ///   throw `.missingPlaceholder` so callers fail loudly instead of leaving
 ///   a raw `{{TOKEN}}` in the AppleScript.
 /// - `CompileCache` compiles on miss on the main actor and caches by source
-///   string. Identical rendered sources reuse the same handle.
+///   string, at most 256 of them. Identical rendered sources reuse the same
+///   handle.
 /// - `known` registers three Phase 1 seed templates (`activateWindow`,
 ///   `enumerateWindows`, `runJSInCurrentTab`); the remaining 4–7 templates
 ///   mentioned in design.md will be ported from `SafariBridge.swift` in

@@ -23,7 +23,7 @@ The subprocess path resolves the exec-level target inside every step's own comma
 
 - **WHEN** the exec-level target is `--url plaud` but step 2's `args` include `["--window", "2"]`
 - **THEN** step 2 SHALL resolve window 2 and dispatch against that target
-- **AND** steps 0, 1, and 3+ SHALL continue using the exec-level resolution, each subject to the check before reuse
+- **AND** the first step that needs the exec-level target SHALL resolve it, and each later step that uses it SHALL be subject to the check before reuse
 
 #### Scenario: resolved tab no longer matches
 
@@ -42,6 +42,12 @@ The subprocess path resolves the exec-level target inside every step's own comma
 - **THEN** that step SHALL resolve afresh and report the ambiguous match
 - **AND** SHALL NOT dispatch against the tab resolved before the failure
 
+#### Scenario: `--first-match` is decided at each resolution
+
+- **WHEN** a daemon exec run has `--url plaud --first-match`, several tabs match, and 3 steps dispatch while the resolved tab keeps matching
+- **THEN** the first match in window and tab order SHALL be resolved once, at the first step
+- **AND** steps 2 and 3 SHALL reuse it after the check
+
 #### Scenario: position-based targets resolve every step
 
 - **WHEN** a daemon exec run's exec-level target is `--document 2`, `--window 1`, or `--profile Work` alone, and 3 steps dispatch
@@ -50,7 +56,9 @@ The subprocess path resolves the exec-level target inside every step's own comma
 
 ### Requirement: Daemon-routed execution when available
 
-When command pacing is disabled and a daemon is detected per the standard daemon opt-in rules (see `persistent-daemon` capability), the `exec` command SHALL open one daemon connection, send a single `exec.runScript` request containing the full step array plus the exec-level target arguments, and receive the result array. When the daemon is unavailable, or a step's command cannot run in-process, the command SHALL execute through the subprocess path: every step runs as its own command, which resolves the exec-level target itself. For the same script and the same Safari state, the subprocess path SHALL produce a byte-identical result array to the daemon path, where the same Safari state means that the set of tabs the exec-level target matches does not change while the script runs. When that set changes mid-run, the two paths MAY differ in exactly one way: when more than one tab matches a URL target at a later step and the resolved position (window and tab index) still shows a matching URL, the daemon path dispatches against that position, which can by then hold a different tab, while the subprocess path reports the ambiguous match, or with `--first-match` takes the first match. A resolved position that stops matching is resolved afresh on both paths.
+When command pacing is disabled and a daemon is detected per the standard daemon opt-in rules (see `persistent-daemon` capability), the `exec` command SHALL open one daemon connection, send a single `exec.runScript` request containing the full step array plus the exec-level target arguments, and receive the result array. When the daemon is unavailable, or a step's command cannot run in-process, the command SHALL execute through the subprocess path: every step runs as its own command, which resolves the exec-level target itself and rides the daemon when the daemon opt-in is active.
+
+For the same script and the same Safari state, both paths SHALL resolve the exec-level target to the same tab. Their result arrays are not byte-identical in exactly these five cases, a closed list that SHALL NOT be extended by resemblance: (1) a `documents` step: pretty-printed JSON on the daemon path, a text list from the subprocess path; (2) a failing step's `error.code` and message: the typed error on the daemon path, `appleScriptFailed` carrying the child's stderr from the subprocess path; (3) a `get text` step with a selector argument: the daemon path ignores the selector and returns the page text; (4) a step whose only target flag is `--first-match`: the daemon path drops it and the subprocess path honours it; (5) the multi-match warning: written to stderr by the subprocess path only. When the set of tabs the exec-level target matches changes mid-run, the paths MAY additionally differ in one way: when more than one tab matches a URL target at a later step and the resolved position (window and tab index) still shows a matching URL, the daemon path dispatches against that position, which can by then hold a different tab, while the subprocess path reports the ambiguous match, or with `--first-match` takes the first match. A resolved position that stops matching is resolved afresh on both paths.
 
 #### Scenario: daemon path shares one connection
 
@@ -58,18 +66,18 @@ When command pacing is disabled and a daemon is detected per the standard daemon
 - **THEN** only one socket connection SHALL be opened for the lifetime of the `exec` invocation
 - **AND** no per-step connection overhead SHALL appear in telemetry
 
-#### Scenario: daemon unavailable triggers stateless fallback
+#### Scenario: daemon unavailable triggers the subprocess fallback
 
 - **WHEN** the daemon opt-in signals indicate a daemon mode but the socket is missing
 - **THEN** a single `[daemon fallback: <reason>]` warning SHALL appear on stderr
 - **AND** the script SHALL execute through the subprocess path
-- **AND** when the tabs the exec-level target matches do not change during the run, the result array SHALL be byte-identical to what the daemon path would produce
+- **AND** when the tabs the exec-level target matches do not change during the run, the subprocess path SHALL resolve the exec-level target to the same tab the daemon path would
 
 #### Scenario: a second matching tab appears mid-run
 
 - **WHEN** an exec run with `--url plaud` has dispatched step 1 against the only matching tab, and a second tab starts matching `plaud` before step 2 while the first still matches
 - **THEN** the daemon path SHALL dispatch step 2 against the tab it resolved
-- **AND** the subprocess path SHALL report the ambiguous match for step 2
+- **AND** the subprocess path SHALL report the ambiguous match for step 2, or with `--first-match` take the first match
 
 When command pacing is enabled, the client SHALL choose the existing subprocess-per-step interpreter before transmitting any batch request. Each eligible child command SHALL perform its own pacing and SHALL retain the existing per-command daemon routing. The client SHALL NOT send `exec.runScript` in this mode, SHALL NOT add an outer batch wait, and SHALL NOT select this path as a retry after a transmitted request. Disabled pacing SHALL preserve the existing batch optimization.
 
@@ -82,3 +90,19 @@ When command pacing is enabled, the client SHALL choose the existing subprocess-
 #### Scenario: Explicit off restores batching
 - **WHEN** `SAFARI_BROWSER_PACING=off` and the script qualifies for the existing daemon batch route
 - **THEN** the client SHALL use the original single-request batch route without pacing waits
+
+## ADDED Requirements
+
+### Requirement: Exec-level `--profile` applies to target resolution and to `documents`
+
+On the daemon path, an exec-level `--profile` SHALL restrict target resolution to windows of that profile, so that a target that exists only in another profile is not found, and SHALL restrict the result of a `documents` step to that profile, as `documents --profile` does. Before this requirement the flag was parsed on the daemon path and not applied.
+
+#### Scenario: the profile restricts the shared target
+
+- **WHEN** a daemon exec run has `--url plaud --profile Work` and the only tab matching `plaud` is in a window of another profile
+- **THEN** the step SHALL fail with the not-found error of that resolution
+
+#### Scenario: the profile restricts `documents`
+
+- **WHEN** a daemon exec run has `--profile Work` and contains a `documents` step, and Safari has windows of profiles `Work` and `Home`
+- **THEN** the step result SHALL list only the tabs of the `Work` profile

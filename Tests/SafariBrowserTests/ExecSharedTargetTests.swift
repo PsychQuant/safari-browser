@@ -24,8 +24,6 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         var scripts: [String] { lock.lock(); defer { lock.unlock() }; return sent }
         var enumerations: Int { scripts.filter { $0.contains("set windowCount to count of windows") }.count }
         var verifications: Int { scripts.filter { $0.contains("SB_TARGET_CHANGED") && $0.contains("return \"ok\"") }.count }
-        /// The regex form of the check: a bare URL read of the resolved tab.
-        var urlReads: Int { scripts.filter { $0.hasPrefix("tell application \"Safari\" to get URL of tab ") }.count }
         func navigate(window: Int, tab: Int, to url: String) {
             lock.withLock { if let i = windows.firstIndex(where: { $0.id == 100 + window }) { windows[i].tabs[tab - 1] = url } }
         }
@@ -218,8 +216,11 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
 
     @MainActor  // NSAppleScript is created and compiled on the main actor (#130)
     func testTheVerificationScriptCompilesWithAHostilePattern() async throws {
-        // The pattern reaches AppleScript as a string literal; quotes,
-        // backslashes, line breaks, tabs and non-ASCII text must not end it early.
+        // The pattern reaches AppleScript as a string literal. The compile check
+        // only proves the payload cannot break out of it (a raw line break is
+        // legal inside a literal, so it cannot see a missing control-character
+        // escape); the exact expected text below is written out by hand so the
+        // escaping is not compared with itself.
         final class Captured: @unchecked Sendable { var script = "" }
         let captured = Captured()
         let hostile = "a\"b\\c\nd\re\tf 日本語 é 😀\" & (do shell script \"echo pwned\") & \""
@@ -228,7 +229,8 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
                                                                   rematch: .contains(hostile), profile: nil))
         }
         XCTAssertTrue(ok)
-        XCTAssertTrue(captured.script.contains("does not contain \"\(hostile.escapedForAppleScript)\""), captured.script)
+        let expected = "does not contain \"a\\\"b\\\\c\\nd\\re\\tf 日本語 é 😀\\\" & (do shell script \\\"echo pwned\\\") & \\\"\""
+        XCTAssertTrue(captured.script.contains(expected), "expected \(expected) in:\n\(captured.script)")
         let script = try XCTUnwrap(NSAppleScript(source: captured.script))
         var error: NSDictionary?
         XCTAssertTrue(script.compileAndReturnError(&error), "\(String(describing: error))")
@@ -410,5 +412,82 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(all, 6)
         XCTAssertEqual(mine, 6)
         XCTAssertEqual(nobody, 0)
+    }
+
+
+    // MARK: - Verify R4: case, first-match, profile, and the forms with nothing to check by
+
+    func testTheVerificationScriptComparesCaseSensitively() async throws {
+        // AppleScript compares strings case-insensitively unless told otherwise,
+        // while the matcher the target was resolved with is case-sensitive.
+        // The fake cannot show this, so the shipped script text is pinned.
+        let matchers: [SafariBridge.UrlMatcher] = [.contains("Foo"), .exact("https://x.example/Foo"), .endsWith("Foo")]
+        for matcher in matchers {
+            final class Captured: @unchecked Sendable { var script = "" }
+            let captured = Captured()
+            _ = try await DaemonRequestContext.$appleScriptRunner.withValue({ captured.script = $0; return "ok" }) {
+                try await SafariBridge.verifyResolvedTab(.resolvedTab(windowID: 101, tabInWindow: 1, rematch: matcher, profile: nil))
+            }
+            let script = captured.script
+            let considering = try XCTUnwrap(script.range(of: "considering case"), script)
+            let comparison = try XCTUnwrap(script.range(of: "(URL of _t)"), script)
+            let end = try XCTUnwrap(script.range(of: "end considering"), script)
+            XCTAssertTrue(considering.lowerBound < comparison.lowerBound && comparison.lowerBound < end.lowerBound,
+                          "\(matcher): the comparison must sit inside `considering case`:\n\(script)")
+        }
+    }
+
+    func testFirstMatchIsDecidedAtTheSharedResolutionAndReused() async throws {
+        // Every fake tab matches "example"; `--first-match` picks the first in
+        // window and tab order, once, and later steps reuse it after the check.
+        let fake = Fake()
+        let urls = try await run([("get url", []), ("get url", []), ("get url", [])],
+                                 shared: ["--url", "example", "--first-match"], on: fake)
+        XCTAssertEqual(urls, Array(repeating: "https://w1.example/1", count: 3))
+        XCTAssertEqual(fake.enumerations, 1)
+        XCTAssertEqual(fake.verifications, 2)
+    }
+
+    func testWithoutFirstMatchTheSameAmbiguousTargetIsRejected() async {
+        let fake = Fake()
+        do {
+            _ = try await run([("get url", [])], shared: ["--url", "example"], on: fake)
+            XCTFail("six tabs match")
+        } catch SafariBrowserError.ambiguousWindowMatch {
+        } catch {
+            XCTFail("expected ambiguousWindowMatch, got \(error)")
+        }
+    }
+
+    func testAURLTargetWithAProfileIsStillReused() async throws {
+        let fake = Fake()
+        let urls = try await run([("get url", []), ("get url", []), ("get url", [])],
+                                 shared: ["--url", "w1.example/2", "--profile", "個人"], on: fake)
+        XCTAssertEqual(urls, Array(repeating: "https://w1.example/2", count: 3))
+        XCTAssertEqual(fake.enumerations, 1)
+        XCTAssertEqual(fake.verifications, 2)
+    }
+
+    func testNoCheckIsMadeForTargetFormsWithNothingToCheckBy() async {
+        // `--document`, `--tab`, `--window`, `--window --tab-in-window`,
+        // `--profile` alone and no flag name no URL, so there is nothing a
+        // check could confirm: none of them issues the guard script. Whether a
+        // step succeeds against the fake is not the point, so errors are ignored.
+        let forms: [[String]] = [["--document", "2"], ["--tab", "2"], ["--window", "1"],
+                                 ["--window", "1", "--tab-in-window", "2"], ["--profile", "個人"], []]
+        for shared in forms {
+            let fake = Fake()
+            let dispatcher = InProcessStepDispatcher()
+            let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+            await DaemonRequestContext.$current.withValue(context) {
+                await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                    for _ in 1...3 { _ = try? await dispatcher.dispatch(cmd: "get url", args: [], sharedTargetArgs: shared) }
+                }
+            }
+            XCTAssertEqual(fake.verifications, 0, "\(shared): no check before reuse")
+            if shared.first == "--document" || shared.first == "--tab" || shared == ["--profile", "個人"] {
+                XCTAssertEqual(fake.enumerations, 3, "\(shared): resolved afresh for each of the 3 steps")
+            }
+        }
     }
 }
