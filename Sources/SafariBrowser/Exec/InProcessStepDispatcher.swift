@@ -99,9 +99,18 @@ struct InProcessStepDispatcher: StepDispatcher {
     /// (the client pre-flights with this; the dispatcher enforces it too, before resolving).
     static func runsInProcess(cmd: String, args: [String]) -> Bool {
         guard supportedCommands.contains(cmd) else { return false }
-        // A target flag with no value after it is a parse error in a child and would be
-        // skipped over by `stripTargetFlags` here.
-        if let last = args.last, TargetOptions.targetFlagNames.contains(last) { return false }
+        // A target flag needs a value that is not another option: a child's parser reads
+        // `--url --first-match` as a flag missing its value, while `stripTargetFlags` here would
+        // take `--first-match` for the value.
+        var index = 0
+        while index < args.count {
+            if TargetOptions.targetFlagNames.contains(args[index]) {
+                guard index + 1 < args.count, !args[index + 1].hasPrefix("-") else { return false }
+                index += 2
+            } else {
+                index += 1
+            }
+        }
         let hasTargetFlag = args.contains { TargetOptions.targetFlagNames.contains($0) }
         if args.contains("--first-match"), !hasTargetFlag { return false }
         let rest = stripTargetFlags(args)
@@ -137,9 +146,6 @@ struct InProcessStepDispatcher: StepDispatcher {
         // A step that cannot run in-process must not pay for a resolution
         // first, nor report a resolution error instead of its own (verify R2).
         guard Self.supportedCommands.contains(cmd) else { throw ScriptDispatchError.unsupportedInExec(cmd) }
-        if cmd == "js", cmdArgs.first == nil {
-            throw ScriptDispatchError.unsupportedInExec("js: missing code argument")
-        }
         guard Self.runsInProcess(cmd: cmd, args: args) else {
             throw ScriptDispatchError.unsupportedArguments(cmd)
         }

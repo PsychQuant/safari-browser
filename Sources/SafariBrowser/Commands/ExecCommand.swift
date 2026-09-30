@@ -59,7 +59,8 @@ struct ExecCommand: AsyncParsableCommand {
     /// sending any batch; each child can still use the ordinary daemon router and its compiled cache.
     func execute(
         source: String, pacingEnabled: Bool, daemonOptedIn: Bool,
-        viaDaemon: ([ScriptStep]) async throws -> String?
+        viaDaemon: ([ScriptStep]) async throws -> String?,
+        note: (String) -> Void = { FileHandle.standardError.write(Data($0.utf8)) }
     ) async throws {
         if case .daemon(let parsed) = Self.route(
             source: source, maxSteps: maxSteps, pacingEnabled: pacingEnabled, daemonOptedIn: daemonOptedIn),
@@ -68,6 +69,11 @@ struct ExecCommand: AsyncParsableCommand {
             return
         }
 
+        // Only the daemon wraps a run in the tab-ownership marker; a script that runs step by step
+        // does not mark the tab, and a marker that was asked for must not fail without a word (#220).
+        if target.markTabResolved() != .off {
+            note("note: the tab-ownership marker (--mark-tab, --mark-tab-persist or SAFARI_BROWSER_MARK_TAB) is applied only when the daemon runs the whole script; this script runs each step as its own command (a step is outside the shapes the daemon runs in-process, pacing is on, or the daemon is not in use), so the tab is not marked.\n")
+        }
         let interpreter = ScriptInterpreter(maxSteps: maxSteps)
         let results = try await interpreter.run(source: source, target: target)
         printResults(results)
@@ -95,10 +101,11 @@ struct ExecCommand: AsyncParsableCommand {
     /// script whose steps would partially fail, or quietly differ, in the daemon path.
     static func allStepsRunInProcess(_ steps: [ScriptStep]) -> Bool {
         for step in steps {
-            // A step whose arguments name a variable has no shape until it runs (`$code` may
-            // become `-1`), and a refusal at run time comes after earlier steps have already run
-            // and cannot fall back — so such a step is not sent to the daemon (#220).
-            if step.args.contains(where: VariableStore.hasReference) { return false }
+            // A step with an argument that begins with a variable has no shape until it runs
+            // (`$code` may become `-1`), and a refusal at run time comes after earlier steps have
+            // already run and cannot fall back — so such a step is not sent to the daemon (#220).
+            // A reference after the first character cannot change the shape.
+            if step.args.contains(where: VariableStore.beginsWithReference) { return false }
             if !InProcessStepDispatcher.runsInProcess(cmd: step.cmd, args: step.args) {
                 return false
             }

@@ -114,10 +114,39 @@ class CommandPacingTests(unittest.TestCase):
             batchable.write_text(json.dumps([
                 {'cmd': 'get url'}, {'cmd': 'get title'}, {'cmd': 'get url', 'if': '$absent exists'},
             ]))
+            # The same in-process shapes, every step guarded by a false `if`: it routes to the daemon
+            # exactly when `run()` passes the wrong pacing or opt-in to the route, and when it does
+            # not, the children run nothing, so Safari is never touched.
+            guarded = Path(directory, 'guarded.json')
+            guarded.write_text(json.dumps([
+                {'cmd': 'get url', 'if': '$absent exists'}, {'cmd': 'get title', 'if': '$absent exists'},
+                {'cmd': 'js', 'args': ['1+1'], 'if': '$absent exists'},
+            ]))
             daemon = OwnedBatchDaemon(directory)
             try:
                 env = environment(directory, 'cauchy')
                 env['SAFARI_BROWSER_DAEMON'] = '1'
+                with self.subTest(mode='cauchy, a script that would otherwise be one batch'):
+                    # `run()` must read the pacing setting and hand it to the route: with pacing on
+                    # this script is NOT sent (a `pacingEnabled: false` in `run()` sends it).
+                    before = len(daemon.requests)
+                    result = subprocess.run([BIN, 'exec', '--script', str(guarded)], env=env,
+                                            capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    self.assertEqual([row['status'] for row in json.loads(result.stdout)], ['skipped'] * 3)
+                    self.assertEqual(len(daemon.requests) - before, 0, 'Paced exec must not send batch RPC')
+                with self.subTest(mode='no daemon signal at all'):
+                    # `run()` must read the daemon opt-in: with none of the three signals set, nothing
+                    # connects and nothing says `daemon fallback` (a `daemonOptedIn: true` would try).
+                    other = environment(directory, 'off')
+                    other['SAFARI_BROWSER_NAME'] = 'nobody'
+                    before = len(daemon.requests)
+                    result = subprocess.run([BIN, 'exec', '--script', str(guarded)], env=other,
+                                            capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    self.assertEqual([row['status'] for row in json.loads(result.stdout)], ['skipped'] * 3)
+                    self.assertEqual(len(daemon.requests) - before, 0)
+                    self.assertNotIn(b'daemon fallback', result.stderr)
                 with self.subTest(mode='cauchy'):
                     before = len(daemon.requests)
                     start = time.monotonic()
