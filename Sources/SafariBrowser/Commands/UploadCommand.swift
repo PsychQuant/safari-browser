@@ -147,8 +147,9 @@ struct UploadCommand: AsyncParsableCommand {
         // --js explicitly selects JS DataTransfer path. Size cap already
         // enforced at validate() time.
         if js {
-            // #51: scope to --profile via a concrete target (10 MB JS path).
-            let scoped = try await target.resolveProfileScoped()
+            // #51: scope to --profile via a concrete target (10 MB JS path); #231: and honour
+            // --first-match, once, instead of once per chunk.
+            let scoped = try await target.resolveFirstMatchOnce()
             try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
@@ -179,7 +180,7 @@ struct UploadCommand: AsyncParsableCommand {
                 Grant Accessibility permission in System Settings → Privacy & Security → Accessibility
                 to enable fast native file dialog upload.\n
             """.utf8))
-        let scoped = try await target.resolveProfileScoped()
+        let scoped = try await target.resolveFirstMatchOnce()
         try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 

@@ -367,12 +367,18 @@ struct TargetOptions: ParsableArguments {
     /// `resolveProfileScoped`, and `--first-match` honoured (#220, #231). `resolveProfileScoped`
     /// resolves to a concrete tab only for `--profile`; for a command whose reads take no
     /// `firstMatch`, an ambiguous `--url` therefore threw although the flag was given. Given
-    /// `--first-match` and no `--profile`, resolve once to a concrete tab here — one
-    /// enumeration, one warning — and let every later read follow that tab.
-    func resolveFirstMatchOnce() async throws -> SafariBridge.TargetDocument {
-        if firstMatch, profile == nil {
+    /// `--first-match` and no `--profile`, a URL-pattern target is resolved once here to a concrete
+    /// tab — one enumeration, one warning — and every later read follows that tab. Every other
+    /// combination is exactly what `resolveProfileScoped` returns: the flag is a no-op without a
+    /// URL-matching flag (`document-targeting`), and with `--profile` the profile-scoped
+    /// resolution already carries it. `warnWriter` receives the multi-match warning.
+    func resolveFirstMatchOnce(
+        warnWriter: @escaping (String) -> Void = TargetOptions.stderrWarnWriter
+    ) async throws -> SafariBridge.TargetDocument {
+        let named = resolve()
+        if firstMatch, profile == nil, case .urlMatch = named {
             return try await SafariBridge.resolveToConcreteTarget(
-                resolve(), firstMatch: true, warnWriter: Self.stderrWarnWriter, profile: nil)
+                named, firstMatch: true, warnWriter: warnWriter, profile: nil)
         }
         return try await resolveProfileScoped()
     }

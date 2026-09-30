@@ -30,13 +30,13 @@ struct ErrorsCommand: AsyncParsableCommand {
                         };
                     }
                 })()
-                """, target: documentTarget, profile: profile)
+                """, target: documentTarget, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
         } else if clear {
-            _ = try await SafariBridge.doJavaScript("window.__sbErrors = []", target: documentTarget, profile: profile)
+            _ = try await SafariBridge.doJavaScript("window.__sbErrors = []", target: documentTarget, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
         } else {
             let result = try await SafariBridge.doJavaScript(
                 "(window.__sbErrors || []).join('\\n')",
-                target: documentTarget, profile: profile
+                target: documentTarget, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile
             )
             if !result.isEmpty {
                 print(result)
