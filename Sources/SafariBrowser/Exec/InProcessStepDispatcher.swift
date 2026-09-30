@@ -63,6 +63,9 @@ struct InProcessStepDispatcher: StepDispatcher {
                 lock.withLock { cached = nil }
             }
             let target = try await resolver()
+            // A request cancelled while it resolved caches and dispatches nothing
+            // (verify R7, Codex).
+            try Task.checkCancellation()
             lock.withLock { cached = (args, target) }
             return target
         }

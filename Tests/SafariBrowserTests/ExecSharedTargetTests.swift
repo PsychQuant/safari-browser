@@ -709,4 +709,33 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         }
         XCTAssertEqual(counts.resolutions, 0)
     }
+
+
+    func testAResolutionThatFinishesAfterCancellationIsNotCachedOrReturned() async {
+        final class Counts: @unchecked Sendable { var resolutions = 0 }
+        let counts = Counts()
+        let resolution = InProcessStepDispatcher.SharedTargetResolution()
+        let args = ["--url", "x"]
+        let tab = SafariBridge.TargetDocument.resolvedTab(windowID: 101, tabInWindow: 2, rematch: .contains("x"), profile: nil)
+        let task = Task { () -> SafariBridge.TargetDocument in
+            try await resolution.resolve(args: args, verify: { _ in true }) {
+                counts.resolutions += 1
+                withUnsafeCurrentTask { $0?.cancel() }      // cancelled while it resolved
+                return tab
+            }
+        }
+        do {
+            _ = try await task.value
+            XCTFail("the request was cancelled while it resolved")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        // Nothing was cached: the next request-shaped call has to resolve afresh.
+        let again = try? await resolution.resolve(args: args, verify: { _ in XCTFail("nothing cached to verify"); return true }) {
+            counts.resolutions += 1; return tab
+        }
+        XCTAssertNotNil(again)
+        XCTAssertEqual(counts.resolutions, 2)
+    }
 }
