@@ -233,7 +233,7 @@ final class TargetIdentityTests: XCTestCase {
 
     func testTargetTabChangedErrorDescriptionIsActionable() {
         let error = SafariBrowserError.targetTabChanged(
-            expected: "URL containing \"plaud\"", actualURL: "https://other.com")
+            expected: "URL containing \"plaud\"", actualURL: RedactedURL("https://other.com"))
         let desc = error.errorDescription ?? ""
         XCTAssertTrue(desc.contains("plaud"))
         XCTAssertTrue(desc.contains("documents"), "should point at `safari-browser documents` for re-discovery")

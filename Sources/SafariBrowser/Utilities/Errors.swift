@@ -104,7 +104,8 @@ enum SafariBrowserError: LocalizedError {
     case unsupportedURLScheme(url: String, scheme: String)
     case axOperationFailed(String)
     case windowIdentityAmbiguous(reason: String)
-    case targetTabChanged(expected: String, actualURL: String?)
+    /// #227: `actualURL` is a `RedactedURL`, so the payload cannot hold a URL with its query.
+    case targetTabChanged(expected: String, actualURL: RedactedURL?)
 
     var errorDescription: String? {
         switch self {
@@ -120,7 +121,7 @@ enum SafariBrowserError: LocalizedError {
             // (window closed, or the tab moved/navigated within its window)
             // and one automatic re-resolve did not find it again.
             // #227: another tab's URL, shown without its query.
-            let actualLine = actualURL.map { "Target position now shows: \(URLText.redactURL($0))\n" } ?? ""
+            let actualLine = actualURL.map { "Target position now shows: \($0.text)\n" } ?? ""
             return """
                 Target tab changed mid-command: expected \(expected), but the tab no longer matches after one automatic re-resolve.
                 \(actualLine)The window may have closed, or the tab moved/navigated during execution.
@@ -161,7 +162,7 @@ enum SafariBrowserError: LocalizedError {
                 (The flag is supported and did run — this is a targeting miss, not an unknown option.)
                 Available documents:
                 \(listing)
-                \(availableDocuments.isEmpty ? "" : "(URLs are shown without their query or fragment; `safari-browser documents` prints them in full.)\n")\(SafariBrowserError.targetingHint(for: pattern))
+                \(availableDocuments.isEmpty ? "" : "(URLs are shown shortened — a query, fragment, credentials, path parameters or a long tail is replaced by `…`; `safari-browser documents` prints them in full.)\n")\(SafariBrowserError.targetingHint(for: pattern))
                 """
         case .elementNotScrollable(let selector):
             // #77: the element matched but carries no overflow, so scrollBy
@@ -240,7 +241,7 @@ enum SafariBrowserError: LocalizedError {
             return """
                 Multiple Safari windows match "\(pattern)":
                 \(listing)
-                (URLs are shown without their query or fragment; `safari-browser documents` prints them in full.)
+                (URLs are shown shortened — a query, fragment, credentials, path parameters or a long tail is replaced by `…`; `safari-browser documents` prints them in full.)
                 Disambiguate by:
                   1. Use a more specific --url substring (e.g., "plaud.ai/file/abc" instead of "plaud"); the part that differs may be in the query, which `safari-browser documents` shows.
                   2. Use --window N --tab-in-window M, with the window and tab numbers listed above, to target a specific tab by position (with --profile, N counts only that profile's windows, whatever number is listed).
@@ -691,7 +692,7 @@ extension SafariBrowserError {
             Hint: --url matches a *substring* of the URL, not the whole URL, and not the title —
                   no tab's URL contained this text. Refine it against the URLs above (shown without
                   their query or fragment — `safari-browser documents` prints them in full, and an
-                  entry copied with its `?…` or `#…` marker matches none of --url, --url-exact or
+                  entry copied with a `…` marker (`?…`, `#…`, `…@`, `;…`) matches none of --url, --url-exact or
                   --url-endswith), or target positionally with --window N --tab-in-window M
                   (coordinates are shown per entry; with --profile, N counts only that profile's
                   windows), or --document N for the [N] index. For stricter matching see

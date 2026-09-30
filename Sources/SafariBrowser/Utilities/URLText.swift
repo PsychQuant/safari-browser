@@ -39,6 +39,19 @@ enum URLText {
     /// What is NOT recognisable as a secret stays: a token that is a path segment
     /// (`/reset/<token>`) is indistinguishable from a path that identifies the tab.
     static func redactURL(_ url: String) -> String {
+        // Applied until it stops changing (at most a few times), so that the result is a fixed
+        // point: the cap can cut inside a `;…` marker or drop the `://` a step relied on, and one
+        // more pass would then change the text again.
+        var current = redactOnce(url)
+        for _ in 0..<4 {
+            let next = redactOnce(current)
+            if next == current { break }
+            current = next
+        }
+        return current
+    }
+
+    private static func redactOnce(_ url: String) -> String {
         var scalars = Array(url.unicodeScalars)
         if let scheme = scheme(of: scalars), payloadSchemes.contains(scheme.lowercased()) {
             return scheme + ":…"
@@ -57,8 +70,10 @@ enum URLText {
 
     /// The leading run of a URL up to its first `:`, when it is shaped like a scheme.
     private static func scheme(of scalars: [Unicode.Scalar]) -> String? {
-        guard let colon = scalars.firstIndex(of: ":"), colon > 0 else { return nil }
-        let head = scalars[..<colon]
+        // A URL parser ignores leading C0 controls and spaces, so `" data:…"` is a data: URL.
+        let start = scalars.firstIndex(where: { $0.value > 0x20 }) ?? scalars.count
+        guard let colon = scalars[start...].firstIndex(of: ":"), colon > start else { return nil }
+        let head = scalars[start..<colon]
         guard let first = head.first, first.properties.isAlphabetic, first.isASCII,
               head.allSatisfy({ $0.isASCII && ($0.properties.isAlphabetic || ("0"..."9").contains($0) || $0 == "+" || $0 == "-" || $0 == ".") })
         else { return nil }
@@ -99,8 +114,11 @@ enum URLText {
     /// `/app/page;jsessionid=ABC/next` → `/app/page;…/next`: a `;` in the path starts a parameter
     /// that runs to the next `/`. The authority is left alone; a text without one is all path.
     private static func removingPathParameters(_ scalars: [Unicode.Scalar]) -> [Unicode.Scalar] {
+        // The outer authority is there only when the text opens with `scheme://`; a `://` further
+        // in belongs to a URL inside the path, and everything before it is path.
         var start = 0
-        if let separator = nextSchemeSeparator(in: scalars, from: 0) {
+        if let separator = nextSchemeSeparator(in: scalars, from: 0), scalars.firstIndex(of: ":") == separator,
+           scheme(of: Array(scalars[..<(separator + 1)])) != nil {
             start = scalars[(separator + 3)...].firstIndex(of: "/") ?? scalars.count
         }
         var output = Array(scalars[..<start])
@@ -117,4 +135,15 @@ enum URLText {
         }
         return output
     }
+}
+
+/// A tab URL that cannot be carried unredacted: the only way to make one is from a raw URL, which
+/// is redacted on the way in (#227). An error payload that holds one — `targetTabChanged` does —
+/// therefore prints only what may be shown, in `"\(error)"` (which a daemon's wire error and log
+/// line use) as well as in `errorDescription`, and a producer cannot pass a raw string by mistake:
+/// there is no string-literal conversion.
+struct RedactedURL: Equatable, Sendable, CustomStringConvertible {
+    let text: String
+    init(_ raw: String) { text = URLText.redactURL(raw) }
+    var description: String { text }
 }

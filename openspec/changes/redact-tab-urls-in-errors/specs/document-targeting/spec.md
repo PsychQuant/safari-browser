@@ -19,7 +19,7 @@ The `?`/`#` cut SHALL NOT depend on the URL having a hierarchical form (`about:b
 5. the note that `js` writes to stderr when the code navigated the page;
 6. the error `upload` raises when the page navigated away during the upload.
 
-The redaction SHALL be applied where the error's payload is built, not only where it is rendered, because a daemon's wire error and the `error` field of its log line print the payload rather than the rendered description. **One exception, stated rather than left to be found:** `targetTabChanged` carries a URL in its payload only when a producer supplies one, and every producer today supplies none; its rendering redacts it, and a producer that supplies one SHALL pass it through the same redaction where it builds it (a test fails otherwise). Labels around the URL (such as `window 1 [Work]:`, tab counts, `(unknown)`) SHALL be unchanged, except that the candidates of `ambiguousWindowMatch` gain their tab number, `[window N tab M]`, because with the query removed it is what tells two tabs of one window apart.
+The redaction SHALL be applied where the error's payload is built, as well as (not instead of) where it is rendered, because a daemon's wire error and the `error` field of its log line print the payload rather than the rendered description. `targetTabChanged` carries its URL as a `RedactedURL`, a type that redacts what it is built from and has no string-literal conversion, so its payload cannot hold an unredacted URL and no producer can pass one. Labels around the URL (such as `window 1 [Work]:`, tab counts, `(unknown)`) SHALL be unchanged, except that the candidates of `ambiguousWindowMatch` gain their tab number, `[window N tab M]`, because with the query removed it is what tells two tabs of one window apart. The messages that list URLs SHALL say that they are shown shortened and that `safari-browser documents` prints them in full.
 
 Not covered, and not by analogy: the person's own input (the `--url` pattern and the description of what was expected); the output of `documents`, `tabs` and `cloud-tabs`, which the person asks for directly; the `result` field of a daemon's log line, which records what a command returned (#230); and the URLs of resources a command fetches or a page loads (`save-image` download errors, for example), which are a different class and are tracked separately (#229). A secret that is part of the path (a reset link `/reset/<token>`, a webhook path) is not recognisable as one and is shown, because the host and path are what identify a tab; only what can be recognised is removed (a query, a fragment, credentials, path parameters, a data payload).
 
@@ -49,7 +49,7 @@ Not covered, and not by analogy: the person's own input (the `--url` pattern and
 
 - **WHEN** `upload --js` finds the page at another URL after a chunk, and the two URLs are `https://app.example/a?token=SECRET` and `https://app.example/b?token=SECRET`
 - **THEN** the error names `https://app.example/a?…` and `https://app.example/b?…` and not the token
-- **AND** when the two look the same once redacted (`.../a?token=A…` and `.../a?token=B…`), the error says that they differ in a part that is not shown
+- **AND** when the two look the same once redacted (the raw URLs `https://app.example/a?token=A…` and `https://app.example/a?token=B…` both become `https://app.example/a?…`), the error says that they differ in a part that is not shown
 
 #### Scenario: credentials and non-hierarchical URLs
 
@@ -63,12 +63,12 @@ Not covered, and not by analogy: the person's own input (the `--url` pattern and
 
 #### Scenario: a very long URL
 
-- **WHEN** a tab's URL has more than 200 scalars of scheme, host and path
-- **THEN** the listing shows the first 199 of them followed by `…`, and a query after them is still shown as `?…`
+- **WHEN** a tab's URL, after the other rules have been applied, has more than 200 scalars of scheme, host and path
+- **THEN** the listing shows the first 199 scalars of what is left after the other rules, followed by `…`, and a query after them is still shown as `?…`
 
-#### Scenario: a URL without a query
+#### Scenario: a URL with nothing to remove
 
-- **WHEN** a listed tab's URL has no query, fragment or credentials
+- **WHEN** a listed tab's URL has no query, fragment, credentials or path parameters, is not a `data:` or `javascript:` URL and is not longer than 200 scalars
 - **THEN** it is shown exactly as it is
 
 #### Scenario: a delimiter followed by a combining mark

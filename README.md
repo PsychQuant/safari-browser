@@ -950,10 +950,10 @@ URL matching is case-sensitive (AppleScript's native behavior).
 Substring match — no regex — so `--url plaud` matches any URL containing
 "plaud". If no document matches, you get a `documentNotFound` error
 whose description lists every currently open document so you can fix
-the pattern (URLs are listed without their query or fragment, since a query
-can be a credential, and without credentials, path parameters such as
-`;jsessionid=…`, and `data:` / `javascript:` content; `safari-browser
-documents` prints them in full).
+the pattern (URLs are listed shortened, since a query can be a credential: a
+query or fragment, credentials, path parameters such as `;jsessionid=…`,
+`data:` / `javascript:` content and a long tail are replaced by `…`;
+`safari-browser documents` prints them in full).
 
 ```bash
 # Storage targeting (#23) — critical for per-origin tokens

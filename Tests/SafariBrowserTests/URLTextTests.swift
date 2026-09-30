@@ -95,6 +95,74 @@ final class URLTextTests: XCTestCase {
         XCTAssertEqual(URLText.redactURL(atTheCap), atTheCap, "a URL of exactly the cap is shown whole")
     }
 
+    /// The outer authority is there only when the text opens with `scheme://`. A `://` further in
+    /// belongs to a URL inside the path, and what comes before it is path — parameters included.
+    func testPathParametersBeforeAnEmbeddedURLAreReplacedToo() {
+        XCTAssertEqual(URLText.redactURL("file:/app;jsessionid=SECRET/https://host.example/x"), "file:/app;…/https://host.example/x")
+        XCTAssertEqual(URLText.redactURL("about:blank;jsessionid=SECRET/https://x.example/p"), "about:blank;…/https://x.example/p")
+        XCTAssertEqual(URLText.redactURL("https://a.example/app;x=https://u:SECRET@h.example/"), "https://a.example/app;…//…@h.example/",
+                       "credentials are removed before parameters are: swapping the order loses the nested authority")
+        XCTAssertEqual(URLText.redactURL("https://proxy.example/fetch/https://user;x=1:SECRET@host.example/p"), "https://proxy.example/fetch/https://…@host.example/p")
+    }
+
+    /// A URL parser ignores leading C0 controls and spaces, so those do not hide a payload URL.
+    func testLeadingWhitespaceDoesNotHideAPayloadScheme() {
+        for lead in [" ", "\t", "\n", "\r\n ", "\u{0}"] {
+            XCTAssertEqual(URLText.redactURL(lead + "data:text/plain,SECRET"), "data:…", lead.debugDescription)
+            XCTAssertEqual(URLText.redactURL(lead + "javascript:alert('SECRET')"), "javascript:…", lead.debugDescription)
+        }
+        XCTAssertEqual(URLText.redactURL(" https://a.example/p?x=1"), " https://a.example/p?…", "an ordinary URL keeps what it had")
+    }
+
+    /// The cap, by its number and not by the constant the code holds: 200 shown at most, 199 of
+    /// the text and the `…` that says something was cut.
+    func testTheCapIsTwoHundredScalars() {
+        XCTAssertEqual(URLText.maxLength, 200)
+        let base = "https://a.example/"
+        let atTwoHundred = base + String(repeating: "p", count: 200 - base.count)
+        XCTAssertEqual(URLText.redactURL(atTwoHundred), atTwoHundred, "exactly 200 is shown whole")
+        let cut = URLText.redactURL(atTwoHundred + "p")
+        XCTAssertEqual(cut.unicodeScalars.count, 200)
+        XCTAssertEqual(String(cut.unicodeScalars.dropLast()), String(atTwoHundred.unicodeScalars.prefix(199)))
+        XCTAssertTrue(cut.hasSuffix("…"))
+    }
+
+    /// The redaction is a fixed point. The two ways it used to fail: the cap cut right after a
+    /// `;…` marker, and the cap dropped the `://` the parameter step had used to find the authority.
+    func testRedactionIsAFixedPointOnTheKnownCounterexamples() {
+        let inputs = [
+            "https://a.example/" + String(repeating: "p", count: 179) + ";jsessionid=SECRET/x",
+            "https://a.example/" + String(repeating: "k", count: 179) + ";x=1/next",
+            "file:/app;jsessionid=SECRET/" + String(repeating: "x", count: 220) + "/https://host/x",
+            "about:a@b.example;…/a;b=SECRET/x://h/",
+        ]
+        for input in inputs {
+            let once = URLText.redactURL(input)
+            XCTAssertEqual(URLText.redactURL(once), once, input)
+            XCTAssertFalse(once.contains("SECRET"), once)
+        }
+    }
+
+    /// A seeded sweep over URL-shaped and random strings, most of them near the cap.
+    func testRedactionIsAFixedPointOverASeededSweep() {
+        var state: UInt64 = 0x9E3779B97F4A7C15
+        func next(_ bound: Int) -> Int {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return Int((state >> 33) % UInt64(bound))
+        }
+        let alphabet = Array("htps:/@;?#=…ab1 .-\u{0301}")
+        let heads = ["https://a.example/", "file:/", "about:blank", "https://u:p@h.example/x", "data:x", "", "https://p.example/https://q:r@s.example/"]
+        for _ in 0..<6000 {
+            var text = heads[next(heads.count)]
+            let length = next(4) == 0 ? next(60) : 150 + next(90)
+            for _ in 0..<length { text.unicodeScalars.append(alphabet[next(alphabet.count)].unicodeScalars.first!) }
+            let once = URLText.redactURL(text)
+            if URLText.redactURL(once) != once {
+                return XCTFail("not a fixed point: \(text.debugDescription) -> \(once.debugDescription) -> \(URLText.redactURL(once).debugDescription)")
+            }
+        }
+    }
+
     func testRedactionIsIdempotent() {
         let long = "https://a.example/" + String(repeating: "p", count: 500)
         for url in ["https://a.example/p?sig=SECRET", "https://u:p@a.example/x#f", "about:blank#x", "https://a.example/p",
@@ -239,11 +307,47 @@ final class URLTextTests: XCTestCase {
         XCTAssertTrue(sameLooking.hasSuffix("Upload aborted."), sameLooking)
     }
 
-    func testTargetTabChangedRedactsItsURLAtRenderingToo() {
-        let text = SafariBrowserError.targetTabChanged(expected: "url contains \"cdn\"", actualURL: "https://cdn.example.org/f.pdf?k=\(secret)").errorDescription ?? ""
-        XCTAssertFalse(text.contains(secret), text)
+    /// `targetTabChanged` carries its URL as a `RedactedURL`, which redacts what it is built from:
+    /// a raw string cannot get into the payload, so what `"\(error)"` (a daemon's wire error and log
+    /// line) prints and what `errorDescription` prints are both redacted.
+    /// The upload's navigation check, driven for real: a fake page whose URL changes after the
+    /// first read, and a file large enough (11 chunks) for the check that runs every 10 chunks.
+    /// What reaches the person is the error built from the redacted URLs.
+    func testTheUploadNavigationBranchReportsRedactedURLs() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("upload-nav-\(UUID().uuidString).bin").path
+        try Data(repeating: 0x41, count: 1_650_000).write(to: URL(fileURLWithPath: file))
+        defer { try? FileManager.default.removeItem(atPath: file) }
+        final class Reads: @unchecked Sendable {
+            private let lock = NSLock(); private var n = 0
+            func next() -> Int { lock.withLock { n += 1; return n } }
+        }
+        let reads = Reads()
+        let secret = self.secret
+        let runner: @Sendable (String) async throws -> String = { script in
+            guard script.contains("location.href.split") else { return "" }
+            return reads.next() == 1 ? "https://app.example/a?token=A\(secret)" : "https://app.example/b?token=B\(secret)"
+        }
+        var command = try UploadCommand.parse(["input", file, "--js"])
+        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        do {
+            try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue(runner) { try await command.run() }
+            }
+            XCTFail("the page navigated: the upload must abort")
+        } catch {
+            assertNoSecret(error, "upload navigated away")
+            XCTAssertTrue("\(error)".contains("was: https://app.example/a?…, now: https://app.example/b?…"), "\(error)")
+        }
+    }
+
+    func testTargetTabChangedCannotCarryAnUnredactedURL() {
+        let error = SafariBrowserError.targetTabChanged(
+            expected: "url contains \"cdn\"", actualURL: RedactedURL("https://cdn.example.org/f.pdf?k=\(secret)#\(secret)"))
+        assertNoSecret(error, "targetTabChanged")
+        let text = error.errorDescription ?? ""
         XCTAssertTrue(text.contains("Target position now shows: https://cdn.example.org/f.pdf?…"), text)
         XCTAssertTrue(text.contains("url contains \"cdn\""), "the expectation is the person's own pattern: \(text)")
+        XCTAssertEqual(RedactedURL("https://a.example/p?x=1").text, "https://a.example/p?…")
         XCTAssertNoThrow(SafariBrowserError.targetTabChanged(expected: "x", actualURL: nil).errorDescription)
     }
 
@@ -278,12 +382,12 @@ final class URLTextTests: XCTestCase {
                 XCTFail("\(label): expected a miss")
             } catch SafariBrowserError.documentNotFound(let pattern, let listing) {
                 let text = SafariBrowserError.documentNotFound(pattern: pattern, availableDocuments: listing).errorDescription ?? ""
-                XCTAssertTrue(text.contains("URLs are shown without their query or fragment"), "\(label): \(text)")
+                XCTAssertTrue(text.contains("URLs are shown shortened"), "\(label): \(text)")
             }
         }
         // Nothing listed, nothing shortened.
         let empty = SafariBrowserError.documentNotFound(pattern: "x", availableDocuments: []).errorDescription ?? ""
-        XCTAssertFalse(empty.contains("URLs are shown without"), empty)
+        XCTAssertFalse(empty.contains("URLs are shown shortened"), empty)
     }
 
     func testURLsWithoutAQueryAreRenderedAsBefore() {
@@ -310,7 +414,7 @@ final class URLTextTests: XCTestCase {
         XCTAssertTrue(hint.contains("without"), hint)
         // A copied entry with its marker fails every URL matcher, not only --url-exact.
         let flat = hint.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        XCTAssertTrue(flat.contains("`?…` or `#…` marker matches none of --url, --url-exact or --url-endswith"), hint)
+        XCTAssertTrue(flat.contains("`…` marker (`?…`, `#…`, `…@`, `;…`) matches none of --url, --url-exact or --url-endswith"), hint)
     }
 
     /// `--window N` counts the windows of the `--profile` when there is one, while the listings
@@ -341,7 +445,7 @@ final class URLTextTests: XCTestCase {
     /// files that build these errors, warnings and notes without going through `URLText`, so the
     /// omission has to be a visible decision. Comment lines are skipped.
     func testEveryInterpolationOfATabURLInTheErrorBuildingFilesGoesThroughTheRedaction() throws {
-        let interpolatedURL = try NSRegularExpression(pattern: #"\\\([^)]*\.url\b"#)
+        let interpolatedURL = try NSRegularExpression(pattern: #"\\\(.*\.url\b"#)
         for file in ["SafariBridge.swift", "Commands/JSCommand.swift", "Commands/UploadCommand.swift", "Utilities/Errors.swift"] {
             for (number, line) in try source(file).split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
                 let text = String(line)
@@ -355,27 +459,13 @@ final class URLTextTests: XCTestCase {
 
     /// The count is the number of places that show a tab URL, so removing one is a failure too.
     func testTheNumberOfRedactionSitesIsWhatWasReviewed() throws {
-        let counts = [("SafariBridge.swift", 11), ("Commands/JSCommand.swift", 1), ("Commands/UploadCommand.swift", 2), ("Utilities/Errors.swift", 2)]
+        let counts = [("SafariBridge.swift", 11), ("Commands/JSCommand.swift", 1), ("Commands/UploadCommand.swift", 2), ("Utilities/Errors.swift", 1)]
         for (file, expected) in counts {
             let found = try source(file).components(separatedBy: "URLText.redactURL(").count - 1
             XCTAssertEqual(found, expected, "\(file): a redaction site was added or removed — decide it, then update this count")
         }
     }
 
-    /// `targetTabChanged` carries a URL in its payload, and a daemon prints the payload. Every
-    /// producer passes none today; one that passes one must redact it where it builds it.
-    func testEveryTargetTabChangedProducerPassesNoURLOrARedactedOne() throws {
-        let producer = try NSRegularExpression(pattern: #"SafariBrowserError\.targetTabChanged\(\s*expected:[^,]+,\s*actualURL:\s*([^\s)]+)"#)
-        var found = 0
-        let files = try XCTUnwrap(FileManager.default.enumerator(at: sourcesRoot, includingPropertiesForKeys: nil))
-        for case let file as URL in files where file.pathExtension == "swift" {
-            let text = try String(contentsOf: file, encoding: .utf8)
-            for match in producer.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-                found += 1
-                let argument = String(text[try XCTUnwrap(Range(match.range(at: 1), in: text))])
-                XCTAssertTrue(argument == "nil" || argument.hasPrefix("URLText.redactURL"), "\(file.lastPathComponent): actualURL: \(argument)")
-            }
-        }
-        XCTAssertGreaterThanOrEqual(found, 3, "the scan found no producers — the pattern no longer matches the code")
-    }
+    // The `targetTabChanged` payload needs no tripwire: its URL is a `RedactedURL`, which has no
+    // string-literal conversion, so a producer cannot pass a raw string (it does not compile).
 }
