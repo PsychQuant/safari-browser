@@ -35,6 +35,12 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         var javaScriptDelay: TimeInterval = 0
         /// #221: seconds a whole-window URL read takes (a poll of `wait --for-url`).
         var windowURLReadDelay: TimeInterval = 0
+        /// #221: seconds the Nth whole-window URL read takes (index 0 is the first poll); later
+        /// reads take `windowURLReadDelay`.
+        var windowURLReadDelays: [TimeInterval] = []
+        /// #221: raised by every whole-window URL read (a poll), after its delay.
+        var windowURLReadError: Error?
+        private var urlPolls = 0
         /// #221: what a `wait --js` poll answers (`"true"` makes the condition hold); empty otherwise.
         var waitJavaScriptAnswer = ""
         /// #221: seconds the Nth `wait --js` poll takes (index 0 is the first poll); polls past the
@@ -42,9 +48,11 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         var waitPollDelays: [TimeInterval] = []
         /// #221: the condition holds from this poll on (1-based); nil leaves it to `waitJavaScriptAnswer`.
         var waitConditionHoldsFromPoll: Int?
+        /// #221: raised by every `wait --js` poll, after its delay.
+        var waitPollError: Error?
         private var waitPolls = 0
         private var cancelledDuringPoll = false
-        /// #221: true when a poll noticed, after it had waited, that its task had been cancelled.
+        /// #221: true when a poll (of either kind) noticed, after it had waited, that its task had been cancelled.
         var aPollWasCancelled: Bool { lock.withLock { cancelledDuringPoll } }
         var failWithTimeout = false
 
@@ -121,7 +129,13 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             }
             if script.contains("URL of every tab of window id "),
                let id = Self.firstInt(after: "URL of every tab of window id ", in: script) {
-                if windowURLReadDelay > 0 { Thread.sleep(forTimeInterval: windowURLReadDelay) }
+                let number = lock.withLock { () -> Int in urlPolls += 1; return urlPolls }
+                let delay = number <= windowURLReadDelays.count ? windowURLReadDelays[number - 1] : windowURLReadDelay
+                if delay > 0 {
+                    Thread.sleep(forTimeInterval: delay)
+                    if Task.isCancelled { lock.withLock { cancelledDuringPoll = true } }
+                }
+                if let windowURLReadError { throw windowURLReadError }
                 lock.lock(); defer { lock.unlock() }
                 windowReads += 1
                 if window1Closed, id == idBase + 1 {
@@ -170,6 +184,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                         Thread.sleep(forTimeInterval: delay)
                         if Task.isCancelled { lock.withLock { cancelledDuringPoll = true } }
                     }
+                    if let waitPollError { throw waitPollError }
                     waitPollAnswer = waitConditionHoldsFromPoll.map { number >= $0 } == true ? "true" : waitJavaScriptAnswer
                 } else if javaScriptDelay > 0 {
                     Thread.sleep(forTimeInterval: javaScriptDelay)

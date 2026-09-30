@@ -20,7 +20,7 @@ struct WaitCommand: AsyncParsableCommand {
     var js: String?
 
     @Option(name: .long, help: ArgumentHelp("Timeout in milliseconds (default: 30000)",
-        discussion: "Bounds when the next poll may start, not how long the command takes: target resolution and a poll already running are never interrupted, so the command can end later than --timeout. Each AppleScript call has its own limit (30 s; with the daemon the client waits at most 15 s and a call that gets no answer ends the wait with an error). For a hard limit, run the command under an external timeout."))
+        discussion: "Bounds when the next poll may start, not how long the command takes: target resolution and a poll already running are never interrupted, so the command can end later than --timeout, by what is still running at the deadline. Every AppleScript call has its own limit: 30 s on the stateless path; with the daemon, at most 15 s once its request has been sent, after which the wait ends with an error (a request that could not be sent is retried on the stateless path, so such a call can take 15 s and then up to 30 s more). A call that reaches its limit ends the wait with its own error. For a hard limit, run the command under an external timeout."))
     var timeout: Int = 30000
 
     // #182: randomized wait. One duration is drawn from a Cauchy distribution
@@ -328,23 +328,31 @@ struct WaitCommand: AsyncParsableCommand {
     /// condition that already holds into a timeout (#168 verify R1). So
     /// `--timeout 0` polls once, where it used to time out without polling.
     /// Neither resolution nor a poll is interrupted at the deadline (#221): `--timeout`
-    /// bounds when a poll may *start*, and the wait never sleeps past the deadline.
+    /// bounds when a poll may *start*, and the wait never asks to sleep past the deadline.
     ///
-    /// Why not bound each poll by the time that remains (deferred, not impossible): the
-    /// resolution and the first poll — which must run, above — are exempt from any such
-    /// bound and dominate the worst case, so bounding the later polls would not bound the
-    /// command; and passing a timeout down needs `doJavaScript`, `dispatchJS`,
-    /// `getCurrentURL` and `tabURLs` (and the test runner seam) to carry one, in code that
-    /// other work is rewriting. What each call already has is its own limit: 30 s on the
-    /// stateless path, and with the daemon at most 15 s, after which a call that was sent
-    /// and not answered fails with an outcome-unknown error — no retry, no fallback.
-    /// A call that reaches its limit ends the wait with that call's error.
+    /// Why not bound each poll by the time that remains (deferred, not ruled out): the resolution
+    /// (several calls, each under its own limit — #180 measured about 20 s for 109 tabs) and the
+    /// first poll (which must run, above) cannot be bounded that way, so the command could still
+    /// end well after the deadline; what bounding the later polls would change is a stall that
+    /// begins mid-wait, which would end about at the deadline instead of up to 31 s after it. It
+    /// needs `doJavaScript`, `dispatchJS`, `getCurrentURL` and `tabURLs` (and the test runner
+    /// seam) to carry a timeout, in code that other work (#189, #224, #225) is rewriting.
+    ///
+    /// What each call has is its own limit: 30 s on the stateless path (the process is terminated,
+    /// and killed after a further 1 s if it does not exit); with the daemon the client waits at
+    /// most 15 s for the answer to a request it has sent, and an unanswered request fails with an
+    /// outcome-unknown error — no retry, no fallback — while a failure before the request is sent
+    /// falls back to the stateless call, so that call can take 15 s and then up to 30 s more. A
+    /// poll can make more than one call. A poll's call that reaches its limit ends the wait with
+    /// that call's error (the blocking-dialog error instead, when a dialog is found on the window).
+    /// Calls that resolve the target have shorter limits and degrade instead: reading the window's
+    /// current tab (2 s) or its id (1 s) leaves the target unanchored.
     private func pollUntilDeadline(_ deadline: Date, _ satisfied: () async throws -> Bool) async throws {
         var first = true
         while first || Date() < deadline {
             first = false
             if try await satisfied() { return }
-            // Poll every 500 ms, but never sleep past the deadline (#221): a sleep that runs
+            // Poll every 500 ms, but never ask to sleep past the deadline (#221): a sleep that runs
             // out the clock only delays the timeout it is about to report.
             let remaining = deadline.timeIntervalSinceNow
             guard remaining > 0 else { break }
