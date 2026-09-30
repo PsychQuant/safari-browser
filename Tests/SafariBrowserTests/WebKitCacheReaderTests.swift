@@ -348,6 +348,31 @@ final class WebKitCacheReaderTests: XCTestCase {
         }
     }
 
+    /// An I/O error carries the path. A name outside the key grammar is judged before anything
+    /// touches the file, so a failure looking at it can neither fail the scan nor put the name
+    /// into a message.
+    func testAnUnreadableBodyWithAMalformedNameIsSkippedWithoutNamingIt() throws {
+        let dir = try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: Self.pdfBody)
+        let locked = dir.appendingPathComponent("ABCDEF12?sig=SECRET-blob")
+        try Self.pdfBody.write(to: locked)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("FOLDER?sig=SECRET-blob"), withIntermediateDirectories: false)
+        let scan = try WebKitCacheReader.scan(cacheRoot: root)
+        XCTAssertEqual(scan.pdfs.map(\.key), [Self.fullKey("AAAA1111")])
+        XCTAssertEqual(scan.malformedNames, 0, "unreadable, so not known to be a PDF body")
+    }
+
+    /// Failing to list the version folder is a permission failure with its cause, not a folder that
+    /// "holds nothing".
+    func testAVersionFolderThatCannotBeListedKeepsItsCauseWhenRecordsIsMissing() throws {
+        let version = root.appendingPathComponent("Version 17")
+        try FileManager.default.createDirectory(at: version, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o300], ofItemAtPath: version.path)   // search, no read
+        XCTAssertThrowsError(try WebKitCacheReader.scan(cacheRoot: root)) {
+            guard case SafariBrowserError.fullDiskAccessRequired = $0 else { return XCTFail("\($0)") }
+        }
+    }
+
     func testOnlyMalformedNamesIsAnUnsupportedLayoutNotAnEmptyCache() throws {
         let dir = try addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: nil)
         try Self.pdfBody.write(to: dir.appendingPathComponent("not-a-key-blob"))

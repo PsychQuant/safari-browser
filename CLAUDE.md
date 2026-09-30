@@ -455,7 +455,8 @@ used to read the target tab's URL when a tab flag is given).
   (8-bit 8572, 16-bit 649, non-empty partition 658, every range null, every hash = file name). Nothing
   after the hash is parsed. The file name must be **exactly 40 ASCII hex characters** (checked before any
   case-folding: `uppercased()` turns `ﬀ` into `FF`); a PDF body with any other name is only *counted*, its
-  name never printed. 16-bit strings with an unpaired surrogate are rejected, not repaired to U+FFFD. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
+  name never printed — and the name is judged **before** anything touches the file, because an I/O
+  error carries the path (a failure looking at such an entry is skipped, deliberately). 16-bit strings with an unpaired surrogate are rejected, not repaired to U+FFFD. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
   and is judged a PDF by its first five bytes; a record with a range holds part of a resource and is
   never listed. Any departure (other `Version N`, no `Records`, PDF bodies whose records all fail to
   parse) is an error that names what was seen — never an empty result. Small bodies stored inside the

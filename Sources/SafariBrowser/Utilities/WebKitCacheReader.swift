@@ -223,7 +223,8 @@ enum WebKitCacheReader {
         let versionDirectory = try versionDirectory(in: cacheRoot)
         let records = versionDirectory.appendingPathComponent("Records", isDirectory: true)
         guard let partitions = try listDirectoryIfPresent(records) else {
-            let seen = (try? listDirectory(versionDirectory)) ?? []
+            // A failure to list keeps its cause; it is not a folder that "holds nothing".
+            let seen = try listDirectory(versionDirectory)
             throw SafariBrowserError.pdfCache(.recordLayoutUnsupported(
                 detail: "\(supportedVersionFolder) has no Records folder (it holds: \(seen.isEmpty ? "nothing" : seen.joined(separator: ", ")))"))
         }
@@ -240,11 +241,20 @@ enum WebKitCacheReader {
             for name in names where name.hasSuffix("-blob") {
                 let key = String(name.dropLast("-blob".count))
                 let bodyURL = resources.appendingPathComponent(name)
-                // Regular file and PDF magic first: only a PDF body is worth a verdict on its name.
+                // The name is judged before anything touches the file: an I/O error carries the
+                // path, and a name outside the key grammar must never reach a message. Such an
+                // entry can only be counted, and only if it is a PDF body; any failure looking
+                // at it is skipped (deliberate `try?`) — it cannot be a cache entry, and a real
+                // access problem in this folder is reported by the entries that do have valid names.
+                guard isCacheKey(key) else {
+                    if (try? regularFileInfo(bodyURL)) != nil, (try? startsWithPDFMagic(bodyURL, reader: reader)) == true {
+                        malformed += 1
+                    }
+                    continue
+                }
                 guard let bodyInfo = try regularFileInfo(bodyURL),
                     try startsWithPDFMagic(bodyURL, reader: reader)
                 else { continue }
-                guard isCacheKey(key) else { malformed += 1; continue }
                 let recordURL = resources.appendingPathComponent(key)
                 switch try readEntry(
                     key: key, partitionDirectory: partitionDirectory,
