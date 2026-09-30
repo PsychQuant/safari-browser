@@ -686,20 +686,21 @@ extension SafariBrowserError {
                 Hint: each entry above shows its own coordinates — target one with
                       --window N --tab-in-window M. (With --profile, N counts only that
                       profile's windows. --document N numbers the tabs as `safari-browser documents`
-                      does, which need not be the [N] shown above.)
+                      does, which can differ from the [N] shown above.)
                 """
         }
         return """
             Hint: --url matches a *substring* of the URL, not the whole URL, and not the title —
-                  no tab's URL contained this text. Refine it against the URLs above (shown without
-                  their query or fragment — `safari-browser documents` prints them in full). An entry
-                  with a `…` marker (`?…`, `#…`, `…@`, `;…`) shows less than the URL: use the part
-                  before the marker as a substring, and not the whole entry with --url-exact or
-                  --url-endswith. Or target positionally with --window N --tab-in-window M
-                  (coordinates are shown per entry; with --profile, N counts only that profile's
-                  windows; --document N numbers the tabs as `safari-browser documents` does, which
-                  need not be the [N] shown above). For stricter matching see
-                  --url-exact / --url-endswith / --url-regex.
+                  no tab's URL contained this text. Refine it against the URLs above, if any are listed
+                  (shown without their query or fragment — `safari-browser documents` prints them in
+                  full). An entry with a `…` marker (`?…`, `#…`, `…@`, `;…`) shows less than the URL
+                  and is not itself part of any URL: copy only what precedes its first marker (it can
+                  be short, as in `https://…@host`) into --url, and take the whole URL from
+                  `safari-browser documents` for --url-exact or --url-endswith. Or target
+                  positionally with --window N --tab-in-window M (coordinates are shown per entry;
+                  with --profile, N counts only that profile's windows; --document N numbers the
+                  tabs as `safari-browser documents` does, which can differ from the [N] shown above).
+                  For stricter matching see --url-exact / --url-endswith / --url-regex.
             """
     }
 }

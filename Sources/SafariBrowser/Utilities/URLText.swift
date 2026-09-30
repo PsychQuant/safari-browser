@@ -46,9 +46,12 @@ enum URLText {
     /// (`https:user:pw@host`): Safari spells its own tab URLs canonically, and an embedded URL is
     /// path text that no one has normalised.
     ///
-    /// Where a URL parser and a plain reading of the text differ (a backslash for a slash, tab and
-    /// line breaks inside a scheme, extra slashes), each rule below takes the reading that removes
-    /// more.
+    /// A URL parser removes ASCII tab, LF and CR from anywhere in its input, so this does too, first
+    /// of all: a scheme or a `//` broken up by them is one, and what is shown has none of them.
+    /// Where a parser and a plain reading of the text still differ (a backslash for a slash, extra
+    /// slashes), each rule below takes the reading that removes more, with one exception that goes
+    /// the other way on purpose: the authority whose path parameters are removed starts after
+    /// exactly two slashes, so that in `file:///app;jsessionid=…` the first segment is path.
     static func redactURL(_ url: String) -> String {
         // The cap can cut inside a `;…` marker or drop the `://` a step relied on, and one more pass
         // would then change the text again, so the pass is repeated until the text stops changing.
@@ -65,7 +68,7 @@ enum URLText {
     }
 
     private static func redactOnce(_ url: String) -> String {
-        var scalars = Array(url.unicodeScalars)
+        var scalars = Array(url.unicodeScalars.filter { $0 != "\t" && $0 != "\n" && $0 != "\r" })
         if let scheme = scheme(of: scalars), payloadSchemes.contains(scheme.lowercased()) {
             return scheme + ":…"
         }
@@ -83,11 +86,10 @@ enum URLText {
 
     /// The leading run of a URL up to its first `:`, when it is shaped like a scheme.
     private static func scheme(of scalars: [Unicode.Scalar]) -> String? {
-        // A URL parser ignores leading C0 controls and spaces, so `" data:…"` is a data: URL, and it
-        // removes ASCII tab, LF and CR from anywhere, so `"da\tta:…"` is one too.
+        // A URL parser ignores leading C0 controls and spaces, so `" data:…"` is a data: URL.
         let start = scalars.firstIndex(where: { $0.value > 0x20 }) ?? scalars.count
         guard let colon = scalars[start...].firstIndex(of: ":"), colon > start else { return nil }
-        let head = scalars[start..<colon].filter { $0 != "\t" && $0 != "\n" && $0 != "\r" }
+        let head = scalars[start..<colon]
         guard let first = head.first, first.properties.isAlphabetic, first.isASCII,
               head.allSatisfy({ $0.isASCII && ($0.properties.isAlphabetic || ("0"..."9").contains($0) || $0 == "+" || $0 == "-" || $0 == ".") })
         else { return nil }
@@ -101,18 +103,26 @@ enum URLText {
     /// last `@`. A backslash does not end it here: when the readings differ, the longer authority
     /// is the one that redacts more.
     private static func removingUserinfo(_ scalars: [Unicode.Scalar]) -> [Unicode.Scalar] {
+        // Where the next `/` is, and where the last `@` at or before each index is, so that finding
+        // an authority's end and its credentials is a lookup: a text made of many authorities with no
+        // `/` between them is then still linear.
+        let count = scalars.count
+        var nextSlash = [Int](repeating: count, count: count + 1)
+        var lastAt = [Int](repeating: -1, count: count)
+        for index in stride(from: count - 1, through: 0, by: -1) { nextSlash[index] = scalars[index] == "/" ? index : nextSlash[index + 1] }
+        for index in 0..<count { lastAt[index] = scalars[index] == "@" ? index : (index > 0 ? lastAt[index - 1] : -1) }
         var output: [Unicode.Scalar] = []
         var position = 0
-        while position < scalars.count {
+        while position < count {
             guard let authority = nextAuthority(in: scalars, from: position) else {
                 output += scalars[position...]
                 break
             }
             output += scalars[position..<authority.start]
-            let authorityEnd = scalars[authority.start...].firstIndex(of: "/") ?? scalars.count
-            if let at = scalars[authority.start..<authorityEnd].lastIndex(of: "@") {
+            let authorityEnd = nextSlash[authority.start]
+            if authorityEnd > authority.start, lastAt[authorityEnd - 1] >= authority.start {
                 output += ["…", "@"]
-                position = at + 1
+                position = lastAt[authorityEnd - 1] + 1
             } else {
                 position = authority.start
             }
@@ -142,12 +152,13 @@ enum URLText {
     /// that runs to the next `/`. The authority is left alone; a text without one is all path.
     private static func removingPathParameters(_ scalars: [Unicode.Scalar]) -> [Unicode.Scalar] {
         // The outer authority is there only when the text opens with `scheme://`; a `://` further
-        // in belongs to a URL inside the path, and everything before it is path. Here a backslash
-        // does end the authority: the text after it is the path, and its parameters are removed.
+        // in belongs to a URL inside the path, and everything before it is path. It starts after
+        // exactly two slashes (a third one makes it empty: `file:///app;x` has a path `/app;x`) and
+        // a backslash ends it: the text after it is the path, and its parameters are removed.
         var start = 0
         if let authority = nextAuthority(in: scalars, from: 0), scalars.firstIndex(of: ":") == authority.colon,
            scheme(of: Array(scalars[...authority.colon])) != nil {
-            start = scalars[authority.start...].firstIndex(where: isSlash) ?? scalars.count
+            start = scalars[(authority.colon + 3)...].firstIndex(where: isSlash) ?? scalars.count
         }
         var output = Array(scalars[..<start])
         var index = start

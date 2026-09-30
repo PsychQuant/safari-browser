@@ -122,9 +122,11 @@ final class URLTextTests: XCTestCase {
             XCTAssertFalse(shown.contains("SECRETVALUE"), "\(scheme.debugDescription) → \(shown.debugDescription)")
             XCTAssertTrue(shown.hasSuffix(":…"), shown)
         }
-        // The same controls leave an ordinary scheme alone, and a scheme that is not one is not one.
-        XCTAssertEqual(URLText.redactURL("ht\ntps://a.example/p?x=1"), "ht\ntps://a.example/p?…")
-        XCTAssertEqual(URLText.redactURL("1\ta:x?SECRET"), "1\ta:x?…")
+        // The controls a parser removes are not shown, and an ordinary URL is otherwise as before.
+        XCTAssertEqual(URLText.redactURL("ht\ntps://a.example/p?x=1"), "https://a.example/p?…")
+        // Only a real scheme makes a payload: a space inside, or a digit first, is not one.
+        XCTAssertEqual(URLText.redactURL("da ta:x,VISIBLE"), "da ta:x,VISIBLE")
+        XCTAssertEqual(URLText.redactURL("1data:x,VISIBLE"), "1data:x,VISIBLE")
         // Through the type that goes into `targetTabChanged`, and through what the error prints.
         let error = SafariBrowserError.targetTabChanged(expected: "x", actualURL: RedactedURL("da\tta:text/plain,SECRETVALUE"))
         XCTAssertFalse("\(error)".contains("SECRETVALUE"), "\(error)")
@@ -147,6 +149,65 @@ final class URLTextTests: XCTestCase {
         XCTAssertFalse(URLText.redactURL("https://user\\name:SECRETVALUE@host.example/x").contains("SECRETVALUE"))
         // One slash, or none, is not recognised as an authority; the doc comment of `redactURL` says so.
         XCTAssertEqual(URLText.redactURL("https://proxy.example/https:/host.example/x"), "https://proxy.example/https:/host.example/x")
+    }
+
+    /// The same controls next to the authority separator: a parser removes them first, so these are
+    /// `https://user:pw@host/` and the credentials go.
+    func testControlsNextToTheAuthoritySeparatorDoNotHideCredentials() {
+        for input in ["https:\t//user:SECRETVALUE@host.example/x", "https:/\n/user:SECRETVALUE@host.example/x",
+                      "https:\r\n//user:SECRETVALUE@host.example/x", "https:/\t/user:SECRETVALUE@host.example/x",
+                      "https://proxy.example/fetch/https:/\t/user:SECRETVALUE@host.example/x"] {
+            let shown = URLText.redactURL(input)
+            XCTAssertFalse(shown.contains("SECRETVALUE"), "\(input.debugDescription) → \(shown.debugDescription)")
+            XCTAssertTrue(shown.contains("…@host.example/x"), shown)
+        }
+    }
+
+    /// With three or more slashes the path parameters of the first segment are still removed: the
+    /// authority whose parameters are removed starts after exactly two slashes (round 4 took the
+    /// whole run of slashes for it, and `file:///app;jsessionid=…` kept its session).
+    func testPathParametersAfterThreeOrMoreSlashesAreReplaced() {
+        XCTAssertEqual(URLText.redactURL("file:///app;jsessionid=SECRET/x"), "file:///app;…/x")
+        XCTAssertEqual(URLText.redactURL("x:///y;SECRET/z"), "x:///y;…/z")
+        XCTAssertEqual(URLText.redactURL("x:////a;SECRET/b"), "x:////a;…/b")
+        XCTAssertEqual(URLText.redactURL("https:///a.example;jsessionid=SECRET/x"), "https:///a.example;…/x")
+    }
+
+    /// What ordinary URLs look like through the redaction: unchanged. The one documented exception is
+    /// an `@` in the first path segment of a `file:///` URL, which reads as credentials.
+    func testOrdinaryURLsAreRenderedAsBefore() {
+        for url in ["https://a.example/p", "file:///Users/x/a.pdf", "file:///C:/Users/x/a.pdf", "file:///Volumes/A@B/x", "http://[::1]:8080/p",
+                    "chrome-extension://id/page", "x-apple:///y", "https://medium.com/@user/post",
+                    "https://web.archive.org/web/2020/https://example.com/", "about:blank"] {
+            XCTAssertEqual(URLText.redactURL(url), url)
+        }
+        XCTAssertEqual(URLText.redactURL("file:///a@b.pdf"), "file:///…@b.pdf", "the over-redaction that is accepted: a file directly in / whose name has an @")
+    }
+
+    /// Linear, including for texts made of many authorities with no `/` between them, which a search
+    /// for each authority's end turned quadratic. 250 000 scalars took minutes that way.
+    func testRedactionIsLinearOnManyAuthoritiesWithoutASlash() {
+        let inputs = ["https://h/" + String(repeating: "x:\\\\h", count: 40_000),
+                      "https://h/" + String(repeating: "x:////h@", count: 30_000),
+                      "https://h/" + String(repeating: ":\\\\", count: 60_000)]
+        let start = Date()
+        for input in inputs { _ = URLText.redactURL(input) }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 10, "three inputs of about 250 000 scalars")
+    }
+
+    /// Only a real scheme opens the text with an authority whose parameters are left alone: for text
+    /// that does not open with one, every `;` in it starts a parameter that is removed.
+    func testOnlyARealSchemeHasAnAuthorityForPathParameters() {
+        XCTAssertEqual(URLText.redactURL("ab://h;x/p;y"), "ab://h;x/p;…")
+        XCTAssertEqual(URLText.redactURL("1a://h;x/p;y"), "1a://h;…/p;…", "a digit cannot start a scheme")
+        XCTAssertEqual(URLText.redactURL("a b://h;x/p;y"), "a b://h;…/p;…", "a space is not a scheme character")
+    }
+
+    /// The documented limit, pinned where it matters: an embedded URL with one slash after its
+    /// scheme is not recognised as having an authority, so its credentials are shown.
+    func testAnEmbeddedURLWithOneSlashKeepsItsCredentialsAsDocumented() {
+        let input = "https://proxy.example/fetch/https:/user:SECRETVALUE@host.example/x"
+        XCTAssertEqual(URLText.redactURL(input), input)
     }
 
     /// The cap, by its number and not by the constant the code holds: 200 shown at most, 199 of
@@ -433,6 +494,7 @@ final class URLTextTests: XCTestCase {
         let text = SafariBrowserError.documentNotFound(
             pattern: "plud", availableDocuments: ["https://web.plaud.ai/", "https://platform.claude.com/oauth/"]).errorDescription ?? ""
         XCTAssertTrue(text.contains("https://web.plaud.ai/") && text.contains("https://platform.claude.com/oauth/"), text)
+        for url in ["https://web.plaud.ai/", "https://platform.claude.com/oauth/"] { XCTAssertEqual(URLText.redactURL(url), url) }
     }
 
     /// The other half of the contract: `documents` is what a person runs on purpose to see the URLs,
@@ -452,20 +514,26 @@ final class URLTextTests: XCTestCase {
         XCTAssertTrue(hint.contains("safari-browser documents"), hint)
         XCTAssertTrue(hint.contains("without"), hint)
         let flat = hint.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        XCTAssertTrue(flat.contains("use the part before the marker as a substring, and not the whole entry with --url-exact or --url-endswith"), hint)
+        XCTAssertTrue(flat.contains("copy only what precedes its first marker"), hint)
+        XCTAssertTrue(flat.contains("if any are listed"), "an empty listing has no URLs: \(hint)")
     }
 
-    /// What the hint tells a person to do, done: the part before the marker matches as a substring
-    /// (and, unlike the whole entry, is what the raw URL contains), the whole marked entry is not the
-    /// URL and matches neither exactly nor by suffix.
-    func testTheAdviceOnAMarkedEntryHoldsForTheMatchers() {
-        let raw = "https://a.example/p?sig=SECRET&x=1"
-        let entry = URLText.redactURL(raw)
-        XCTAssertEqual(entry, "https://a.example/p?…")
-        let beforeTheMarker = String(entry.dropLast(2))
-        XCTAssertTrue(SafariBridge.UrlMatcher.contains(beforeTheMarker).matches(raw), "the part before the marker is a substring")
-        XCTAssertFalse(SafariBridge.UrlMatcher.exact(entry).matches(raw))
-        XCTAssertFalse(SafariBridge.UrlMatcher.endsWith(entry).matches(raw))
+    /// What the hint tells a person to do, for each kind of marker: the text before the FIRST `…` of
+    /// an entry is verbatim from the URL it stands for, so it is a prefix of it (and can be short:
+    /// before `…@` it is only `https://`), while the whole entry is not a substring of any URL, and
+    /// matches neither exactly nor by suffix.
+    func testTheAdviceOnAMarkedEntryHoldsForEveryKindOfMarker() {
+        let raws = ["https://a.example/p?sig=SECRET&x=1", "https://a.example/p#token=SECRET", "https://u:pw@h.example/cb?code=1",
+                    "https://a.example/app;jsessionid=S/next?x=1", "https://a.example/" + String(repeating: "p", count: 300) + "?q=1"]
+        for raw in raws {
+            let entry = URLText.redactURL(raw)
+            let beforeTheFirstMarker = String(entry.split(separator: "…", maxSplits: 1, omittingEmptySubsequences: false)[0])
+            XCTAssertTrue(raw.hasPrefix(beforeTheFirstMarker), "\(beforeTheFirstMarker) must be a prefix of \(raw)")
+            XCTAssertTrue(SafariBridge.UrlMatcher.contains(beforeTheFirstMarker).matches(raw))
+            XCTAssertFalse(SafariBridge.UrlMatcher.contains(entry).matches(raw), "the whole entry is not part of the URL: \(entry)")
+            XCTAssertFalse(SafariBridge.UrlMatcher.exact(entry).matches(raw))
+            XCTAssertFalse(SafariBridge.UrlMatcher.endsWith(entry).matches(raw))
+        }
     }
 
     /// A listing can be scoped to one window, and `--document N` numbers the tabs as `documents`
@@ -474,7 +542,7 @@ final class URLTextTests: XCTestCase {
         for pattern in ["some-substring", "window 9", "document 9"] {
             let flat = SafariBrowserError.targetingHint(for: pattern).split(whereSeparator: \.isWhitespace).joined(separator: " ")
             XCTAssertFalse(flat.contains("for the [N] index"), "\(pattern): \(flat)")
-            XCTAssertTrue(flat.contains("need not be the [N] shown above"), "\(pattern): \(flat)")
+            XCTAssertTrue(flat.contains("can differ from the [N] shown above"), "\(pattern): \(flat)")
         }
     }
 
