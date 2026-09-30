@@ -146,6 +146,21 @@ assert_contains "pdf without --allow-hid refuses" "$OUT" "--allow-hid"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────
+echo "## pdf-cache refusals (#210) — no Safari, no cache read, nothing written"
+PDFC_DIR=$(mktemp -d)
+OUT=$("$SB" pdf-cache get "$PDFC_DIR/out.pdf" 2>&1 || true)
+assert_contains "pdf-cache get without a selection names the three forms" "$OUT" "--source webkit-pdfs --file"
+assert_exit "pdf-cache get without a selection exits 1" 1 -- "$SB" pdf-cache get "$PDFC_DIR/out.pdf"
+OUT=$("$SB" pdf-cache get "$PDFC_DIR/out.pdf" --profile Work 2>&1 || true)
+assert_contains "a profile alone is not a selection" "$OUT" "explicit selection"
+assert_exit "pdf-cache get --key too short is a usage error (exit 64)" 64 -- "$SB" pdf-cache get "$PDFC_DIR/out.pdf" --key abcd
+assert_exit "pdf-cache get with two selections is a usage error (exit 64)" 64 -- "$SB" pdf-cache get "$PDFC_DIR/out.pdf" --key abcd1234 --url plaud
+assert_exit "pdf-cache get --file without --source webkit-pdfs is a usage error (exit 64)" 64 -- "$SB" pdf-cache get "$PDFC_DIR/out.pdf" --file a.pdf
+if [[ -z "$(ls -A "$PDFC_DIR")" ]]; then pass "every refusal left the destination folder empty"; else fail "a refusal created a file" "$(ls -A "$PDFC_DIR")"; fi
+rm -rf "$PDFC_DIR"
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────
 echo "───────────────────────────────────────────────"
 echo "SMOKE: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] && exit 0 || exit 1

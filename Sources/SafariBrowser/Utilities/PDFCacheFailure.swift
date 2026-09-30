@@ -58,7 +58,7 @@ enum PDFCacheFailure: Equatable, Sendable {
                 """
         case .noMatch(let subject):
             return """
-                No cached PDF matches \(subject).
+                No cached PDF matches \(t(subject)).
                 Run `safari-browser pdf-cache list` to see what is cached. A tab is matched by its \
                 exact URL (fragment removed), and responses stored inside the record itself rather \
                 than in a separate body file are not covered.
@@ -66,7 +66,7 @@ enum PDFCacheFailure: Equatable, Sendable {
         case .ambiguous(let subject, let candidates):
             let lines = candidates.map { "  \($0)" }.joined(separator: "\n")
             return """
-                \(subject) matches \(candidates.count) cached PDFs; refusing to choose between them:
+                \(t(subject)) matches \(candidates.count) cached PDFs; refusing to choose between them:
                 \(lines)
                 Re-run with --key <prefix> naming one of them.
                 """

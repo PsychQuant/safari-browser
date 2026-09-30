@@ -298,6 +298,15 @@ struct TargetOptions: ParsableArguments {
         }
     }
 
+    /// True when a flag that names a tab was given (#210). `--profile` and
+    /// `--first-match` only narrow or relax a selection; on their own they name
+    /// nothing, so a command that refuses to act without an explicit target
+    /// must not count them.
+    var hasExplicitTarget: Bool {
+        url != nil || urlExact != nil || urlEndswith != nil || urlRegex != nil
+            || window != nil || tab != nil || document != nil
+    }
+
     /// Convert the parsed flags into a `TargetDocument`. Precedence
     /// (already checked as mutually exclusive by `validate()`):
     /// 1. `--window + --tab-in-window` → `.windowTab(w, m)`
@@ -410,7 +419,7 @@ struct TargetOptions: ParsableArguments {
     /// the matching `target.warnIfProfileUnsupported(...)` call from
     /// that command's `run()`. The two are mirrored — the warning
     /// helper exists for commands NOT in this list.
-    static let honoredProfileCommandsHelp = "js, get url, get title, get source, get value, get attr, get count, get box, screenshot, documents, click, fill, type, press, select, hover, dblclick, drag, focus, scroll, scrollintoview, highlight, check, uncheck, is visible, is exists, is enabled, is checked, errors, console, cookies get, cookies set, cookies clear, storage local get, storage local set, storage local remove, storage local clear, storage session get, storage session set, storage session remove, storage session clear, back, forward, reload, set media, close, mouse move, mouse down, mouse up, mouse wheel, pdf, snapshot, tabs, tab switch, tab is-marked, tab unmark, find, wait, exec, get text, get html, save-image, upload, open"
+    static let honoredProfileCommandsHelp = "js, get url, get title, get source, get value, get attr, get count, get box, screenshot, documents, click, fill, type, press, select, hover, dblclick, drag, focus, scroll, scrollintoview, highlight, check, uncheck, is visible, is exists, is enabled, is checked, errors, console, cookies get, cookies set, cookies clear, storage local get, storage local set, storage local remove, storage local clear, storage session get, storage session set, storage session remove, storage session clear, back, forward, reload, set media, close, mouse move, mouse down, mouse up, mouse wheel, pdf, snapshot, tabs, tab switch, tab is-marked, tab unmark, find, wait, exec, get text, get html, save-image, upload, open, pdf-cache get"
 
     /// Emit a stderr warning when `--profile` was passed but the
     /// invoking command does not yet honor the filter at the

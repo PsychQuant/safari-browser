@@ -728,6 +728,41 @@ never enabled iCloud tab syncing exits 0 with an empty result and a note on
 stderr. These commands require **Full Disk Access**, which `setup` does not
 handle; see below.
 
+### Cached PDFs (#210)
+
+Publishers can treat a script-issued `fetch()` from the page as automated
+traffic. Safari does not need one to show a PDF: WebKit's network cache already
+holds the response body. `pdf-cache` reads that copy, so **no request leaves the
+machine and nothing in Safari is driven** — it only reads files (and, when you
+give a tab flag, asks Safari for that tab's URL).
+
+```bash
+safari-browser pdf-cache list                                   # PDFs in the cache (URL shown without query)
+safari-browser pdf-cache get paper.pdf --url example.org/a.pdf  # the tab whose URL matches
+safari-browser pdf-cache get paper.pdf --key 9F3A62C1           # a key (8+ hex chars) from `list`
+safari-browser pdf-cache list --source webkit-pdfs              # the WebKitPDFs-* temporaries
+safari-browser pdf-cache get paper.pdf --source webkit-pdfs --file paper.pdf
+```
+
+`get` acts only on an explicit selection — one of a tab flag, `--key`, or
+`--source webkit-pdfs --file` — and never picks a PDF for you, not even when only
+one is cached. A tab is matched by its **exact URL** (fragment removed); a URL
+with no cached record, or one cached in several partitions, stops and lists the
+candidates rather than guessing. The copy is written `0600`, only after it opens
+as a PDF with every page readable, and is renamed into place, so a truncated file
+never appears under your name. An existing destination is kept unless `--force`.
+
+URLs are always shown without their query and fragment, because the query of a
+signed URL can be a credential. `list` defaults to 50 rows (`--limit`).
+
+The record layout is WebKit's private format; only `Version 17` is understood, and
+anything else fails with what was seen instead of reporting an empty cache.
+Responses small enough to be stored inside the record itself (no `-blob` file)
+are not covered. The `WebKitPDFs-*` folders appear only after someone presses
+"Open with Preview" in Safari's PDF viewer, so that source is opt-in and the
+command never presses it for you. Requires **Full Disk Access**, like the
+local-data commands above.
+
 ### Permissions
 
 ```bash
@@ -742,7 +777,7 @@ Three macOS permissions gate part of the CLI:
 |---|---|---|---|
 | **Accessibility** | window resolution for `screenshot` / `pdf` / `upload --native`, blocked-dialog detection | those paths refuse; front-window resolution falls back to a heuristic and says so | yes |
 | **Screen Recording** | the pixel capture inside `screenshot` | `screenshot` refuses with guidance | yes |
-| **Full Disk Access** | reading `~/Library/Safari/` for `history` / `bookmarks` / `cloud-tabs` / `downloads` | those four refuse with guidance specific to how this binary is signed | **no** — see below |
+| **Full Disk Access** | reading `~/Library/Safari/` for `history` / `bookmarks` / `cloud-tabs` / `downloads`, and Safari's cache folders for `pdf-cache` | those commands refuse with guidance specific to how this binary is signed | **no** — see below |
 
 **Full Disk Access is deliberately not part of `setup`** (#109). It cannot be
 requested programmatically the way Accessibility can — you add the binary by

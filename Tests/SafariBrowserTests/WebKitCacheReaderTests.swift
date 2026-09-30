@@ -209,6 +209,16 @@ final class WebKitCacheReaderTests: XCTestCase {
         }
     }
 
+    func testAVersionFolderWithoutRecordsIsAnUnsupportedLayoutNotAnEmptyCache() throws {
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Version 17/SomethingNew"), withIntermediateDirectories: true)
+        XCTAssertThrowsError(try WebKitCacheReader.scan(cacheRoot: root)) {
+            guard case SafariBrowserError.pdfCache(.recordLayoutUnsupported(let detail)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertTrue(detail.contains("Records"), detail)
+            XCTAssertTrue(detail.contains("SomethingNew"), "names what it did find: \(detail)")
+        }
+    }
+
     func testNoPDFAtAllIsAnEmptyScanNotAnError() throws {
         try addRecord(key: "BBBB2222", identifier: "https://example.org/page.html", body: Data("<html>".utf8))
         let scan = try WebKitCacheReader.scan(cacheRoot: root)

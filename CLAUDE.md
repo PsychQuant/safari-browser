@@ -415,6 +415,44 @@ V1 wires marker 到 `ClickCommand` 作為 reference integration。其他 30+ com
 完整 spec：`openspec/specs/local-data-query/spec.md`、`non-interference/spec.md`、
 `json-output/spec.md`（`local-safari-data-query` archive 後生成）。
 
+## Cached PDFs (`pdf-cache`, #210)
+
+`pdf-cache list` / `pdf-cache get <path>` read the PDFs that Safari's WebKit network cache already
+holds (`~/Library/Containers/com.apple.Safari/Data/Library/Caches/com.apple.Safari/WebKitCache/Version 17/`).
+The reason it exists: a page-level or script-level request to a publisher can be judged automated
+traffic, and a copy Safari already has cannot. **Nothing here may send a request or drive Safari** —
+`Tests/SafariBrowserTests/PDFCacheTests.swift` pins that structurally (the implementation files name no
+network, script, or UI-automation API; the command file's only `SafariBridge` call is `getCurrentURL`,
+used to read the target tab's URL when a tab flag is given).
+
+- **Non-interference**: Non-interfering (reads files; writes only the destination). Data sensitivity:
+  it exposes a record of every PDF viewed, so `list` has a default limit and `get` acts only on an
+  explicit selection. Needs Full Disk Access; errors reuse `SafariDataStore.ioError`.
+- **Selection is a closed list of three** (tab flag / `--key` / `--source webkit-pdfs --file`); no
+  selection is refused before anything is read; two forms is a usage error; `--profile` and
+  `--first-match` alone are not a selection (`TargetOptions.hasExplicitTarget`). Never "newest" or
+  "the only one".
+- **Matching is exact string equality** of the tab URL (fragment removed) with the record's request URL.
+  Zero or several matches stop and list candidates; there is no near-match fallback and no fallback
+  between the two sources.
+- **URLs are shown without query or fragment** (`PDFCacheURL.redact`); matching uses the full string.
+  The tests plant a `SECRET` query and assert it appears in no row, JSON, or error message.
+- **The record format is WebKit-private.** Observed 2026-09-30 and pinned by a byte-literal test:
+  `uint32 version (17)`, then three strings — partition, `"Resource"`, identifier (= request URL) —
+  each `uint32 length`, one `is8Bit` byte, the characters, **no alignment padding**. Nothing after the
+  identifier is parsed. The body is `<key>-blob` and is judged a PDF by its first five bytes. Any
+  departure (other `Version N`, no `Records`, PDF bodies whose records all fail to parse) is an error
+  that names what was seen — never an empty result. Small bodies stored inside the record (no `-blob`)
+  are not covered; the eviction rules and private-browsing behaviour are unverified.
+- **Copy**: `PDFCacheOutput.copyVerified` — source opened read-only, exclusive `0600` temp file next to
+  the destination, `%PDF-` check on the first chunk, `CGPDFDocument` with every page readable, then
+  `renamex_np(RENAME_EXCL)` (`rename` with `--force`). The early "destination exists" refusal comes
+  before the source is read. The `RENAME_EXCL` guard against a destination appearing mid-copy is not
+  covered by a test (it needs a race).
+- `--source webkit-pdfs` reads `WebKitPDFs-*` under the container's `tmp`. Those folders appeared after
+  "Open with Preview" was pressed (one observation, no controlled experiment); the command never
+  creates them or presses anything.
+
 ## Install-signature guard：suite 本身被 gate 管（#119, round 10）
 
 #122 後的 authoritative policy 位於 `Sources/SafariBrowser/Utilities/SignatureAssessment.swift`，

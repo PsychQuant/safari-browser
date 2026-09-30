@@ -51,7 +51,7 @@ When no selection is given, the command SHALL fail before reading the cache and 
 
 ### Requirement: A tab selection maps to a record by exact URL
 
-For a tab-targeting selection, the command SHALL read the target tab's URL through the existing target resolution (which fails closed on an ambiguous match), remove the URL fragment, and compare the result to each cached record's request URL by string equality, with no normalization of scheme, host, path, port, or query. When zero records match, the command SHALL fail and SHALL say that the tab's URL has no cached PDF, with the URL shown as required by "URLs are shown without query or fragment". When more than one record matches, the command SHALL fail and SHALL list every matching candidate (key prefix, partition, size, time) and SHALL NOT choose one. `--key` SHALL match the record file name by case-insensitive prefix of at least 8 characters and SHALL fail on zero or more than one match.
+For a tab-targeting selection, the command SHALL read the target tab's URL through the existing target resolution (which fails closed on an ambiguous match), remove the URL fragment, and compare the result to each cached record's request URL by string equality, with no normalization of scheme, host, path, port, or query. When zero records match, the command SHALL fail and SHALL say that the tab's URL has no cached PDF, with the URL shown as required by "URLs are shown without query or fragment". When more than one record matches, the command SHALL fail and SHALL list every matching candidate (key prefix, partition, size, time) and SHALL NOT choose one. `--key` SHALL match the record file name by case-insensitive prefix of at least 8 hexadecimal characters and SHALL fail on zero or more than one match.
 
 #### Scenario: one record matches
 
@@ -76,7 +76,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 ### Requirement: Retrieval writes a verified copy atomically
 
-`pdf-cache get` SHALL open the source read-only and SHALL NOT modify it. It SHALL require the source's first five bytes to be `%PDF-`. It SHALL write the bytes to a temporary file created exclusively, with mode `0600`, in the destination's directory; verify that CoreGraphics reads it as a PDF with at least one page; and then publish it by renaming it onto the destination path. When the destination exists, the command SHALL fail unless `--force` is given. On any failure the command SHALL leave no file at the destination that it created and no temporary file. The destination's directory SHALL already exist.
+`pdf-cache get` SHALL open the source read-only and SHALL NOT modify it. It SHALL require the source's first five bytes to be `%PDF-`. It SHALL write the bytes to a temporary file created exclusively, with mode `0600`, in the destination's directory; verify that CoreGraphics reads it as a PDF with at least one page; and then publish it by renaming it onto the destination path. When the destination exists, the command SHALL fail unless `--force` is given. On any failure the command SHALL leave no file at the destination that it created and no temporary file. The destination's directory SHALL already exist. On success it SHALL print one line, or with `--json` one object, giving the destination path, the size, the page count, and where the PDF came from (the key and the URL shown as required by "URLs are shown without query or fragment", or the folder and file name).
 
 #### Scenario: verified copy published
 
@@ -105,7 +105,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 ### Requirement: The listing shows PDFs only
 
-`pdf-cache list` SHALL list only records whose body starts with `%PDF-`, and SHALL decide that by reading no more than the first five bytes of each body. Each row SHALL show the first 12 characters of the record key, the partition (or `-` when empty), the request URL as required by "URLs are shown without query or fragment", the body size, and the record's modification time in local time. Rows SHALL be ordered newest first and limited by `--limit` (default 50, a positive integer). `--json` SHALL print an array whose objects carry the full `key`, `partition`, `url`, `has_query`, `size`, and `modified` (ISO 8601). Explanatory text SHALL go to stderr and rows to stdout. When no PDF is cached, the command SHALL exit successfully with an explanatory note on stderr and, with `--json`, `[]` on stdout.
+`pdf-cache list` SHALL list only records whose body starts with `%PDF-`, and SHALL decide that by reading no more than the first five bytes of each body. Each row SHALL show the first 12 characters of the record key, the partition (or `-` when empty), the request URL as required by "URLs are shown without query or fragment", the body size, and the record's modification time in local time. Rows SHALL be ordered newest first and limited by `--limit` (default 50, a positive integer). `--json` SHALL print an array whose objects carry the full `key`, `partition`, `url`, `has_query`, `size`, and `modified` (ISO 8601); with `--source webkit-pdfs` the objects carry `file`, `folder`, `size`, and `modified`. Explanatory text SHALL go to stderr and rows to stdout. When no PDF is cached, the command SHALL exit successfully with an explanatory note on stderr and, with `--json`, `[]` on stdout.
 
 #### Scenario: default limit
 
@@ -139,12 +139,13 @@ Every URL the command prints — in list rows, JSON, `get` output, and error mes
 
 ### Requirement: The cache layout is validated and unsupported layouts fail closed
 
-The command SHALL accept only the cache version directory `Version 17`. The failure classes below are a closed list of four; each SHALL fail with a message naming what was seen, and none SHALL be reinterpreted as a missing PDF:
+The command SHALL accept only the cache version directory `Version 17`. The failure classes below are a closed list of five; each SHALL fail with a message naming what was seen, and none SHALL be reinterpreted as a missing PDF:
 
 1. the WebKit cache folder does not exist;
 2. no `Version 17` directory exists (the message lists the `Version *` directories that do);
 3. a record selected for use does not begin with `uint32 version 17`, then the strings partition, `Resource`, and identifier, each string being `uint32 length`, one byte `is8Bit`, and the characters (UTF-16LE when `is8Bit` is 0), with the identifier at most 65536 characters, or it is truncated;
-4. PDF bodies exist and none of their records parse under class 3.
+4. PDF bodies exist and none of their records parse under class 3;
+5. the `Version 17` folder has no `Records` folder (the message lists what it does hold).
 
 A record that fails class 3 while others parse SHALL be left out of `list` output and counted in a stderr note; `get --key` on it SHALL fail.
 
@@ -157,6 +158,12 @@ A record that fails class 3 while others parse SHALL be left out of `list` outpu
 
 - **WHEN** every PDF body's record fails the leading-field check
 - **THEN** the command fails as an unsupported layout rather than reporting that there are no PDFs
+
+#### Scenario: no Records folder
+
+- **WHEN** the `Version 17` folder holds no `Records` folder
+- **THEN** the command fails as an unsupported layout and lists what the folder does hold
+- **AND** it does not report that no PDF is cached
 
 #### Scenario: one unreadable record
 
