@@ -352,8 +352,9 @@ struct TargetOptions: ParsableArguments {
     /// window/tab (via `resolveToConcreteTarget`, reusing the #47 filter), so
     /// downstream bridge calls inherit profile scoping without each needing a
     /// `profile:` parameter. When absent, returns `resolve()` unchanged so the
-    /// no-profile path is byte-identical. Used by commands whose downstream
-    /// bridge methods don't take `profile:` (get text/html, save-image, upload).
+    /// no-profile path is byte-identical. Commands whose downstream bridge
+    /// methods don't take `profile:` (get text/html, save-image, upload) call
+    /// `resolveFirstMatchOnce`, which falls back to this.
     func resolveProfileScoped(
         warnWriter: @escaping (String) -> Void = TargetOptions.stderrWarnWriter
     ) async throws -> SafariBridge.TargetDocument {
