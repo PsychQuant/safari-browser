@@ -2430,7 +2430,7 @@ enum SafariBridge {
         }
         if matches.count > 1 {
             let summary = matches.map { m in
-                "  window \(m.windowIndex) tab \(m.tab.tabIndex): \(m.tab.url)"
+                "  window \(m.windowIndex) tab \(m.tab.tabIndex): \(URLText.redactURL(m.tab.url))"
             }.joined(separator: "\n")
             let msg = "warning: --first-match resolved '\(matcher.description)' to "
                 + "window \(first.windowIndex) tab \(first.tab.tabIndex) "

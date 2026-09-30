@@ -117,7 +117,8 @@ enum SafariBrowserError: LocalizedError {
             // #79: the identity-anchored target stopped matching mid-command
             // (window closed, or the tab moved/navigated within its window)
             // and one automatic re-resolve did not find it again.
-            let actualLine = actualURL.map { "Target position now shows: \($0)\n" } ?? ""
+            // #227: another tab's URL, shown without its query.
+            let actualLine = actualURL.map { "Target position now shows: \(URLText.redactURL($0))\n" } ?? ""
             return """
                 Target tab changed mid-command: expected \(expected), but the tab no longer matches after one automatic re-resolve.
                 \(actualLine)The window may have closed, or the tab moved/navigated during execution.
@@ -148,8 +149,10 @@ enum SafariBrowserError: LocalizedError {
             if availableDocuments.isEmpty {
                 listing = "  (no Safari documents are currently open)"
             } else {
+                // #227: a query can be a credential; the listing only has to help a person
+                // choose a substring, and `safari-browser documents` prints the full URLs.
                 listing = availableDocuments.enumerated()
-                    .map { "  [\($0.offset + 1)] \($0.element)" }
+                    .map { "  [\($0.offset + 1)] \(URLText.redactingURLs(in: $0.element))" }
                     .joined(separator: "\n")
             }
             return """
@@ -230,7 +233,7 @@ enum SafariBrowserError: LocalizedError {
                 listing = "  (internal error: empty matches array)"
             } else {
                 listing = matches
-                    .map { "  [window \($0.windowIndex)] \($0.url)" }
+                    .map { "  [window \($0.windowIndex)] \(URLText.redactURL($0.url))" }
                     .joined(separator: "\n")
             }
             return """
