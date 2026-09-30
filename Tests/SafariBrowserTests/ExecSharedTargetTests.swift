@@ -661,4 +661,52 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         }
         XCTAssertEqual(counts.resolutions, 1, "a cancelled request must not resolve afresh")
     }
+
+
+    func testACheckThatReturnsAfterCancellationStartsNothing() async {
+        // Cancellation is cooperative: a check can cancel the task and still
+        // return normally. Neither answer may lead to a resolution or a
+        // dispatchable target.
+        for verdict in [false, true] {
+            final class Counts: @unchecked Sendable { var resolutions = 0 }
+            let counts = Counts()
+            let resolution = InProcessStepDispatcher.SharedTargetResolution()
+            let args = ["--url", "x"]
+            let tab = SafariBridge.TargetDocument.resolvedTab(windowID: 101, tabInWindow: 2, rematch: .contains("x"), profile: nil)
+            _ = try? await resolution.resolve(args: args, verify: { _ in true }) { counts.resolutions += 1; return tab }
+            let task = Task { () -> SafariBridge.TargetDocument in
+                try await resolution.resolve(args: args, verify: { _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    return verdict
+                }) { counts.resolutions += 1; return tab }
+            }
+            do {
+                _ = try await task.value
+                XCTFail("verdict \(verdict): the request was cancelled, no target may be returned")
+            } catch is CancellationError {
+            } catch {
+                XCTFail("verdict \(verdict): expected CancellationError, got \(error)")
+            }
+            XCTAssertEqual(counts.resolutions, 1, "verdict \(verdict): a cancelled request must not resolve afresh")
+        }
+    }
+
+    func testAResolutionRequestedByACancelledTaskDoesNotRun() async {
+        final class Counts: @unchecked Sendable { var resolutions = 0 }
+        let counts = Counts()
+        let resolution = InProcessStepDispatcher.SharedTargetResolution()
+        let tab = SafariBridge.TargetDocument.resolvedTab(windowID: 101, tabInWindow: 2, rematch: .contains("x"), profile: nil)
+        let task = Task { () -> SafariBridge.TargetDocument in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await resolution.resolve(args: ["--url", "x"], verify: { _ in true }) { counts.resolutions += 1; return tab }
+        }
+        do {
+            _ = try await task.value
+            XCTFail("the task was cancelled before it asked")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        XCTAssertEqual(counts.resolutions, 0)
+    }
 }

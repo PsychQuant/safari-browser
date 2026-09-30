@@ -41,20 +41,25 @@ struct InProcessStepDispatcher: StepDispatcher {
             verify: (SafariBridge.TargetDocument) async throws -> Bool = SafariBridge.verifyResolvedTab,
             _ resolver: () async throws -> SafariBridge.TargetDocument
         ) async throws -> SafariBridge.TargetDocument {
+            // A cancelled request starts no resolution and dispatches no step
+            // (verify R6, R7): cancellation is cooperative, so it is checked on
+            // entry, whatever the check raised, and after the check returns.
+            try Task.checkCancellation()
             if let hit = lock.withLock({ cached }), hit.args == args {
                 // Any failure of the check counts as "not verified": the
                 // daemon's NSAppleScript errors carry no -1719 / -1728 and are
                 // localized, so a closed tab or window cannot be recognised
                 // by its message (verify R2). A check that threw used to skip
                 // this reset and leave every later step failing.
+                let verified: Bool
                 do {
-                    if try await verify(hit.target) { return hit.target }
+                    verified = try await verify(hit.target)
                 } catch {
-                    // A cancelled request must not start a resolution, whatever
-                    // the check raised (verify R6: only CancellationError was
-                    // recognised).
                     if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                    verified = false
                 }
+                try Task.checkCancellation()
+                if verified { return hit.target }
                 lock.withLock { cached = nil }
             }
             let target = try await resolver()
