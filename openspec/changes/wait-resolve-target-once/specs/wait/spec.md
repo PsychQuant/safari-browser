@@ -4,7 +4,7 @@
 
 The system SHALL poll the URL of the target tab every 500 ms until it matches the given pattern, then exit. The `--for-url` flag accepts the pattern. (The previous `--url` flag was repurposed as a global targeting flag in #23 — see the `document-targeting` capability.)
 
-The target SHALL be resolved once, before the first poll. Resolution time counts against `--timeout`, and the first poll SHALL always run, even when resolution used up the timeout. `--timeout` bounds when a poll after the first may start, and after an unsatisfied poll the wait SHALL ask to sleep no longer than until the deadline. It does not bound how long the command takes: resolving the target and a poll that has started are not cut short by `--timeout`, so the command can end later than it. The limits that the calls a poll makes have of their own are not changed by this requirement, and are not stated here: when the call that reads the URL fails, the wait ends with that call's error and does not go on polling. The command's help SHALL say that the command can end later than `--timeout`. Which tab is read is decided by the target form, a closed list:
+The target SHALL be resolved once, before the first poll. Resolution time counts against `--timeout`, and the first poll SHALL always run, even when resolution used up the timeout. `--timeout` bounds when a poll after the first may start, and after an unsatisfied poll the wait SHALL ask to sleep no longer than until the deadline. It does not bound how long the command takes: resolving the target and a poll that has started are not cut short by `--timeout`, so the command can end later than it. The calls a poll makes, their own limits and what happens when one fails are not changed by this requirement and are not stated here. The command's help SHALL say that the command can end later than `--timeout`. Which tab is read is decided by the target form, a closed list:
 
 1. The default target and `--window N` SHALL read the window's current tab at command start. Each poll SHALL check, in the same AppleScript as the read, that this tab is still the window's current tab, and SHALL otherwise fail with the target-tab-changed error. When the window's current tab cannot be read at command start (a timeout under load, a window with no tab), the target stays unanchored and every poll resolves it afresh, without that check.
 2. A URL-pattern target (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`) SHALL be followed through its window's URL list. The first poll SHALL compare that list with the one read while resolving; every later poll with the previous poll's. While the tabs to its left are unchanged and its position still shows the URL it showed before, the tab is read in place. When that URL is shown by exactly one tab, and by exactly one tab before, the tab has moved there and SHALL be read at the new position. When its position shows another URL, the tabs to its left and the tab count are unchanged, the tabs to its right did not all move one place left, and the URL it showed is either shown by no tab now or was shown by several tabs before, it navigated: its new URL is read and becomes the URL to follow. Anything else SHALL fail with the target-tab-changed error; in particular a URL that was shown by one tab and is now shown by several tabs is ambiguous and is not followed, and so is a tab that navigates to the URL its right neighbour shows (the observation is the same as the tab closing and a tab opening at the end).
@@ -64,10 +64,10 @@ Every poll SHALL probe for a blocking dialog on the window it reads, as every ot
 - **THEN** it SHALL NOT be interrupted or cancelled by `--timeout`, and its answer SHALL count: a condition that held in that poll ends the wait successfully
 - **AND** no further poll SHALL start after the deadline, and the wait SHALL NOT ask to sleep past it
 
-#### Scenario: the call that reads the URL fails
+#### Scenario: the call that reads the URL reaches its own limit
 
-- **WHEN** the call that reads the URL in a poll fails (for example it reaches its own time limit, or a daemon request that was sent is not answered)
-- **THEN** the wait SHALL end with that call's error, and SHALL NOT continue polling or report the timeout of `--timeout`
+- **WHEN** the call that reads the URL in a poll reaches its own time limit (a process timeout), or is a daemon request that was sent and not answered
+- **THEN** the wait SHALL end with the error of that limit, unchanged, and SHALL NOT continue polling or report the timeout of `--timeout`
 
 #### Scenario: a poll begins after the deadline was reached while sleeping
 
@@ -103,10 +103,10 @@ The system SHALL poll a JavaScript expression every 500 ms until it evaluates to
 - **WHEN** resolving the target takes longer than `--timeout` and the condition already holds
 - **THEN** the wait SHALL poll once and exit with zero status
 
-#### Scenario: the call that evaluates the expression fails
+#### Scenario: a daemon request of a `--js` poll is not answered
 
-- **WHEN** the call that evaluates the expression in a `--js` poll fails (for example it reaches its own time limit)
-- **THEN** the wait SHALL end with that call's error and SHALL NOT continue polling
+- **WHEN** the call that evaluates the expression in a `--js` poll is a daemon request that was sent and not answered
+- **THEN** the wait SHALL end with the error of that limit, unchanged, and SHALL NOT continue polling or report the timeout of `--timeout`
 
 #### Scenario: a zero or negative timeout
 
