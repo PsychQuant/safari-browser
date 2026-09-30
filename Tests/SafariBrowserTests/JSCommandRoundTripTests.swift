@@ -33,6 +33,10 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         /// which is what let the dialog gate's 2 s cache expire mid-command.
         var enumerationDelay: TimeInterval = 0
         var javaScriptDelay: TimeInterval = 0
+        /// #221: seconds a whole-window URL read takes (a poll of `wait --for-url`).
+        var windowURLReadDelay: TimeInterval = 0
+        /// #221: what a `wait --js` poll answers (`"true"` makes the condition hold); empty otherwise.
+        var waitJavaScriptAnswer = ""
         var failWithTimeout = false
 
         init(tabCounts: [Int] = [96, 2, 6, 1, 4], failJSContaining: String? = nil) {
@@ -108,6 +112,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             }
             if script.contains("URL of every tab of window id "),
                let id = Self.firstInt(after: "URL of every tab of window id ", in: script) {
+                if windowURLReadDelay > 0 { Thread.sleep(forTimeInterval: windowURLReadDelay) }
                 lock.lock(); defer { lock.unlock() }
                 windowReads += 1
                 if window1Closed, id == idBase + 1 {
@@ -157,6 +162,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                     throw SafariBrowserError.appleScriptFailed(
                         "execution error: Safari got an error: Can’t get tab. Invalid index. (-1719)")
                 }
+                if script.contains("? 'true' : ''") { return waitJavaScriptAnswer }
                 if script.contains("window.__sbResult.substring(") { return "hello" }
                 if script.contains("do JavaScript \"window.__sbResultLen\"") { return "5.0" }
                 if script.contains("'' + window.__sbLen") { return "5.0" }

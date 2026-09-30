@@ -19,7 +19,8 @@ struct WaitCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Wait until this JS expression is truthy")
     var js: String?
 
-    @Option(name: .long, help: "Timeout in milliseconds (default: 30000)")
+    @Option(name: .long, help: ArgumentHelp("Timeout in milliseconds (default: 30000)",
+        discussion: "Bounds when the next poll may start, not how long the command takes: target resolution and a poll already running are never interrupted, so the command can end later than --timeout. Each AppleScript call has its own 30 s process timeout. Use timeout(1) around the command for a hard limit."))
     var timeout: Int = 30000
 
     // #182: randomized wait. One duration is drawn from a Cauchy distribution
@@ -326,7 +327,12 @@ struct WaitCommand: AsyncParsableCommand {
     /// resolution, and a resolution that used up the timeout must not turn a
     /// condition that already holds into a timeout (#168 verify R1). So
     /// `--timeout 0` polls once, where it used to time out without polling.
-    /// Neither resolution nor a poll is interrupted at the deadline.
+    /// Neither resolution nor a poll is interrupted at the deadline (#221): `--timeout`
+    /// bounds when a poll may *start*. Interrupting is not done on purpose — the first poll
+    /// must always run (above), the daemon path cannot interrupt an `NSAppleScript`, and a
+    /// poll's identity check and its read are one AppleScript, so an interrupted poll would
+    /// leave it unknown whether the check happened. Every AppleScript call is bounded by its
+    /// own 30 s process timeout, so the tail is finite.
     private func pollUntilDeadline(_ deadline: Date, _ satisfied: () async throws -> Bool) async throws {
         var first = true
         while first || Date() < deadline {

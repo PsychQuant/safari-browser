@@ -245,6 +245,58 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         try await runWait(["--for-url", "w1.example/53", "--timeout", "500", "--url", "w1.example/53"], on: fake)
     }
 
+    // MARK: - #221: `--timeout` bounds when a poll may start, not how long one takes
+
+    private func elapsed(_ body: () async throws -> Void) async -> (seconds: TimeInterval, error: Error?) {
+        let start = Date()
+        do { try await body(); return (Date().timeIntervalSince(start), nil) }
+        catch { return (Date().timeIntervalSince(start), error) }
+    }
+
+    /// A poll already running is not interrupted at the deadline, and what it answers counts:
+    /// the condition held, so the wait succeeds even though the poll took longer than `--timeout`.
+    func testAJSPollThatOutlastsTheTimeoutIsNotInterruptedAndItsAnswerCounts() async {
+        let fake = FakeSafari()
+        fake.javaScriptDelay = 0.8
+        fake.waitJavaScriptAnswer = "true"
+        let result = await elapsed { try await runWait(["--js", "window.ready", "--timeout", "300"], on: fake) }
+        XCTAssertNil(result.error, "\(String(describing: result.error))")
+        XCTAssertGreaterThanOrEqual(result.seconds, 0.75, "the poll ran to completion")
+        XCTAssertEqual(fake.javaScripts.count, 1, fake.transcript)
+    }
+
+    /// The last poll outlasting the deadline ends the wait; no further poll starts.
+    func testNoJSPollStartsAfterTheDeadlineEvenWhenTheLastOneOutlastedIt() async {
+        let fake = FakeSafari()
+        fake.javaScriptDelay = 0.8
+        let result = await elapsed { try await runWait(["--js", "window.ready", "--timeout", "300"], on: fake) }
+        guard case SafariBrowserError.timeout? = result.error else { return XCTFail("expected a timeout, got \(String(describing: result.error))") }
+        XCTAssertGreaterThanOrEqual(result.seconds, 0.75, "the poll in flight was not interrupted at 300 ms")
+        XCTAssertEqual(fake.javaScripts.count, 1, "no second poll after the deadline:\n\(fake.transcript)")
+    }
+
+    func testAURLPollThatOutlastsTheTimeoutIsNotInterruptedAndItsAnswerCounts() async {
+        let fake = FakeSafari()
+        fake.windowURLReadDelay = 0.8
+        let result = await elapsed {
+            try await runWait(["--for-url", "w1.example/53", "--timeout", "300", "--url", "w1.example/53"], on: fake)
+        }
+        XCTAssertNil(result.error, "\(String(describing: result.error))")
+        XCTAssertGreaterThanOrEqual(result.seconds, 0.75, "the poll ran to completion")
+        XCTAssertEqual(fake.windowURLReads.count, 1, fake.transcript)
+    }
+
+    func testNoURLPollStartsAfterTheDeadlineEvenWhenTheLastOneOutlastedIt() async {
+        let fake = FakeSafari()
+        fake.windowURLReadDelay = 0.8
+        let result = await elapsed {
+            try await runWait(["--for-url", "never-matches", "--timeout", "300", "--url", "w1.example/53"], on: fake)
+        }
+        guard case SafariBrowserError.timeout? = result.error else { return XCTFail("expected a timeout, got \(String(describing: result.error))") }
+        XCTAssertGreaterThanOrEqual(result.seconds, 0.75)
+        XCTAssertEqual(fake.windowURLReads.count, 1, "no second poll after the deadline:\n\(fake.transcript)")
+    }
+
     func testDefaultTargetWaitNeverEnumerates() async {
         let fake = FakeSafari()
         do {
