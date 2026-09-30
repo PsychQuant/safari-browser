@@ -354,12 +354,14 @@ struct TargetOptions: ParsableArguments {
     /// `profile:` parameter. When absent, returns `resolve()` unchanged so the
     /// no-profile path is byte-identical. Used by commands whose downstream
     /// bridge methods don't take `profile:` (get text/html, save-image, upload).
-    func resolveProfileScoped() async throws -> SafariBridge.TargetDocument {
+    func resolveProfileScoped(
+        warnWriter: @escaping (String) -> Void = TargetOptions.stderrWarnWriter
+    ) async throws -> SafariBridge.TargetDocument {
         guard let profile = profile, !profile.isEmpty else { return resolve() }
         return try await SafariBridge.resolveToConcreteTarget(
             resolve(),
             firstMatch: firstMatch,
-            warnWriter: Self.stderrWarnWriter,
+            warnWriter: warnWriter,
             profile: profile
         )
     }
@@ -380,7 +382,7 @@ struct TargetOptions: ParsableArguments {
             return try await SafariBridge.resolveToConcreteTarget(
                 named, firstMatch: true, warnWriter: warnWriter, profile: nil)
         }
-        return try await resolveProfileScoped()
+        return try await resolveProfileScoped(warnWriter: warnWriter)
     }
 
     /// Convenience wrapper that bundles the resolved `TargetDocument`

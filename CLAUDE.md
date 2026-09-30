@@ -163,6 +163,8 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
 
 **注意**：`documents` subcommand 列出 Safari `document` collection 的 MRU 順序，但 `--document N` 在 native path（#26）被解讀成「spatial window-major 第 N 個 tab」— 兩者在單視窗單 tab 等價，多 tab 情境下略有差異。JS path 保留 Safari 的 document-index semantics。
 
+**`--first-match` 的兩種接法（#231）**：帶 `TargetOptions` 的指令要嘛把旗標交給 bridge（`resolveWithFirstMatch()`，或 `doJavaScript(..., firstMatch:, warnWriter:)`，每次讀取各自解析、各自警告），要嘛用 `TargetOptions.resolveFirstMatchOnce()`：有 `--first-match`、沒有 `--profile`、目標是 URL 類旗標時只解析一次成具體分頁（一次列舉、多個匹配時一則警告），之後每次讀取都跟著那個分頁；其他組合與 `resolveProfileScoped()` 完全相同。**兩種不要「統一」成同一種**：後者的單次解析與單一警告是刻意的。`FirstMatchResolutionTests` 有逐指令的行為測試與逐 struct 的形狀檢查；已知沒接的（`screenshot` 等）記在 #233。
+
 AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪些 documents，然後用 `--url <substring>` 明確指定。避免靠 `front window` 的 z-order 猜測。
 
 新抽象：
