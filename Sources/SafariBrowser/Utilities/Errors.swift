@@ -35,7 +35,9 @@ enum SafariBrowserError: LocalizedError {
     case invalidTimeout(Double)
     case systemEventsNotResponding(underlying: String)
     case documentNotFound(pattern: String, availableDocuments: [String])
-    case ambiguousWindowMatch(pattern: String, matches: [(windowIndex: Int, url: String)])
+    /// `url` is already redacted by whoever builds the error (#227): the payload is what a daemon's
+    /// wire error and log line print, and they do not go through `errorDescription`.
+    case ambiguousWindowMatch(pattern: String, matches: [(windowIndex: Int, tabIndex: Int, url: String)])
     case backgroundTabNotCapturable(windowIndex: Int, tabIndex: Int)
     case noSafariWindow
     case guiSessionLocked
@@ -149,10 +151,9 @@ enum SafariBrowserError: LocalizedError {
             if availableDocuments.isEmpty {
                 listing = "  (no Safari documents are currently open)"
             } else {
-                // #227: a query can be a credential; the listing only has to help a person
-                // choose a substring, and `safari-browser documents` prints the full URLs.
+                // #227: the URLs in these strings were redacted where the strings were built.
                 listing = availableDocuments.enumerated()
-                    .map { "  [\($0.offset + 1)] \(URLText.redactingURLs(in: $0.element))" }
+                    .map { "  [\($0.offset + 1)] \($0.element)" }
                     .joined(separator: "\n")
             }
             return """
@@ -160,7 +161,7 @@ enum SafariBrowserError: LocalizedError {
                 (The flag is supported and did run — this is a targeting miss, not an unknown option.)
                 Available documents:
                 \(listing)
-                \(SafariBrowserError.targetingHint(for: pattern))
+                \(availableDocuments.isEmpty ? "" : "(URLs are shown without their query or fragment; `safari-browser documents` prints them in full.)\n")\(SafariBrowserError.targetingHint(for: pattern))
                 """
         case .elementNotScrollable(let selector):
             // #77: the element matched but carries no overflow, so scrollBy
@@ -233,15 +234,16 @@ enum SafariBrowserError: LocalizedError {
                 listing = "  (internal error: empty matches array)"
             } else {
                 listing = matches
-                    .map { "  [window \($0.windowIndex)] \(URLText.redactURL($0.url))" }
+                    .map { "  [window \($0.windowIndex) tab \($0.tabIndex)] \(URLText.redactURL($0.url))" }
                     .joined(separator: "\n")
             }
             return """
                 Multiple Safari windows match "\(pattern)":
                 \(listing)
+                (URLs are shown without their query or fragment; `safari-browser documents` prints them in full.)
                 Disambiguate by:
-                  1. Use a more specific --url substring (e.g., "plaud.ai/file/abc" instead of "plaud").
-                  2. Use --window N --tab-in-window M to target a specific tab by position.
+                  1. Use a more specific --url substring (e.g., "plaud.ai/file/abc" instead of "plaud"); the part that differs may be in the query, which `safari-browser documents` shows.
+                  2. Use --window N --tab-in-window M, with the window and tab numbers listed above, to target a specific tab by position.
                   3. Pass --first-match to accept the first match (with a stderr warning listing all candidates).
                 """
         case .guiSessionLocked:
@@ -686,10 +688,11 @@ extension SafariBrowserError {
         }
         return """
             Hint: --url matches a *substring* of the URL, not the whole URL, and not the title —
-                  no tab's URL contained this text. Refine it against the URLs above, or target
-                  positionally with --window N --tab-in-window M (coordinates are shown per entry),
-                  or --document N for the [N] index. For stricter matching see
-                  --url-exact / --url-endswith / --url-regex.
+                  no tab's URL contained this text. Refine it against the URLs above (shown without
+                  their query or fragment — `safari-browser documents` prints them in full, and a
+                  copy of a shortened entry will not match --url-exact), or target positionally with
+                  --window N --tab-in-window M (coordinates are shown per entry), or --document N
+                  for the [N] index. For stricter matching see --url-exact / --url-endswith / --url-regex.
             """
     }
 }

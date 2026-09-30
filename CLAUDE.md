@@ -163,7 +163,7 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
 
 **注意**：`documents` subcommand 列出 Safari `document` collection 的 MRU 順序，但 `--document N` 在 native path（#26）被解讀成「spatial window-major 第 N 個 tab」— 兩者在單視窗單 tab 等價，多 tab 情境下略有差異。JS path 保留 Safari 的 document-index semantics。
 
-**錯誤與警告裡的分頁 URL 不含 query（#227）**：`documentNotFound` 的清單、`ambiguousWindowMatch` 的候選、`targetTabChanged` 的「Target position now shows」與 `--first-match` 警告，都以 `URLText` 顯示 scheme／host／path，query 以 `?…`、只有 fragment 以 `#…` 代替（分隔符在 Unicode scalar 上找，組合符藏不住）。使用者自己輸入的 pattern、`documents`／`tabs`／`cloud-tabs`（使用者明確要求的輸出）與下載錯誤裡的資源網址不變。代價：只差 query 的兩個分頁在錯誤清單裡看起來一樣，用 `[window N]`、`--window N --tab-in-window M` 或 `documents`（完整 URL）區分。
+**錯誤、警告與註記裡的分頁 URL 不含 query／fragment／帳密（#227）**：六個位置（`documentNotFound` 清單、`ambiguousWindowMatch` 候選、`targetTabChanged` 的「Target position now shows」、`--first-match` 警告與其 no-match 清單、`js` 導頁註記、`upload` 導走錯誤）以 `URLText.redactURL` 顯示 scheme／host／path，query 以 `?…`、只有 fragment 以 `#…`、authority 帳密以 `…@` 代替；不要求 URL 是階層式，分隔符在 Unicode scalar 上找（組合符藏不住）。**在建構 payload 的地方套用，不是在 `errorDescription` 渲染**：daemon 的 wire error 與 log 印的是 payload（`"\(error)"`），不經 `errorDescription`；`URLTextTests` 的 tripwire 要求 `SafariBridge.swift` 中每一行把分頁 URL 放進「window …」清單的都經過 `URLText`。`ambiguousWindowMatch` 帶 `tabIndex`（脫敏後，只差 query 的候選靠序號區分，也是 `--window N --tab-in-window M` 要的）。使用者自己輸入的 pattern、`documents`／`tabs`／`cloud-tabs`（明確要求的輸出）、頁面載入的資源網址（`save-image` 下載錯誤，另案）不在範圍內；`targetTabChanged` 目前的建構點都傳 nil，其渲染只是防禦。
 
 AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪些 documents，然後用 `--url <substring>` 明確指定。避免靠 `front window` 的 z-order 猜測。
 

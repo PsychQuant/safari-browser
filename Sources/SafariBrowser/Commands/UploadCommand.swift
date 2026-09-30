@@ -459,7 +459,7 @@ struct UploadCommand: AsyncParsableCommand {
                 if currentURL != initialURL {
                     _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
                     throw SafariBrowserError.appleScriptFailed(
-                        "Page navigated away during upload (was: \(initialURL), now: \(currentURL)). Upload aborted."
+                        "Page navigated away during upload (was: \(URLText.redactURL(initialURL)), now: \(URLText.redactURL(currentURL))). Upload aborted."
                     )
                 }
             }

@@ -251,7 +251,7 @@ struct JSCommand: AsyncParsableCommand {
 
     /// Pure message builder so the wording is testable without capturing stderr.
     static func navigationNote(for url: String) -> String {
-        "note: the code navigated the page (now at \(url)); it ran successfully but returned no readable value — the page context that would carry it was replaced.\n"
+        "note: the code navigated the page (now at \(URLText.redactURL(url))); it ran successfully but returned no readable value — the page context that would carry it was replaced.\n"
     }
 
     /// #76: `--large` / `--output` path without page-context eval().
