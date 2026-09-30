@@ -8,6 +8,8 @@
 - [x] 1.5 exec 層級與步驟層級 `--profile` 套用於解析、`documents` 步驟與 `--mark-tab` 的解析（Requirement: `--profile` on the daemon path applies to target resolution and to `documents`）
 - [x] 1.6 測試：`--first-match` 與 `--profile` 搭配 URL pattern 仍重用；無可檢查依據的目標形式不做檢查；驗證腳本以 `considering case` 比較（含以真實 `osascript` 執行的語意測試）；hostile pattern 的跳脫以字面預期值斷言；預設編譯快取在 257 個 source 時淘汰最舊的
 
+- [x] 1.7 #220：`InProcessStepDispatcher.runsInProcess` 的封閉形狀表，client 預檢與 dispatcher 共用；subprocess 的 `documents` 步驟補 `--json`；in-process `get text` 的 innerText 後備；`GetText` 遵守 `--first-match`；剩餘五項差異以封閉清單記入規格（Requirement: Daemon-routed execution when available）
+
 ## 2. 編譯快取上限
 
 - [x] 2.1 測試先失敗：超過容量淘汰最久未使用者

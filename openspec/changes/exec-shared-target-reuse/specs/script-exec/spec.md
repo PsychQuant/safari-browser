@@ -56,9 +56,31 @@ The subprocess path resolves the exec-level target inside every step's own comma
 
 ### Requirement: Daemon-routed execution when available
 
-When command pacing is disabled and a daemon is detected per the standard daemon opt-in rules (see `persistent-daemon` capability), the `exec` command SHALL open one daemon connection, send a single `exec.runScript` request containing the full step array plus the exec-level target arguments, and receive the result array. When the daemon is unavailable, or a step's command cannot run in-process, the command SHALL execute through the subprocess path: every step runs as its own command, which resolves the exec-level target itself and rides the daemon when the daemon opt-in is active.
+When command pacing is disabled and a daemon is detected per the standard daemon opt-in rules (see `persistent-daemon` capability), the `exec` command SHALL open one daemon connection, send a single `exec.runScript` request containing the full step array plus the exec-level target arguments, and receive the result array. When the daemon is unavailable, or a step cannot run in-process, the command SHALL execute through the subprocess path: every step runs as its own command, which resolves the exec-level target itself and rides the daemon when the daemon opt-in is active.
 
-The two paths are not guaranteed to produce the same results. The daemon path calls the bridge directly for six commands; the subprocess path runs the CLI command, which parses more arguments and adds behaviour of its own (output format, fallbacks, error channels, argument handling, diagnostics on stderr). The differences known today are tracked in #220; this requirement does not list them, and it is not to be read as saying that results outside them agree. What it specifies about the two paths is target resolution: a URL-pattern target is resolved at the first step that needs it on the daemon path and reused after a check, while every other target form is resolved every step on both paths, and each subprocess step resolves the exec-level target in its own command. When the set of tabs the exec-level target matches changes mid-run, the paths can therefore differ in this way: when more than one tab matches a URL target at a later step and the resolved position (window and tab index) still shows a matching URL, the daemon path dispatches against that position, which can by then hold a different tab than the one first resolved (a `js` step included: it runs on whatever tab holds that position, and its in-script check compares only the URL), while a subprocess step reports what a fresh resolution reports (the ambiguous match, or for a command that honours `--first-match` the first match). A resolved position that stops matching is resolved afresh on both paths. The multi-match warning that the base requirement 'Exec emits a structured result array' sends to stderr is not written by the daemon path (#220).
+A step can run in-process only when its command is in the in-process set and, once its target flags are removed, its arguments have one of the following shapes (a closed list of shapes; no other shape is run in-process on the ground that it resembles one): for `js`, exactly one argument, the code, which does not start with `-`; for `documents`, no argument or only `--json`; for `get url`, `get title`, `get text` and `get source`, no argument. A step with a step-level `--first-match` and no target flag of its own is not run in-process either, because the in-process dispatcher would drop it. The client SHALL send a script to the daemon only when every step can run in-process, and the in-process dispatcher SHALL refuse a step that cannot, with `unsupportedInExec`, before it resolves anything. A `documents` step run by a child process SHALL be run with `--json`, so that it returns the same JSON rows (`[]` when there are none) as in-process. An in-process `get text` SHALL read the page's `innerText`, in chunks for a large page, when the native text is empty, as the CLI command does.
+
+The two paths are not guaranteed to produce the same results outside what this requirement specifies. The daemon path calls the bridge directly for six commands; the subprocess path runs the CLI command, which parses more arguments and adds behaviour of its own. The differences that remain are these, a closed list of five that is not to be extended by analogy and is not to be read as saying that results outside it agree: (1) a failing step: the daemon path reports the typed code and message, a child's failure is reported as `appleScriptFailed` with the child's stderr; (2) the multi-match warning of the base requirement 'Exec emits a structured result array' is not written by the daemon path; (3) `--mark-tab` wraps the whole run on the daemon path, so a `get title` step reads the wrapped title, while the subprocess path does not forward the marker; (4) the daemon path trims leading and trailing whitespace and newlines from every AppleScript result while a stateless child loses only the trailing newline (found by reading the code, not measured against Safari); (5) `js` in-process passes the code to `do JavaScript` unwrapped, while the CLI wraps it with an error channel and a chunked read above 1 MB, so an uncaught error or a large result may differ (not measured against Safari; see the requirement on `js` step results below). What this requirement specifies about target resolution is: a URL-pattern target is resolved at the first step that needs it on the daemon path and reused after a check, while every other target form is resolved every step on both paths, and each subprocess step resolves the exec-level target in its own command. When the set of tabs the exec-level target matches changes mid-run, the paths can therefore differ in this way: when more than one tab matches a URL target at a later step and the resolved position (window and tab index) still shows a matching URL, the daemon path dispatches against that position, which can by then hold a different tab than the one first resolved (a `js` step included: it runs on whatever tab holds that position, and its in-script check compares only the URL), while a subprocess step reports what a fresh resolution reports (the ambiguous match, or for a command that honours `--first-match` the first match). A resolved position that stops matching is resolved afresh on both paths.
+
+#### Scenario: a step the in-process dispatcher would misread
+
+- **WHEN** a script has a step `get text` with the argument `#selector`, or `js` with `--file script.js`, or `get url` with a stray argument
+- **THEN** the client SHALL NOT send the script to the daemon; every step runs as its own command, where the selector, the option or the rejection of the stray argument is the CLI command's own
+
+#### Scenario: a step-level first-match without a target flag
+
+- **WHEN** a step has `--first-match` and no target flag of its own
+- **THEN** it is not run in-process, so the child honours the flag
+
+#### Scenario: documents returns the same rows on both paths
+
+- **WHEN** a script has a `documents` step and Safari has no tabs
+- **THEN** the result is `[]` whether the step ran in-process or as a child
+
+#### Scenario: an empty native text falls back to innerText in-process
+
+- **WHEN** a `get text` step runs in-process and the page's native text is empty
+- **THEN** the step returns the page's `innerText`, as `safari-browser get text` does
 
 #### Scenario: daemon path shares one connection
 
@@ -105,9 +127,7 @@ unwrapped (the CLI wraps it, #76, to carry results, errors and >1MB payloads
 across an AppleScript boundary that only returns strings). Because the routes
 differ, the agreement is not structural and is pinned by the scenarios below
 only for the cases they name — a future change to either surface's wrapping
-could silently reintroduce the divergence #80 was filed about. Other cases (the
-error channel, results above 1MB, the CLI-only options `--file`, `--large` and
-`--output`) are not promised to agree on the daemon path and are tracked in #220.
+could silently reintroduce the divergence #80 was filed about. Other cases (the error channel and results above 1MB) are not promised to agree on the daemon path; they are difference (5) in the requirement 'Daemon-routed execution when available'. The CLI-only options `--file`, `--large` and `--output` are not run in-process at all (#220): a `js` step that has them is run by a child, where the CLI honours them.
 
 #### Scenario: multi-statement snippet needs `return` on both surfaces
 

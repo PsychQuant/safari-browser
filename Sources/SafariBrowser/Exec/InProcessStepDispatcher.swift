@@ -89,6 +89,30 @@ struct InProcessStepDispatcher: StepDispatcher {
         supportedCommands.contains(cmd)
     }
 
+    /// #220: whether a step is one this dispatcher runs *exactly* as the CLI command would.
+    /// The command being supported is not enough — the dispatcher reads only the target flags,
+    /// so anything else on the step (a selector for `get text`, `--file` for `js`, a stray
+    /// positional, a step-level `--first-match` with no target flag of its own) it would ignore
+    /// or misread while a child process running the CLI command honours or rejects it. A step
+    /// outside this closed list of shapes is run by a child process, and so is the whole script
+    /// (the client pre-flights with this; the dispatcher enforces it too, before resolving).
+    static func runsInProcess(cmd: String, args: [String]) -> Bool {
+        guard supportedCommands.contains(cmd) else { return false }
+        let hasTargetFlag = args.contains { TargetOptions.targetFlagNames.contains($0) }
+        if args.contains("--first-match"), !hasTargetFlag { return false }
+        let rest = stripTargetFlags(args)
+        switch cmd {
+        case "js":
+            // Exactly the code; text that starts like an option is misread by a child's parser.
+            return rest.count == 1 && !rest[0].hasPrefix("-")
+        case "documents":
+            // In-process is always JSON, and so is a `documents` child under exec (#220).
+            return rest.isEmpty || rest == ["--json"]
+        default:
+            return rest.isEmpty
+        }
+    }
+
     func dispatch(
         cmd: String,
         args: [String],
@@ -111,6 +135,9 @@ struct InProcessStepDispatcher: StepDispatcher {
         guard Self.supportedCommands.contains(cmd) else { throw ScriptDispatchError.unsupportedInExec(cmd) }
         if cmd == "js", cmdArgs.first == nil {
             throw ScriptDispatchError.unsupportedInExec("js: missing code argument")
+        }
+        guard Self.runsInProcess(cmd: cmd, args: args) else {
+            throw ScriptDispatchError.unsupportedInExec("\(cmd): arguments this dispatcher does not honour")
         }
 
         let target = try Self.parseTargetOptions(from: effectiveTargetArgs)
@@ -157,11 +184,15 @@ struct InProcessStepDispatcher: StepDispatcher {
             )
 
         case "get text":
-            return try await SafariBridge.getCurrentText(
+            // Same two steps as `GetText.run` (#220): native text first; a page whose native
+            // text is empty is read through its innerText, in chunks for a large page.
+            let native = try await SafariBridge.getCurrentText(
                 target: resolved,
                 firstMatch: target.firstMatch,
                 warnWriter: nil
             )
+            guard native.isEmpty else { return native }
+            return try await SafariBridge.doJavaScriptLarge("document.body.innerText", target: resolved)
 
         case "get source":
             return try await SafariBridge.getCurrentSource(

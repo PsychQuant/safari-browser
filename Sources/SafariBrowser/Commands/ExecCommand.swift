@@ -52,7 +52,7 @@ struct ExecCommand: AsyncParsableCommand {
             // still use the ordinary daemon router and its compiled cache.
             if !pacingEnabled, SafariBridge.shouldUseDaemonAuto(),
                let parsed = try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps),
-               Self.allStepsSupported(parsed),
+               Self.allStepsRunInProcess(parsed),
                let results = try await runViaDaemon(steps: parsed) {
                 print(results)
                 return
@@ -64,13 +64,14 @@ struct ExecCommand: AsyncParsableCommand {
         }
     }
 
-    /// Returns true when every step's `cmd` is in
-    /// `InProcessStepDispatcher.supportedCommands`. Used as a pre-flight
-    /// gate so the client doesn't send a script that would partially fail
-    /// in the daemon path.
-    private static func allStepsSupported(_ steps: [ScriptStep]) -> Bool {
+    /// Returns true when every step is one the in-process dispatcher runs exactly as
+    /// the CLI command would (`InProcessStepDispatcher.runsInProcess`, #220): the
+    /// command is in `supportedCommands` and its arguments have a shape the
+    /// dispatcher honours. Used as a pre-flight gate so the client doesn't send a
+    /// script whose steps would partially fail, or quietly differ, in the daemon path.
+    static func allStepsRunInProcess(_ steps: [ScriptStep]) -> Bool {
         for step in steps {
-            if !InProcessStepDispatcher.isSupported(step.cmd) {
+            if !InProcessStepDispatcher.runsInProcess(cmd: step.cmd, args: step.args) {
                 return false
             }
         }

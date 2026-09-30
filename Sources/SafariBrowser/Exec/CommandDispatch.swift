@@ -45,11 +45,24 @@ enum CommandDispatch {
             throw ScriptDispatchError.unsupportedInExec(cmd)
         }
 
+        let invocation = invocation(cmd: cmd, args: args, sharedTargetArgs: sharedTargetArgs)
+        return try await runSubprocess(executable: currentExecutablePath(), arguments: invocation)
+    }
+
+    /// The argument list of the child that runs one step. Pure, so the shape is testable.
+    ///
+    /// A step without a target flag of its own gets the exec-level target flags. A
+    /// `documents` step is asked for `--json` (#220): exec's own results are JSON, the
+    /// in-process dispatcher has always answered `documents` with the same JSON rows
+    /// (`[]` when there are none), and the CLI's default text listing made the same
+    /// script return a different shape depending on which path ran it.
+    static func invocation(cmd: String, args: [String], sharedTargetArgs: [String]) -> [String] {
+        let cmdParts = cmd.split(separator: " ").map(String.init)
         let stepHasTargetFlag = args.contains { TargetOptions.targetFlagNames.contains($0) }
         let targetArgs = stepHasTargetFlag ? [] : sharedTargetArgs
-
-        let invocation = cmdParts + args + targetArgs
-        return try await runSubprocess(executable: currentExecutablePath(), arguments: invocation)
+        var stepArgs = args
+        if cmd == "documents", !stepArgs.contains("--json") { stepArgs.append("--json") }
+        return cmdParts + stepArgs + targetArgs
     }
 
     /// Executes the running `safari-browser` binary with the given
