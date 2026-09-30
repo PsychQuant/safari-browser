@@ -2434,7 +2434,7 @@ enum SafariBridge {
             }.joined(separator: "\n")
             let msg = "warning: --first-match resolved '\(matcher.description)' to "
                 + "window \(first.windowIndex) tab \(first.tab.tabIndex) "
-                + "(of \(matches.count) matches):\n\(summary)\n"
+                + "(of \(matches.count) matches):\n\(summary)\n(\(URLText.shortenedNote))\n"
             warnWriter?(msg)
         }
         return ResolvedWindowTarget(

@@ -114,6 +114,41 @@ final class URLTextTests: XCTestCase {
         XCTAssertEqual(URLText.redactURL(" https://a.example/p?x=1"), " https://a.example/p?…", "an ordinary URL keeps what it had")
     }
 
+    /// A URL parser removes ASCII tab, LF and CR from anywhere in the input, so a scheme broken up
+    /// by them is still `data:` or `javascript:` — and the payload is not an address.
+    func testControlsInsideASchemeDoNotHideAPayloadScheme() {
+        for scheme in ["da\tta", "d\na\rta", "java\nscript", "ja\tva\tscript", "DA\tTA"] {
+            let shown = URLText.redactURL(scheme + ":text/plain,SECRETVALUE")
+            XCTAssertFalse(shown.contains("SECRETVALUE"), "\(scheme.debugDescription) → \(shown.debugDescription)")
+            XCTAssertTrue(shown.hasSuffix(":…"), shown)
+        }
+        // The same controls leave an ordinary scheme alone, and a scheme that is not one is not one.
+        XCTAssertEqual(URLText.redactURL("ht\ntps://a.example/p?x=1"), "ht\ntps://a.example/p?…")
+        XCTAssertEqual(URLText.redactURL("1\ta:x?SECRET"), "1\ta:x?…")
+        // Through the type that goes into `targetTabChanged`, and through what the error prints.
+        let error = SafariBrowserError.targetTabChanged(expected: "x", actualURL: RedactedURL("da\tta:text/plain,SECRETVALUE"))
+        XCTAssertFalse("\(error)".contains("SECRETVALUE"), "\(error)")
+        XCTAssertFalse((error.errorDescription ?? "").contains("SECRETVALUE"), error.errorDescription ?? "")
+    }
+
+    /// A URL parser reads a backslash as a slash and skips extra ones after a scheme, so the
+    /// authority of a URL inside a path can start after more than two of them. Where the readings
+    /// differ the text takes the one that removes more.
+    func testCredentialsAfterExtraSlashesOrBackslashesAreReplaced() {
+        for separator in ["////", "///", "\\\\", "/\\", "\\/", "//\\/"] {
+            let shown = URLText.redactURL("https://proxy.example/fetch/https:\(separator)user:SECRETVALUE@host.example/x")
+            XCTAssertFalse(shown.contains("SECRETVALUE"), "\(separator) → \(shown)")
+            XCTAssertTrue(shown.contains("…@host.example/x"), shown)
+        }
+        XCTAssertEqual(URLText.redactURL("https:////user:SECRETVALUE@host.example/x"), "https:////…@host.example/x")
+        XCTAssertEqual(URLText.redactURL("https://a.example\\p;jsessionid=SECRET/x"), "https://a.example\\p;…/x",
+                       "a backslash ends the authority for path parameters: the text after it is path")
+        // A backslash inside the credentials does not end the authority for them: the longer reading removes more.
+        XCTAssertFalse(URLText.redactURL("https://user\\name:SECRETVALUE@host.example/x").contains("SECRETVALUE"))
+        // One slash, or none, is not recognised as an authority; the doc comment of `redactURL` says so.
+        XCTAssertEqual(URLText.redactURL("https://proxy.example/https:/host.example/x"), "https://proxy.example/https:/host.example/x")
+    }
+
     /// The cap, by its number and not by the constant the code holds: 200 shown at most, 199 of
     /// the text and the `…` that says something was cut.
     func testTheCapIsTwoHundredScalars() {
@@ -143,14 +178,16 @@ final class URLTextTests: XCTestCase {
         }
     }
 
-    /// A seeded sweep over URL-shaped and random strings, most of them near the cap.
+    /// A seeded sweep over URL-shaped and random strings, most of them near the cap. It checks the
+    /// result is stable, not that the repeat loop is needed: on this generator a second pass almost
+    /// never changes anything, and the counterexamples above are what pin the loop.
     func testRedactionIsAFixedPointOverASeededSweep() {
         var state: UInt64 = 0x9E3779B97F4A7C15
         func next(_ bound: Int) -> Int {
             state = state &* 6364136223846793005 &+ 1442695040888963407
             return Int((state >> 33) % UInt64(bound))
         }
-        let alphabet = Array("htps:/@;?#=…ab1 .-\u{0301}")
+        let alphabet = Array("htps:/\\@;?#=…ab1 .-\u{0301}\t\n")
         let heads = ["https://a.example/", "file:/", "about:blank", "https://u:p@h.example/x", "data:x", "", "https://p.example/https://q:r@s.example/"]
         for _ in 0..<6000 {
             var text = heads[next(heads.count)]
@@ -274,6 +311,7 @@ final class URLTextTests: XCTestCase {
         XCTAssertFalse(captured[0].contains(secret), captured[0])
         XCTAssertTrue(captured[0].contains("window 1 tab 2: https://cdn.example.org/g.pdf?…"), captured[0])
         XCTAssertTrue(captured[0].contains("'cdn'"), "the matcher is the person's own pattern: \(captured[0])")
+        XCTAssertTrue(captured[0].contains(URLText.shortenedNote), "two entries that differ only in a hidden query must not read as a repeated line: \(captured[0])")
     }
 
     func testTheFirstMatchMissListsTabsWithoutTheirQuery() {
@@ -307,9 +345,6 @@ final class URLTextTests: XCTestCase {
         XCTAssertTrue(sameLooking.hasSuffix("Upload aborted."), sameLooking)
     }
 
-    /// `targetTabChanged` carries its URL as a `RedactedURL`, which redacts what it is built from:
-    /// a raw string cannot get into the payload, so what `"\(error)"` (a daemon's wire error and log
-    /// line) prints and what `errorDescription` prints are both redacted.
     /// The upload's navigation check, driven for real: a fake page whose URL changes after the
     /// first read, and a file large enough (11 chunks) for the check that runs every 10 chunks.
     /// What reaches the person is the error built from the redacted URLs.
@@ -340,6 +375,10 @@ final class URLTextTests: XCTestCase {
         }
     }
 
+    /// `targetTabChanged` carries its URL as a `RedactedURL`, which redacts what it is built from:
+    /// a raw string cannot get into the payload, so what `"\(error)"` (a daemon's wire error and log
+    /// line) prints and what `errorDescription` prints are both redacted. No producer in Sources
+    /// passes a URL yet (all three pass `nil`); this is the guarantee for the first one that does.
     func testTargetTabChangedCannotCarryAnUnredactedURL() {
         let error = SafariBrowserError.targetTabChanged(
             expected: "url contains \"cdn\"", actualURL: RedactedURL("https://cdn.example.org/f.pdf?k=\(secret)#\(secret)"))
@@ -412,9 +451,31 @@ final class URLTextTests: XCTestCase {
         let hint = SafariBrowserError.targetingHint(for: "some-substring")
         XCTAssertTrue(hint.contains("safari-browser documents"), hint)
         XCTAssertTrue(hint.contains("without"), hint)
-        // A copied entry with its marker fails every URL matcher, not only --url-exact.
         let flat = hint.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        XCTAssertTrue(flat.contains("`…` marker (`?…`, `#…`, `…@`, `;…`) matches none of --url, --url-exact or --url-endswith"), hint)
+        XCTAssertTrue(flat.contains("use the part before the marker as a substring, and not the whole entry with --url-exact or --url-endswith"), hint)
+    }
+
+    /// What the hint tells a person to do, done: the part before the marker matches as a substring
+    /// (and, unlike the whole entry, is what the raw URL contains), the whole marked entry is not the
+    /// URL and matches neither exactly nor by suffix.
+    func testTheAdviceOnAMarkedEntryHoldsForTheMatchers() {
+        let raw = "https://a.example/p?sig=SECRET&x=1"
+        let entry = URLText.redactURL(raw)
+        XCTAssertEqual(entry, "https://a.example/p?…")
+        let beforeTheMarker = String(entry.dropLast(2))
+        XCTAssertTrue(SafariBridge.UrlMatcher.contains(beforeTheMarker).matches(raw), "the part before the marker is a substring")
+        XCTAssertFalse(SafariBridge.UrlMatcher.exact(entry).matches(raw))
+        XCTAssertFalse(SafariBridge.UrlMatcher.endsWith(entry).matches(raw))
+    }
+
+    /// A listing can be scoped to one window, and `--document N` numbers the tabs as `documents`
+    /// does, so the hints do not promise that `[N]` is a document number.
+    func testTheHintsDoNotPromiseThatTheListedNumberIsADocumentNumber() {
+        for pattern in ["some-substring", "window 9", "document 9"] {
+            let flat = SafariBrowserError.targetingHint(for: pattern).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            XCTAssertFalse(flat.contains("for the [N] index"), "\(pattern): \(flat)")
+            XCTAssertTrue(flat.contains("need not be the [N] shown above"), "\(pattern): \(flat)")
+        }
     }
 
     /// `--window N` counts the windows of the `--profile` when there is one, while the listings

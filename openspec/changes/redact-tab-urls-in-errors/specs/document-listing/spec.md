@@ -6,9 +6,15 @@ Every tab that a `documentNotFound` listing names SHALL be a tab that `safari-br
 
 #### Scenario: Error listing matches documents output
 
-- **WHEN** a `documentNotFound` error is raised with `availableDocuments` listing two URLs
+- **WHEN** a `documentNotFound` error that is not scoped (a URL substring that matches nothing) is raised with `availableDocuments` listing two URLs
 - **AND** the user immediately runs `safari-browser documents`
 - **THEN** both outputs SHALL refer to the same documents in the same index order
+
+#### Scenario: a scoped listing names tabs that documents lists
+
+- **WHEN** a `documentNotFound` error is scoped (window 2 has two tabs, window 1 has one, and `--window 2 --tab-in-window 99` misses)
+- **THEN** the listing names window 2's two tabs, with their window and tab numbers, and each of them is a tab that `safari-browser documents` lists with the same numbers
+- **AND** the number in front of each entry is its position in this listing; it is not promised to be what `--document N` takes
 
 #### Scenario: a query is elided in the error and complete in documents
 

@@ -19,9 +19,9 @@ The `?`/`#` cut SHALL NOT depend on the URL having a hierarchical form (`about:b
 5. the note that `js` writes to stderr when the code navigated the page;
 6. the error `upload` raises when the page navigated away during the upload.
 
-The redaction SHALL be applied where the error's payload is built, as well as (not instead of) where it is rendered, because a daemon's wire error and the `error` field of its log line print the payload rather than the rendered description. `targetTabChanged` carries its URL as a `RedactedURL`, a type that redacts what it is built from and has no string-literal conversion, so its payload cannot hold an unredacted URL and no producer can pass one. Labels around the URL (such as `window 1 [Work]:`, tab counts, `(unknown)`) SHALL be unchanged, except that the candidates of `ambiguousWindowMatch` gain their tab number, `[window N tab M]`, because with the query removed it is what tells two tabs of one window apart. The messages that list URLs SHALL say that they are shown shortened and that `safari-browser documents` prints them in full.
+The redaction SHALL be applied where the error's payload is built, because a daemon's wire error and the `error` field of its log line print the payload rather than the rendered description. `ambiguousWindowMatch` also redacts when it renders, which is harmless because the redaction is a fixed point. `targetTabChanged` carries its URL as a `RedactedURL`, a type that redacts what it is built from and has no string-literal conversion, so its payload cannot hold an unredacted URL; no producer passes a URL to it yet (all three pass none), so that guarantee is for the first one that does. `documentNotFound` has no such type: its strings are redacted where each of its producers builds them. Labels around the URL (such as `window 1 [Work]:`, tab counts, `(unknown)`) SHALL be unchanged, except that the candidates of `ambiguousWindowMatch` gain their tab number, `[window N tab M]`, because with the query removed it is what tells two tabs of one window apart. The messages that list URLs (the listing of `documentNotFound`, the candidates of `ambiguousWindowMatch`, and the `--first-match` warning) SHALL say that they are shown shortened and that `safari-browser documents` prints them in full. A hint that tells the person how to retarget SHALL NOT promise that the number in front of a listed entry is what `--document N` takes: a listing can be scoped to one window, and `--document N` numbers the tabs as `safari-browser documents` does.
 
-Not covered, and not by analogy: the person's own input (the `--url` pattern and the description of what was expected); the output of `documents`, `tabs` and `cloud-tabs`, which the person asks for directly; the `result` field of a daemon's log line, which records what a command returned (#230); and the URLs of resources a command fetches or a page loads (`save-image` download errors, for example), which are a different class and are tracked separately (#229). A secret that is part of the path (a reset link `/reset/<token>`, a webhook path) is not recognisable as one and is shown, because the host and path are what identify a tab; only what can be recognised is removed (a query, a fragment, credentials, path parameters, a data payload).
+Not covered, and not by analogy: the person's own input (the `--url` pattern and the description of what was expected); the output of `documents`, `tabs` and `cloud-tabs`, which the person asks for directly; the `result` field of a daemon's log line, which records what a command returned (#230); and the URLs of resources a command fetches or a page loads (`save-image` download errors, for example), which are a different class and are tracked separately (#229). A secret that is part of the path (a reset link `/reset/<token>`, a webhook path) is not recognisable as one and is shown, because the host and path are what identify a tab; only what can be recognised is removed (a query, a fragment, credentials, path parameters, a data payload). Where a URL parser and a plain reading of the text differ, the redaction takes the reading that removes more: ASCII tab, LF and CR inside a scheme are ignored when the scheme is recognised, and a backslash or an extra slash after a scheme begins an authority. A URL inside a path that has fewer than two slashes after its scheme (`https:user:pw@host`) is not recognised as having an authority; Safari spells its own tab URLs canonically, and an embedded one is path text.
 
 #### Scenario: a signed URL in the not-found listing
 
@@ -39,6 +39,7 @@ Not covered, and not by analogy: the person's own input (the `--url` pattern and
 
 - **WHEN** `--first-match` resolves among several tabs whose URLs carry queries
 - **THEN** the stderr warning lists every candidate without its query and still says which tab was chosen
+- **AND** the warning says that the URLs are shown shortened, so two entries that differ only in a part that is not shown do not read as a repeated line
 
 #### Scenario: a navigation note
 
@@ -61,6 +62,12 @@ Not covered, and not by analogy: the person's own input (the `--url` pattern and
 - **WHEN** a tab's URL is `https://proxy.example/fetch/https://user:SECRET@host.example/x`, `https://a.example/app;jsessionid=SECRET/next` or `data:text/plain,SECRET`
 - **THEN** it is listed as `https://proxy.example/fetch/https://…@host.example/x`, `https://a.example/app;…/next` and `data:…`
 
+#### Scenario: a scheme broken up by control characters, and extra slashes
+
+- **WHEN** a tab's URL is `da` TAB `ta:text/plain,SECRET` (an ASCII tab inside the scheme), or `https://proxy.example/fetch/https:////user:SECRET@host.example/x`
+- **THEN** it is listed as `data:…` and `https://proxy.example/fetch/https:////…@host.example/x`
+- **AND** the string `SECRET` appears nowhere in what the error prints, including through `targetTabChanged`'s `RedactedURL`
+
 #### Scenario: a very long URL
 
 - **WHEN** a tab's URL, after the other rules have been applied, has more than 200 scalars of scheme, host and path
@@ -80,7 +87,7 @@ Not covered, and not by analogy: the person's own input (the `--url` pattern and
 
 ### Requirement: Document not found surfaces discoverable error
 
-When the user supplies a target flag that does not match any document (URL substring not found, window index out of range, document index out of range), the system SHALL throw `SafariBrowserError.documentNotFound(pattern: String, availableDocuments: [String])`. The error description MUST list all currently available documents, each with its URL shown as the requirement "URLs of tabs in targeting errors, warnings and navigation notes are shown without query or fragment" says, and, whenever it lists any URL, MUST say that `safari-browser documents` prints the URLs in full (an empty listing has no URL to say it about), so the user can correct their target from the listing or, when the difference is in a query, from `safari-browser documents`.
+When the user supplies a target flag that does not match any document (URL substring not found, window index out of range, document index out of range), the system SHALL throw `SafariBrowserError.documentNotFound(pattern: String, availableDocuments: [String])`. The error description MUST list the tabs the miss is about — every tab for an unscoped miss; for a scoped miss fewer (a miss on one window's tab lists that window's tabs, a window-level miss lists each window's current tab) — each with its URL shown as the requirement "URLs of tabs in targeting errors, warnings and navigation notes are shown without query or fragment" says, and, whenever it lists any URL, MUST say that `safari-browser documents` prints the URLs in full (an empty listing has no URL to say it about), so the user can correct their target from the listing or, when the difference is in a query, from `safari-browser documents`.
 
 #### Scenario: URL substring with no matching document
 
