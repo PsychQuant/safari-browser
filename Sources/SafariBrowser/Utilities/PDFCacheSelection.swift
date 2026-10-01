@@ -102,10 +102,25 @@ enum PDFCacheSelection {
     /// URL exactly. No normalisation: a different query, a trailing slash, an
     /// explicit port or a different case is a different resource, and a
     /// near-match that copied the wrong PDF would look exactly like success.
-    static func select(tabURL: String, from pdfs: [WebKitCachedPDF]) throws -> WebKitCachedPDF {
+    static func select(tabURL: String, from pdfs: [WebKitCachedPDF], unreadNote: String? = nil) throws -> WebKitCachedPDF {
         let wanted = PDFCacheURL.removingFragment(tabURL)
         let subject = "the tab's URL \(PDFCacheURL.redact(tabURL).display)"
-        return try single(pdfs.filter { PDFCacheURL.isSame($0.requestURL, wanted) }, subject: subject)
+        return try single(pdfs.filter { PDFCacheURL.isSame($0.requestURL, wanted) }, subject: subject, unreadNote: unreadNote)
+    }
+
+    /// The tab form over a whole scan: a miss says so when part of the cache could not be read.
+    static func select(tabURL: String, scan: WebKitCacheReader.Scan) throws -> WebKitCachedPDF {
+        try select(tabURL: tabURL, from: scan.pdfs, unreadNote: unreadNote(scan))
+    }
+
+    /// `nil` when everything in the cache was understood.
+    static func unreadNote(_ scan: WebKitCacheReader.Scan) -> String? {
+        var parts: [String] = []
+        if scan.unreadableRecords > 0 { parts.append("\(scan.unreadableRecords) with a record that cannot be read") }
+        if !scan.partialKeys.isEmpty { parts.append("\(scan.partialKeys.count) that hold only a byte range") }
+        if !scan.outOfSyncKeys.isEmpty { parts.append("\(scan.outOfSyncKeys.count) whose record does not describe its body") }
+        guard !parts.isEmpty else { return nil }
+        return "The cache also holds PDF bodies that were not considered: \(parts.joined(separator: ", ")). The one you mean may be among them; see `pdf-cache list`."
     }
 
     /// Case-insensitive prefix of the record key. A body whose record cannot be
@@ -115,17 +130,19 @@ enum PDFCacheSelection {
         let matches = scan.pdfs.filter { $0.key.uppercased().hasPrefix(prefix) }
         let unreadable = scan.unreadableKeys.filter { $0.uppercased().hasPrefix(prefix) }
         let partial = scan.partialKeys.filter { $0.uppercased().hasPrefix(prefix) }
+        let outOfSync = scan.outOfSyncKeys.filter { $0.uppercased().hasPrefix(prefix) }
         let subject = "key prefix \(keyPrefix)"
-        if matches.isEmpty, unreadable.isEmpty, partial.count == 1 {
-            throw SafariBrowserError.pdfCache(.partialBody(key: partial[0]))
+        let others = unreadable.count + partial.count + outOfSync.count
+        if matches.isEmpty, others == 1 {
+            if let key = partial.first { throw SafariBrowserError.pdfCache(.partialBody(key: key)) }
+            if let key = unreadable.first { throw SafariBrowserError.pdfCache(.unreadableRecord(key: key)) }
+            if let key = outOfSync.first { throw SafariBrowserError.pdfCache(.recordDisagrees(key: key)) }
         }
-        if matches.isEmpty, partial.isEmpty, unreadable.count == 1 {
-            throw SafariBrowserError.pdfCache(.unreadableRecord(key: unreadable[0]))
-        }
-        if matches.count + unreadable.count + partial.count > 1 {
+        if matches.count + others > 1 {
             let lines = matches.map { PDFCacheFormat.candidateLine($0) }
                 + unreadable.map { "\($0.prefix(12))  (record unreadable)" }
                 + partial.map { "\($0.prefix(12))  (byte range only, cannot be copied)" }
+                + outOfSync.map { "\($0.prefix(12))  (record and body disagree, cannot be copied)" }
             throw SafariBrowserError.pdfCache(.ambiguous(subject: subject, candidates: lines))
         }
         return try single(matches, subject: subject)
@@ -143,10 +160,10 @@ enum PDFCacheSelection {
         }
     }
 
-    private static func single(_ matches: [WebKitCachedPDF], subject: String) throws -> WebKitCachedPDF {
+    private static func single(_ matches: [WebKitCachedPDF], subject: String, unreadNote: String? = nil) throws -> WebKitCachedPDF {
         switch matches.count {
         case 1: return matches[0]
-        case 0: throw SafariBrowserError.pdfCache(.noMatch(subject: subject))
+        case 0: throw SafariBrowserError.pdfCache(.noMatch(subject: subject, unreadNote: unreadNote))
         default:
             throw SafariBrowserError.pdfCache(.ambiguous(
                 subject: subject, candidates: matches.map { PDFCacheFormat.candidateLine($0) }))

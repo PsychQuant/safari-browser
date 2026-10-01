@@ -28,6 +28,8 @@ final class WebKitCacheReaderTests: XCTestCase {
 
     // MARK: - Record bytes
 
+    static let bodyHashOffsetAfterKey = WebKitCacheReader.bodyHashOffsetAfterKey
+
     /// Encodes one WTF persistence string: `uint32 length`, `is8Bit`, characters.
     static func string(_ text: String, is8Bit: Bool = true) -> Data {
         var out = Data()
@@ -60,7 +62,7 @@ final class WebKitCacheReaderTests: XCTestCase {
     static func record(
         version: UInt32 = 17, partition: String = "", type: String = "Resource",
         identifier: String, is8Bit: Bool = true, range: String? = nil,
-        hash: Data = Data(repeating: 0x11, count: 20), trailer: Data = Data(repeating: 0xAB, count: 64)
+        hash: Data = Data(repeating: 0x11, count: 20), bodySize: UInt64 = 0, trailer: Data? = nil
     ) -> Data {
         var out = Data(withUnsafeBytes(of: version.littleEndian, Array.init))
         out.append(string(partition))
@@ -68,7 +70,17 @@ final class WebKitCacheReaderTests: XCTestCase {
         out.append(string(identifier, is8Bit: is8Bit))
         if let range { out.append(string(range)) } else { out.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF]) }
         out.append(hash)
-        out.append(trailer)
+        // After the key, as in a real record: 56 bytes of what is not parsed (timestamp, header hash
+        // and size), the 20-byte hash of the body, and the body's length as uint64. `trailer`
+        // replaces all of it (a record that ends after the key).
+        if let trailer {
+            out.append(trailer)
+        } else {
+            out.append(Data(repeating: 0xAB, count: bodyHashOffsetAfterKey))
+            out.append(Data(repeating: 0xCD, count: 20))
+            out.append(contentsOf: withUnsafeBytes(of: bodySize.littleEndian, Array.init))
+            out.append(Data(repeating: 0xAB, count: 16))
+        }
         return out
     }
 
@@ -169,17 +181,22 @@ final class WebKitCacheReaderTests: XCTestCase {
     /// record's hash is that name's bytes, as in a real cache.
     @discardableResult
     func addRecord(
-        version: String = "Version 17", partition: String = "PARTITIONHASH1",
-        key: String, identifier: String, body: Data?, recordBytes: Data? = nil, range: String? = nil
+        version: String = "Version 17", partition: String = WebKitCacheReaderTests.partitionOne,
+        key: String, identifier: String, body: Data?, recordBytes: Data? = nil, range: String? = nil, bodySizeOverride: Int? = nil
     ) throws -> URL {
         let name = Self.fullKey(key)
         let dir = root.appendingPathComponent("\(version)/Records/\(partition)/Resource", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let bytes = recordBytes ?? Self.record(identifier: identifier, range: range, hash: Self.hashBytes(forKey: name))
+        let bytes = recordBytes ?? Self.record(
+            identifier: identifier, range: range, hash: Self.hashBytes(forKey: name), bodySize: UInt64(bodySizeOverride ?? body?.count ?? 0))
         try bytes.write(to: dir.appendingPathComponent(name))
         if let body { try body.write(to: dir.appendingPathComponent("\(name)-blob")) }
         return dir
     }
+
+    /// Partition folders are hashes (hexadecimal), as in a real cache.
+    static let partitionOne = "A1B2C3D4E5F60718293A4B5C6D7E8F9001122334"
+    static let partitionTwo = "FFEEDDCCBBAA99887766554433221100DEADBEEF"
 
     static let pdfBody = Data("%PDF-1.7\n1 0 obj\n<<>>\nendobj\n".utf8)
 
@@ -187,7 +204,7 @@ final class WebKitCacheReaderTests: XCTestCase {
         try addRecord(key: "AAAA1111", identifier: "https://example.org/a.pdf?sig=SECRET", body: Self.pdfBody)
         try addRecord(key: "BBBB2222", identifier: "https://example.org/page.html", body: Data("<html>".utf8))
         try addRecord(key: "CCCC3333", identifier: "https://example.org/inline", body: nil)
-        try addRecord(partition: "PARTITIONHASH2", key: "DDDD4444", identifier: "https://example.org/b.pdf", body: Self.pdfBody)
+        try addRecord(partition: Self.partitionTwo, key: "DDDD4444", identifier: "https://example.org/b.pdf", body: Self.pdfBody)
 
         let scan = try WebKitCacheReader.scan(cacheRoot: root)
         XCTAssertEqual(scan.unreadableRecords, 0)
@@ -195,7 +212,7 @@ final class WebKitCacheReaderTests: XCTestCase {
         let first = try XCTUnwrap(scan.pdfs.first { $0.key == Self.fullKey("AAAA1111") })
         XCTAssertEqual(first.requestURL, "https://example.org/a.pdf?sig=SECRET")
         XCTAssertEqual(first.size, Int64(Self.pdfBody.count))
-        XCTAssertEqual(first.partitionDirectory, "PARTITIONHASH1")
+        XCTAssertEqual(first.partitionDirectory, Self.partitionOne)
         XCTAssertEqual(first.partition, "")
         XCTAssertNotNil(first.modified)
         XCTAssertEqual(first.bodyURL.lastPathComponent, "\(Self.fullKey("AAAA1111"))-blob")
@@ -257,7 +274,7 @@ final class WebKitCacheReaderTests: XCTestCase {
         XCTAssertEqual(scan.partialKeys, [Self.fullKey("BBBB2222")])
         XCTAssertEqual(scan.unreadableKeys, [])
         // Only a partial body in the cache is an empty listing, not a layout error.
-        let resources = root.appendingPathComponent("Version 17/Records/PARTITIONHASH1/Resource")
+        let resources = root.appendingPathComponent("Version 17/Records/\(Self.partitionOne)/Resource")
         for suffix in ["", "-blob"] {
             try FileManager.default.removeItem(at: resources.appendingPathComponent(Self.fullKey("AAAA1111") + suffix))
         }

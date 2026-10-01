@@ -9,7 +9,7 @@
 
 ## 2. 選取與取出
 
-- [x] 2.1 測試先失敗：沒有指定就拒絕且零副作用、多種指定形式互斥、`--profile` 或 `--first-match` 單獨不算指定（Requirement: Retrieval requires an explicit selection）
+- [x] 2.1 測試先失敗：沒有指定就拒絕且零副作用、多種指定形式互斥、`--first-match` 單獨不算指定、`--profile` 一律拒絕（只讀預設 profile 的快取）（Requirement: Retrieval requires an explicit selection）
 - [x] 2.2 測試先失敗：精確 URL 比對（去 fragment、query 有差就不相符）、0 份與多份都拒絕並列候選、`--key` 唯一前綴且至少 8 字元（Requirement: A tab selection maps to a record by exact URL）
 - [x] 2.3 實作 `PDFCacheSelection`（純函式）與 `TargetOptions.hasExplicitTarget`
 - [x] 2.4 測試先失敗：寫出（`%PDF-` 驗證、可讀且至少一頁、`0600`、已存在拒絕、`--force`、失敗不留目的檔與暫存檔、來源不被修改）（Requirement: Retrieval writes a verified copy atomically）
@@ -29,3 +29,10 @@
 
 - [x] 4.1 CLAUDE.md、docs、CHANGELOG
 - [x] 4.2 `spectra validate`、全套單元測試
+
+## 5. Sonnet 重審（2026-10-02）
+
+- [x] 5.1 record 描述本體的欄位（長度）與 `-blob` 大小對照；store 從未寫入視為空；`Records/` 下非雜湊資料夾略過並計數；目錄名不照印；Resource 資料夾的可搜尋性獨立檢查
+- [x] 5.2 目的地字串不標準化、結尾 `/`／`.`／`..` 拒絕、Safari 自己的資料夾（快取根與所選 PDF 的暫存資料夾）一律拒絕、發布前再比對一次來源、暫存檔 `fchmod 0600` 並去掉 ACL 項目、`RENAME_EXCL` 不支援時的訊息
+- [x] 5.3 `get` 拒絕 `--profile`；tab 形式 no-match 訊息帶「有 N 個 PDF 沒被考慮」；`list` 對 record 與本體不符、略過的資料夾各有 stderr 註記
+- [x] 5.4 指令層測試（`run(paths:tabURL:)` 的接縫）、writer 錨定與保護資料夾測試、reader 的驗證守衛測試；變異檢查

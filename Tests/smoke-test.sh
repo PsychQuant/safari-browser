@@ -152,7 +152,8 @@ OUT=$("$SB" pdf-cache get "$PDFC_DIR/out.pdf" 2>&1 || true)
 assert_contains "pdf-cache get without a selection names the three forms" "$OUT" "--source webkit-pdfs --file"
 assert_exit "pdf-cache get without a selection exits 1" 1 -- "$SB" pdf-cache get "$PDFC_DIR/out.pdf"
 OUT=$("$SB" pdf-cache get "$PDFC_DIR/out.pdf" --profile Work 2>&1 || true)
-assert_contains "a profile alone is not a selection" "$OUT" "explicit selection"
+assert_contains "pdf-cache get refuses --profile (only the default profile's cache is read)" "$OUT" "--profile is not supported"
+assert_exit "pdf-cache get --profile is a usage error (exit 64)" 64 -- "$SB" pdf-cache get "$PDFC_DIR/out.pdf" --profile Work --key abcd1234
 assert_exit "pdf-cache get --key too short is a usage error (exit 64)" 64 -- "$SB" pdf-cache get "$PDFC_DIR/out.pdf" --key abcd
 assert_exit "pdf-cache get with two selections is a usage error (exit 64)" 64 -- "$SB" pdf-cache get "$PDFC_DIR/out.pdf" --key abcd1234 --url plaud
 assert_exit "pdf-cache get --file without --source webkit-pdfs is a usage error (exit 64)" 64 -- "$SB" pdf-cache get "$PDFC_DIR/out.pdf" --file a.pdf

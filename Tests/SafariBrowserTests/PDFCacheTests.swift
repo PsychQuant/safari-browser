@@ -522,7 +522,8 @@ final class PDFCacheTests: XCTestCase {
             let name = WebKitCacheReaderTests.fullKey(entry.key)
             let resources = root.appendingPathComponent("Version 17/Records/\(entry.partition)/Resource", isDirectory: true)
             try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
-            try WebKitCacheReaderTests.record(identifier: entry.url, hash: WebKitCacheReaderTests.hashBytes(forKey: name))
+            try WebKitCacheReaderTests.record(
+                identifier: entry.url, hash: WebKitCacheReaderTests.hashBytes(forKey: name), bodySize: UInt64(entry.body?.count ?? 0))
                 .write(to: resources.appendingPathComponent(name))
             if let body = entry.body { try body.write(to: resources.appendingPathComponent("\(name)-blob")) }
         }
@@ -532,8 +533,8 @@ final class PDFCacheTests: XCTestCase {
     func testRetrieveByTabURLWritesTheCachedBodyAndReportsWhereItCameFrom() throws {
         let bytes = Self.makePDF(pages: 2)
         let paths = try makeCache([
-            (key: "AAAA1111AAAA", url: "https://example.org/a.pdf?sig=SECRET", body: bytes, partition: "P1"),
-            (key: "BBBB2222BBBB", url: "https://example.org/other.pdf", body: Self.makePDF(pages: 1), partition: "P1"),
+            (key: "AAAA1111AAAA", url: "https://example.org/a.pdf?sig=SECRET", body: bytes, partition: WebKitCacheReaderTests.partitionOne),
+            (key: "BBBB2222BBBB", url: "https://example.org/other.pdf", body: Self.makePDF(pages: 1), partition: WebKitCacheReaderTests.partitionOne),
         ])
         let out = try outDir()
         let retrieved = try PDFCacheService.retrieve(
@@ -546,7 +547,7 @@ final class PDFCacheTests: XCTestCase {
 
     /// What `get` prints on success — the row and the JSON — carries the redacted URL too.
     func testWhatGetPrintsOnSuccessNeverCarriesTheQuery() throws {
-        let paths = try makeCache([(key: "AAAA1111AAAA", url: "https://example.org/a.pdf?sig=SECRET", body: Self.makePDF(pages: 1), partition: "P1")])
+        let paths = try makeCache([(key: "AAAA1111AAAA", url: "https://example.org/a.pdf?sig=SECRET", body: Self.makePDF(pages: 1), partition: WebKitCacheReaderTests.partitionOne)])
         let out = try outDir()
         let retrieved = try PDFCacheService.retrieve(
             form: .tab, tabURL: "https://example.org/a.pdf?sig=SECRET", paths: paths,
@@ -558,7 +559,7 @@ final class PDFCacheTests: XCTestCase {
     }
 
     func testRetrieveByKeyAndTheTabFormNeedsAURL() throws {
-        let paths = try makeCache([(key: "AAAA1111AAAA", url: "https://example.org/a.pdf", body: Self.makePDF(pages: 1), partition: "P1")])
+        let paths = try makeCache([(key: "AAAA1111AAAA", url: "https://example.org/a.pdf", body: Self.makePDF(pages: 1), partition: WebKitCacheReaderTests.partitionOne)])
         let out = try outDir()
         _ = try PDFCacheService.retrieve(form: .key("aaaa1111"), tabURL: nil, paths: paths,
                                          destination: out.appendingPathComponent("k.pdf").path, force: false)
@@ -570,8 +571,8 @@ final class PDFCacheTests: XCTestCase {
 
     func testRetrieveWithAnAmbiguousTabWritesNothing() throws {
         let paths = try makeCache([
-            (key: "AAAA1111AAAA", url: "https://example.org/a.pdf", body: Self.makePDF(pages: 1), partition: "P1"),
-            (key: "CCCC3333CCCC", url: "https://example.org/a.pdf", body: Self.makePDF(pages: 1), partition: "P2"),
+            (key: "AAAA1111AAAA", url: "https://example.org/a.pdf", body: Self.makePDF(pages: 1), partition: WebKitCacheReaderTests.partitionOne),
+            (key: "CCCC3333CCCC", url: "https://example.org/a.pdf", body: Self.makePDF(pages: 1), partition: WebKitCacheReaderTests.partitionTwo),
         ])
         let out = try outDir()
         XCTAssertThrowsError(try PDFCacheService.retrieve(form: .tab, tabURL: "https://example.org/a.pdf", paths: paths,
@@ -582,7 +583,7 @@ final class PDFCacheTests: XCTestCase {
     }
 
     func testTheCacheIsNotFallenBackToWhenTheTemporaryFolderHoldsAMatch() throws {
-        let paths = try makeCache([(key: "BBBB2222BBBB", url: "https://example.org/other.pdf", body: Self.makePDF(pages: 1), partition: "P1")])
+        let paths = try makeCache([(key: "BBBB2222BBBB", url: "https://example.org/other.pdf", body: Self.makePDF(pages: 1), partition: WebKitCacheReaderTests.partitionOne)])
         let folder = paths.temporaryRoot.appendingPathComponent("WebKitPDFs-abc", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Self.makePDF(pages: 1).write(to: folder.appendingPathComponent("a.pdf"))
@@ -722,9 +723,19 @@ final class PDFCacheTests: XCTestCase {
         XCTAssertThrowsError(try PDFCacheGet.parse(["out.pdf", "--file", "a.pdf"]))
     }
 
-    func testAProfileAloneIsNotATargetSelection() throws {
-        let profileOnly = try PDFCacheGet.parse(["out.pdf", "--profile", "Work", "--first-match"])
-        XCTAssertFalse(profileOnly.target.hasExplicitTarget)
+    /// The network cache read is the default profile's; a named profile has a store of its own that is
+    /// not read, so the flag is refused rather than ignored (an ignored one would match a tab of
+    /// another profile against the wrong cache and could copy that profile's version of the URL).
+    func testAProfileIsRefusedBecauseOnlyTheDefaultProfilesCacheIsRead() throws {
+        for flags in [["--profile", "Work"], ["--profile", "Work", "--first-match"], ["--profile", "Work", "--url", "a"],
+                      ["--profile", "Work", "--key", "abcd1234"]] {
+            XCTAssertThrowsError(try PDFCacheGet.parse(["out.pdf"] + flags), "\(flags)") {
+                XCTAssertTrue("\($0)".contains("--profile is not supported") || "\($0)".contains("profile"), "\($0)")
+            }
+        }
+    }
+
+    func testTabFlagsAreASelection() throws {
         for flags in [["--url", "a"], ["--url-exact", "a"], ["--url-endswith", "a"], ["--url-regex", "a"],
                       ["--window", "1"], ["--window", "1", "--tab-in-window", "2"], ["--document", "1"], ["--tab", "1"]] {
             XCTAssertTrue(try PDFCacheGet.parse(["out.pdf"] + flags).target.hasExplicitTarget, "\(flags)")
@@ -762,7 +773,8 @@ final class PDFCacheTests: XCTestCase {
             for token in forbidden {
                 XCTAssertFalse(code.contains(token), "\(file) names \(token)")
             }
-            let pattern = try NSRegularExpression(pattern: #"SafariBridge\.(\w+)"#)
+            // Calls only (a name followed by `(`): naming the bridge's target TYPE is not a call.
+            let pattern = try NSRegularExpression(pattern: #"SafariBridge\.(\w+)\("#)
             let bridgeCalls = Set(pattern.matches(in: code, range: NSRange(code.startIndex..., in: code)).compactMap {
                 Range($0.range(at: 1), in: code).map { String(code[$0]) }
             })

@@ -26,7 +26,7 @@
 2. `--key <prefix>`;
 3. `--source webkit-pdfs --file <name>`.
 
-When no selection is given, the command SHALL fail before reading the cache and before creating any file. When more than one selection form is given, the command SHALL fail with a usage error. `--profile` and `--first-match` alone are not selections. The command SHALL NOT choose the newest, the largest, or the only PDF on the caller's behalf.
+When no selection is given, the command SHALL fail before reading the cache and before creating any file. When more than one selection form is given, the command SHALL fail with a usage error. `--first-match` alone is not a selection. `pdf-cache get` SHALL refuse `--profile` with a usage error: it reads the default profile's network cache only, a named profile keeps its own store that is not read, and matching a named profile's tab URL against the default store could copy the default profile's version of the same URL. `pdf-cache list` SHALL say, when it finds nothing, that it read the default profile's network cache. The command SHALL NOT choose the newest, the largest, or the only PDF on the caller's behalf.
 
 #### Scenario: nothing selected
 
@@ -34,10 +34,10 @@ When no selection is given, the command SHALL fail before reading the cache and 
 - **THEN** the command fails naming the three selection forms
 - **AND** `out.pdf` does not exist afterwards and the cache was not read
 
-#### Scenario: a profile alone is not a selection
+#### Scenario: a profile is refused
 
-- **WHEN** `safari-browser pdf-cache get out.pdf --profile Work` runs
-- **THEN** the command fails as if no selection had been given
+- **WHEN** `safari-browser pdf-cache get out.pdf --profile Work` runs, with or without a selection
+- **THEN** the command fails with a usage error that says only the default profile's cache is read, before any read
 
 #### Scenario: two selection forms
 
@@ -51,7 +51,7 @@ When no selection is given, the command SHALL fail before reading the cache and 
 
 ### Requirement: A tab selection maps to a record by exact URL
 
-For a tab-targeting selection, the command SHALL read the target tab's URL through the existing target resolution (which fails closed on an ambiguous match), remove the URL fragment, and compare the result to each cached record's request URL by bytes (UTF-8), with no normalization of scheme, host, path, port, or query and no Unicode canonical equivalence: text that differs only in how a character is encoded does not match. When zero records match, the command SHALL fail and SHALL say that the tab's URL has no cached PDF, with the URL shown as required by "URLs are shown without query or fragment". When more than one record matches, the command SHALL fail and SHALL list every matching candidate (key prefix, partition, size, time) and SHALL NOT choose one. `--key` SHALL match the record file name by case-insensitive prefix of at least 8 hexadecimal characters and SHALL fail on zero or more than one match.
+For a tab-targeting selection, the command SHALL read the target tab's URL through the existing target resolution (which fails closed on an ambiguous match), remove the URL fragment, and compare the result to each cached record's request URL by bytes (UTF-8), with no normalization of scheme, host, path, port, or query and no Unicode canonical equivalence: text that differs only in how a character is encoded does not match. When zero records match, the command SHALL fail and SHALL say that the tab's URL has no cached PDF, with the URL shown as required by "URLs are shown without query or fragment", and, when the cache also holds PDF bodies that were not considered (a record that cannot be read, a body that is only a byte range, a record that does not describe its body), SHALL say how many, because the one meant may be among them. It does not list candidates: with nothing matching there are none, and `pdf-cache list` shows what is cached. When more than one record matches, the command SHALL fail and SHALL list every matching candidate (key prefix, partition, size, time) and SHALL NOT choose one. `--key` SHALL match the record file name by case-insensitive prefix of at least 8 hexadecimal characters and SHALL fail on zero or more than one match.
 
 #### Scenario: one record matches
 
@@ -76,7 +76,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 ### Requirement: Retrieval writes a verified copy atomically
 
-`pdf-cache get` SHALL open the source read-only and SHALL NOT modify it. It SHALL require the source's first five bytes to be `%PDF-`. It SHALL write the bytes to a temporary file created exclusively, with mode `0600`, in the destination's directory; verify that CoreGraphics opens it as a PDF with at least one page and that every page's entry in the page tree can be read (content streams and images are not decoded, so a document whose page tree is intact but whose content is damaged passes); and then publish it by renaming it onto the destination path. The command SHALL NOT replace the file it is copying from: when the destination is that file, whether by the same path, a symbolic link, or a hard link (the same device and inode), it SHALL fail before writing. When the destination exists, the command SHALL fail unless `--force` is given. On any failure the command SHALL leave no file at the destination that it created and no temporary file; when a temporary file cannot be removed (a folder can allow creating a file and deny removing it), the error SHALL keep the original reason and SHALL say that the staged file was left and where. The destination's directory SHALL already exist. It SHALL be opened once, and the temporary file, the verification, the publication, and the cleanup SHALL all refer to that opened folder and to the file that was written, not to paths resolved again; the verification SHALL read the file that was written, and the publication SHALL fail when the staging name no longer refers to it. (The command defends against mistakes and stale state, not against another process of the same user rewriting the destination folder while it runs.) On success it SHALL print one line, or with `--json` one object, giving the destination path, the size, the page count, and where the PDF came from (the key and the URL shown as required by "URLs are shown without query or fragment", or the folder and file name).
+`pdf-cache get` SHALL open the source read-only and SHALL NOT modify it. It SHALL require the source's first five bytes to be `%PDF-`. It SHALL write the bytes to a temporary file created exclusively, with mode `0600` exactly (whatever the umask) and no access-control-list entries (a folder can hand down an inheritable one that grants other users access independently of the mode bits; the entries are removed before any byte is written), in the destination's directory; verify that CoreGraphics opens it as a PDF with at least one page and that every page's entry in the page tree can be read (content streams and images are not decoded, so a document whose page tree is intact but whose content is damaged passes); and then publish it by renaming it onto the destination path. The command SHALL NOT replace the file it is copying from: when the destination is that file, whether by the same path, a symbolic link, or a hard link (the same device and inode), it SHALL fail before writing. When the destination exists, the command SHALL fail unless `--force` is given. On any failure the command SHALL leave no file at the destination that it created and no temporary file; when a temporary file cannot be removed (a folder can allow creating a file and deny removing it), the error SHALL keep the original reason and SHALL say that the staged file was left and where. The destination's directory SHALL already exist. The destination text SHALL be split at its last `/` as plain text and SHALL NOT be standardised, expanded or resolved by anything but the kernel when the folder is opened: `..` after a symbolic link, a leading `~` and a trailing `/` mean what they mean to `cp` (a literal `~` is a folder named `~`; a destination ending in `/`, `.` or `..` names no file and is refused). A destination inside Safari's own cache folder, or inside the temporary folder the chosen PDF came from, SHALL be refused with or without `--force`, compared by the folders' canonical paths so that a symbolic link or another spelling does not get past it. The same-file check SHALL be made again immediately before the forced rename. The folder SHALL be opened once, and the temporary file, the verification, the publication, and the cleanup SHALL all refer to that opened folder and to the file that was written, not to paths resolved again; the verification SHALL read the file that was written, and the publication SHALL fail when the staging name no longer refers to it (a check of the file's identity, not of its bytes: what keeps another user from writing to the staged file is that it is owner-only). When the file system cannot refuse to replace an existing file in one step, a copy without `--force` SHALL fail saying so. (The command defends against mistakes and stale state, not against another process of the same user rewriting the destination folder while it runs.) On success it SHALL print one line, or with `--json` one object, giving the destination path, the size, the page count, and where the PDF came from (the key and the URL shown as required by "URLs are shown without query or fragment", or the folder and file name).
 
 #### Scenario: verified copy published
 
@@ -97,6 +97,21 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 
 - **WHEN** `--force` is given and the destination is the cached file being copied, or a symbolic link or hard link to it
 - **THEN** the command fails and the cached file keeps its content, inode, and permissions
+
+#### Scenario: the destination is inside Safari's own folders
+
+- **WHEN** `--force` is given and the destination is any file inside the cache folder (another entry's record, a `Blobs/` link, through a symbolic link to the folder) or inside the chosen PDF's temporary folder
+- **THEN** the command fails with a message naming that it is Safari's folder, and nothing there changes
+
+#### Scenario: the destination text is resolved by the kernel
+
+- **WHEN** the destination is `link/../x.pdf` and `link` is a symbolic link into another folder
+- **THEN** the file is written where `cp` would write it, and the file the literal text would name is not touched, with or without `--force`
+
+#### Scenario: an inherited ACL
+
+- **WHEN** the destination folder carries an inheritable ACL entry that grants other users access
+- **THEN** the published copy has no ACL entry and mode `0600`
 
 #### Scenario: destination exists
 
@@ -166,9 +181,9 @@ The command SHALL accept only the cache version directory `Version 17`. The fail
 2. no `Version 17` directory exists (the message lists the `Version *` directories that do);
 3. a record selected for use does not begin with `uint32 version 17`, then the strings partition, `Resource`, and identifier, then the range (`0xFFFFFFFF` for none, otherwise a string) and a 20-byte hash whose hexadecimal form equals the record's file name (case-insensitive) where that name is exactly 40 ASCII hexadecimal characters, each string being `uint32 length`, one byte `is8Bit`, and the characters (UTF-16LE when `is8Bit` is 0), with each string at most 65536 characters and no unpaired surrogate in a 16-bit string, or it is truncated;
 4. PDF bodies exist and none of their records parse under class 3;
-5. the `Version 17` folder has no `Records` folder (the message lists what it does hold).
+5. the `Version 17` folder has no `Records` folder and is not a store WebKit has never written to (the message lists what it does hold, naming only entries whose names are those of the layout and counting the rest). A store that holds only an empty `Blobs` folder and `salt` has never been written to and is an empty cache, not class 5.
 
-A record that fails class 3 while others parse SHALL be left out of `list` output and counted in a stderr note; `get --key` on it SHALL fail.
+A record that fails class 3 while others parse SHALL be left out of `list` output and counted in a stderr note; `get --key` on it SHALL fail. A record that parses but does not describe the body file beside it (its body length, read at 76 bytes after the key hash, differs from the file's size, or it ends before that field) is left out and counted in its own stderr note, and `get --key` on it fails saying that Safari was probably writing or replacing it; this is not a failure class of the run. Folders under `Records/` whose names are not hashes are skipped and counted, never named. Names on disk that are outside the layout's grammar are never printed.
 
 #### Scenario: another version directory
 
@@ -224,7 +239,7 @@ A record that fails class 3 while others parse SHALL be left out of `list` outpu
 
 ### Requirement: Access failures keep their cause
 
-Reading the cache folder SHALL preserve the failing call's errno, for the open and for every lookup inside it; a folder that can be listed but not searched is a permission failure and never an empty listing. Sizes and times come from the same lookup that decided the entry is a regular file; a failed lookup is never replaced by a size of zero or a missing date. `EACCES` and `EPERM` SHALL be reported as a Full Disk Access requirement with the guidance the other local-data commands give for the binary's signing state; other errors SHALL be reported with their own errno text and SHALL NOT be reported as a permission problem or as a missing PDF.
+Reading the cache folder SHALL preserve the failing call's errno, for the open and for every lookup inside it; a folder that can be listed but not searched is a permission failure and never an empty listing, whatever its entries are named. An entry that is gone (`ENOENT`, `ENOTDIR`) between listing and reading is not a failure: the cache evicts while Safari runs, and a body that is gone is not a PDF body. Sizes and times come from the same lookup that decided the entry is a regular file; a failed lookup is never replaced by a size of zero or a missing date. `EACCES` and `EPERM` SHALL be reported as a Full Disk Access requirement with the guidance the other local-data commands give for the binary's signing state; other errors SHALL be reported with their own errno text and SHALL NOT be reported as a permission problem or as a missing PDF.
 
 #### Scenario: no Full Disk Access
 

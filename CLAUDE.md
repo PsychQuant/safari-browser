@@ -429,13 +429,15 @@ used to read the target tab's URL when a tab flag is given).
   it exposes a record of every PDF viewed, so `list` has a default limit and `get` acts only on an
   explicit selection. Needs Full Disk Access; errors reuse `SafariDataStore.ioError`.
 - **Selection is a closed list of three** (tab flag / `--key` / `--source webkit-pdfs --file`); no
-  selection is refused before anything is read; two forms is a usage error; `--profile` and
-  `--first-match` alone are not a selection (`TargetOptions.hasExplicitTarget`). Never "newest" or
-  "the only one".
+  selection is refused before anything is read; two forms is a usage error; `--first-match` alone is not
+  a selection (`TargetOptions.hasExplicitTarget`) and `--profile` is a usage error (only the default
+  profile's store is read; a named profile has its own, and matching its tab's URL against the default
+  store could copy the default profile's version of the same URL). Never "newest" or "the only one".
 - **Matching is byte equality** (UTF-8, not Swift's canonical-equivalence `==`) of the tab URL (fragment removed)
   with the record's request URL.
-  Zero or several matches stop and list candidates; there is no near-match fallback and no fallback
-  between the two sources.
+  Several matches stop and list the candidates; zero matches stop and say so (with a count of the PDFs
+  the scan could not interpret, because the one meant may be among them); there is no near-match
+  fallback and no fallback between the two sources.
 - **URLs are shown without query or fragment** (`PDFCacheURL.redact`, delimiters found among Unicode
   *scalars* — `String.firstIndex(of: "?")` compares grapheme clusters and misses a `?` followed by a
   combining mark); matching uses the full string.
@@ -452,11 +454,14 @@ used to read the target tab's URL when a tab flag is given).
   (`0xFFFFFFFF` = none, else a string) and a 20-byte SHA-1 that **equals the record's file name**. That
   last equality is the drift detector: if WebKit reshapes the key the bytes read as the hash stop being
   the name and the record is rejected, not trusted. All 9221 records of the cache it was observed on fit
-  (8-bit 8572, 16-bit 649, non-empty partition 658, every range null, every hash = file name). Nothing
-  after the hash is parsed. The file name must be **exactly 40 ASCII hex characters** (checked before any
+  (8-bit 8572, 16-bit 649, non-empty partition 658, every range null, every hash = file name). After
+  the key only two fields are read: 56 bytes after the key hash the body's 20-byte SHA-1 and at 76 bytes its
+  length as `uint64` (observed 2026-10-01 on the default store: 4602 of 4603 records that have a `-blob`
+  agree with the file's size and with a `Blobs/` link that is the same inode; one disagreed). A record that
+  does not describe its body is left out and counted (`outOfSyncKeys`), never copied. The file name must be **exactly 40 ASCII hex characters** (checked before any
   case-folding: `uppercased()` turns `ﬀ` into `FF`); a PDF body with any other name is only *counted*, its
   name never printed — and the name is judged **before** anything touches the file, because an I/O
-  error carries the path (a failure looking at such an entry is skipped, deliberately). 16-bit strings with an unpaired surrogate are rejected, not repaired to U+FFFD. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
+  error carries the path (a failure looking at such an entry is skipped, deliberately). Folder names under `Records/` must be hashes (hex) and the names a layout error prints must be of the layout's grammar; the rest are counted, never named. 16-bit strings with an unpaired surrogate are rejected, not repaired to U+FFFD. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
   and is judged a PDF by its first five bytes; a record with a range holds part of a resource and is
   never listed. Any departure (other `Version N`, no `Records`, PDF bodies whose records all fail to
   parse) is an error that names what was seen — never an empty result. Small bodies stored inside the
@@ -467,10 +472,16 @@ used to read the target tab's URL when a tab flag is given).
   `CGPDFDocument` reads **the fd the copy was written with** (not the path) and every page's entry in the
   page tree must read (CoreGraphics is lazy: content streams and images are not decoded, so a document
   with an intact page tree and damaged content passes); the staging name must still be the verified inode;
-  then `renameatx_np(RENAME_EXCL)` (`renameat` with `--force`). The early "destination exists" refusal
+  then `renameatx_np(RENAME_EXCL)` (`renameat` with `--force`). The destination text is split at the last `/`
+  as plain text — never `standardizedFileURL`, which folds `..` lexically and expands a leading `~`, so
+  with `--force` it replaced a file the person did not name — and the staged file is `fchmod`ed to 0600 and
+  stripped of ACL entries before a byte is written (a folder can hand down an inheritable ACL). A
+  destination inside Safari's cache folder, or the chosen PDF's temporary folder, is refused with or
+  without `--force` (canonical paths through descriptors); the same-file check runs again right before the
+  rename. The early "destination exists" refusal
   comes before the source is read, and a destination that is the source (same path, symlink or hard link,
   by device and inode) is refused even with `--force` — the real cache bodies are hard-linked into
-  `Blobs/`. A symlink destination is replaced as an entry; its target is never touched. If the staged file cannot be
+  `Blobs/`. The staged-name check is an identity check, not a content check. A symlink destination is replaced as an entry; its target is never touched. If the staged file cannot be
   removed after a failure (an ACL can allow creating and deny removing), the error says it was left and where. The
   `beforePublish` parameter is a test seam that lets `PDFCacheTests` create the two races (destination
   appears after the early check; staged file replaced). **Threat model**: mistakes and stale state, not

@@ -34,7 +34,7 @@ Need login? ──── Yes → safari-browser
 ## MCP stdio
 
 Run `safari-browser mcp` from an MCP client using the installed executable's
-absolute path. The server provides all 77 public CLI leaf commands,
+absolute path. The server provides all 79 public CLI leaf commands,
 including `help`, `setup` and daemon controls. Names follow the command path:
 `wait` becomes `safari.wait`, and `tab focus` becomes `safari.tab.focus`.
 Hidden commands and the MCP transport are excluded. The catalog and input
@@ -747,12 +747,19 @@ safari-browser pdf-cache get paper.pdf --source webkit-pdfs --file paper.pdf
 `get` acts only on an explicit selection — one of a tab flag, `--key`, or
 `--source webkit-pdfs --file` — and never picks a PDF for you, not even when only
 one is cached. A tab is matched by its **exact URL** (fragment removed); a URL
-with no cached record, or one cached in several partitions, stops and lists the
-candidates rather than guessing. The copy is written `0600`, only after it opens
-as a PDF whose pages can all be found in its page tree (content streams and images
-are not decoded), and is renamed into place, so a truncated file never appears under your
-name. An existing destination is kept unless `--force`, and Safari's own cache file
-is never replaced, even with `--force`.
+with no cached record stops and says so (and says how many PDFs in the cache it could
+not read, because the one you mean may be among them); one cached in several
+partitions stops and lists the candidates rather than guessing. The copy is written
+`0600` with no ACL entries, only after it opens as a PDF whose pages can all be found
+in its page tree (content streams and images are not decoded), and is renamed into
+place, so a truncated file never appears under your name. An existing destination is
+kept unless `--force`. A destination **inside Safari's own cache folder** is refused,
+with or without `--force`. The destination is resolved the way `cp` resolves it
+(`link/../x.pdf` follows the link; a quoted `~` is a folder named `~`).
+
+Only the **default profile's** network cache is read: a named profile keeps its own
+store, so `pdf-cache get` refuses `--profile` instead of matching a named profile's tab
+against the wrong cache.
 
 URLs this command prints are shown without their query and fragment, because the
 query of a signed URL can be a credential. (When a tab flag matches no tab, the
@@ -761,12 +768,15 @@ see #227.) `list` defaults to 50 rows (`--limit`).
 
 The record layout is WebKit's private format; only `Version 17` is understood, and
 anything else fails with what was seen instead of reporting an empty cache. Each
-record must name itself (an embedded hash equal to its file name), and a record
-for a byte range — part of a resource — is never listed.
+record must name itself (an embedded hash equal to its file name) and must describe
+the body file beside it (its recorded body length equals the file's size; one that does
+not means Safari was writing or replacing it, and it is left out and counted); a record
+for a byte range — part of a resource — is never listed. A store Safari has never
+written to (an empty `Blobs` folder and `salt`) is an empty cache.
 Responses small enough to be stored inside the record itself (no `-blob` file)
-are not covered. The `WebKitPDFs-*` folders appear only after someone presses
-"Open with Preview" in Safari's PDF viewer, so that source is opt-in and the
-command never presses it for you. Requires **Full Disk Access**, like the
+are not covered. The `WebKitPDFs-*` folders were seen to appear after someone pressed
+"Open with Preview" in Safari's PDF viewer (one observation), so that source is opt-in
+and the command never presses it for you. Requires **Full Disk Access**, like the
 local-data commands above.
 
 ### Permissions

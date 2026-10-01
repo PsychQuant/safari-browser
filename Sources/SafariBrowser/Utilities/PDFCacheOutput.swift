@@ -29,35 +29,49 @@ enum PDFCacheOutput {
     private static let chunkSize = 64 * 1024
 
     /// The source is opened read-only and never modified. The copy is created
-    /// exclusively in the destination's own folder (mode 0600, so a cached
-    /// private document does not become world-readable by a permissive umask),
+    /// exclusively in the destination's own folder, owner-only (mode 0600 and no
+    /// ACL entries, so neither a permissive umask nor an ACL the folder hands down
+    /// makes a cached private document readable or writable by anyone else),
     /// verified through the descriptor it was written with, then renamed into
     /// place. On any failure no temporary file and no destination this call
     /// created remains.
     ///
-    /// `beforePublish` runs after verification and before the last checks and
-    /// the rename. It exists so tests can create the races those checks are
-    /// for; production callers leave it alone.
+    /// The destination text is split at its last `/` as plain text and is NOT
+    /// standardised, expanded or resolved by Foundation: `..`, a symlink and a
+    /// leading `~` mean what the kernel (and `cp`) make of them, because the folder
+    /// is opened with the text as given. The success line names the folder as the
+    /// descriptor reports it, so it says where the file is.
+    ///
+    /// `protectedFolders` are Safari's own folders; a destination inside one is
+    /// refused, with or without `--force`. `afterParentOpened` and `beforePublish`
+    /// exist so tests can create the races the anchoring and the last checks are
+    /// for (swap the folder, swap the staged file); production callers leave them
+    /// alone.
     static func copyVerified(
-        from source: URL, to destination: String, force: Bool, beforePublish: (String) -> Void = { _ in }
+        from source: URL, to destination: String, force: Bool, protectedFolders: [URL] = [],
+        afterParentOpened: () -> Void = {}, beforePublish: (String) -> Void = { _ in }
     ) throws -> Result {
-        let destinationURL = URL(fileURLWithPath: destination).standardizedFileURL
-        let parentURL = destinationURL.deletingLastPathComponent()
-        let name = destinationURL.lastPathComponent
-        // A constant, so that `writeFailure(destinationPath, errno)` evaluates nothing but
-        // a local between the failing call and the read of errno.
-        let destinationPath = destinationURL.path
+        let split = try splitDestination(destination)
+        let typedPath = destination
 
         // The one place the destination folder is resolved by path.
-        let parentFD = open(parentURL.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        let parentFD = open(split.parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard parentFD >= 0 else {
             let code = errno
             if code == ENOENT || code == ENOTDIR {
-                throw SafariBrowserError.pdfCache(.destinationDirectoryMissing(path: parentURL.path))
+                throw SafariBrowserError.pdfCache(.destinationDirectoryMissing(path: split.parent))
             }
-            throw writeFailure(destinationPath, code)
+            throw writeFailure(typedPath, code)
         }
         defer { close(parentFD) }
+        afterParentOpened()
+
+        let parentPath = canonicalPath(of: parentFD) ?? split.parent
+        let name = split.name
+        // A constant, so that `writeFailure(destinationPath, errno)` evaluates nothing but
+        // a local between the failing call and the read of errno.
+        let destinationPath = parentPath == "/" ? "/\(name)" : "\(parentPath)/\(name)"
+        try refuseInside(protectedFolders, parentPath: parentPath, destination: destinationPath)
 
         var existing = stat()
         if fstatat(parentFD, name, &existing, AT_SYMLINK_NOFOLLOW) == 0 {
@@ -78,12 +92,16 @@ enum PDFCacheOutput {
         var temporaryOpen = true
         var published = false
         do {
+            try restrictToOwner(temporaryFD, destination: destinationPath)
             let size = try copy(from: sourceFD, to: temporaryFD, sourceName: source.lastPathComponent, destination: destinationPath)
             guard fsync(temporaryFD) == 0 else { throw writeFailure(destinationPath, errno) }
             let pages = try verifiedPageCount(fd: temporaryFD, size: size)
             beforePublish(temporaryName)
 
-            // The name must still be the file that was written and verified.
+            // The name must still be the file that was written and verified. This is the
+            // identity of the file, not a check of its bytes: what keeps anyone else from
+            // writing to it in between is that it is owner-only (above) and that this runs
+            // as the user who owns it.
             var written = stat(), named = stat()
             guard fstat(temporaryFD, &written) == 0,
                 fstatat(parentFD, temporaryName, &named, AT_SYMLINK_NOFOLLOW) == 0,
@@ -92,6 +110,10 @@ enum PDFCacheOutput {
                 throw SafariBrowserError.pdfCache(.destinationWriteFailed(
                     path: destinationPath, detail: "the staged copy was replaced before it could be published"))
             }
+            // A destination that became the cached file between the first look and now (a link
+            // made in the meantime) is still refused, with or without --force; the window that
+            // remains is the one between this call and the rename.
+            try refuseIfSameFile(sourceFD: sourceFD, parentFD: parentFD, name: name, destination: destinationPath)
 
             // Darwin releases the descriptor even when close() reports an error, so it
             // is never closed again or retried (the number may already belong to
@@ -104,8 +126,14 @@ enum PDFCacheOutput {
                 ? renameat(parentFD, temporaryName, parentFD, name)
                 : renameatx_np(parentFD, temporaryName, parentFD, name, UInt32(RENAME_EXCL))
             guard renamed == 0 else {
-                if errno == EEXIST { throw SafariBrowserError.pdfCache(.destinationExists(path: destinationPath)) }
-                throw writeFailure(destinationPath, errno)
+                let code = errno
+                if code == EEXIST { throw SafariBrowserError.pdfCache(.destinationExists(path: destinationPath)) }
+                if !force, code == ENOTSUP || code == EINVAL {
+                    throw writeFailure(
+                        destinationPath, code,
+                        prefix: "This file system cannot refuse to replace an existing file in one step, so the copy would not be safe without --force.")
+                }
+                throw writeFailure(destinationPath, code)
             }
             published = true
             return Result(path: destinationPath, size: size, pages: pages)
@@ -118,9 +146,66 @@ enum PDFCacheOutput {
                 let code = errno
                 let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 throw writeFailure(
-                    destinationPath, code, prefix: "\(reason) The staged copy \(temporaryName) could not be removed and was left in \(parentURL.path):")
+                    destinationPath, code, prefix: "\(reason) The staged copy \(temporaryName) could not be removed and was left in \(parentPath):")
             }
             throw error
+        }
+    }
+
+    /// The destination as text: everything before the last `/` is the folder (`.` when there is no
+    /// `/`, `/` when it is the only one), the rest is the file name. No normalisation, so the text
+    /// the person typed is the text the kernel resolves.
+    static func splitDestination(_ destination: String) throws -> (parent: String, name: String) {
+        func refuse(_ detail: String) -> SafariBrowserError {
+            .pdfCache(.destinationWriteFailed(path: destination, detail: detail))
+        }
+        guard !destination.isEmpty else { throw refuse("the destination is empty") }
+        guard !destination.hasSuffix("/") else { throw refuse("it must name a file, not a folder") }
+        guard let slash = destination.lastIndex(of: "/") else {
+            guard destination != ".", destination != ".." else { throw refuse("it must name a file, not a folder") }
+            return (".", destination)
+        }
+        let parent = String(destination[..<slash])
+        let name = String(destination[destination.index(after: slash)...])
+        guard name != ".", name != ".." else { throw refuse("it must name a file, not a folder") }
+        return (parent.isEmpty ? "/" : parent, name)
+    }
+
+    /// The folder as the kernel reports it for an open descriptor: symlinks resolved, case as stored.
+    private static func canonicalPath(of fd: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard fcntl(fd, F_GETPATH, &buffer) == 0 else { return nil }
+        return String(cString: buffer)
+    }
+
+    /// A destination inside one of Safari's own folders is refused, with or without `--force`:
+    /// writing there replaces a record, a body or a temporary of Safari's, not a copy of ours.
+    /// Both sides are canonicalised through a descriptor, so a symlink or a different spelling
+    /// of the same folder does not get past it.
+    private static func refuseInside(_ folders: [URL], parentPath: String, destination: String) throws {
+        for folder in folders {
+            let fd = open(folder.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            guard fd >= 0 else { continue }
+            defer { close(fd) }
+            guard let protected = canonicalPath(of: fd) else { continue }
+            if parentPath == protected || parentPath.hasPrefix(protected == "/" ? "/" : protected + "/") {
+                throw SafariBrowserError.pdfCache(.destinationWriteFailed(
+                    path: destination, detail: "it is inside Safari's own cache folder, which this command only reads"))
+            }
+        }
+    }
+
+    /// Owner-only: mode 0600 whatever the umask, and no ACL entries — a folder can hand down an
+    /// inheritable ACL that grants other users access independently of the mode bits. Done
+    /// before a byte is written, so nothing private is ever in a file anyone else could open.
+    /// A file system without ACLs has nothing to remove.
+    private static func restrictToOwner(_ fd: Int32, destination: String) throws {
+        guard fchmod(fd, 0o600) == 0 else { throw writeFailure(destination, errno) }
+        guard let empty = acl_init(0) else { return }
+        defer { acl_free(UnsafeMutableRawPointer(empty)) }
+        if acl_set_fd_np(fd, empty, ACL_TYPE_EXTENDED) != 0 {
+            let code = errno
+            if code != ENOENT, code != ENOTSUP, code != EINVAL, code != EOPNOTSUPP { throw writeFailure(destination, code) }
         }
     }
 
@@ -192,8 +277,8 @@ enum PDFCacheOutput {
     /// A failed `pread` is not an end of file. The provider records the first such
     /// failure, and it decides the verdict: CoreGraphics would otherwise see a short
     /// read and report "could not open", or worse, verify a file it only half read.
-    static func verifiedPageCount(fd: Int32, size: Int64) throws -> Int {
-        let reader = PDFCacheDescriptorReader(fd: fd)
+    static func verifiedPageCount(fd: Int32, size: Int64, read: PositionalRead? = nil) throws -> Int {
+        let reader = PDFCacheDescriptorReader(fd: fd, read: read)
         func fail(_ detail: String) -> SafariBrowserError {
             if reader.failure != 0 {
                 return .pdfCache(.unreadablePDF(detail: "reading the copy back failed: \(String(cString: strerror(reader.failure))) (errno \(reader.failure))"))
@@ -208,15 +293,14 @@ enum PDFCacheOutput {
                 let reader = Unmanaged<PDFCacheDescriptorReader>.fromOpaque(info).takeUnretainedValue()
                 var received = 0
                 while received < count {
-                    let result = pread(reader.fd, buffer.advanced(by: received), count - received, position + off_t(received))
-                    if result < 0 {
-                        let code = errno
-                        if code == EINTR { continue }
-                        if reader.failure == 0 { reader.failure = code }
+                    let step = reader.read(reader.fd, buffer.advanced(by: received), count - received, position + off_t(received))
+                    if step.count < 0 {
+                        if step.errno == EINTR { continue }
+                        if reader.failure == 0 { reader.failure = step.errno }
                         break
                     }
-                    if result == 0 { break }
-                    received += result
+                    if step.count == 0 { break }
+                    received += step.count
                 }
                 return received
             },
@@ -246,10 +330,20 @@ enum PDFCacheOutput {
     }
 }
 
+/// One positional read: the bytes it returned (negative on failure, with the errno).
+typealias PositionalRead = (Int32, UnsafeMutableRawPointer, Int, off_t) -> (count: Int, errno: Int32)
+
 /// Lets CoreGraphics read the staged copy through the descriptor that wrote it.
 private final class PDFCacheDescriptorReader {
     let fd: Int32
-    /// The first `pread` errno that was not EINTR; 0 when every read succeeded.
+    let read: PositionalRead
+    /// The first read errno that was not EINTR; 0 when every read succeeded.
     var failure: Int32 = 0
-    init(fd: Int32) { self.fd = fd }
+    init(fd: Int32, read: PositionalRead?) {
+        self.fd = fd
+        self.read = read ?? { fd, buffer, count, position in
+            let result = pread(fd, buffer, count, position)
+            return (result, result < 0 ? errno : 0)
+        }
+    }
 }

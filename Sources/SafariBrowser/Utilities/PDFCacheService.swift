@@ -30,20 +30,27 @@ enum PDFCacheService {
         case .tab:
             guard let tabURL else { throw SafariBrowserError.pdfCache(.selectionRequired) }
             let scan = try WebKitCacheReader.scan(cacheRoot: paths.cacheRoot)
-            return try copy(try PDFCacheSelection.select(tabURL: tabURL, from: scan.pdfs), destination: destination, force: force)
+            return try copy(
+                try PDFCacheSelection.select(tabURL: tabURL, scan: scan), destination: destination, force: force,
+                protecting: paths.cacheRoot)
         case .key(let prefix):
             let scan = try WebKitCacheReader.scan(cacheRoot: paths.cacheRoot)
-            return try copy(try PDFCacheSelection.select(keyPrefix: prefix, scan: scan), destination: destination, force: force)
+            return try copy(
+                try PDFCacheSelection.select(keyPrefix: prefix, scan: scan), destination: destination, force: force,
+                protecting: paths.cacheRoot)
         case .file(let name):
             let listed = try WebKitTemporaryPDFs.scan(temporaryRoot: paths.temporaryRoot)
             let chosen = try PDFCacheSelection.select(fileName: name, from: listed)
-            let result = try PDFCacheOutput.copyVerified(from: chosen.url, to: destination, force: force)
+            let result = try PDFCacheOutput.copyVerified(
+                from: chosen.url, to: destination, force: force,
+                protectedFolders: [paths.temporaryRoot.appendingPathComponent(chosen.folder, isDirectory: true)])
             return Retrieved(result: result, origin: .temporaryPDFs(folder: chosen.folder, name: chosen.name))
         }
     }
 
-    private static func copy(_ pdf: WebKitCachedPDF, destination: String, force: Bool) throws -> Retrieved {
-        let result = try PDFCacheOutput.copyVerified(from: pdf.bodyURL, to: destination, force: force)
+    private static func copy(_ pdf: WebKitCachedPDF, destination: String, force: Bool, protecting cacheRoot: URL) throws -> Retrieved {
+        let result = try PDFCacheOutput.copyVerified(
+            from: pdf.bodyURL, to: destination, force: force, protectedFolders: [cacheRoot])
         return Retrieved(
             result: result,
             origin: .networkCache(key: pdf.key, displayURL: PDFCacheURL.redact(pdf.requestURL).display))
