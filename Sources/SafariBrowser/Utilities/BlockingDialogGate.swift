@@ -120,6 +120,28 @@ final class BlockingDialogGate: @unchecked Sendable {
         }
     }
 
+    /// A JS invocation includes target resolution and multiple protocol calls.
+    /// Its single probe allowance must survive cache expiry, without extending
+    /// the lifetime of the evidence itself. Task-local ownership also separates
+    /// nested and concurrent invocations in a persistent process.
+    private final class ProbeAllowance: @unchecked Sendable {
+        private let lock = NSLock()
+        private var available = true
+
+        func claim() -> Bool {
+            lock.withLock {
+                guard available else { return false }
+                available = false
+                return true
+            }
+        }
+    }
+    @TaskLocal private static var invocationAllowance: ProbeAllowance?
+
+    static func withSingleProbe<T>(_ operation: () async throws -> T) async rethrows -> T {
+        try await $invocationAllowance.withValue(ProbeAllowance(), operation: operation)
+    }
+
     private static let processGate = BlockingDialogGate()
     static var shared: BlockingDialogGate {
         DaemonRequestContext.current?.gate ?? MCPInvocationContext.current?.gate ?? processGate
@@ -189,18 +211,19 @@ final class BlockingDialogGate: @unchecked Sendable {
     func check(_ key: WindowKey, forceRefresh: Bool = false) -> BlockingDialogState {
         guard environment[Self.optOutVariable] != "1" else { return .unprobed }
         let started = now()
-        let lookup: (cached: BlockingDialogState?, token: UInt64, reserved: TimeInterval, epoch: UInt64) = lock.withLock {
+        let lookup: (cached: BlockingDialogState?, token: UInt64, reserved: TimeInterval, epoch: UInt64, limited: Bool) = lock.withLock {
             if !forceRefresh, let cached = cache[key],
                started >= cached.at, started - cached.at < ttl {
-                return (cached.state, 0, 0, budgetEpoch)
+                return (cached.state, 0, 0, budgetEpoch, false)
             }
             generation &+= 1
             latestProbe[key] = generation
             cache.removeValue(forKey: key)
             let available = max(0, Self.commandBudget - budgetCommitted)
-            let reserved = available >= 0.001 ? min(Self.singleProbeBudget, available) : 0
+            let limited = available >= 0.001 && !(Self.invocationAllowance?.claim() ?? true)
+            let reserved = available >= 0.001 && !limited ? min(Self.singleProbeBudget, available) : 0
             budgetCommitted += reserved
-            return (nil, generation, reserved, budgetEpoch)
+            return (nil, generation, reserved, budgetEpoch, limited)
         }
         let result: BlockingDialogState
         let reused = lookup.cached != nil
@@ -235,7 +258,7 @@ final class BlockingDialogGate: @unchecked Sendable {
             case .accessibilityDenied where !warnedUnavailable:
                 warnedUnavailable = true
                 lines.append(BlockingDialogWarning.probeUnavailableLine() + "\n")
-            case .unprobed where !warnedUnavailable && !reused:
+            case .unprobed where !warnedUnavailable && !reused && !lookup.limited:
                 warnedUnavailable = true
                 lines.append(BlockingDialogWarning.unmappableLine(windowKey: key) + "\n")
             case .present, .accessibilityDenied, .unprobed, .clear:
@@ -247,7 +270,8 @@ final class BlockingDialogGate: @unchecked Sendable {
         for message in messages { stderr(message) }
         if environment[Self.debugVariable] == "1" {
             let ms = Int((max(0, now() - started) * 1000).rounded())
-            stderr("dialog probe: \(key.humanDescription) \(reused ? "(cached)" : "\(ms) ms") → \(result.debugName)\n")
+            let cost = lookup.limited ? "(skipped: invocation limit)" : reused ? "(cached)" : "\(ms) ms"
+            stderr("dialog probe: \(key.humanDescription) \(cost) → \(result.debugName)\n")
         }
         return result
     }

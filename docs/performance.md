@@ -93,7 +93,9 @@ quantiles. The benchmark cannot force cleanup when the OS refuses a signal.
 
 `--live` additionally creates one owned localhost static page per timing mode,
 and may launch Safari if it is not running (including Safari's normal session
-restoration). It then measures direct and warm-daemon `get title`/`get url`. It verifies the window
+restoration). It then measures direct and warm-daemon `get title`/`get url`/`js document.title`
+(`live.<mode>.get-title`, `.get-url`, `.js-title`; the `js` row is the multi-round-trip
+protocol whose per-step target re-resolution #180 bounded). It verifies the window
 ID, exact URL, one-tab identity and clear-dialog state. Changed or uncertain
 ownership prevents cleanup actions and marks the report; an uncertain close is
 not retried. No upload, PDF, Print or arbitrary repeated mutation is supported.
@@ -343,6 +345,29 @@ A separate three-call resident snapshot found zero versus two children, with
 RSS sums of 17,728 versus 38,896 KiB (shared pages included, not unique memory).
 These measurements support this fixed workload comparison; lifetime correctness
 is established separately by the TERM/grace/host-death regressions.
+
+## Reference: `js` with 109 tabs open (#180)
+
+Historical measurements from the September 22–24 #180 implementation, before the
+current main integration: same machine, same minute, Safari with 5 windows / 109
+tabs, `SAFARI_BROWSER_TRACE_TIMING=1`;
+a direct `osascript … do JavaScript` on the same tab took 0.19 s at the time.
+
+| form | before (09-11 build) | after | `target.native` spans (full enumerations) after |
+|---|---|---|---|
+| `js --window 1 --tab-in-window 2 'location.host'` | 11.6 s | 1.4 s | 1 (was 6) |
+| `js 'location.host'` (default target) | — | 1.4 s | 0 |
+| `js --url … --first-match 'location.host'` | — | 1.5 s | 1 |
+
+What changed: `js` anchors positional targets once at the command boundary
+(`resolveToAnchoredTarget`), so subsequent JavaScript steps use a resolved or
+anchored-current-tab target instead of repeating the enumeration. The initial
+batched enumeration measured 2.3 s → 0.43 s with byte-identical output; the later
+review added a URL re-read, making three bulk property reads per window in the
+common case and at most six before per-tab fallback. The 1.4 s observation did
+not meet the agreed ≤ 1 s target and is not a measurement of this integrated
+revision. Resolving once removes repeated enumerations, but the initial
+enumeration still reads all tab records; this is not a constant-time guarantee.
 
 ## Daemon exec shared target (#170, 2026-09-29)
 

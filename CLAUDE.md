@@ -160,8 +160,19 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
   - 無 flag 時：AX 可用 → native + resolver；AX 不可用 → JS fallback + 10 MB 上限檢查
   - `--url plaud` 搭配 11 MB 檔案不再像 #24 那樣無解 — AX 可用就走 native，**不**觸發 10 MB 上限
 - **Wait breaking change**（#23）：原本的 `wait --url <pattern>` 改為 `wait --for-url <pattern>`，因為 `--url` 現在是 targeting flag
+- **`js` 的位置式目標在命令邊界 anchor**（#180）：`resolveToConcreteTarget` 只把 `.urlMatch` / `.documentIndex` 收斂成 `.resolvedTab`，而 `resolveScriptTarget` 只對已收斂的目標走捷徑——所以 `--window N --tab-in-window M` / `--window N` / 無 flag 的 `js` 過去**每一步**都重跑 resolver（`.windowTab` 每步一次完整列舉，六步六次，109 個分頁要 20 秒）。`JSCommand` 現在改走 `resolveToAnchoredTarget`，兩種收斂結果語意不同：
+  - `--window N --tab-in-window M` → 一次列舉後收斂成 `.resolvedTab(rematch: nil)`：視窗以穩定 id 固定、分頁維持**位置語意**（與 #79 寫明的「顯式 `--window` / `--tab-in-window` 維持 positional」一致）。**沒有**每步的身分檢查：指令中途左邊分頁被關掉，序號 M 會指向下一個分頁——這與 #180 之前每步依位置重新解析的結果相同，不是退化，但也沒有被修到（verify R3）。失敗路徑仍會先付一次全列舉再由 `anchoredFailure` 改寫錯誤。
+  - 無 flag / `--window N` → 一個 `readWindowAnchor` round-trip 收斂成 `.anchoredCurrentTab(windowID:tabInWindow:profile:)`，**每一步在同一段 AppleScript 內檢查該序號仍是那個視窗的 current tab**（`dispatchJS`），否則以 `SB_TARGET_CHANGED` 失敗。檢查與 `do JavaScript` 仍是兩個 Apple event、不是原子操作：變化剛好落在同一步的檢查與派送之間時偵測不到（verify R3）。verify R2（Codex HIGH）證實只固定「視窗 id + 序號」時，左邊分頁被關掉會讓序號安靜地指向下一個分頁；發生在兩步之間的左邊關分頁、拖曳重排、使用者切分頁都 fail-closed。已知仍擋不住的一種：錨定的分頁本身被關、右邊分頁補上同一序號並成為 current——這在 #180 之前同樣會安靜地跑在那個分頁上，沒有退化。
+  - anchor 腳本先讀出 `_id` 再以 `window id _id` 讀 current tab（兩次 z-order 查詢可能讀到不同視窗，R2）；`--profile` + 視窗層級目標直接以 resolved window id 讀 anchor。
+  - 拿不到 anchor（0-tab window、無視窗）就原樣退回位置式目標，#87 / #97 的錯誤路徑逐字不變。anchor 後分頁中途改變，一律改報 `anchoredTargetChanged`（`JSCommand.anchoredFailure`），**不**走 `documentNotFound`——後者列出所有 profile 的全部分頁；`.anchoredCurrentTab` 在 `runTargetedAppleScript` 直接略過該翻譯，失敗路徑不付那次全列舉。
+  - **`resolveToConcreteTarget` 的契約刻意不動**——`TabCommand` / `OpenCommand` / `resolveProfileScoped` 在 `--profile` 路徑 pattern-match 它回的 `.windowIndex` / `.windowTab`，改了會靜默丟 window。
+  - `listAllWindowsScript` 每視窗讀 `URL of every tab` / `name of every tab`，再讀一次 URL 比對（`considering case`；常見 3 個、最壞 6 個 Apple event 才退回逐分頁；A→B→A 在兩次讀之間來回的變化偵測不到），同數量的關開分頁或拖曳才不會把 URL 配到別的分頁標題；兩次都不穩才退回逐分頁讀。結構由 `WindowEnumerationBatchingTests` 與 `ZeroTabWindowGuardTests` 一起 pin。
+  - Safari 的 AppleScript 沒有穩定的分頁 id；上述檢查都是以位置與 current 狀態近似身分。以頁面 JS 環境內的 token 做真正的身分檢查另案追蹤（見 #180 verify R3 開出的 follow-up）。
+  - 迴歸測試 `JSCommandRoundTripTests` 用假 Safari（`DaemonRequestContext.appleScriptRunner`）模擬 5 視窗 109 分頁，數列舉次數與整條指令的 AppleScript 次數（≤ 7）。
 
 **注意**：`documents` subcommand 列出 Safari `document` collection 的 MRU 順序，但 `--document N` 在 native path（#26）被解讀成「spatial window-major 第 N 個 tab」— 兩者在單視窗單 tab 等價，多 tab 情境下略有差異。JS path 保留 Safari 的 document-index semantics。
+
+**錯誤、警告與註記裡的分頁 URL 不含 query／fragment／帳密（#227）**：六個位置（`documentNotFound` 清單、`ambiguousWindowMatch` 候選、`targetTabChanged` 的「Target position now shows」、`--first-match` 警告與其 no-match 清單、`js` 導頁註記、`upload` 導走錯誤）以 `URLText.redactURL` 顯示 scheme／host／path；認得出的秘密被去掉並留標記：`?` 起的 query 與 fragment（`?…`／只有 fragment 時 `#…`）、authority 帳密（`…@`，含路徑裡另一個 URL 的帳密）、路徑參數（`;jsessionid=…` → `;…`；外層 authority 只認開頭的 `scheme://`）、`data:`／`javascript:` 的內容（`data:…`，前導空白不影響）、scheme／host／path 超過 200 個 scalar 的尾巴（留前 199 個加 `…`，`?…`／`#…` 標記在其後）。三則列 URL 的訊息（清單、ambiguous 候選、`--first-match` 警告）都說「URLs are shown shortened」（字串在 `URLText.shortenedNote`）。`?`／`#` 的切割不要求 URL 是階層式，分隔符在 Unicode scalar 上找（組合符藏不住）；`redactURL` 取不動點（再套一次不變）；路徑本身的秘密（`/reset/<token>`）認不出來，照原樣顯示。**在建構 payload 的地方套用，不是只在渲染**：daemon 的 wire error 與 log 的 `error` 欄位印的是 payload（`"\(error)"`），不經 `errorDescription`（log 的 `result` 欄位記指令回傳的內容，不在範圍，另案 #230）。`ambiguousWindowMatch` 渲染時再套一次（取不動點，無害）；`targetTabChanged` 的 URL 是 `RedactedURL`（建構時脫敏、沒有字串字面值轉換），目前沒有 producer 傳 URL 給它，保證是留給第一個會傳的；`documentNotFound` 沒有這種型別，靠各 producer 建構時脫敏。URL parser 先去掉 ASCII tab／LF／CR（`da<TAB>ta:` 是 `data:`，顯示時也不含它們）；其餘與字面讀法不同時取去掉較多的讀法：scheme 後的反斜線或多餘斜線開一個憑證用的 authority（`https:////u:p@host/`），唯獨路徑參數用的 authority 固定從兩個斜線後開始（`file:///app;jsessionid=…` 的參數要被去掉）；內嵌 URL 只有一個斜線或沒有（`https:u:p@host`）則認不出；`file:///` 第一段路徑含 `@` 會被當成帳密（`file:///a@b.pdf` → `file:///…@b.pdf`，接受的過度遮蔽）。`URLTextTests` 有兩個**形狀檢查（不是證明）**：`SafariBridge.swift`／`JSCommand.swift`／`UploadCommand.swift`／`Errors.swift` 中內插分頁 `.url` 的行都經過 `URLText`；各檔 `URLText.redactURL(` 的處數固定（11／1／2／1，增減都要有人決定）——它們看不到經由區域變數或字串相加的洩漏，所以每一處改動仍要靠行為測試（真實產生端）。`ambiguousWindowMatch` 帶 `tabIndex`（脫敏後，只差 query 的候選靠序號區分，也是 `--window N --tab-in-window M` 要的；用了 `--profile` 時 `--window` 是該 profile 內視窗的序位，不是列出的 Safari 視窗編號，訊息會說明）。使用者自己輸入的 pattern、`documents`／`tabs`／`cloud-tabs`（明確要求的輸出）、頁面載入的資源網址（`save-image` 下載錯誤，另案 #229）不在範圍內。
 
 **`--first-match` 的接法（#231）**：帶 `TargetOptions` 的指令有兩種：把旗標交給 bridge（`resolveWithFirstMatch()`，或 `doJavaScript(..., firstMatch:, warnWriter:)`；原始的 `.urlMatch` 目標在 `doJavaScript` 與 `doJavaScriptLarge` 的入口各解析一次，`doJavaScriptLarge` 之後的讀取用那個分頁），或用 `TargetOptions.resolveFirstMatchOnce()`：有 `--first-match`、沒有 `--profile`、目標是 URL 類旗標時只解析一次成具體分頁（一次列舉、多個匹配時一則警告），之後的讀取都跟著那個分頁；其他組合與 `resolveProfileScoped()` 相同。**兩種不要「統一」**：後者的單次解析與單一警告是刻意的。`FirstMatchResolutionTests` 有逐指令的行為測試與逐 struct 的形狀檢查（形狀檢查不是證明）；已知沒接的是 #233 列出的 `screenshot`、`open`、`tab`、`tabs`、`wait` 的旗標判斷與目標導航後的重新解析，不是一份完整清單。
 
@@ -177,7 +188,7 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 - `SafariBridge.ResolvedWindowTarget` / `WindowInfo` / `TabInWindow` structs（#26）
 - `TargetOptions` ParsableArguments — 全域 CLI flags via `@OptionGroup`（#23，#26 擴展到 window-only primitives）
 - `SafariBrowserError.documentNotFound(pattern:availableDocuments:)` — 錯誤路徑含 discovery（#23）
-- `SafariBrowserError.ambiguousWindowMatch(pattern:matches:)` — 多 match 錯誤含 window + URL 列表（#26）
+- `SafariBrowserError.ambiguousWindowMatch(pattern:matches:)` — 多 match 錯誤含 window + tab + 脫敏後 URL 的列表（#26；tab 與脫敏見 #227）
 
 完整 spec 見：
 - `openspec/specs/document-targeting/spec.md`
@@ -333,7 +344,7 @@ Multi-step automation in single invocation。Agents 用 JSON 描述 step sequenc
 
 V1 dispatch 透過 subprocess 跑同個 binary（不是 design 原本的 daemon-shared-connection）。當 daemon mode opt-in 時每個 step 還是 ~50ms 透過 warm daemon。Connection-sharing 是 v2 enhancement。
 
-之後（#170）：腳本全部由 `js`、`documents`、`get url/title/text/source`、`click`、`fill`、`type`、`press`、`storage` 子指令（#219；參數形狀為封閉列表，位置參數不得以 `-` 開頭）組成、且 daemon 可用時，整份腳本以一個 `exec.runScript` 請求在 daemon 內執行（`InProcessStepDispatcher`），不再每步一個子行程。`--url` 類目標在第一個需要它的步驟解析並在該請求內重用（每次重用前做一次檢查，只比對該位置顯示的網址，不比對是否仍是原本那個分頁）；其他目標形式每步解析。請求被取消時不再開始新的步驟。兩條路徑不保證結果相同，已知差異追蹤於 #220；規格見 `openspec/specs/script-exec/spec.md`。
+之後（#170）：腳本全部由 `js`、`documents`、`get url/title/text/source`、`click`、`fill`、`type`、`press`、`storage` 子指令（#219；參數形狀為封閉列表，位置參數不得以 `-` 開頭）組成、且 daemon 可用時，整份腳本以一個 `exec.runScript` 請求在 daemon 內執行（`InProcessStepDispatcher`），不再每步一個子行程。`--url` 類目標在第一個需要它的步驟解析並在該請求內重用（每次重用前做一次檢查，只比對該位置顯示的網址，不比對是否仍是原本那個分頁）；其他目標形式每步解析。請求被取消時不再開始新的步驟。`js` 步驟套用 `js` 指令同一份「最多一次真實 probe、逾時只回報原始錯誤」的 allowance（#226；每步一份，其他步驟不受此限；步驟本身仍是一次原始的 `doJavaScript`，不像 `js` 指令那樣錨定位置型目標、也不包結果協定）。兩條路徑不保證結果相同，已知差異追蹤於 #220；規格見 `openspec/specs/script-exec/spec.md`。
 
 `screenshot` / `pdf` / `upload` 觸發 `unsupportedInExec`（keystroke / CG / AX path 不適合 exec script）。
 

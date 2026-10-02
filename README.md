@@ -637,7 +637,18 @@ unfinished worker prevents new work from being queued. A daemon exec step is
 one logical command, matching its subprocess counterpart. Window-ID resolution
 uses the normal AppleScript transport and is separate from this AX budget.
 Within a command, cached verdicts require the same key and a fresh monotonic
-TTL; another window's dialog is never used to classify the target's failure.
+TTL; another window's dialog is never used to classify the target's failure. A
+`js` subcommand invocation additionally permits at most one actual probe across target
+resolution and all protocol steps, including timeout diagnostics. Cache expiry,
+a changed window or forced refresh after that allowance is spent returns
+`unprobed`; it never extends an old clear/blocked verdict. A timeout retains its
+original error when no fresh evidence remains. Other commands retain their
+existing refresh behavior. The daemon's in-process `exec` JS dispatcher currently
+bypasses this subcommand wrapper and retains its original refresh policy.
+Checks skipped because the single-probe allowance was spent do not add an
+incomplete-inspection warning; debug mode labels them `skipped: invocation limit`.
+The underlying state remains `unprobed`. Time-budget exhaustion and genuinely
+incomplete probes retain their existing warning behavior.
 `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1` prints per-probe costs; the e2e harness
 asserts their per-command sum stays within 200 ms.
 
@@ -646,7 +657,7 @@ the warning, the fast-fail, and the "probe unavailable" notice — for scripts
 that accept going back to the pre-#126 behaviour; `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1`
 prints the probe's cost and verdict. A dialog that opens during an operation
 cannot be predicted by the entry probe. Target-aware timeout paths recheck
-only that window when probe budget remains; otherwise the original error stays. Safari only renders a dialog in a window's
+only that window when both probe time and invocation allowance remain; otherwise the original error stays. Safari only renders a dialog in a window's
 *active* tab: an alert pending in a background tab freezes that tab's JavaScript
 without any dialog to find — `tab focus` the tab first (#131). Without the Accessibility grant the probe cannot run, and it
 says so once rather than staying quiet — no permission means no information,
@@ -1005,7 +1016,10 @@ URL matching is case-sensitive (AppleScript's native behavior).
 Substring match — no regex — so `--url plaud` matches any URL containing
 "plaud". If no document matches, you get a `documentNotFound` error
 whose description lists every currently open document so you can fix
-the pattern without running another command.
+the pattern (URLs are listed shortened, since a query can be a credential: a
+query or fragment, credentials, path parameters such as `;jsessionid=…`,
+`data:` / `javascript:` content and a long tail are replaced by `…`;
+`safari-browser documents` prints them in full).
 
 ```bash
 # Storage targeting (#23) — critical for per-origin tokens
@@ -1094,7 +1108,7 @@ it captures the current front Safari window via legacy CG name match.
 safari-browser wait <ms>                 # wait milliseconds
 safari-browser wait --for-url <pattern>  # wait for URL match
 safari-browser wait --js <expr>          # wait for JS truthy
-safari-browser wait --timeout <ms>       # custom timeout (default 30s)
+safari-browser wait --timeout <ms>       # bounds when a poll after the first may start (default 30s); the command can end later
 
 # Randomized pacing between steps (#182): one duration drawn from a Cauchy
 # distribution doubly truncated to [--min, --max] ms. --median is the median

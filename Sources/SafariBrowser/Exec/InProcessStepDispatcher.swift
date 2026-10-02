@@ -167,6 +167,20 @@ struct InProcessStepDispatcher: StepDispatcher {
         // Cancelled before the step starts: nothing is resolved or dispatched for it.
         try Task.checkCancellation()
         BlockingDialogGate.shared.beginCommand()
+        // #226: a `js` step is one logical `js` command, which `JSCommand` runs inside a single-probe
+        // allowance (#181): at most one real dialog probe, and a timeout reports the original error
+        // instead of a second inspection. This path does not go through `JSCommand`, so the same
+        // allowance is opened here, per step (`beginCommand` above already gives each step its own
+        // evidence and budget). The other in-process commands never had it as their own processes.
+        if cmd == "js" {
+            return try await BlockingDialogGate.withSingleProbe {
+                try await self.runStep(cmd: cmd, args: args, sharedTargetArgs: sharedTargetArgs)
+            }
+        }
+        return try await runStep(cmd: cmd, args: args, sharedTargetArgs: sharedTargetArgs)
+    }
+
+    private func runStep(cmd: String, args: [String], sharedTargetArgs: [String]) async throws -> String {
 
         // Reconstruct the per-step target. If the step has its own
         // target flags, those override; otherwise use the shared exec
