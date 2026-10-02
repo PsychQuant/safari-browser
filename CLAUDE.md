@@ -172,6 +172,8 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
 
 **注意**：`documents` subcommand 列出 Safari `document` collection 的 MRU 順序，但 `--document N` 在 native path（#26）被解讀成「spatial window-major 第 N 個 tab」— 兩者在單視窗單 tab 等價，多 tab 情境下略有差異。JS path 保留 Safari 的 document-index semantics。
 
+**錯誤、警告與註記裡的分頁 URL 不含 query／fragment／帳密（#227）**：六個位置（`documentNotFound` 清單、`ambiguousWindowMatch` 候選、`targetTabChanged` 的「Target position now shows」、`--first-match` 警告與其 no-match 清單、`js` 導頁註記、`upload` 導走錯誤）以 `URLText.redactURL` 顯示 scheme／host／path；認得出的秘密被去掉並留標記：`?` 起的 query 與 fragment（`?…`／只有 fragment 時 `#…`）、authority 帳密（`…@`，含路徑裡另一個 URL 的帳密）、路徑參數（`;jsessionid=…` → `;…`；外層 authority 只認開頭的 `scheme://`）、`data:`／`javascript:` 的內容（`data:…`，前導空白不影響）、scheme／host／path 超過 200 個 scalar 的尾巴（留前 199 個加 `…`，`?…`／`#…` 標記在其後）。三則列 URL 的訊息（清單、ambiguous 候選、`--first-match` 警告）都說「URLs are shown shortened」（字串在 `URLText.shortenedNote`）。`?`／`#` 的切割不要求 URL 是階層式，分隔符在 Unicode scalar 上找（組合符藏不住）；`redactURL` 取不動點（再套一次不變）；路徑本身的秘密（`/reset/<token>`）認不出來，照原樣顯示。**在建構 payload 的地方套用，不是只在渲染**：daemon 的 wire error 與 log 的 `error` 欄位印的是 payload（`"\(error)"`），不經 `errorDescription`（log 的 `result` 欄位記指令回傳的內容，不在範圍，另案 #230）。`ambiguousWindowMatch` 渲染時再套一次（取不動點，無害）；`targetTabChanged` 的 URL 是 `RedactedURL`（建構時脫敏、沒有字串字面值轉換），目前沒有 producer 傳 URL 給它，保證是留給第一個會傳的；`documentNotFound` 沒有這種型別，靠各 producer 建構時脫敏。URL parser 先去掉 ASCII tab／LF／CR（`da<TAB>ta:` 是 `data:`，顯示時也不含它們）；其餘與字面讀法不同時取去掉較多的讀法：scheme 後的反斜線或多餘斜線開一個憑證用的 authority（`https:////u:p@host/`），唯獨路徑參數用的 authority 固定從兩個斜線後開始（`file:///app;jsessionid=…` 的參數要被去掉）；內嵌 URL 只有一個斜線或沒有（`https:u:p@host`）則認不出；`file:///` 第一段路徑含 `@` 會被當成帳密（`file:///a@b.pdf` → `file:///…@b.pdf`，接受的過度遮蔽）。`URLTextTests` 有兩個**形狀檢查（不是證明）**：`SafariBridge.swift`／`JSCommand.swift`／`UploadCommand.swift`／`Errors.swift` 中內插分頁 `.url` 的行都經過 `URLText`；各檔 `URLText.redactURL(` 的處數固定（11／1／2／1，增減都要有人決定）——它們看不到經由區域變數或字串相加的洩漏，所以每一處改動仍要靠行為測試（真實產生端）。`ambiguousWindowMatch` 帶 `tabIndex`（脫敏後，只差 query 的候選靠序號區分，也是 `--window N --tab-in-window M` 要的；用了 `--profile` 時 `--window` 是該 profile 內視窗的序位，不是列出的 Safari 視窗編號，訊息會說明）。使用者自己輸入的 pattern、`documents`／`tabs`／`cloud-tabs`（明確要求的輸出）、頁面載入的資源網址（`save-image` 下載錯誤，另案 #229）不在範圍內。
+
 **`--first-match` 的接法（#231）**：帶 `TargetOptions` 的指令有兩種：把旗標交給 bridge（`resolveWithFirstMatch()`，或 `doJavaScript(..., firstMatch:, warnWriter:)`；原始的 `.urlMatch` 目標在 `doJavaScript` 與 `doJavaScriptLarge` 的入口各解析一次，`doJavaScriptLarge` 之後的讀取用那個分頁），或用 `TargetOptions.resolveFirstMatchOnce()`：有 `--first-match`、沒有 `--profile`、目標是 URL 類旗標時只解析一次成具體分頁（一次列舉、多個匹配時一則警告），之後的讀取都跟著那個分頁；其他組合與 `resolveProfileScoped()` 相同。**兩種不要「統一」**：後者的單次解析與單一警告是刻意的。`FirstMatchResolutionTests` 有逐指令的行為測試與逐 struct 的形狀檢查（形狀檢查不是證明）；已知沒接的是 #233 列出的 `screenshot`、`open`、`tab`、`tabs`、`wait` 的旗標判斷與目標導航後的重新解析，不是一份完整清單。
 
 AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪些 documents，然後用 `--url <substring>` 明確指定。避免靠 `front window` 的 z-order 猜測。
@@ -186,7 +188,7 @@ AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪�
 - `SafariBridge.ResolvedWindowTarget` / `WindowInfo` / `TabInWindow` structs（#26）
 - `TargetOptions` ParsableArguments — 全域 CLI flags via `@OptionGroup`（#23，#26 擴展到 window-only primitives）
 - `SafariBrowserError.documentNotFound(pattern:availableDocuments:)` — 錯誤路徑含 discovery（#23）
-- `SafariBrowserError.ambiguousWindowMatch(pattern:matches:)` — 多 match 錯誤含 window + URL 列表（#26）
+- `SafariBrowserError.ambiguousWindowMatch(pattern:matches:)` — 多 match 錯誤含 window + tab + 脫敏後 URL 的列表（#26；tab 與脫敏見 #227）
 
 完整 spec 見：
 - `openspec/specs/document-targeting/spec.md`

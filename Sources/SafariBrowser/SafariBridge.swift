@@ -775,7 +775,7 @@ enum SafariBridge {
                 // when the listing does not say what N and M are.
                 throw SafariBrowserError.documentNotFound(
                     pattern: targetDescription(target),
-                    availableDocuments: docs.map { "window \($0.window) tab \($0.tabInWindow): \($0.url)" }
+                    availableDocuments: docs.map { "window \($0.window) tab \($0.tabInWindow): \(URLText.redactURL($0.url))" }
                 )
             }
             throw error
@@ -2398,7 +2398,7 @@ enum SafariBridge {
             candidates = windows.filter { $0.profile == profile }
             if candidates.isEmpty {
                 let available = windows.map { w -> String in
-                    let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+                    let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
                     let p = w.profile ?? "(no profile)"
                     return "window \(w.windowIndex) [\(p)]: \(cur)"
                 }
@@ -2432,7 +2432,7 @@ enum SafariBridge {
                 ? "window \(ordinal)"
                 : "window \(ordinal) (Safari window \(w.windowIndex))"
             guard !w.tabs.isEmpty else { return "\(label): (0 tabs)" }
-            let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+            let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
             return "\(label): \(cur)"
         }
     }
@@ -2472,7 +2472,7 @@ enum SafariBridge {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window id \(windowID) tab \(tab)",
                     availableDocuments: windows.flatMap { w in
-                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
                     }
                 )
             }
@@ -2513,7 +2513,7 @@ enum SafariBridge {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "document \(n)",
                     availableDocuments: windows.flatMap { w in
-                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
                     }
                 )
             }
@@ -2540,7 +2540,7 @@ enum SafariBridge {
             }
             let totalTabs = windows.reduce(0) { $0 + $1.tabs.count }
             let availableSummary = windows.map { w -> String in
-                let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+                let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
                 return "window \(w.windowIndex): \(cur) (\(w.tabs.count) tab(s))"
             }
             throw SafariBrowserError.documentNotFound(
@@ -2563,7 +2563,7 @@ enum SafariBridge {
 
             if matches.isEmpty {
                 let allUrls = windows.flatMap { w in
-                    w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                    w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
                 }
                 throw SafariBrowserError.documentNotFound(
                     pattern: matcher.description,
@@ -2574,7 +2574,7 @@ enum SafariBridge {
             if matches.count > 1 {
                 throw SafariBrowserError.ambiguousWindowMatch(
                     pattern: matcher.description,
-                    matches: matches.map { (windowIndex: $0.windowIndex, url: $0.url) }
+                    matches: matches.map { (windowIndex: $0.windowIndex, tabIndex: $0.tabIndex, url: URLText.redactURL($0.url)) }
                 )
             }
 
@@ -2601,7 +2601,7 @@ enum SafariBridge {
             let window = windows[w - 1]
             if t < 1 || t > window.tabs.count {
                 let availableSummary = window.tabs.map { tab in
-                    "window \(window.windowIndex) tab \(tab.tabIndex): \(tab.url)"
+                    "window \(window.windowIndex) tab \(tab.tabIndex): \(URLText.redactURL(tab.url))"
                 }
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window \(w) tab \(t) (window has \(window.tabs.count) tab(s))",
@@ -2725,7 +2725,7 @@ enum SafariBridge {
         }
         guard let first = matches.first else {
             let allUrls = windows.flatMap { w in
-                w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
             }
             throw SafariBrowserError.documentNotFound(
                 pattern: matcher.description,
@@ -2734,11 +2734,11 @@ enum SafariBridge {
         }
         if matches.count > 1 {
             let summary = matches.map { m in
-                "  window \(m.windowIndex) tab \(m.tab.tabIndex): \(m.tab.url)"
+                "  window \(m.windowIndex) tab \(m.tab.tabIndex): \(URLText.redactURL(m.tab.url))"
             }.joined(separator: "\n")
             let msg = "warning: --first-match resolved '\(matcher.description)' to "
                 + "window \(first.windowIndex) tab \(first.tab.tabIndex) "
-                + "(of \(matches.count) matches):\n\(summary)\n"
+                + "(of \(matches.count) matches):\n\(summary)\n(\(URLText.shortenedNote))\n"
             warnWriter?(msg)
         }
         return ResolvedWindowTarget(
