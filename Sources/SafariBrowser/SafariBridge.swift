@@ -732,7 +732,7 @@ enum SafariBridge {
     /// errors from `.urlContains` / `.windowIndex` / `.documentIndex` into
     /// the user-friendly `documentNotFound` error that lists all available
     /// Safari documents. Without this wrapper, the user would see a raw
-    /// AppleScript error like "Can't get first document whose URL contains...".
+    /// AppleScript error whose text ends in its error number (-1719 / -1728).
     private static func runTargetedAppleScript(
         _ script: String,
         target: TargetDocument,
@@ -751,10 +751,11 @@ enum SafariBridge {
                 }
                 await emitBackgroundTabHint(for: diagnosticTarget, warnWriter: warnWriter)
             }
-            // Only translate when the error is plausibly "document not found"
-            // from a non-default target. AppleScript uses error codes -1719
-            // (invalid index) and -1728 (object not found) for missing
-            // documents. We also match localized error strings.
+            // Only translate when the error is "document not found" from a
+            // non-default target: AppleScript error -1719 (invalid index) or
+            // -1728 (object not found). The trailing code, not the localized
+            // message, decides (#218): `osascript` always ends its text with
+            // it, the daemon runner when NSAppleScript supplies a number.
             if case .frontWindow = target {
                 // Default target: propagate as-is (backward compat).
                 throw error
@@ -766,8 +767,7 @@ enum SafariBridge {
                 // `JSCommand.anchoredFailure` to discard the listing.
                 throw error
             }
-            if case .appleScriptFailed(let msg) = error,
-               msg.contains("-1719") || msg.contains("-1728") || msg.contains("Can't get") || msg.contains("無法取得") {
+            if case .appleScriptFailed(let msg) = error, isObjectNotFound(msg) {
                 let docs = (try? await listAllDocuments()) ?? []
                 // #72: carry each tab's coordinates, not just its URL — the
                 // error's hint tells the reader to retarget with
@@ -1591,6 +1591,24 @@ enum SafariBridge {
         """
     }
 
+    /// The AppleScript error number at the end of an error text, as the runners
+    /// print it: `… (-1728)` (#218). `osascript` always ends its text with it;
+    /// the daemon's `CompileCache.describe` appends it when `NSAppleScript`
+    /// supplies one. Nil when there is none. The one definition of "the code"
+    /// that every classifier below uses, so a body that merely mentions a
+    /// number (a URL, a page title) cannot pass for one.
+    static func appleScriptErrorCode(in message: String) -> Int? {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasSuffix(")"), let open = trimmed.lastIndex(of: "(") else { return nil }
+        return Int(trimmed[trimmed.index(after: open)..<trimmed.index(before: trimmed.endIndex)])
+    }
+
+    /// AppleScript's "invalid index" (-1719) or "object not found" (-1728).
+    static func isObjectNotFound(_ message: String) -> Bool {
+        guard let code = appleScriptErrorCode(in: message) else { return false }
+        return code == -1719 || code == -1728
+    }
+
     /// #170: does an identity-anchored tab still show a URL its matcher
     /// accepts? One small AppleScript; false when the guard trips or the tab
     /// or window is gone, and for a target with no matcher to check by.
@@ -1630,8 +1648,12 @@ enum SafariBridge {
             // scope — JSCommand throws them after readback — so this is
             // defense in depth, keeping the predicate safe for any caller.)
             if msg.contains("JavaScript error:") { return false }
-            // Guard trip (our sentinel) or invalid-index on a dangled ref.
-            return msg.contains("SB_TARGET_CHANGED") || msg.contains("-1719") || msg.contains("-1728")
+            // Guard trip (our sentinel; the regex pre-check throws it from
+            // Swift with no code) or invalid-index / object-not-found on a
+            // dangled ref, decided by the trailing code like the not-found
+            // translation (#218 verify R2: two definitions of "the code" gave
+            // different answers on the same text).
+            return msg.contains("SB_TARGET_CHANGED") || isObjectNotFound(msg)
         case .documentNotFound:
             // runTargetedAppleScript translates -1719/-1728 on non-default
             // targets into documentNotFound before we see it.

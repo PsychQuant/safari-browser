@@ -243,12 +243,23 @@ enum PreCompiledScripts {
                 var errorInfo: NSDictionary?
                 let descriptor = script.executeAndReturnError(&errorInfo)
                 if let info = errorInfo {
-                    let message = (info["NSAppleScriptErrorMessage"] as? String)
-                        ?? String(describing: info)
-                    throw Error.executionFailed(message)
+                    throw Error.executionFailed(Self.describe(info))
                 }
                 return ExecutionResult(descriptor: descriptor)
             }
+        }
+
+        /// The error text `osascript` would print: the message, then the
+        /// AppleScript error number in parentheses (#218). NSAppleScript keeps
+        /// the number in a separate key and localizes the message, so without
+        /// it `isTargetDangleError` and the not-found translation cannot
+        /// classify a daemon-path error.
+        nonisolated static func describe(_ info: NSDictionary) -> String {
+            let number = (info["NSAppleScriptErrorNumber"] as? NSNumber)?.intValue
+            guard let message = info["NSAppleScriptErrorMessage"] as? String else {
+                return number.map { "AppleScript error (\($0))" } ?? String(describing: info)
+            }
+            return number.map { "\(message) (\($0))" } ?? message
         }
 
         /// Number of compiled handles currently cached.
@@ -282,9 +293,7 @@ enum PreCompiledScripts {
                 }
                 var errorInfo: NSDictionary?
                 if !script.compileAndReturnError(&errorInfo) {
-                    let message = (errorInfo?["NSAppleScriptErrorMessage"] as? String)
-                        ?? String(describing: errorInfo)
-                    throw Error.compilationFailed(message)
+                    throw Error.compilationFailed(errorInfo.map(Self.describe) ?? "compilation failed")
                 }
                 cache[key] = Entry(script: script, lastUse: useClock)
                 evictIfOverCapacity()

@@ -93,7 +93,7 @@ final class DaemonRequestContextTests: XCTestCase {
         }
     }
 
-    func testCachedRunnerMatchesStandaloneTextAndErrorFormatting() async throws {
+    func testCachedRunnerTrimsTextAndKeepsTheErrorCode() async throws {
         let cache = PreCompiledScripts.CompileCache()
         let text = try await DaemonDispatch.Handlers.cachedScriptText(
             source: #"return " hello " & linefeed"#, cache: cache)
@@ -102,7 +102,10 @@ final class DaemonRequestContextTests: XCTestCase {
             _ = try await DaemonDispatch.Handlers.cachedScriptText(source: #"error "broken""#, cache: cache)
             XCTFail("expected AppleScript error")
         } catch SafariBrowserError.appleScriptFailed(let message) {
-            XCTAssertEqual(message, "broken")
+            // #218: the cached runner keeps the code, as osascript does
+            // ("…execution error: broken (-2700)"); it has no "N:M: execution
+            // error:" prefix, and its language is the daemon process's.
+            XCTAssertEqual(message, "broken (-2700)")
         }
     }
 
