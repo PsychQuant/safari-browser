@@ -18,3 +18,7 @@ references/
 
 # SafariVision Xcode derived data and nested Swift package checkouts.
 /safari-vision/.xcodebuild/
+
+# Python bytecode from the Python-driven test harnesses (Tests/*.py)
+__pycache__/
+*.pyc
