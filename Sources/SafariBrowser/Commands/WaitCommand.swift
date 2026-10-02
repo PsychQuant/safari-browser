@@ -19,7 +19,8 @@ struct WaitCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Wait until this JS expression is truthy")
     var js: String?
 
-    @Option(name: .long, help: "Timeout in milliseconds (default: 30000)")
+    @Option(name: .long, help: ArgumentHelp("Timeout in milliseconds (default: 30000)",
+        discussion: "Bounds when a poll after the first may start, not how long the command takes: resolving the target and a poll that has started are not cut short by --timeout, and the first poll runs even when resolution used up the timeout, so the command can end later than --timeout. For a hard limit, run the command under an external timeout."))
     var timeout: Int = 30000
 
     // #182: randomized wait. One duration is drawn from a Cauchy distribution
@@ -227,8 +228,10 @@ struct WaitCommand: AsyncParsableCommand {
         try await run(sleep: { try await Task.sleep(nanoseconds: $0) })
     }
 
-    /// Keep the real sleep argument observable without relying on scheduler timing.
-    func run(sleep: (UInt64) async throws -> Void) async throws {
+    /// Keep the real sleep argument observable without relying on scheduler timing. `now` is the
+    /// clock the deadline is read from: a test that advances it by what `sleep` is asked for gets
+    /// an exact, scheduler-independent record of the sleeps (#221).
+    func run(sleep: (UInt64) async throws -> Void, now: () -> Date = { Date() }) async throws {
         if jitter != nil {
             let distribution = try jitterDistribution()
             let range = try JitterNanosecondRange(min: distribution.min, max: distribution.max)
@@ -238,9 +241,9 @@ struct WaitCommand: AsyncParsableCommand {
             let drawn = try drawJitterMilliseconds(from: distribution)
             try await sleep(range.nanoseconds(for: drawn))
         } else if let forUrl {
-            try await waitForURL(pattern: forUrl)
+            try await waitForURL(pattern: forUrl, sleep: sleep, now: now)
         } else if let js {
-            try await waitForJS(expression: js)
+            try await waitForJS(expression: js, sleep: sleep, now: now)
         } else if let milliseconds {
             let duration = try Self.nanoseconds(forMilliseconds: milliseconds)
             try await sleep(duration)
@@ -275,8 +278,8 @@ struct WaitCommand: AsyncParsableCommand {
         return (initial, anchored, firstMatch, nil)
     }
 
-    private func waitForURL(pattern: String) async throws {
-        let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
+    private func waitForURL(pattern: String, sleep: (UInt64) async throws -> Void, now: () -> Date) async throws {
+        let deadline = now().addingTimeInterval(Double(timeout) / 1000.0)
         let (original, anchored, firstMatch, windowURLs) = try await resolveOnce()
         // #168 verify R1/R2: `getCurrentURL` on a bare `tab T of window id W`
         // has no identity check. A tab resolved by URL pattern is followed
@@ -295,7 +298,7 @@ struct WaitCommand: AsyncParsableCommand {
                 windowAnchor = (windowID, WaitURLAnchor(position: tab))
             }
         }
-        try await pollUntilDeadline(deadline) {
+        try await pollUntilDeadline(deadline, sleep: sleep, now: now) {
             do {
                 if var tracked = windowAnchor {
                     BlockingDialogGate.shared.check(.id(tracked.windowID))
@@ -321,18 +324,37 @@ struct WaitCommand: AsyncParsableCommand {
         }
     }
 
-    /// Polls every 500 ms until `satisfied` returns true or the deadline
-    /// passes. The first poll always runs: the deadline starts before target
-    /// resolution, and a resolution that used up the timeout must not turn a
-    /// condition that already holds into a timeout (#168 verify R1). So
-    /// `--timeout 0` polls once, where it used to time out without polling.
-    /// Neither resolution nor a poll is interrupted at the deadline.
-    private func pollUntilDeadline(_ deadline: Date, _ satisfied: () async throws -> Bool) async throws {
+    /// Polls, sleeping 500 ms between polls, until `satisfied` returns true or the deadline
+    /// passes. The first poll runs even when resolution used up the timeout: the deadline starts
+    /// before target resolution, and a resolution that used up the timeout must not turn a
+    /// condition that already holds into a timeout (#168 verify R1). So `--timeout 0` polls
+    /// once, where it used to time out without polling.
+    /// Neither resolution nor a poll is interrupted at the deadline (#221): `--timeout`
+    /// bounds when a poll after the first may *start*, and the wait never asks to sleep past the
+    /// deadline.
+    ///
+    /// Why not bound each poll by the time that remains (deferred, not ruled out): the resolution
+    /// and the first poll — which must run, above — cannot be bounded that way, so the command
+    /// could still end after the deadline; what bounding the later polls would change is what a
+    /// stall that begins mid-wait costs. It needs a timeout to be carried into the calls a
+    /// poll makes, in code that other work (#189, #224, #225) is rewriting.
+    ///
+    /// The calls a poll makes, their own limits and what happens when one fails are not changed
+    /// by this wait.
+    ///
+    /// `sleep` and `now` are seams: a test records what is asked for and moves the clock itself.
+    private func pollUntilDeadline(
+        _ deadline: Date, sleep: (UInt64) async throws -> Void, now: () -> Date, _ satisfied: () async throws -> Bool
+    ) async throws {
         var first = true
-        while first || Date() < deadline {
+        while first || now() < deadline {
             first = false
             if try await satisfied() { return }
-            try await Task.sleep(nanoseconds: 500_000_000) // 500ms polling
+            // Poll every 500 ms, but never ask to sleep past the deadline (#221): a sleep that runs
+            // out the clock only delays the timeout it is about to report.
+            let remaining = deadline.timeIntervalSince(now())
+            guard remaining > 0 else { break }
+            try await sleep(UInt64(min(0.5, remaining) * 1_000_000_000))
         }
         throw SafariBrowserError.timeout(seconds: timeout / 1000)
     }
@@ -353,10 +375,10 @@ struct WaitCommand: AsyncParsableCommand {
         }
     }
 
-    private func waitForJS(expression: String) async throws {
-        let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
+    private func waitForJS(expression: String, sleep: (UInt64) async throws -> Void, now: () -> Date) async throws {
+        let deadline = now().addingTimeInterval(Double(timeout) / 1000.0)
         let (original, anchored, firstMatch, _) = try await resolveOnce()
-        try await pollUntilDeadline(deadline) {
+        try await pollUntilDeadline(deadline, sleep: sleep, now: now) {
             let result: String
             do {
                 result = try await SafariBridge.doJavaScript(

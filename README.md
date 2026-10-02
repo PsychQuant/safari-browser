@@ -1105,7 +1105,7 @@ it captures the current front Safari window via legacy CG name match.
 safari-browser wait <ms>                 # wait milliseconds
 safari-browser wait --for-url <pattern>  # wait for URL match
 safari-browser wait --js <expr>          # wait for JS truthy
-safari-browser wait --timeout <ms>       # custom timeout (default 30s)
+safari-browser wait --timeout <ms>       # bounds when a poll after the first may start (default 30s); the command can end later
 
 # Randomized pacing between steps (#182): one duration drawn from a Cauchy
 # distribution doubly truncated to [--min, --max] ms. --median is the median
