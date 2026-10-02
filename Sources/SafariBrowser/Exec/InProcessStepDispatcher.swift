@@ -6,11 +6,76 @@ import Foundation
 /// handler so the entire client-daemon interaction is one socket round
 /// trip; per-step subprocess overhead is eliminated.
 ///
-/// v2.0 ships the most common Phase 1 commands as in-process; less
-/// common commands (storage, snapshot, wait, type, press, fill, click,
-/// get text/source) throw `unsupportedInExec` so the client falls
-/// back to the subprocess path. Future iterations expand coverage.
+/// In-process: `js`, `documents`, `get url`, `get title`, `get text`,
+/// `get source` (`supportedCommands`). Any other command throws
+/// `unsupportedInExec`, and the client runs a script containing one through
+/// the subprocess path; `screenshot` / `pdf` / `upload` are unsupported on
+/// that path too.
 struct InProcessStepDispatcher: StepDispatcher {
+    /// #170: the shared exec target, resolved once per exec run and verified
+    /// before each reuse. A new dispatcher is created for every
+    /// `exec.runScript` request, so this never carries Safari state across
+    /// requests. Before, every step rebuilt and re-resolved the shared target —
+    /// one full window/tab enumeration per step for a `--url` target.
+    private let sharedResolution = SharedTargetResolution()
+
+    /// Only a `--url` target (any matcher form) is effectively reused: it
+    /// resolves to a tab that can be re-checked by its URL, while
+    /// `verifyResolvedTab` refuses any target with nothing to check by
+    /// (`--document N`, positional flags, `--profile` alone), so those are
+    /// resolved afresh every step. Each reuse first checks that the tab still
+    /// shows a URL the pattern accepts; if not, the cache is dropped and the
+    /// target is resolved afresh, as each step of the subprocess path does
+    /// for itself — so a navigated, moved or closed tab gives the same
+    /// found / not-found outcome on both paths (verify R1: get steps used to
+    /// read the cached tab unchecked). A failed resolution leaves nothing
+    /// cached. A change between the check and the step itself is not
+    /// detected; the subprocess path has the same gap between its resolution
+    /// and its read.
+    final class SharedTargetResolution: @unchecked Sendable {
+        private let lock = NSLock()
+        /// Keyed by the target arguments' UTF-8 bytes, not by `String` equality: Swift treats canonically
+        /// equivalent text (NFC and NFD spellings of the same pattern) as equal, while AppleScript and
+        /// the JavaScript it embeds tell them apart. Within one run the exec-level arguments never change,
+        /// so this is a guard against serving one spelling's resolution for another, not a path a real
+        /// run takes; a spurious miss is the worst it can cost.
+        private var cached: (args: [[UInt8]], target: SafariBridge.TargetDocument)?
+
+        func resolve(
+            args: [String],
+            verify: (SafariBridge.TargetDocument) async throws -> Bool = SafariBridge.verifyResolvedTab,
+            _ resolver: () async throws -> SafariBridge.TargetDocument
+        ) async throws -> SafariBridge.TargetDocument {
+            // A cancelled request starts no resolution and dispatches no step
+            // (verify R6, R7): cancellation is cooperative, so it is checked on
+            // entry, whatever the check raised, and after the check returns.
+            try Task.checkCancellation()
+            let key = args.map { Array($0.utf8) }
+            if let hit = lock.withLock({ cached }), hit.args == key {
+                // Any failure of the check counts as "not verified": the
+                // daemon's NSAppleScript errors carry no -1719 / -1728 and are
+                // localized, so a closed tab or window cannot be recognised
+                // by its message (verify R2). A check that threw used to skip
+                // this reset and leave every later step failing.
+                let verified: Bool
+                do {
+                    verified = try await verify(hit.target)
+                } catch {
+                    if error is CancellationError { throw CancellationError() }
+                    verified = false
+                }
+                try Task.checkCancellation()
+                if verified { return hit.target }
+                lock.withLock { cached = nil }
+            }
+            let target = try await resolver()
+            // A request cancelled while it resolved caches and dispatches nothing
+            // (verify R7, Codex).
+            try Task.checkCancellation()
+            lock.withLock { cached = (key, target) }
+            return target
+        }
+    }
 
     /// Phase 1 commands this dispatcher handles directly. v2.0 ships the
     /// most-common read commands; v2.1 adds `get text` and `get source`
@@ -35,6 +100,8 @@ struct InProcessStepDispatcher: StepDispatcher {
         args: [String],
         sharedTargetArgs: [String]
     ) async throws -> String {
+        // Cancelled before the step starts: nothing is resolved or dispatched for it.
+        try Task.checkCancellation()
         BlockingDialogGate.shared.beginCommand()
 
         // Reconstruct the per-step target. If the step has its own
@@ -47,8 +114,31 @@ struct InProcessStepDispatcher: StepDispatcher {
             : sharedTargetArgs
         let cmdArgs = Self.stripTargetFlags(args)
 
+        // A step that cannot run in-process must not pay for a resolution
+        // first, nor report a resolution error instead of its own (verify R2).
+        guard Self.supportedCommands.contains(cmd) else { throw ScriptDispatchError.unsupportedInExec(cmd) }
+        if cmd == "js", cmdArgs.first == nil {
+            throw ScriptDispatchError.unsupportedInExec("js: missing code argument")
+        }
+
         let target = try Self.parseTargetOptions(from: effectiveTargetArgs)
-        let resolved = target.resolve()
+        // #170: resolve to a concrete target (a `--url` / `--document` target
+        // becomes an identity-anchored `.resolvedTab` with its URL guard and
+        // bounded retry, #79). Steps without their own target flags share one
+        // resolution per exec run. The resolution now also honours `--profile`,
+        // which this path parsed but never handed to the bridge (#60 intent).
+        let resolveConcrete = {
+            try await SafariBridge.resolveToConcreteTarget(
+                target.resolve(), firstMatch: target.firstMatch,
+                warnWriter: nil, profile: target.resolveProfile())
+        }
+        let resolved = cmd == "documents" ? target.resolve()
+            : stepHasTargetFlag ? try await resolveConcrete()
+            : try await sharedResolution.resolve(args: effectiveTargetArgs, resolveConcrete)
+        // A step with its own target flags resolves outside the shared object, and a resolver that
+        // finishes after the request was cancelled still returns a target: check again before the
+        // command runs, so no command's AppleScript follows a cancellation.
+        try Task.checkCancellation()
 
         switch cmd {
         case "js":
@@ -93,8 +183,10 @@ struct InProcessStepDispatcher: StepDispatcher {
             )
 
         case "documents":
-            // Reuse the existing JSON encoder used by `documents --json`.
-            let documents = try await SafariBridge.listAllDocuments()
+            // Reuse the existing JSON encoder used by `documents --json`, and
+            // its --profile filter (#47), which this path used to skip (verify R3).
+            let profile = target.resolveProfile()
+            let documents = try await SafariBridge.listAllDocuments().filter { profile == nil || $0.profile == profile }
             guard !documents.isEmpty else { return "[]" }
             let observation = WindowDialogObservation.capture()
             DocumentsCommand.emitDialogWarning(DocumentsCommand.dialogWarnings(commandName: "documents",
