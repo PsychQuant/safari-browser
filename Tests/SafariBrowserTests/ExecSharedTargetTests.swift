@@ -206,9 +206,10 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
                         XCTFail("\(cmd) \(args) must not run in-process")
                     } catch let error as ScriptDispatchError { messages.append(error.message) }
                 }
-                // The text a client sees is unchanged from before the check moved ahead of resolution.
+                // The texts a client sees: an unsupported command keeps its own message.
                 XCTAssertEqual(messages, ["command 'click' is not yet available in exec scripts",
-                                          "command 'js: missing code argument' is not yet available in exec scripts"])
+                                          ScriptDispatchError.unsupportedArguments("js").message])
+                XCTAssertTrue(messages[1].hasPrefix("step 'js' is not one the in-process dispatcher runs exactly"), messages[1])
             }
         }
         XCTAssertEqual(fake.enumerations, 0, "an unsupported or malformed step must not pay for a resolution")

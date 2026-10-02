@@ -6,11 +6,12 @@ import Foundation
 /// handler so the entire client-daemon interaction is one socket round
 /// trip; per-step subprocess overhead is eliminated.
 ///
-/// In-process: `js`, `documents`, `get url`, `get title`, `get text`,
+/// In-process (only for the argument shapes `runsInProcess` accepts, #220): `js`, `documents`, `get url`, `get title`, `get text`,
 /// `get source` (`supportedCommands`). Any other command throws
-/// `unsupportedInExec`, and the client runs a script containing one through
-/// the subprocess path; `screenshot` / `pdf` / `upload` are unsupported on
-/// that path too.
+/// `unsupportedInExec`, and a supported command with arguments outside those
+/// shapes throws `unsupportedArguments`; the client runs a script containing
+/// either through the subprocess path (`screenshot` / `pdf` / `upload` are
+/// unsupported on that path too).
 struct InProcessStepDispatcher: StepDispatcher {
     /// #170: the shared exec target, resolved once per exec run and verified
     /// before each reuse. A new dispatcher is created for every
@@ -89,10 +90,46 @@ struct InProcessStepDispatcher: StepDispatcher {
         "get source",
     ]
 
-    /// Returns true when `cmd` is in `supportedCommands` so callers can
-    /// pre-flight a script before sending to the daemon.
+    /// Whether `cmd` is one of the in-process commands. Not enough to run a step in-process:
+    /// see `runsInProcess`, which also looks at the arguments (#220).
     static func isSupported(_ cmd: String) -> Bool {
         supportedCommands.contains(cmd)
+    }
+
+    /// #220: whether a step is one this dispatcher runs *exactly* as the CLI command would.
+    /// The command being supported is not enough — the dispatcher reads only the target flags,
+    /// so anything else on the step (a selector for `get text`, `--file` for `js`, a stray
+    /// positional, a step-level `--first-match` with no target flag of its own) it would ignore
+    /// or misread while a child process running the CLI command honours or rejects it. A step
+    /// outside this closed list of shapes is run by a child process, and so is the whole script
+    /// (the client pre-flights with this; the dispatcher enforces it too, before resolving).
+    static func runsInProcess(cmd: String, args: [String]) -> Bool {
+        guard supportedCommands.contains(cmd) else { return false }
+        // A target flag needs a value that is not another option: a child's parser reads
+        // `--url --first-match` as a flag missing its value, while `stripTargetFlags` here would
+        // take `--first-match` for the value.
+        var index = 0
+        while index < args.count {
+            if TargetOptions.targetFlagNames.contains(args[index]) {
+                guard index + 1 < args.count, !args[index + 1].hasPrefix("-") else { return false }
+                index += 2
+            } else {
+                index += 1
+            }
+        }
+        let hasTargetFlag = args.contains { TargetOptions.targetFlagNames.contains($0) }
+        if args.contains("--first-match"), !hasTargetFlag { return false }
+        let rest = stripTargetFlags(args)
+        switch cmd {
+        case "js":
+            // Exactly the code; text that starts like an option is misread by a child's parser.
+            return rest.count == 1 && !rest[0].hasPrefix("-")
+        case "documents":
+            // In-process is always JSON, and so is a `documents` child under exec (#220).
+            return rest.isEmpty || rest == ["--json"]
+        default:
+            return rest.isEmpty
+        }
     }
 
     func dispatch(
@@ -117,8 +154,8 @@ struct InProcessStepDispatcher: StepDispatcher {
         // A step that cannot run in-process must not pay for a resolution
         // first, nor report a resolution error instead of its own (verify R2).
         guard Self.supportedCommands.contains(cmd) else { throw ScriptDispatchError.unsupportedInExec(cmd) }
-        if cmd == "js", cmdArgs.first == nil {
-            throw ScriptDispatchError.unsupportedInExec("js: missing code argument")
+        guard Self.runsInProcess(cmd: cmd, args: args) else {
+            throw ScriptDispatchError.unsupportedArguments(cmd)
         }
 
         let target = try Self.parseTargetOptions(from: effectiveTargetArgs)
@@ -142,10 +179,10 @@ struct InProcessStepDispatcher: StepDispatcher {
 
         switch cmd {
         case "js":
+            // `runsInProcess` has already required exactly one argument; this stays a refusal with
+            // the same code as every other shape the dispatcher does not run, were that list loosened.
             guard let code = cmdArgs.first else {
-                throw ScriptDispatchError.unsupportedInExec(
-                    "js: missing code argument"
-                )
+                throw ScriptDispatchError.unsupportedArguments(cmd)
             }
             return try await SafariBridge.doJavaScript(
                 code,
@@ -169,11 +206,15 @@ struct InProcessStepDispatcher: StepDispatcher {
             )
 
         case "get text":
-            return try await SafariBridge.getCurrentText(
+            // Same two steps as `GetText.run` (#220): native text first; a page whose native
+            // text is empty is read through its innerText, in chunks for a large page.
+            let native = try await SafariBridge.getCurrentText(
                 target: resolved,
                 firstMatch: target.firstMatch,
                 warnWriter: nil
             )
+            guard native.isEmpty else { return native }
+            return try await SafariBridge.doJavaScriptLarge("document.body.innerText", target: resolved)
 
         case "get source":
             return try await SafariBridge.getCurrentSource(
