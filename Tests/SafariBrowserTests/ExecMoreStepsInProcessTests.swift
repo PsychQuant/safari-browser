@@ -79,6 +79,22 @@ final class ExecMoreStepsInProcessTests: XCTestCase, @unchecked Sendable {
 
     /// The client sends a script to the daemon only when every step runs in-process: one `wait` or
     /// `snapshot` keeps the whole script on the subprocess path, as before.
+    /// The key of a `press` has a name only if some character of it is not `+`, so a reference anywhere in it
+    /// (`+$k` with `$k` empty) can leave it nameless after substitution: such a script runs step by step.
+    func testAPressKeyWithAVariableReferenceAnywhereIsNotSentToTheDaemon() throws {
+        func steps(_ json: String) throws -> [ScriptStep] { try ScriptInterpreter.parseScript(source: json, maxSteps: 50) }
+        for key in ["+$k", "$k", "a$k", "$k+$k"] {
+            let json = "[{\"cmd\":\"press\",\"args\":[\"\(key)\"]}]"
+            XCTAssertFalse(ExecCommand.allStepsRunInProcess(try steps(json)), "press \(key)")
+        }
+        // A literal `\$` is not a reference; the key is `$x` after substitution.
+        XCTAssertTrue(ExecCommand.allStepsRunInProcess(try steps(##"[{"cmd":"press","args":["\\$x"]}]"##)))
+        XCTAssertTrue(ExecCommand.allStepsRunInProcess(try steps(##"[{"cmd":"press","args":["Enter"]}]"##)))
+        // Other steps keep the old rule: only an argument that begins with a reference has no shape.
+        XCTAssertTrue(ExecCommand.allStepsRunInProcess(try steps(##"[{"cmd":"fill","args":["#q","x$k"]}]"##)))
+        XCTAssertFalse(ExecCommand.allStepsRunInProcess(try steps(##"[{"cmd":"fill","args":["#q","$k"]}]"##)))
+    }
+
     func testAScriptOfTheNewStepsGoesToTheDaemonAndOneWaitKeepsItOff() throws {
         func steps(_ json: String) throws -> [ScriptStep] { try ScriptInterpreter.parseScript(source: json, maxSteps: 50) }
         let inProcess = try steps("""
@@ -364,6 +380,30 @@ final class ExecMoreStepsInProcessTests: XCTestCase, @unchecked Sendable {
             XCTAssertEqual(sent.count, 1, cmd)
             XCTAssertTrue(sent[0].contains(expected), "\(cmd): expected\n\(expected)\nin\n\(sent[0])")
         }
+    }
+
+    /// A quote, a backslash or a double quote followed by a combining mark is one `Character` that is not
+    /// equal to the quote, and Foundation's `replacingOccurrences` skips it unless it is asked to be literal:
+    /// the character is left unescaped and ends the string early. The helpers are literal.
+    func testTheEscapingHelpersAreLiteralAfterACombiningMark() {
+        let mark = "\u{301}"
+        XCTAssertEqual("x'\(mark)y".escapedForJS, "x\\'\(mark)y")
+        XCTAssertEqual("x\\\(mark)y".escapedForJS, "x\\\\\(mark)y")
+        XCTAssertEqual("x\"\(mark)y".escapedForAppleScript, "x\\\"\(mark)y")
+        XCTAssertEqual("x\\\(mark)y".escapedForAppleScript, "x\\\\\(mark)y")
+        XCTAssertEqual("x\"\(mark)y".jsStringLiteral, "\"x\\\"\(mark)y\"")
+        // The other characters the JavaScript helper handles, in one string.
+        XCTAssertEqual("a\r\0\u{2028}\u{2029}b".escapedForJS, "a\\r\\0\\u2028\\u2029b")
+    }
+
+    func testTypedTextWithACombiningMarkAfterAQuoteReachesSafariEscaped() async throws {
+        let fake = Fake()
+        _ = try await withFake(fake, javaScriptAnswer: "OK") {
+            try await InProcessStepDispatcher().dispatch(cmd: "fill", args: ["#q", "x'\u{301};alert(1);//"], sharedTargetArgs: targetArgs)
+        }
+        let sent = javaScripts(fake).map(unescapedAppleScript)
+        XCTAssertEqual(sent.count, 1)
+        XCTAssertTrue(sent[0].contains("el.value = 'x\\'\u{301};alert(1);//';"), sent[0])
     }
 
     // MARK: - Nothing here may bring the daemon down

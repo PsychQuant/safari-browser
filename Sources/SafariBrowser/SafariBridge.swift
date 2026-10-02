@@ -4302,33 +4302,33 @@ enum SafariBridge {
 
 extension String {
     var escapedForAppleScript: String {
-        self.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\t", with: "\\t")
+        self.replacingOccurrences(of: "\\", with: "\\\\", options: .literal)
+            .replacingOccurrences(of: "\"", with: "\\\"", options: .literal)
+            .replacingOccurrences(of: "\n", with: "\\n", options: .literal)
+            .replacingOccurrences(of: "\r", with: "\\r", options: .literal)
+            .replacingOccurrences(of: "\t", with: "\\t", options: .literal)
     }
 
     var escapedForJS: String {
-        self.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\0", with: "\\0")
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+        self.replacingOccurrences(of: "\\", with: "\\\\", options: .literal)
+            .replacingOccurrences(of: "'", with: "\\'", options: .literal)
+            .replacingOccurrences(of: "\n", with: "\\n", options: .literal)
+            .replacingOccurrences(of: "\r", with: "\\r", options: .literal)
+            .replacingOccurrences(of: "\0", with: "\\0", options: .literal)
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028", options: .literal)
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029", options: .literal)
     }
 
     /// Returns a JS double-quoted string literal (with proper escaping for multi-line content)
     var jsStringLiteral: String {
         let escaped = self
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\0", with: "\\0")
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+            .replacingOccurrences(of: "\\", with: "\\\\", options: .literal)
+            .replacingOccurrences(of: "\"", with: "\\\"", options: .literal)
+            .replacingOccurrences(of: "\n", with: "\\n", options: .literal)
+            .replacingOccurrences(of: "\r", with: "\\r", options: .literal)
+            .replacingOccurrences(of: "\0", with: "\\0", options: .literal)
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028", options: .literal)
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029", options: .literal)
         return "\"\(escaped)\""
     }
 

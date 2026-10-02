@@ -35,4 +35,5 @@
 - [x] 5.2 測試：形狀表（接受與拒絕）、與 CLI 指令送出相同的 JavaScript／回傳相同的值／以相同方式失敗、共用 `--url` 目標一次解析、整份腳本的路由
 - [x] 5.3 量測：混合腳本 before／after（見 docs/performance.md；Safari 只有 1 個分頁，量不到列舉成本）
 - [x] 5.4 審查發現並修正：`press` 空字串／只有 `+` 的 key 與過大的 `@e` ref 以 force-unwrap 崩潰（改為錯誤／不存在的 ref；形狀判斷把無名 key 留給子行程）；daemon 日誌以明文記下 `exec.runScript` 的步驟參數（Requirement: Daemon log redaction：步驟的 `args` 與 `if` 一律遮蔽）；測試補上目標／profile／`--first-match`／步驟層目標覆蓋、獨立的跳脫預期值、`var`／`onError`、路由
+- [x] 5.5 第三輪審查：日誌遮蔽對格式不對的請求也成立（`steps` 不是物件陣列、`args` 不是陣列、數字、拼錯的 key）；`exec.runScript` 的結果只留步驟編號、狀態、`var`、錯誤碼，`value` 與 `error.message` 以大小取代（Requirement: Daemon log redaction）；`press` 的 key 在任何位置帶 `$變數` 就不送 daemon、無名 key 留給 CLI；共用的跳脫函式改為 literal（`'`、`\\`、`"` 後接組合字元原本不被跳脫）；規格的封閉形狀列表補上 `press` 的有名 key 規則
 
