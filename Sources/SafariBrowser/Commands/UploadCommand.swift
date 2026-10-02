@@ -139,6 +139,12 @@ struct UploadCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        try await run(accessibilityProbe: SafariBridge.isAccessibilityPermitted)
+    }
+
+    /// `accessibilityProbe` is a seam: without permission and without `--native` the command
+    /// falls back to the JS path, which a test cannot otherwise reach (#231).
+    func run(accessibilityProbe: () -> Bool) async throws {
         let expandedPath = (filePath as NSString).expandingTildeInPath
         guard FileManager.default.fileExists(atPath: expandedPath) else {
             throw SafariBrowserError.fileNotFound(filePath)
@@ -147,8 +153,9 @@ struct UploadCommand: AsyncParsableCommand {
         // --js explicitly selects JS DataTransfer path. Size cap already
         // enforced at validate() time.
         if js {
-            // #51: scope to --profile via a concrete target (10 MB JS path).
-            let scoped = try await target.resolveProfileScoped()
+            // #51: scope to --profile via a concrete target (10 MB JS path); #231: and honour
+            // --first-match, once, instead of once per chunk.
+            let scoped = try await target.resolveFirstMatchOnce()
             try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
@@ -162,7 +169,7 @@ struct UploadCommand: AsyncParsableCommand {
         let wantNative = UploadCommand.resolveNativeRouting(
             native: native,
             allowHid: allowHid,
-            accessibilityProbe: SafariBridge.isAccessibilityPermitted)
+            accessibilityProbe: accessibilityProbe)
         if wantNative {
             try await runNativeWithResolver(expandedPath: expandedPath)
             return
@@ -179,7 +186,7 @@ struct UploadCommand: AsyncParsableCommand {
                 Grant Accessibility permission in System Settings → Privacy & Security → Accessibility
                 to enable fast native file dialog upload.\n
             """.utf8))
-        let scoped = try await target.resolveProfileScoped()
+        let scoped = try await target.resolveFirstMatchOnce()
         try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 
@@ -430,7 +437,7 @@ struct UploadCommand: AsyncParsableCommand {
         // Record initial URL (strip fragment) to detect page navigation during chunking
         let initialURL = try await SafariBridge.doJavaScript(
             "window.location.href.split('#')[0]",
-            target: target
+            target: target, firstMatch: firstMatch, warnWriter: warnWriter
         )
 
         // #24: Transfer base64 in 200KB chunks via Array.push (NOT String +=).
@@ -454,12 +461,12 @@ struct UploadCommand: AsyncParsableCommand {
             if chunkCount % 10 == 0 {
                 let currentURL = try await SafariBridge.doJavaScript(
                     "window.location.href.split('#')[0]",
-                    target: target
+                    target: target, firstMatch: firstMatch, warnWriter: warnWriter
                 )
                 if currentURL != initialURL {
                     _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
                     throw SafariBrowserError.appleScriptFailed(
-                        "Page navigated away during upload (was: \(initialURL), now: \(currentURL)). Upload aborted."
+                        Self.navigatedAwayMessage(initialURL: initialURL, currentURL: currentURL)
                     )
                 }
             }
@@ -494,7 +501,7 @@ struct UploadCommand: AsyncParsableCommand {
                     return 'JS_FAILED:' + e.message;
                 }
             })()
-            """, target: target)
+            """, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
 
         if jsResult == "NOT_FOUND" {
             _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
@@ -505,6 +512,16 @@ struct UploadCommand: AsyncParsableCommand {
             _ = try? await SafariBridge.doJavaScript("delete window.__sbUploadChunks", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
             throw SafariBrowserError.appleScriptFailed("JS file injection failed: \(jsResult)")
         }
+    }
+
+    /// #227: the two URLs are shown without their queries, so a page that only changed its query
+    /// (or something else that is not shown) would print the same text twice. Say so, instead of
+    /// leaving a message that reads as if nothing changed.
+    static func navigatedAwayMessage(initialURL: String, currentURL: String) -> String {
+        let was = URLText.redactURL(initialURL)
+        let now = URLText.redactURL(currentURL)
+        let unseen = was == now ? " — they differ in a part that is not shown here" : ""
+        return "Page navigated away during upload (was: \(was), now: \(now)\(unseen)). Upload aborted."
     }
 
     private func guessMimeType(for filename: String) -> String {

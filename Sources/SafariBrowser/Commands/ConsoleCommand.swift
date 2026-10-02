@@ -37,13 +37,13 @@ struct ConsoleCommand: AsyncParsableCommand {
                         }
                     }
                 })()
-                """, target: documentTarget, profile: profile)
+                """, target: documentTarget, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
         } else if clear {
-            _ = try await SafariBridge.doJavaScript("window.__sbConsole = []", target: documentTarget, profile: profile)
+            _ = try await SafariBridge.doJavaScript("window.__sbConsole = []", target: documentTarget, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
         } else {
             let result = try await SafariBridge.doJavaScript(
                 "(window.__sbConsole || []).join('\\n')",
-                target: documentTarget, profile: profile
+                target: documentTarget, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile
             )
             if !result.isEmpty {
                 print(result)

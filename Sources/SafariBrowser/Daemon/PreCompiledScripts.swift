@@ -1,10 +1,11 @@
 import Foundation
 
 /// Catalog of AppleScript source blocks that the daemon pre-compiles into
-/// `NSAppleScript` objects and holds in memory for the lifetime of the
-/// daemon process. This is the main latency win of the persistent-daemon
-/// change: a warm request path reuses the already-compiled handle instead
-/// of spawning a fresh `osascript` subprocess.
+/// `NSAppleScript` objects and holds in memory, up to `CompileCache`'s bound
+/// (256 sources, least recently used evicted; #170). This is the main latency
+/// win of the persistent-daemon change: a warm request path reuses the
+/// already-compiled handle instead of spawning a fresh `osascript`
+/// subprocess.
 ///
 /// Task 3.1 scope (infrastructure + seed templates):
 ///
@@ -13,7 +14,8 @@ import Foundation
 ///   throw `.missingPlaceholder` so callers fail loudly instead of leaving
 ///   a raw `{{TOKEN}}` in the AppleScript.
 /// - `CompileCache` compiles on miss on the main actor and caches by source
-///   string. Identical rendered sources reuse the same handle.
+///   string, at most 256 of them. Identical rendered sources reuse the same
+///   handle.
 /// - `known` registers three Phase 1 seed templates (`activateWindow`,
 ///   `enumerateWindows`, `runJSInCurrentTab`); the remaining 4–7 templates
 ///   mentioned in design.md will be ported from `SafariBridge.swift` in
@@ -205,10 +207,26 @@ enum PreCompiledScripts {
     /// `execute(source:)` which returns a `Sendable` `ExecutionResult`, or
     /// through the introspection accessors `cacheCount` / `contains(source:)`.
     @MainActor final class CompileCache {
-        private var cache: [String: NSAppleScript] = [:]
+        /// #170: sources embed window ids, tab indices and JavaScript text,
+        /// so distinct sources are unbounded; a long-lived daemon kept every
+        /// one. The least recently used handle is evicted past this capacity.
+        nonisolated static let defaultCapacity = 256
+
+        private struct Entry {
+            let script: NSAppleScript
+            var lastUse: UInt64
+        }
+        private let capacity: Int
+        /// Keyed by the source's UTF-8 bytes: `String` equality treats canonically equivalent text
+        /// (an NFC and an NFD spelling of the same literal) as equal, and the cache would then run one
+        /// request's compiled script for another's, though NSAppleScript tells the two apart.
+        private var cache: [[UInt8]: Entry] = [:]
+        private var useClock: UInt64 = 0
 
         // No NSAppleScript work occurs until an isolated method is called.
-        nonisolated init() {}
+        nonisolated init(capacity: Int = CompileCache.defaultCapacity) {
+            self.capacity = max(1, capacity)
+        }
 
         /// Ensure `source` is compiled and cached. Idempotent: repeated calls
         /// with the same source string re-use the cached `NSAppleScript`.
@@ -249,13 +267,26 @@ enum PreCompiledScripts {
 
         /// Whether a given source string has been compiled and cached.
         func contains(source: String) -> Bool {
-            cache[source] != nil
+            cache[Array(source.utf8)] != nil
+        }
+
+        private func evictIfOverCapacity() {
+            while cache.count > capacity,
+                  let oldest = cache.min(by: { $0.value.lastUse < $1.value.lastUse })?.key {
+                cache.removeValue(forKey: oldest)
+            }
         }
 
         // MARK: - Actor-isolated helpers
 
         private func compiledLocked(for source: String) throws -> NSAppleScript {
-            if let existing = cache[source] { return PerformanceTrace.span(.daemonCacheHit) { existing } }
+            useClock &+= 1
+            let key = Array(source.utf8)
+            if var existing = cache[key] {
+                existing.lastUse = useClock
+                cache[key] = existing
+                return PerformanceTrace.span(.daemonCacheHit) { existing.script }
+            }
             return try PerformanceTrace.span(.daemonCompile) {
                 guard let script = NSAppleScript(source: source) else {
                     throw Error.compilationFailed("NSAppleScript init returned nil")
@@ -264,7 +295,8 @@ enum PreCompiledScripts {
                 if !script.compileAndReturnError(&errorInfo) {
                     throw Error.compilationFailed(errorInfo.map(Self.describe) ?? "compilation failed")
                 }
-                cache[source] = script
+                cache[key] = Entry(script: script, lastUse: useClock)
+                evictIfOverCapacity()
                 return script
             }
         }

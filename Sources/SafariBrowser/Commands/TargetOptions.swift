@@ -298,6 +298,15 @@ struct TargetOptions: ParsableArguments {
         }
     }
 
+    /// True when a flag that names a tab was given (#210). `--profile` and
+    /// `--first-match` only narrow or relax a selection; on their own they name
+    /// nothing, so a command that refuses to act without an explicit target
+    /// must not count them.
+    var hasExplicitTarget: Bool {
+        url != nil || urlExact != nil || urlEndswith != nil || urlRegex != nil
+            || window != nil || tab != nil || document != nil
+    }
+
     /// Convert the parsed flags into a `TargetDocument`. Precedence
     /// (already checked as mutually exclusive by `validate()`):
     /// 1. `--window + --tab-in-window` → `.windowTab(w, m)`
@@ -352,16 +361,38 @@ struct TargetOptions: ParsableArguments {
     /// window/tab (via `resolveToConcreteTarget`, reusing the #47 filter), so
     /// downstream bridge calls inherit profile scoping without each needing a
     /// `profile:` parameter. When absent, returns `resolve()` unchanged so the
-    /// no-profile path is byte-identical. Used by commands whose downstream
-    /// bridge methods don't take `profile:` (get text/html, save-image, upload).
-    func resolveProfileScoped() async throws -> SafariBridge.TargetDocument {
+    /// no-profile path is byte-identical. Commands whose downstream bridge
+    /// methods don't take `profile:` (get text/html, save-image, upload) call
+    /// `resolveFirstMatchOnce`, which falls back to this.
+    func resolveProfileScoped(
+        warnWriter: @escaping (String) -> Void = TargetOptions.stderrWarnWriter
+    ) async throws -> SafariBridge.TargetDocument {
         guard let profile = profile, !profile.isEmpty else { return resolve() }
         return try await SafariBridge.resolveToConcreteTarget(
             resolve(),
             firstMatch: firstMatch,
-            warnWriter: Self.stderrWarnWriter,
+            warnWriter: warnWriter,
             profile: profile
         )
+    }
+
+    /// `resolveProfileScoped`, and `--first-match` honoured (#220, #231). `resolveProfileScoped`
+    /// resolves to a concrete tab only for `--profile`; for a command whose reads take no
+    /// `firstMatch`, an ambiguous `--url` therefore threw although the flag was given. Given
+    /// `--first-match` and no `--profile`, a URL-pattern target is resolved once here to a concrete
+    /// tab — one enumeration, one warning — and every later read follows that tab. Every other
+    /// combination is exactly what `resolveProfileScoped` returns: the flag is a no-op without a
+    /// URL-matching flag (`document-targeting`), and with `--profile` the profile-scoped
+    /// resolution already carries it. `warnWriter` receives the multi-match warning.
+    func resolveFirstMatchOnce(
+        warnWriter: @escaping (String) -> Void = TargetOptions.stderrWarnWriter
+    ) async throws -> SafariBridge.TargetDocument {
+        let named = resolve()
+        if firstMatch, profile == nil, case .urlMatch = named {
+            return try await SafariBridge.resolveToConcreteTarget(
+                named, firstMatch: true, warnWriter: warnWriter, profile: nil)
+        }
+        return try await resolveProfileScoped(warnWriter: warnWriter)
     }
 
     /// Convenience wrapper that bundles the resolved `TargetDocument`

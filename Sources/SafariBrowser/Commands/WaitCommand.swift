@@ -19,7 +19,8 @@ struct WaitCommand: AsyncParsableCommand {
     @Option(name: .long, help: "Wait until this JS expression is truthy")
     var js: String?
 
-    @Option(name: .long, help: "Timeout in milliseconds (default: 30000)")
+    @Option(name: .long, help: ArgumentHelp("Timeout in milliseconds (default: 30000)",
+        discussion: "Bounds when a poll after the first may start, not how long the command takes: resolving the target and a poll that has started are not cut short by --timeout, and the first poll runs even when resolution used up the timeout, so the command can end later than --timeout. For a hard limit, run the command under an external timeout."))
     var timeout: Int = 30000
 
     // #182: randomized wait. One duration is drawn from a Cauchy distribution
@@ -227,8 +228,10 @@ struct WaitCommand: AsyncParsableCommand {
         try await run(sleep: { try await Task.sleep(nanoseconds: $0) })
     }
 
-    /// Keep the real sleep argument observable without relying on scheduler timing.
-    func run(sleep: (UInt64) async throws -> Void) async throws {
+    /// Keep the real sleep argument observable without relying on scheduler timing. `now` is the
+    /// clock the deadline is read from: a test that advances it by what `sleep` is asked for gets
+    /// an exact, scheduler-independent record of the sleeps (#221).
+    func run(sleep: (UInt64) async throws -> Void, now: () -> Date = { Date() }) async throws {
         if jitter != nil {
             let distribution = try jitterDistribution()
             let range = try JitterNanosecondRange(min: distribution.min, max: distribution.max)
@@ -238,59 +241,234 @@ struct WaitCommand: AsyncParsableCommand {
             let drawn = try drawJitterMilliseconds(from: distribution)
             try await sleep(range.nanoseconds(for: drawn))
         } else if let forUrl {
-            try await waitForURL(pattern: forUrl)
+            try await waitForURL(pattern: forUrl, sleep: sleep, now: now)
         } else if let js {
-            try await waitForJS(expression: js)
+            try await waitForJS(expression: js, sleep: sleep, now: now)
         } else if let milliseconds {
             let duration = try Self.nanoseconds(forMilliseconds: milliseconds)
             try await sleep(duration)
         }
     }
 
-    private func waitForURL(pattern: String) async throws {
-        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
-        let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
-        // #59: thread firstMatch/warnWriter through so the multi-match URL
-        // fallback warning is emitted (it was silently dropped before). The
-        // warning fires only on the first poll — the target is re-resolved
-        // each 500ms iteration, and re-emitting the same ambiguity warning
-        // on every poll would spam stderr.
-        var firstPoll = true
-        while Date() < deadline {
-            let currentURL = try await SafariBridge.getCurrentURL(
-                target: resolvedTarget,
-                firstMatch: firstMatch,
-                warnWriter: firstPoll ? warnWriter : nil,
-                profile: target.resolveProfile()
-            )
-            firstPoll = false
-            if currentURL.contains(pattern) {
-                return
+    /// #168: resolve the target once, before the first poll. Re-resolving on
+    /// every 500 ms poll cost one full window/tab enumeration per poll for a
+    /// `--url` target, and it defeated the command's purpose: waiting for a
+    /// navigation away from the URL the target was named by failed on the next
+    /// poll, because the old URL no longer matched anything. Anchored the same
+    /// way `js` is (#180): a `--url` / `--document` target is pinned to its tab
+    /// by window id, and the default target / `--window N` to the window's
+    /// current tab. Resolution time counts against `--timeout` but is not
+    /// interrupted by it. The multi-match warning (#59) fires once, at this
+    /// single resolution. A URL-pattern target also returns its window's tab
+    /// URLs from the resolving enumeration, the baseline `WaitURLAnchor`
+    /// follows the tab from (verify R2).
+    private func resolveOnce() async throws -> (
+        original: SafariBridge.TargetDocument, anchored: SafariBridge.TargetDocument,
+        firstMatch: Bool, windowURLs: [String]?
+    ) {
+        let (initial, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let profile = target.resolveProfile()
+        if case .urlMatch = initial {
+            let (anchored, urls) = try await SafariBridge.resolveURLTargetWithWindowURLs(
+                initial, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+            return (initial, anchored, firstMatch, urls)
+        }
+        let anchored = try await SafariBridge.resolveToAnchoredTarget(
+            initial, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+        return (initial, anchored, firstMatch, nil)
+    }
+
+    private func waitForURL(pattern: String, sleep: (UInt64) async throws -> Void, now: () -> Date) async throws {
+        let deadline = now().addingTimeInterval(Double(timeout) / 1000.0)
+        let (original, anchored, firstMatch, windowURLs) = try await resolveOnce()
+        // #168 verify R1/R2: `getCurrentURL` on a bare `tab T of window id W`
+        // has no identity check. A tab resolved by URL pattern is followed
+        // through its window's URL list (one Apple event per poll); a tab named
+        // by position is read at that position; the anchored current tab is
+        // read with the current-tab check. Each window read probes for a
+        // blocking dialog first, as every other URL read does.
+        var windowAnchor: (windowID: Int, anchor: WaitURLAnchor)?
+        if case .resolvedTab(let windowID, let tab, _, _) = anchored {
+            if let windowURLs {
+                guard let anchor = WaitURLAnchor(following: tab, in: windowURLs) else {
+                    throw SafariBrowserError.anchoredTargetChanged(target: Self.describe(original, anchored))
+                }
+                windowAnchor = (windowID, anchor)
+            } else {
+                windowAnchor = (windowID, WaitURLAnchor(position: tab))
             }
-            try await Task.sleep(nanoseconds: 500_000_000) // 500ms polling
+        }
+        try await pollUntilDeadline(deadline, sleep: sleep, now: now) {
+            do {
+                if var tracked = windowAnchor {
+                    BlockingDialogGate.shared.check(.id(tracked.windowID))
+                    let urls = try await SafariBridge.tabURLs(windowID: tracked.windowID)
+                    defer { windowAnchor = tracked }
+                    return try tracked.anchor.url(in: urls).contains(pattern)
+                }
+                // The default target and `--window N` come here: the current-tab
+                // check and the dialog probe are `getCurrentURL`'s anchored-tab
+                // branch, pinned by `testWaitForURLOnTheDefaultTargetFailsClosed…`
+                // and `testURLWaitsKeepProbingForABlockingDialog`.
+                return try await SafariBridge.getCurrentURL(
+                    target: anchored, firstMatch: firstMatch, warnWriter: nil,
+                    profile: target.resolveProfile()).contains(pattern)
+            } catch is WaitURLAnchor.Changed {
+                throw SafariBrowserError.anchoredTargetChanged(target: Self.describe(original, anchored))
+            } catch let error as SafariBrowserError {
+                if windowAnchor != nil, SafariBridge.isTargetDangleError(error) {
+                    throw SafariBrowserError.anchoredTargetChanged(target: Self.describe(original, anchored))
+                }
+                throw JSCommand.anchoredFailure(error, original: original, anchored: anchored)
+            }
+        }
+    }
+
+    /// Polls, sleeping 500 ms between polls, until `satisfied` returns true or the deadline
+    /// passes. The first poll runs even when resolution used up the timeout: the deadline starts
+    /// before target resolution, and a resolution that used up the timeout must not turn a
+    /// condition that already holds into a timeout (#168 verify R1). So `--timeout 0` polls
+    /// once, where it used to time out without polling.
+    /// Neither resolution nor a poll is interrupted at the deadline (#221): `--timeout`
+    /// bounds when a poll after the first may *start*, and the wait never asks to sleep past the
+    /// deadline.
+    ///
+    /// Why not bound each poll by the time that remains (deferred, not ruled out): the resolution
+    /// and the first poll — which must run, above — cannot be bounded that way, so the command
+    /// could still end after the deadline; what bounding the later polls would change is what a
+    /// stall that begins mid-wait costs. It needs a timeout to be carried into the calls a
+    /// poll makes, in code that other work (#189, #224, #225) is rewriting.
+    ///
+    /// The calls a poll makes, their own limits and what happens when one fails are not changed
+    /// by this wait.
+    ///
+    /// `sleep` and `now` are seams: a test records what is asked for and moves the clock itself.
+    private func pollUntilDeadline(
+        _ deadline: Date, sleep: (UInt64) async throws -> Void, now: () -> Date, _ satisfied: () async throws -> Bool
+    ) async throws {
+        var first = true
+        while first || now() < deadline {
+            first = false
+            if try await satisfied() { return }
+            // Poll every 500 ms, but never ask to sleep past the deadline (#221): a sleep that runs
+            // out the clock only delays the timeout it is about to report.
+            let remaining = deadline.timeIntervalSince(now())
+            guard remaining > 0 else { break }
+            try await sleep(UInt64(min(0.5, remaining) * 1_000_000_000))
         }
         throw SafariBrowserError.timeout(seconds: timeout / 1000)
     }
 
-    private func waitForJS(expression: String) async throws {
-        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
-        let deadline = Date().addingTimeInterval(Double(timeout) / 1000.0)
-        // #59: see waitForURL — warn once on the first poll only.
-        var firstPoll = true
-        while Date() < deadline {
-            let result = try await SafariBridge.doJavaScript(
-                "!!(\(expression)) ? 'true' : ''",
-                target: resolvedTarget,
-                firstMatch: firstMatch,
-                warnWriter: firstPoll ? warnWriter : nil,
-                profile: target.resolveProfile()
-            )
-            firstPoll = false
-            if result.trimmingCharacters(in: .whitespacesAndNewlines) == "true" {
-                return
-            }
-            try await Task.sleep(nanoseconds: 500_000_000) // 500ms polling
+    /// The target as the user named it, for a target-changed error.
+    private static func describe(_ original: SafariBridge.TargetDocument, _ anchored: SafariBridge.TargetDocument) -> String {
+        let position: String
+        if case .resolvedTab(let windowID, let tab, _, _) = anchored {
+            position = "window id \(windowID) tab \(tab) at command start"
+        } else {
+            position = "its position at command start"
         }
-        throw SafariBrowserError.timeout(seconds: timeout / 1000)
+        switch original {
+        case .urlMatch(let matcher): return "the tab matching \(matcher.description) (\(position))"
+        case .documentIndex(let n): return "document \(n) (\(position))"
+        case .windowTab(let w, let t): return "window \(w) tab \(t) (\(position))"
+        default: return "the target tab (\(position))"
+        }
+    }
+
+    private func waitForJS(expression: String, sleep: (UInt64) async throws -> Void, now: () -> Date) async throws {
+        let deadline = now().addingTimeInterval(Double(timeout) / 1000.0)
+        let (original, anchored, firstMatch, _) = try await resolveOnce()
+        try await pollUntilDeadline(deadline, sleep: sleep, now: now) {
+            let result: String
+            do {
+                result = try await SafariBridge.doJavaScript(
+                    "!!(\(expression)) ? 'true' : ''",
+                    target: anchored, firstMatch: firstMatch, warnWriter: nil,
+                    profile: target.resolveProfile())
+            } catch let error as SafariBrowserError {
+                throw JSCommand.anchoredFailure(error, original: original, anchored: anchored)
+            }
+            return result.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+        }
+    }
+}
+
+/// #168 verify R2: which tab a `wait --for-url` reads, poll after poll.
+///
+/// A tab named by position (`--document N`, `--window N --tab-in-window M`)
+/// is read at that position, as `js` reads it (#79); the wait fails only when
+/// the position runs past the end of the window.
+///
+/// A tab resolved by URL pattern is followed by what its window shows, since
+/// Safari has no tab id. Each poll compares the window's URLs with the
+/// previous read — for the first poll, with the enumeration that resolved the
+/// target, so a change between resolution and the first poll is seen like any
+/// other. `last` is the URL the tab showed at the previous read:
+///
+/// 1. The tabs to its left are unchanged and its position still shows `last`:
+///    the same tab.
+/// 2. `last` was shown by no other tab and now shows in exactly one tab: the
+///    tab moved there (a tab opened, closed or was dragged) without navigating.
+/// 3. Its position no longer shows `last`, the tabs to its left and the tab
+///    count are unchanged, and the tabs to its right did not all move one place
+///    left: it navigated — the event being waited for — and its new URL
+///    becomes `last`.
+/// 4. Anything else fails closed: it closed, moved while navigating, or tabs
+///    to its left changed while it navigated.
+///
+/// This is a closed list. Not detected: a tab showing the same URL opened
+/// right before it (the copy is read from then on), and the tab closing while
+/// a new tab opens at the same position within one poll interval.
+struct WaitURLAnchor {
+    struct Changed: Error {}
+
+    private var tab: Int
+    /// The window's URLs at the previous read; nil for a position-only target.
+    private var previous: [String]?
+
+    /// Follow the tab at `tab` (1-based) of a window that showed `windowURLs`.
+    init?(following tab: Int, in windowURLs: [String]) {
+        guard tab >= 1, tab <= windowURLs.count else { return nil }
+        self.tab = tab
+        self.previous = windowURLs
+    }
+
+    /// Read whatever tab is at `tab` (1-based).
+    init(position tab: Int) {
+        self.tab = tab
+        self.previous = nil
+    }
+
+    mutating func url(in urls: [String]) throws -> String {
+        guard let previous else {
+            guard tab >= 1, tab <= urls.count else { throw Changed() }
+            return urls[tab - 1]
+        }
+        let i = tab - 1
+        let last = previous[i]
+        let leftUnchanged = urls.count > i && urls[..<i].elementsEqual(previous[..<i])
+        if leftUnchanged, urls[i] == last {
+            self.previous = urls
+            return last
+        }
+        let wasUnique = previous.filter { $0 == last }.count == 1
+        let shownAt = urls.indices.filter { urls[$0] == last }
+        if wasUnique, shownAt.count == 1 {
+            tab = shownAt[0] + 1
+            self.previous = urls
+            return last
+        }
+        // Navigation needs the count unchanged: only then is the right-shift
+        // comparison in bounds (verify R3: it sliced the new list with the old
+        // list's bound and trapped when the window had shrunk).
+        if leftUnchanged, urls.count == previous.count {
+            let rightMovedLeft = i + 1 < previous.count
+                && urls[i..<(previous.count - 1)].elementsEqual(previous[(i + 1)...])
+            if !rightMovedLeft, shownAt.isEmpty || !wasUnique {
+                self.previous = urls
+                return urls[i]
+            }
+        }
+        throw Changed()
     }
 }

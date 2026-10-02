@@ -96,6 +96,15 @@ enum SafariBridge {
         /// profile-blind retry could dispatch into another profile's
         /// same-URL tab — an isolation violation).
         case resolvedTab(windowID: Int, tabInWindow: Int, rematch: UrlMatcher?, profile: String?)
+        /// #180 verify R2: the default target / `--window N` anchored at
+        /// command start — the window by its stable id, and the index its
+        /// current tab had then. Unlike `.resolvedTab` it asserts, in the same
+        /// AppleScript as every JavaScript dispatch, that tab `tabInWindow` is
+        /// STILL that window's current tab, so a tab closing to its left (the
+        /// index then names the next tab), a reorder, or the user switching
+        /// tabs fails closed instead of silently running in another tab.
+        /// Produced only by `resolveToAnchoredTarget` (i.e. by `js` and `wait`).
+        case anchoredCurrentTab(windowID: Int, tabInWindow: Int, profile: String?)
         /// Composite target: the tab-in-window-th tab of the window-th
         /// window. Addresses same-URL duplicate tabs that `.urlMatch`
         /// cannot disambiguate (issue #28 gap #2). Always requires both
@@ -151,6 +160,8 @@ enum SafariBridge {
         case .resolvedTab(let windowID, let tab, _, _):
             // #79: window id is stable for the window's lifetime, unlike
             // the z-order `window N` index the other cases use.
+            return "tab \(tab) of window id \(windowID)"
+        case .anchoredCurrentTab(let windowID, let tab, _):
             return "tab \(tab) of window id \(windowID)"
         }
     }
@@ -230,6 +241,14 @@ enum SafariBridge {
                 BlockingDialogGate.shared.check(key)
                 return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key,
                     diagnosticTarget: BackgroundTabDiagnosticTarget(windowID: id, tabIndex: tab, matcher: matcher))
+            }
+            if case .anchoredCurrentTab(let id, _, _) = target {
+                // Already concrete; the current-tab guard in dispatchJS is the
+                // per-step identity check. A current tab is never a background
+                // tab, so no background diagnostic target.
+                let key = BlockingDialogGate.WindowKey.id(id)
+                BlockingDialogGate.shared.check(key)
+                return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key)
             }
             let resolved = try await resolveNativeTarget(from: target, firstMatch: firstMatch,
                                                         warnWriter: warnWriter, profile: profile)
@@ -316,6 +335,7 @@ enum SafariBridge {
             // profile-validated) once at command entry — re-validating on
             // every internal round-trip would add an enumeration per call.
             if case .resolvedTab = target { return target }
+            if case .anchoredCurrentTab = target { return target }
             let resolved = try await resolveNativeTarget(
                 from: target,
                 firstMatch: firstMatch,
@@ -325,7 +345,7 @@ enum SafariBridge {
             return concreteTarget(from: resolved, original: target, profile: profile)
         }
         switch target {
-        case .frontWindow, .windowIndex, .windowTab, .resolvedTab:
+        case .frontWindow, .windowIndex, .windowTab, .resolvedTab, .anchoredCurrentTab:
             return target
         case .urlMatch, .documentIndex:
             let resolved = try await resolveNativeTarget(
@@ -365,6 +385,162 @@ enum SafariBridge {
             return .windowTab(window: resolved.windowIndex, tabInWindow: tab)
         }
         return .windowIndex(resolved.windowIndex)
+    }
+
+    // MARK: - Positional target anchoring (#180)
+
+    /// The two facts a positional target needs to become identity-anchored:
+    /// the window's stable AppleScript id and the index of its current tab.
+    /// Read in ONE round-trip by `readWindowAnchor` (`windowAnchorScript`).
+    struct WindowAnchor: Sendable, Equatable {
+        let windowID: Int
+        let currentTabIndex: Int
+    }
+
+    /// AppleScript returning `id GS current-tab-index` for window `index`.
+    /// Deliberately not an enumeration — no tab URLs, no names, no repeat.
+    /// A 0-tab window raises on `current tab` (-1728); that error is the
+    /// "no anchor" signal and the caller keeps the positional target so the
+    /// #87 / #97 error paths stay byte-identical (see `anchoredTarget`).
+    static func windowAnchorScript(index: Int) -> String {
+        windowAnchorScript(idExpression: "id of window \(index)")
+    }
+
+    /// Same round-trip addressed by the stable window id (#180 verify R1):
+    /// used after a `--profile` enumeration, where re-reading by z-order
+    /// index could land on a window that moved in between — possibly another
+    /// profile's.
+    static func windowAnchorScript(windowID: Int) -> String {
+        windowAnchorScript(idExpression: "\(windowID)")
+    }
+
+    /// Verify R2: `_id` is read once and the current-tab read goes through
+    /// `window id _id`. Reading both through `window N` would look the window
+    /// up by z-order twice, and a window raised in between would pair one
+    /// window's id with another window's current tab.
+    private static func windowAnchorScript(idExpression: String) -> String {
+        """
+        tell application "Safari"
+            set GS to (character id 29)
+            set _id to \(idExpression)
+            return (_id as text) & GS & ((index of current tab of window id _id) as text)
+        end tell
+        """
+    }
+
+    /// Parse `windowAnchorScript` output. Exactly two positive integers
+    /// separated by GS; anything else (empty, one field, zero / negative,
+    /// extra fields) is `nil` — a malformed anchor must degrade to the
+    /// positional target, never anchor to window id 0 / tab 0.
+    static func parseWindowAnchor(_ raw: String) -> WindowAnchor? {
+        let parts = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: "\u{1D}")
+        guard parts.count == 2,
+              let id = Int(parts[0]), let tab = Int(parts[1]),
+              id > 0, tab > 0 else { return nil }
+        return WindowAnchor(windowID: id, currentTabIndex: tab)
+    }
+
+    /// One AppleScript round-trip; `nil` on any failure (no such window,
+    /// 0-tab window, timeout). Same budget shape as `readWindowID`.
+    static func readWindowAnchor(index: Int) async -> WindowAnchor? {
+        guard index > 0,
+              let raw = try? await runAppleScript(windowAnchorScript(index: index), timeout: 2)
+        else { return nil }
+        return parseWindowAnchor(raw)
+    }
+
+    static func readWindowAnchor(windowID: Int) async -> WindowAnchor? {
+        guard windowID > 0,
+              let raw = try? await runAppleScript(windowAnchorScript(windowID: windowID), timeout: 2),
+              let anchor = parseWindowAnchor(raw), anchor.windowID == windowID
+        else { return nil }
+        return anchor
+    }
+
+    /// Pure: map a positional window-level target onto `.anchoredCurrentTab`
+    /// given its window ID and current tab index. This is not stable tab identity. `nil` anchor → target unchanged.
+    /// `.windowTab` is NOT anchored here — the anchor only knows the window's
+    /// *current* tab, not tab M; that case collapses through the enumeration
+    /// path in `resolveToAnchoredTarget`. Already-concrete / matcher targets
+    /// pass through untouched.
+    static func anchoredTarget(
+        _ target: TargetDocument,
+        anchor: WindowAnchor?,
+        profile: String?
+    ) -> TargetDocument {
+        switch target {
+        case .frontWindow, .windowIndex:
+            guard let anchor else { return target }
+            return .anchoredCurrentTab(windowID: anchor.windowID, tabInWindow: anchor.currentTabIndex,
+                                       profile: profile)
+        case .windowTab, .urlMatch, .documentIndex, .resolvedTab, .anchoredCurrentTab:
+            return target
+        }
+    }
+
+    /// `resolveToConcreteTarget` for commands that issue MANY bridge calls
+    /// per invocation (#180: `js` runs up to six `doJavaScript` round-trips).
+    ///
+    /// `resolveToConcreteTarget` only collapses `.urlMatch` / `.documentIndex`
+    /// into `.resolvedTab`; it returns `.frontWindow` / `.windowIndex` /
+    /// `.windowTab` unchanged ("already concrete"). But only `.resolvedTab`
+    /// and `.anchoredCurrentTab` take the no-enumeration shortcut in
+    /// `resolveScriptTarget`; unresolved positional cases resolve per call, which for `.windowTab` is
+    /// a full window/tab enumeration (six per `js` command with ~100 tabs
+    /// ≈ 20 s, #180). This wrapper spends at most ONE extra round-trip at the
+    /// command boundary so later calls can reuse the window ID and tab position:
+    ///
+    /// - `.windowTab` → one enumeration, collapsed by `concreteTarget`
+    ///   (stays positional only for legacy records without a window id);
+    /// - `.frontWindow` / `.windowIndex` → `readWindowAnchor` (id + current
+    ///   tab in one script); no anchor (0-tab window, no window, timeout)
+    ///   → unchanged, so the existing error paths are byte-identical.
+    ///
+    /// Kept separate from `resolveToConcreteTarget` on purpose: `TabCommand`
+    /// / `OpenCommand` / `TargetOptions.resolveProfileScoped` pattern-match
+    /// its `.windowIndex` / `.windowTab` results on the `--profile` path and
+    /// would silently drop a `.resolvedTab`.
+    static func resolveToAnchoredTarget(
+        _ target: TargetDocument,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
+    ) async throws -> TargetDocument {
+        // `--profile` + window-level target: resolve once through the profile
+        // filter, then anchor by the resolved window's stable id. Going through
+        // `resolveToConcreteTarget` would collapse to `.windowIndex(i)` and the
+        // anchor would re-read by z-order index — a second round-trip in which
+        // the index can come to name a different window, possibly another
+        // profile's (#180 verify R1).
+        if let profile, !profile.isEmpty {
+            switch target {
+            case .frontWindow, .windowIndex:
+                let resolved = try await resolveNativeTarget(
+                    from: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+                if let id = resolved.windowID, let anchor = await readWindowAnchor(windowID: id) {
+                    return .anchoredCurrentTab(windowID: id, tabInWindow: anchor.currentTabIndex,
+                                               profile: profile)
+                }
+                return concreteTarget(from: resolved, original: target, profile: profile)
+            default:
+                break
+            }
+        }
+        let concrete = try await resolveToConcreteTarget(
+            target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+        switch concrete {
+        case .resolvedTab, .anchoredCurrentTab, .urlMatch, .documentIndex:
+            return concrete
+        case .windowTab:
+            let resolved = try await resolveNativeTarget(
+                from: concrete, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+            return concreteTarget(from: resolved, original: concrete, profile: profile)
+        case .frontWindow:
+            return anchoredTarget(concrete, anchor: await readWindowAnchor(index: 1), profile: profile)
+        case .windowIndex(let n):
+            return anchoredTarget(concrete, anchor: await readWindowAnchor(index: n), profile: profile)
+        }
     }
 
     // MARK: - Focus-existing (Group 8: open default)
@@ -584,6 +760,13 @@ enum SafariBridge {
                 // Default target: propagate as-is (backward compat).
                 throw error
             }
+            if case .anchoredCurrentTab = target {
+                // #180 verify R2: the anchored default / `--window N` target.
+                // Propagate as-is like `.frontWindow`: the translation below
+                // would enumerate every tab of every profile only for
+                // `JSCommand.anchoredFailure` to discard the listing.
+                throw error
+            }
             if case .appleScriptFailed(let msg) = error, isObjectNotFound(msg) {
                 let docs = (try? await listAllDocuments()) ?? []
                 // #72: carry each tab's coordinates, not just its URL — the
@@ -592,7 +775,7 @@ enum SafariBridge {
                 // when the listing does not say what N and M are.
                 throw SafariBrowserError.documentNotFound(
                     pattern: targetDescription(target),
-                    availableDocuments: docs.map { "window \($0.window) tab \($0.tabInWindow): \($0.url)" }
+                    availableDocuments: docs.map { "window \($0.window) tab \($0.tabInWindow): \(URLText.redactURL($0.url))" }
                 )
             }
             throw error
@@ -610,6 +793,8 @@ enum SafariBridge {
         case .resolvedTab(let windowID, let tab, let rematch, _):
             let suffix = rematch.map { " (matched: \($0.description))" } ?? ""
             return "window id \(windowID) tab \(tab)\(suffix)"
+        case .anchoredCurrentTab(let windowID, let tab, _):
+            return "window id \(windowID) tab \(tab) (current tab at command start)"
         }
     }
 
@@ -1424,6 +1609,31 @@ enum SafariBridge {
         return code == -1719 || code == -1728
     }
 
+    /// #170: does an identity-anchored tab still show a URL its matcher
+    /// accepts? One small AppleScript; false when the guard trips or the tab
+    /// or window is gone, and for a target with no matcher to check by.
+    static func verifyResolvedTab(_ target: TargetDocument) async throws -> Bool {
+        guard case .resolvedTab(let windowID, let tab, let matcher?, _) = target else { return false }
+        let reference = "tab \(tab) of window id \(windowID)"
+        do {
+            if let guardClause = urlGuardClause(for: matcher) {
+                _ = try await runAppleScript("""
+                    tell application "Safari"
+                        set _t to \(reference)
+                        \(guardClause)
+                        return "ok"
+                    end tell
+                    """)
+                return true
+            }
+            // A regex matcher has no AppleScript form: check the URL here.
+            let url = try await runAppleScript("tell application \"Safari\" to get URL of \(reference)")
+            return matcher.matches(url)
+        } catch let error as SafariBrowserError where isTargetDangleError(error) {
+            return false
+        }
+    }
+
     /// #79: does this error mean the identity-anchored target dangled
     /// (window closed / tab moved / guard tripped) — i.e. a bounded
     /// re-resolve is worth one attempt? Pure; drives the retry decision.
@@ -1528,8 +1738,8 @@ enum SafariBridge {
                     expected: matcher.description, actualURL: nil)
             }
             let retry = try await resolveScriptTarget(retryTarget)
-            // #126: the re-resolve probed again; refuse here too rather than
-            // letting the retry pay the 30 s osascript timeout.
+            // #126: the re-resolve consulted the gate. Refuse if it has fresh
+            // evidence of a dialog; a spent JS allowance may leave it unprobed.
             try BlockingDialogGate.shared.throwIfBlocked(retry.key)
             do {
                 return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key, diagnosticTarget: retry.diagnosticTarget, warnWriter: warnWriter)
@@ -1553,6 +1763,21 @@ enum SafariBridge {
         target: TargetDocument, dialogKey: BlockingDialogGate.WindowKey,
         diagnosticTarget: BackgroundTabDiagnosticTarget?, warnWriter: ((String) -> Void)?
     ) async throws -> String {
+        if case .anchoredCurrentTab(let windowID, let tab, _) = target {
+            // #180 verify R2/R3: the check and the dispatch share one
+            // osascript run, so a tab change between two steps is caught. They
+            // are still two Apple events, not an atomic operation: a change
+            // landing in the gap between this check and `do JavaScript` inside
+            // one step is not detected. Safari exposes no stable tab identity
+            // to close that gap.
+            return try await runTargetedAppleScript("""
+                tell application "Safari"
+                    set _w to window id \(windowID)
+                    if (index of current tab of _w) is not \(tab) then error "SB_TARGET_CHANGED: tab \(tab) is no longer the current tab of window id \(windowID)" number 9001
+                    do JavaScript "\(code.escapedForAppleScript)" in tab \(tab) of _w
+                end tell
+                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
+        }
         guard case .resolvedTab(_, _, .some(let matcher), _) = target else {
             return try await runTargetedAppleScript("""
                 tell application "Safari"
@@ -1594,26 +1819,35 @@ enum SafariBridge {
     /// consistent across multi-document Safari sessions.
     static func doJavaScriptLarge(
         _ code: String,
-        target: TargetDocument = .frontWindow,
+        target initialTarget: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil,
         profile: String? = nil
     ) async throws -> String {
-        // Store result in window variable. Only the first doJavaScript
-        // call forwards the warnWriter — subsequent chunked reads reuse
-        // the already-resolved tab, so re-emitting the multi-match
-        // warning each chunk would spam the caller. profile likewise
-        // only on the first call (filter validates once at resolution).
+        // #231: a raw `.urlMatch` / `.documentIndex` is resolved ONCE here, as `doJavaScript` does at
+        // its own boundary, so the reads that follow address the tab the first read used. Left raw,
+        // each follow-up read re-resolved without `firstMatch` and an ambiguous `--url` failed on
+        // the second read (`snapshot --first-match` on a page large enough to be read in chunks).
+        // The warning is emitted by this one resolution, not by the reads.
+        var target = initialTarget
+        switch target {
+        case .urlMatch, .documentIndex:
+            target = try await resolveToConcreteTarget(
+                target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+        default:
+            break
+        }
+
+        // Store result in window variable. The profile is validated at the resolution above.
         _ = try await doJavaScript(
             "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()",
             target: target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter,
             profile: profile
         )
 
         // Get total length
-        let lenStr = try await doJavaScript("window.__sbResultLen", target: target)
+        let lenStr = try await doJavaScript("window.__sbResultLen", target: target, firstMatch: firstMatch)
         // AppleScript returns numbers as "9.0" — parse via Double then truncate.
         // Mirrors the non-large path in JSCommand.swift; #74. Int("5489.0")
         // returns nil → length parses to 0 → the whole chunked read returns ""
@@ -1636,14 +1870,15 @@ enum SafariBridge {
             let end = min(offset + chunkSize, totalLen)
             let chunk = try await doJavaScript(
                 "window.__sbResult.substring(\(offset), \(end))",
-                target: target
+                target: target,
+                firstMatch: firstMatch
             )
             result += chunk
             offset = end
         }
 
         // Cleanup
-        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen", target: target)
+        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen", target: target, firstMatch: firstMatch)
 
         return result
     }
@@ -1660,6 +1895,21 @@ enum SafariBridge {
         warnWriter: ((String) -> Void)? = nil,
         profile: String? = nil
     ) async throws -> String {
+        // #168: an anchored current tab is read with the same current-tab
+        // check `dispatchJS` gives `js` (#180), in the same AppleScript. A bare
+        // `tab T of window id W` would read whatever tab slid into position T.
+        // The dialog probe `resolveScriptTarget` ran for this target still runs
+        // (verify R2): a wait stuck behind a dialog must keep warning.
+        if case .anchoredCurrentTab(let windowID, let tab, _) = target {
+            BlockingDialogGate.shared.check(.id(windowID))
+            return try await runTargetedAppleScript("""
+                tell application "Safari"
+                    set _w to window id \(windowID)
+                    if (index of current tab of _w) is not \(tab) then error "SB_TARGET_CHANGED: tab \(tab) is no longer the current tab of window id \(windowID)" number 9001
+                    get URL of tab \(tab) of _w
+                end tell
+                """, target: target)
+        }
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
@@ -1671,6 +1921,55 @@ enum SafariBridge {
                 get URL of \(docRef)
             end tell
             """, target: target)
+    }
+
+    /// #168 verify R2: a URL-pattern target resolved exactly as
+    /// `resolveToAnchoredTarget` resolves it — one enumeration, the pattern
+    /// picked in it, the dialog probe, the identity-anchored tab — together
+    /// with the resolved window's tab URLs from that same enumeration. `wait`
+    /// follows its tab from that list; reading it again afterwards would miss
+    /// a tab that moved in between.
+    static func resolveURLTargetWithWindowURLs(
+        _ target: TargetDocument,
+        firstMatch: Bool = false,
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
+    ) async throws -> (target: TargetDocument, windowURLs: [String]?) {
+        try await PerformanceTrace.spanAsync(.nativeTarget) {
+            let windows = try await listAllWindows()
+            let resolved = try resolveNativeTargetInWindows(target, windows: windows, firstMatch: firstMatch,
+                                                            warnWriter: warnWriter, profile: profile)
+            BlockingDialogGate.shared.check(windowKey(for: resolved))
+            let window = resolved.windowID.flatMap { id in windows.first { $0.windowID == id } }
+            let urls = window?.tabs.sorted { $0.tabIndex < $1.tabIndex }.map(\.url)
+            return (concreteTarget(from: resolved, original: target, profile: profile), urls)
+        }
+    }
+
+    /// #168: the URLs of every tab of one window, in tab order, in one Apple
+    /// event. A tab without a URL reads as "", as in `listAllWindows`.
+    static func tabURLs(windowID: Int) async throws -> [String] {
+        let raw = try await runAppleScript("""
+            tell application "Safari"
+                set GS to (character id 29)
+                set out to ""
+                -- Evaluate the list first: iterating the element reference
+                -- directly fails with -1700 on Safari (live check, #168).
+                set urls to URL of every tab of window id \(windowID)
+                repeat with i from 1 to count of urls
+                    set u to item i of urls
+                    if u is missing value then
+                        set out to out & GS
+                    else
+                        set out to out & u & GS
+                    end if
+                end repeat
+                return out
+            end tell
+            """)
+        var parts = raw.components(separatedBy: "\u{1D}")
+        if parts.last == "" { parts.removeLast() }
+        return parts
     }
 
     /// Read the title of the target document. Document-scoped for modal bypass (#21).
@@ -1794,6 +2093,8 @@ enum SafariBridge {
             return try await operation()
 
         case .persist:
+            // A cancelled request does not wrap a title for a caller that has gone.
+            try Task.checkCancellation()
             // Read via document.title (NOT window title) so the value
             // round-trips symmetrically with setTabTitle. Safari's
             // window title prepends the macOS username, which would
@@ -1808,6 +2109,8 @@ enum SafariBridge {
             return try await operation()
 
         case .ephemeral:
+            // As for `.persist`; the restore below still runs when the operation is cancelled.
+            try Task.checkCancellation()
             let original = try await getDocumentTitle(
                 target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
             )
@@ -2117,7 +2420,7 @@ enum SafariBridge {
             candidates = windows.filter { $0.profile == profile }
             if candidates.isEmpty {
                 let available = windows.map { w -> String in
-                    let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+                    let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
                     let p = w.profile ?? "(no profile)"
                     return "window \(w.windowIndex) [\(p)]: \(cur)"
                 }
@@ -2151,7 +2454,7 @@ enum SafariBridge {
                 ? "window \(ordinal)"
                 : "window \(ordinal) (Safari window \(w.windowIndex))"
             guard !w.tabs.isEmpty else { return "\(label): (0 tabs)" }
-            let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+            let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
             return "\(label): \(cur)"
         }
     }
@@ -2180,7 +2483,8 @@ enum SafariBridge {
             }
             return ResolvedWindowTarget(windowIndex: first.windowIndex, tabIndexInWindow: nil, windowID: first.windowID)
 
-        case .resolvedTab(let windowID, let tab, _, _):
+        case .resolvedTab(let windowID, let tab, _, _),
+             .anchoredCurrentTab(let windowID, let tab, _):
             // Already-concrete identity target (#79) re-entering the
             // resolver (defensive totality — production flows render it
             // directly via resolveDocumentReference). Map the stable id
@@ -2190,7 +2494,7 @@ enum SafariBridge {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window id \(windowID) tab \(tab)",
                     availableDocuments: windows.flatMap { w in
-                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
                     }
                 )
             }
@@ -2231,7 +2535,7 @@ enum SafariBridge {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "document \(n)",
                     availableDocuments: windows.flatMap { w in
-                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
                     }
                 )
             }
@@ -2258,7 +2562,7 @@ enum SafariBridge {
             }
             let totalTabs = windows.reduce(0) { $0 + $1.tabs.count }
             let availableSummary = windows.map { w -> String in
-                let cur = w.tabs.first(where: { $0.isCurrent })?.url ?? "(unknown)"
+                let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
                 return "window \(w.windowIndex): \(cur) (\(w.tabs.count) tab(s))"
             }
             throw SafariBrowserError.documentNotFound(
@@ -2281,7 +2585,7 @@ enum SafariBridge {
 
             if matches.isEmpty {
                 let allUrls = windows.flatMap { w in
-                    w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                    w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
                 }
                 throw SafariBrowserError.documentNotFound(
                     pattern: matcher.description,
@@ -2292,7 +2596,7 @@ enum SafariBridge {
             if matches.count > 1 {
                 throw SafariBrowserError.ambiguousWindowMatch(
                     pattern: matcher.description,
-                    matches: matches.map { (windowIndex: $0.windowIndex, url: $0.url) }
+                    matches: matches.map { (windowIndex: $0.windowIndex, tabIndex: $0.tabIndex, url: URLText.redactURL($0.url)) }
                 )
             }
 
@@ -2319,7 +2623,7 @@ enum SafariBridge {
             let window = windows[w - 1]
             if t < 1 || t > window.tabs.count {
                 let availableSummary = window.tabs.map { tab in
-                    "window \(window.windowIndex) tab \(tab.tabIndex): \(tab.url)"
+                    "window \(window.windowIndex) tab \(tab.tabIndex): \(URLText.redactURL(tab.url))"
                 }
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window \(w) tab \(t) (window has \(window.tabs.count) tab(s))",
@@ -2371,7 +2675,7 @@ enum SafariBridge {
                 case .windowIndex(let index):
                     resolved = ResolvedWindowTarget(windowIndex: index, tabIndexInWindow: nil,
                                                     windowID: await readWindowID(index: index))
-                case .urlMatch, .documentIndex, .windowTab, .resolvedTab:
+                case .urlMatch, .documentIndex, .windowTab, .resolvedTab, .anchoredCurrentTab:
                     resolved = try resolveNativeTargetInWindows(target, windows: await listAllWindows(),
                         firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
                 }
@@ -2443,7 +2747,7 @@ enum SafariBridge {
         }
         guard let first = matches.first else {
             let allUrls = windows.flatMap { w in
-                w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \($0.url)" }
+                w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
             }
             throw SafariBrowserError.documentNotFound(
                 pattern: matcher.description,
@@ -2452,11 +2756,11 @@ enum SafariBridge {
         }
         if matches.count > 1 {
             let summary = matches.map { m in
-                "  window \(m.windowIndex) tab \(m.tab.tabIndex): \(m.tab.url)"
+                "  window \(m.windowIndex) tab \(m.tab.tabIndex): \(URLText.redactURL(m.tab.url))"
             }.joined(separator: "\n")
             let msg = "warning: --first-match resolved '\(matcher.description)' to "
                 + "window \(first.windowIndex) tab \(first.tab.tabIndex) "
-                + "(of \(matches.count) matches):\n\(summary)\n"
+                + "(of \(matches.count) matches):\n\(summary)\n(\(URLText.shortenedNote))\n"
             warnWriter?(msg)
         }
         return ResolvedWindowTarget(
@@ -2518,10 +2822,49 @@ enum SafariBridge {
                     -- #79: stable window id — unlike the z-order index w,
                     -- it doesn't dangle when the user raises another window.
                     set winID to id of window w
+                    -- #180: read every tab's URL / name with batched Apple
+                    -- events per window instead of two per tab (109 tabs:
+                    -- ~218 events → 3 per window in the common case, at most
+                    -- 6 before the per-tab fallback; 2.6–4.9 s → 0.4–1.0 s
+                    -- standalone, identical output). The per-tab loop survives only as the
+                    -- fallback: a whole-window read that raises (a tab
+                    -- mid-load / ghost tab) or comes back a different length
+                    -- than tabCount (a tab closed between the two reads)
+                    -- refills per tab — and then fails on the exact tab, as
+                    -- the enumeration did before #180.
+                    -- Verify R2: the URL list is read again after the names; a
+                    -- same-count change between the two reads (one tab closed
+                    -- and another opened, a tab dragged) would otherwise pair
+                    -- a URL with another tab's title. Two attempts, then the
+                    -- per-tab loop.
+                    set urls to {}
+                    set names to {}
+                    set stable to false
+                    repeat 2 times
+                        try
+                            set urls to URL of every tab of window w
+                            set names to name of every tab of window w
+                            set urls2 to URL of every tab of window w
+                            if (count of urls) is tabCount and (count of names) is tabCount then
+                                considering case
+                                    if urls = urls2 then set stable to true
+                                end considering
+                            end if
+                        end try
+                        if stable then exit repeat
+                    end repeat
+                    if not stable then
+                        set urls to {}
+                        set names to {}
+                        repeat with t from 1 to tabCount
+                            set end of urls to (URL of tab t of window w)
+                            set end of names to (name of tab t of window w)
+                        end repeat
+                    end if
                     repeat with t from 1 to tabCount
-                        set tabUrl to URL of tab t of window w
+                        set tabUrl to item t of urls
                         if tabUrl is missing value then set tabUrl to ""
-                        set tabName to name of tab t of window w
+                        set tabName to item t of names
                         if tabName is missing value then set tabName to ""
                         if t = currentIdx then
                             set isCur to "1"
@@ -3077,6 +3420,7 @@ enum SafariBridge {
         case .windowIndex(let n): return .index(n)
         case .windowTab(let window, _): return .index(window)
         case .resolvedTab(let windowID, _, _, _): return .id(windowID)
+        case .anchoredCurrentTab(let windowID, _, _): return .id(windowID)
         case .urlMatch, .documentIndex: return nil
         }
     }
@@ -3980,33 +4324,33 @@ enum SafariBridge {
 
 extension String {
     var escapedForAppleScript: String {
-        self.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\t", with: "\\t")
+        self.replacingOccurrences(of: "\\", with: "\\\\", options: .literal)
+            .replacingOccurrences(of: "\"", with: "\\\"", options: .literal)
+            .replacingOccurrences(of: "\n", with: "\\n", options: .literal)
+            .replacingOccurrences(of: "\r", with: "\\r", options: .literal)
+            .replacingOccurrences(of: "\t", with: "\\t", options: .literal)
     }
 
     var escapedForJS: String {
-        self.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\0", with: "\\0")
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+        self.replacingOccurrences(of: "\\", with: "\\\\", options: .literal)
+            .replacingOccurrences(of: "'", with: "\\'", options: .literal)
+            .replacingOccurrences(of: "\n", with: "\\n", options: .literal)
+            .replacingOccurrences(of: "\r", with: "\\r", options: .literal)
+            .replacingOccurrences(of: "\0", with: "\\0", options: .literal)
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028", options: .literal)
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029", options: .literal)
     }
 
     /// Returns a JS double-quoted string literal (with proper escaping for multi-line content)
     var jsStringLiteral: String {
         let escaped = self
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\0", with: "\\0")
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+            .replacingOccurrences(of: "\\", with: "\\\\", options: .literal)
+            .replacingOccurrences(of: "\"", with: "\\\"", options: .literal)
+            .replacingOccurrences(of: "\n", with: "\\n", options: .literal)
+            .replacingOccurrences(of: "\r", with: "\\r", options: .literal)
+            .replacingOccurrences(of: "\0", with: "\\0", options: .literal)
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028", options: .literal)
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029", options: .literal)
         return "\"\(escaped)\""
     }
 
@@ -4015,7 +4359,9 @@ extension String {
     /// Otherwise, uses document.querySelector.
     var resolveRefJS: String {
         if let match = self.wholeMatch(of: /^@e([1-9]\d*)$/) {
-            let index = Int(match.1)! - 1
+            // A number too large for `Int` names no ref: it reads past the end of `__sbRefs` and finds
+            // nothing, instead of trapping (#219: in-process, a trap would take the daemon down).
+            let index = (Int(match.1) ?? Int.max) - 1
             return "(function(){ if (!window.__sbRefs) return null; return window.__sbRefs[\(index)] || null; })()"
         } else {
             return "document.querySelector('\(self.escapedForJS)')"

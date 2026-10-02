@@ -1354,7 +1354,7 @@ enum DaemonServer {
             let params = String(data: DaemonLog.redactParams(method: request.method, paramsJSON: request.params,
                                                             logFull: work.log.full), encoding: .utf8) ?? "{}"
             let resultLog = result.flatMap {
-                String(data: DaemonLog.truncateResult(resultJSON: $0, logFull: work.log.full), encoding: .utf8)
+                String(data: DaemonLog.truncateResult(resultJSON: $0, logFull: work.log.full, method: request.method), encoding: .utf8)
             }
             writer(DaemonLog.formatEntry(timestamp: request.started, requestToken: work.id, method: request.method, requestId: requestId,
                                         durationMs: Int(Date().timeIntervalSince(request.started) * 1000),

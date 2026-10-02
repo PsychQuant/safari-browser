@@ -40,37 +40,82 @@ struct ExecCommand: AsyncParsableCommand {
                 source = readStdinAsString()
             }
 
-            // Section 10 v2 of `script-exec-command`: when daemon is opt-in
-            // active AND every step in the script uses an in-process-supported
-            // command, send the entire script as a single `exec.runScript`
-            // request. This eliminates per-step subprocess + socket-handshake
-            // overhead from the client path. Otherwise (daemon off, or any
-            // step uses an unsupported command) fall through to the local
-            // interpreter which uses the SubprocessStepDispatcher.
-            // An older daemon cannot pace in-process steps. Choose the known
-            // per-step CLI boundary before sending any batch; each child can
-            // still use the ordinary daemon router and its compiled cache.
-            if !pacingEnabled, SafariBridge.shouldUseDaemonAuto(),
-               let parsed = try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps),
-               Self.allStepsSupported(parsed),
-               let results = try await runViaDaemon(steps: parsed) {
-                print(results)
-                return
-            }
-
-            let interpreter = ScriptInterpreter(maxSteps: maxSteps)
-            let results = try await interpreter.run(source: source, target: target)
-            printResults(results)
+            try await execute(
+                source: source, pacingEnabled: pacingEnabled, daemonOptedIn: SafariBridge.shouldUseDaemonAuto(),
+                viaDaemon: { try await runViaDaemon(steps: $0) })
         }
     }
 
-    /// Returns true when every step's `cmd` is in
-    /// `InProcessStepDispatcher.supportedCommands`. Used as a pre-flight
-    /// gate so the client doesn't send a script that would partially fail
-    /// in the daemon path.
-    private static func allStepsSupported(_ steps: [ScriptStep]) -> Bool {
+    /// The part of `run()` after the script is read (#220). `viaDaemon` is the daemon request,
+    /// injected so a test can see whether `run()` sends a script there or runs it locally.
+    ///
+    /// Section 10 v2 of `script-exec-command`: when daemon is opt-in active AND every step in the
+    /// script can run in-process — its command is supported and its arguments are a shape the
+    /// dispatcher honours exactly, with no argument that begins with a variable reference — send the entire script as a single
+    /// `exec.runScript` request. This eliminates per-step subprocess + socket-handshake overhead
+    /// from the client path. Otherwise (daemon off, or any step cannot run in-process) fall through
+    /// to the local interpreter which uses the SubprocessStepDispatcher.
+    /// An older daemon cannot pace in-process steps. Choose the known per-step CLI boundary before
+    /// sending any batch; each child can still use the ordinary daemon router and its compiled cache.
+    func execute(
+        source: String, pacingEnabled: Bool, daemonOptedIn: Bool,
+        viaDaemon: ([ScriptStep]) async throws -> String?,
+        note: (String) -> Void = { FileHandle.standardError.write(Data($0.utf8)) },
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) async throws {
+        if case .daemon(let parsed) = Self.route(
+            source: source, maxSteps: maxSteps, pacingEnabled: pacingEnabled, daemonOptedIn: daemonOptedIn),
+           let results = try await viaDaemon(parsed) {
+            print(results)
+            return
+        }
+
+        // Only the daemon wraps a whole run in the tab-ownership marker. A script that runs step by
+        // step gets none around the run (the flags are not forwarded to a step's command; the
+        // environment variable is inherited by each step's own process, so a step that marks the
+        // tab marks it for its own duration), and a marker that was asked for must not fail
+        // without a word (#220). Said only for a script that parses, because one that does not
+        // never runs.
+        if target.markTabResolved(env: environment) != .off,
+           (try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps)) != nil {
+            note("note: the tab-ownership marker (--mark-tab, --mark-tab-persist or SAFARI_BROWSER_MARK_TAB) is applied around a whole run only when the daemon runs the whole script; this script runs each step as its own command (a step is outside the shapes the daemon runs in-process, pacing is on, or the daemon is not in use), so no marker is applied around the run.\n")
+        }
+        let interpreter = ScriptInterpreter(maxSteps: maxSteps)
+        let results = try await interpreter.run(source: source, target: target)
+        printResults(results)
+    }
+
+    /// Where a script runs (#220). Pure, so the decision `run()` makes is testable: the whole
+    /// script goes to the daemon only when pacing is off, the daemon is opted in, the script
+    /// parses, and every step can run in-process.
+    enum Route: Equatable {
+        case daemon([ScriptStep])
+        case subprocess
+    }
+
+    static func route(source: String, maxSteps: Int, pacingEnabled: Bool, daemonOptedIn: Bool) -> Route {
+        guard !pacingEnabled, daemonOptedIn,
+              let parsed = try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps),
+              allStepsRunInProcess(parsed) else { return .subprocess }
+        return .daemon(parsed)
+    }
+
+    /// Returns true when every step is one the in-process dispatcher runs exactly as
+    /// the CLI command would (`InProcessStepDispatcher.runsInProcess`, #220): the
+    /// command is in `supportedCommands` and its arguments have a shape the
+    /// dispatcher honours. Used as a pre-flight gate so the client doesn't send a
+    /// script whose steps would partially fail, or quietly differ, in the daemon path.
+    static func allStepsRunInProcess(_ steps: [ScriptStep]) -> Bool {
         for step in steps {
-            if !InProcessStepDispatcher.isSupported(step.cmd) {
+            // A step with an argument that begins with a variable has no shape until it runs
+            // (`$code` may become `-1`), and a refusal at run time comes after earlier steps have
+            // already run and cannot fall back — so such a step is not sent to the daemon (#220).
+            // A reference after the first character cannot change the shape.
+            if step.args.contains(where: VariableStore.beginsWithReference) { return false }
+            // The key of a `press` has a name only if some character of it is not `+`, so its shape depends on
+            // every character: a reference anywhere in it (`+$k` with `$k` empty) can leave it nameless (#219).
+            if step.cmd == "press", step.args.contains(where: VariableStore.containsReference) { return false }
+            if !InProcessStepDispatcher.runsInProcess(cmd: step.cmd, args: step.args) {
                 return false
             }
         }

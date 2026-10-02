@@ -93,7 +93,9 @@ quantiles. The benchmark cannot force cleanup when the OS refuses a signal.
 
 `--live` additionally creates one owned localhost static page per timing mode,
 and may launch Safari if it is not running (including Safari's normal session
-restoration). It then measures direct and warm-daemon `get title`/`get url`. It verifies the window
+restoration). It then measures direct and warm-daemon `get title`/`get url`/`js document.title`
+(`live.<mode>.get-title`, `.get-url`, `.js-title`; the `js` row is the multi-round-trip
+protocol whose per-step target re-resolution #180 bounded). It verifies the window
 ID, exact URL, one-tab identity and clear-dialog state. Changed or uncertain
 ownership prevents cleanup actions and marks the report; an uncertain close is
 not retried. No upload, PDF, Print or arbitrary repeated mutation is supported.
@@ -343,3 +345,95 @@ A separate three-call resident snapshot found zero versus two children, with
 RSS sums of 17,728 versus 38,896 KiB (shared pages included, not unique memory).
 These measurements support this fixed workload comparison; lifetime correctness
 is established separately by the TERM/grace/host-death regressions.
+
+## Reference: `js` with 109 tabs open (#180)
+
+Historical measurements from the September 22–24 #180 implementation, before the
+current main integration: same machine, same minute, Safari with 5 windows / 109
+tabs, `SAFARI_BROWSER_TRACE_TIMING=1`;
+a direct `osascript … do JavaScript` on the same tab took 0.19 s at the time.
+
+| form | before (09-11 build) | after | `target.native` spans (full enumerations) after |
+|---|---|---|---|
+| `js --window 1 --tab-in-window 2 'location.host'` | 11.6 s | 1.4 s | 1 (was 6) |
+| `js 'location.host'` (default target) | — | 1.4 s | 0 |
+| `js --url … --first-match 'location.host'` | — | 1.5 s | 1 |
+
+What changed: `js` anchors positional targets once at the command boundary
+(`resolveToAnchoredTarget`), so subsequent JavaScript steps use a resolved or
+anchored-current-tab target instead of repeating the enumeration. The initial
+batched enumeration measured 2.3 s → 0.43 s with byte-identical output; the later
+review added a URL re-read, making three bulk property reads per window in the
+common case and at most six before per-tab fallback. The 1.4 s observation did
+not meet the agreed ≤ 1 s target and is not a measurement of this integrated
+revision. Resolving once removes repeated enumerations, but the initial
+enumeration still reads all tab records; this is not a constant-time guarantee.
+
+## Daemon exec shared target (#170, 2026-09-29)
+
+Read the figures below as relative to the window enumeration that `main` had when they were taken, which does not include the batched enumeration of #180 (PR #189, not merged into `main` at the time). That change makes each enumeration cheaper, so the saving of this change on top of it is smaller than the tables show; it has not been measured. Neither is the tree after the later cancellation and profile-forwarding commits.
+
+What changed: the daemon's in-process exec dispatcher resolved a `--url` shared target once per step (one full window/tab enumeration each). It now resolves a URL-pattern target at the first step that needs it and, before each reuse, runs one small AppleScript that checks the tab still shows a URL the pattern accepts; any failed or erroring check resolves afresh. Other target forms are resolved every step (see Scope).
+
+Environment: Safari with 3 windows / 41 tabs; Developer-ID signed debug builds of `main` a26eda8 and of this branch built 2026-09-29 16:07 +08:00 from a tree between 4eca186 and 070939e (the exact tree was not recorded; the confirmation run below names its commit); one daemon per build under its own `SAFARI_BROWSER_NAME`; background load average 20–40.
+
+Script (`exec170.json`), all read-only:
+
+```json
+[{"cmd":"get url"},{"cmd":"get title"},{"cmd":"js","args":["document.title.length"]},{"cmd":"get url"},{"cmd":"js","args":["location.host"]},{"cmd":"get title"}]
+```
+
+Commands (target: a tab whose URL is unique across windows):
+
+```bash
+SAFARI_BROWSER_NAME=<name> ./safari-browser daemon start
+SAFARI_BROWSER_NAME=<name> SAFARI_BROWSER_DAEMON=1 ./safari-browser exec --url <unique-url> --script exec170.json   # 5×, alternating builds
+SAFARI_BROWSER_NAME=<unused> ./safari-browser exec --url <unique-url> --script exec170.json                       # stateless, 3× per build
+SAFARI_BROWSER_TRACE_TIMING=1 SAFARI_BROWSER_NAME=<name> SAFARI_BROWSER_DAEMON=1 ./safari-browser exec ...        # span counts
+```
+
+| Run | `main` daemon | this branch |
+|---|---|---|
+| 1 (cold: first request after `daemon start`) | 5.86 s | 1.31 s |
+| 2 | 5.32 s | 1.12 s |
+| 3 | 5.27 s | 1.08 s |
+| 4 | 5.23 s | 1.27 s |
+| 5 | 5.34 s | 1.12 s |
+| stateless ×3 | 8.37 / 8.62 / 8.92 s | 8.24 / 8.55 / 9.25 s |
+
+Spans of one warm run: `main` 6 × `target.native` (one enumeration per step) and 12 in-process AppleScripts; this branch 1 × `target.native` and 12 in-process AppleScripts (1 enumeration, 5 checks, 6 reads). Both builds on that warm run: 12 `daemon.cache_hit`, 0 compiles — the compile cache was not the cost there. The cold run (run 1) necessarily compiled; its compile count was not recorded. This holds for today's scripts, which are identical from call to call; once #190's per-call identity lands, scripts differ per call and the compile cache has to be measured again. The stateless path's per-step cost is unchanged (each step is its own process); after #220 more scripts take it, and a `documents` step run there returns JSON.
+
+Confirmation run (verify round 3), build pinned: Developer-ID signed debug builds of `main` a26eda8 and of c41bd0e, same script, same target and 41 tabs, alternating, background load average 55–70 (higher than above, so absolute times are higher):
+
+| Run | `main` daemon | c41bd0e |
+|---|---|---|
+| 1 (cold) | 6.72 s | 2.12 s |
+| 2 | 6.81 s | 1.20 s |
+| 3 | 5.85 s | 1.26 s |
+| 4 | 5.61 s | 1.52 s |
+| 5 | 6.53 s | 1.88 s |
+
+Spans of one warm run: `main` 6 × `target.native`, c41bd0e 1 × `target.native`; both 12 in-process AppleScripts, all `daemon.cache_hit`.
+
+Scope (as of #170; #219 moved `click`, `fill`, `type`, `press` and `storage` in-process, see the section below): only scripts made entirely of in-process commands (then `js`, `documents`, `get url/title/text/source`) take the daemon path. A script with any other step (`wait`, `snapshot` today), or with a step whose arguments the in-process dispatcher would not run exactly as the CLI does (#220: a `get text` selector, `js --file`, a stray argument, an argument that begins with a `$variable`, …), runs through the subprocess path — one process and one resolution per step. As implemented (`CommandDispatch.phase1Commands`; the base 'Phase 1 command coverage' requirement lists fewer commands): the in-process commands run on the daemon path; the subprocess path accepts the heads `click`, `fill`, `type`, `press`, `js`, `documents`, `wait`, `snapshot`, `get` and `storage` (`CommandDispatch.phase1Commands`); every other command (`screenshot`, `pdf`, `upload`, `open`, `tabs`, `close`, …) is rejected as unsupported in exec scripts on both paths. Only a URL-pattern target (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`) is reused. `--document N` / `--tab N` are resolved every step, one enumeration each, as before. `--profile` on those forms adds an enumeration per step for `--window N` and for `--profile` alone, where this path used to ignore the flag (a window-id read, or none); `--window N --tab-in-window M`, `--document` and `--tab` enumerated every step already. That cost was not measured.
+
+
+## Daemon exec: more steps in-process (#219, 2026-10-02)
+
+What changed: `click`, `fill`, `type`, `press` and the `storage local|session` subcommands run in the daemon's in-process dispatcher (for a closed list of argument shapes), through the same function or script builder as the CLI command. Before, a script with any such step ran as one child process per step; `wait` and `snapshot` still do.
+
+Environment: **Safari with 1 window and 1 tab (the start page)**, not the 41 tabs of the #170 measurement: the target was `--url-exact favorites://`, every step read-only (`get url`, `get title`, `js document.title.length`, `js location.host`, `storage local|session get` of a key that is not set). Developer-ID signed debug builds of `main` cdd3ea0 and of the working tree of this change, each with its own warm daemon, alternating, 5 runs each, wall time of `safari-browser exec`, background load average 49–57. The load is high and the numbers are noisy: read the ratios, not the digits.
+
+Scripts: A = 6 in-process read steps (`get url`, `get title`, `js`, `get url`, `js`, `get title`); B = the same with the last step replaced by `storage local get`; D = 6 `storage get` steps (alternating local and session).
+
+| Script | `main` | this change |
+|---|---|---|
+| A: 6 read steps (one request on both) | 0.56 / 0.77 / 0.79 / 0.80 / 1.17 s | 0.64 / 0.69 / 0.72 / 0.90 / 1.57 s |
+| B: 5 read steps + 1 `storage` step | 2.14 / 2.17 / 2.34 / 2.53 / 2.63 s | 0.57 / 0.57 / 0.76 / 0.81 / 1.25 s |
+| D: 6 `storage` steps | 1.97 / 2.14 / 2.26 / 2.45 / 2.70 s | 0.52 / 0.68 / 0.69 / 0.83 / 1.45 s |
+
+Absolute times move with the load: an earlier run of `main` alone (load not recorded, 5 runs, a build of the same tree) had A at 0.31–0.55 s, B at 1.13–1.64 s and an all-`storage` script at 0.99–1.34 s, about half of what the table shows for B under load 49–57. So the headline ratio of B is the table's, not a general figure. Row A overlaps between the two builds (and its slowest run is slower on this change, 1.57 s against 1.17 s): with 5 runs it shows neither a difference nor a regression, as expected of a script that takes the same path on both. B costs about as much as a script made only of subprocess steps: one step that is not in-process sends the whole script to the subprocess path.
+
+That B and D are one request on this change and one process per step on `main` is read from the timing trace (`SAFARI_BROWSER_TRACE_TIMING=1`) of one run of B: `main` printed 7 timing records from 7 processes (the `exec` client and 6 children) with 21 `applescript.daemon` spans; this change printed 1 record from 1 process, an `exec.run` span, 1 daemon request and 12 `applescript.inprocess` spans (the same 12 as the #170 section).
+
+What this does not show: with one tab the per-step target resolution is cheap, so the saving here is the process spawn per step. At 41 tabs each child also re-enumerated the windows (about 0.85 s per step in the #170 measurement, before the batched enumeration of #180), so the saving there would be larger; that was **not measured**. Nor was any step that changes the page: `click`, `fill`, `type`, `press` and `storage set|remove|clear` were never run against a live Safari (the measurement is read-only: `get` of a key that is not set); they share the `doJavaScript` call that `storage get` and `js` use, and their JavaScript is compared with the CLI command's in the tests.

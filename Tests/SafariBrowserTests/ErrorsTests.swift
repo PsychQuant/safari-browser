@@ -112,8 +112,8 @@ final class ErrorsTests: XCTestCase {
         let error = SafariBrowserError.ambiguousWindowMatch(
             pattern: "plaud",
             matches: [
-                (windowIndex: 1, url: "https://web.plaud.ai/file/a"),
-                (windowIndex: 3, url: "https://web.plaud.ai/file/b"),
+                (windowIndex: 1, tabIndex: 1, url: "https://web.plaud.ai/file/a"),
+                (windowIndex: 3, tabIndex: 2, url: "https://web.plaud.ai/file/b"),
             ]
         )
         let description = error.errorDescription ?? ""

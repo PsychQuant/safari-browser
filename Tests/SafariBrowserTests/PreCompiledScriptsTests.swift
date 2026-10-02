@@ -309,4 +309,53 @@ final class PreCompiledScriptsTests: XCTestCase {
             XCTFail("the window does not exist")
         } catch SafariBrowserError.documentNotFound {}
     }
+
+    // MARK: - #170 verify R1: bounded capacity
+
+    func testCompileCacheEvictsTheLeastRecentlyUsedScriptAtCapacity() async throws {
+        // Every distinct source (window ids, JavaScript text) was kept for the
+        // daemon's lifetime; the issue requires a bounded cache.
+        let cache = PreCompiledScripts.CompileCache(capacity: 2)
+        try await cache.compile(source: "return 1")
+        try await cache.compile(source: "return 2")
+        try await cache.compile(source: "return 1")           // most recently used again
+        try await cache.compile(source: "return 3")
+        let count = await cache.cacheCount
+        XCTAssertEqual(count, 2)
+        let keptRecent = await cache.contains(source: "return 1")
+        let evictedOldest = await cache.contains(source: "return 2")
+        XCTAssertTrue(keptRecent)
+        XCTAssertFalse(evictedOldest)
+    }
+
+    func testDefaultCompileCacheCapacityIsBounded() {
+        XCTAssertEqual(PreCompiledScripts.CompileCache.defaultCapacity, 256)
+    }
+
+    func testTheDaemonsDefaultCacheEvictsAtTheBound() async throws {
+        // The daemon builds `CompileCache()`; the constant alone would pass with
+        // an initializer that ignored it. 257 distinct sources: the first goes.
+        let cache = PreCompiledScripts.CompileCache()
+        for index in 0...256 { try await cache.compile(source: "return \(index)") }
+        let count = await cache.cacheCount
+        let oldest = await cache.contains(source: "return 0")
+        let newest = await cache.contains(source: "return 256")
+        XCTAssertEqual(count, 256)
+        XCTAssertFalse(oldest)
+        XCTAssertTrue(newest)
+    }
+
+    /// The test above builds its own cache; this one ties it to the daemon's. The daemon's server must
+    /// construct its cache with the default capacity: a literal `capacity:` argument there (an unbounded
+    /// cache, say) would pass every other test.
+    func testTheDaemonServerBuildsItsCacheWithTheDefaultCapacity() throws {
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0..<3 { url.deleteLastPathComponent() }
+        url.appendPathComponent("Sources/SafariBrowser/Daemon/DaemonServeLoop.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let constructions = source.components(separatedBy: "PreCompiledScripts.CompileCache(").dropFirst()
+        XCTAssertEqual(constructions.count, 1, "the daemon server builds exactly one compile cache")
+        XCTAssertTrue(constructions.first?.hasPrefix(")") == true,
+                      "and builds it without a capacity argument, so the default bound applies")
+    }
 }
