@@ -13,21 +13,30 @@ final class ExecProbePolicyTests: XCTestCase, @unchecked Sendable {
 
     /// Runs the steps one after the other through one dispatcher, as an `exec.runScript` request
     /// does, and returns what each step produced.
+    ///
+    /// A timed-out step asks `BackgroundTabDiagnostics` whether the tab is in the background, which runs a
+    /// real `osascript` against whatever Safari is open unless it is answered; it is answered here, so
+    /// nothing in these tests looks at the real Safari. `probesAfterEachStep` is the gate's probe count
+    /// after each step, so one step's probes can be told from the next one's.
     private func run(
         _ steps: [(cmd: String, args: [String])], shared: [String], on fake: FakeSafari, probes: ProbeCounter
-    ) async -> (results: [Result<String, Error>], gate: BlockingDialogGate) {
+    ) async -> (results: [Result<String, Error>], gate: BlockingDialogGate, probesAfterEachStep: [Int]) {
         let context = DaemonRequestContext(probe: { _ in probes.hit(); return .clear }, environment: [:])
         let dispatcher = InProcessStepDispatcher()
         var results: [Result<String, Error>] = []
-        await DaemonRequestContext.$current.withValue(context) {
-            await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
-                for step in steps {
-                    do { results.append(.success(try await dispatcher.dispatch(cmd: step.cmd, args: step.args, sharedTargetArgs: shared))) }
-                    catch { results.append(.failure(error)) }
+        var counts: [Int] = []
+        await BackgroundTabDiagnostics.$query.withValue({ _ in "" }) {
+            await DaemonRequestContext.$current.withValue(context) {
+                await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                    for step in steps {
+                        do { results.append(.success(try await dispatcher.dispatch(cmd: step.cmd, args: step.args, sharedTargetArgs: shared))) }
+                        catch { results.append(.failure(error)) }
+                        counts.append(probes.count)
+                    }
                 }
             }
         }
-        return (results, context.gate)
+        return (results, context.gate, counts)
     }
 
     private let targets: [[String]] = [[], ["--window", "1", "--tab-in-window", "2"], ["--url-exact", "https://w1.example/2"]]
@@ -62,19 +71,36 @@ final class ExecProbePolicyTests: XCTestCase, @unchecked Sendable {
     }
 
     /// The allowance belongs to a step, not to the run: each step is a logical command with its own
-    /// evidence and budget (`beginCommand`), as it is when every step runs as its own process.
+    /// evidence and budget (`beginCommand`), as it is when every step runs as its own process. With a
+    /// URL target the exec-level resolution is shared across the steps, and the first step's resolution
+    /// probe must not leave the later ones without theirs.
     func testEachJSStepHasItsOwnAllowance() async {
+        for shared in [["--window", "1", "--tab-in-window", "2"], ["--url-exact", "https://w1.example/2"]] {
+            let fake = FakeSafari()
+            let probes = ProbeCounter()
+            let outcome = await run([("js", ["document.title"]), ("js", ["document.title"]), ("js", ["document.title"])],
+                                    shared: shared, on: fake, probes: probes)
+            XCTAssertEqual(outcome.results.count, 3)
+            XCTAssertEqual(outcome.probesAfterEachStep, [1, 2, 3], "\(shared): one probe per step")
+        }
+    }
+
+    /// In a mixed script the `js` step makes exactly one probe of its own, whatever the steps around it did.
+    func testAJSStepInAMixedScriptMakesOneProbeOfItsOwn() async {
         let fake = FakeSafari()
         let probes = ProbeCounter()
-        let outcome = await run([("js", ["document.title"]), ("js", ["document.title"]), ("js", ["document.title"])],
-                                shared: ["--window", "1", "--tab-in-window", "2"], on: fake, probes: probes)
+        let outcome = await run([("get url", []), ("js", ["document.title"]), ("get title", [])],
+                                shared: ["--url-exact", "https://w1.example/2"], on: fake, probes: probes)
         XCTAssertEqual(outcome.results.count, 3)
-        XCTAssertEqual(probes.count, 3, "one probe per step")
+        let counts = [0] + outcome.probesAfterEachStep
+        XCTAssertEqual(counts[2] - counts[1], 1, "the js step: \(outcome.probesAfterEachStep)")
     }
 
     /// Only `js` has the allowance. Its counterparts that are not the `js` command, run as their own
-    /// processes, never had it either; their timeout keeps the forced re-check. Pinned so that the
-    /// scope of the change is a decision (here: `get text`, whose `innerText` fallback runs JavaScript).
+    /// processes, never had it either. Pinned so that the scope of the change is a decision: `get text`
+    /// is used because its `innerText` fallback runs JavaScript. Its probes here are the resolution's,
+    /// the empty-text re-check's (#89) and the timeout's, so the count says "not limited to one", which
+    /// is the scope; it is not by itself a pin on the timeout re-check.
     func testAStepThatIsNotJSKeepsTheForcedRecheckAfterATimeout() async {
         let fake = FakeSafari(failJSContaining: "window.__sb")
         fake.failWithTimeout = true
