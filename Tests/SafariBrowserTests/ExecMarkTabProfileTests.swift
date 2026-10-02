@@ -82,6 +82,28 @@ final class ExecMarkTabProfileTests: XCTestCase, @unchecked Sendable {
         assertStopsAtTheProfile("ephemeral, the restoring write", await run(.ephemeral, renameAfter: (2, 1)))
     }
 
+    /// A request cancelled before the marker wraps issues no AppleScript for it, in either mode.
+    func testACancelledRequestWrapsNoTitle() async {
+        for mode in [TargetOptions.MarkTabMode.persist, .ephemeral] {
+            let safari = TitledSafari(renameAfter: (Int.max, Int.max))
+            let task = Task { () -> Void in
+                while !Task.isCancelled { await Task.yield() }   // start only once cancelled
+                let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+                try await DaemonRequestContext.$current.withValue(context) {
+                    try await DaemonRequestContext.$appleScriptRunner.withValue({ try safari.respond($0) }) {
+                        try await SafariBridge.markTabIfRequested(
+                            target: .urlMatch(.contains("w1.example/2")), mode: mode, firstMatch: false, profile: "個人"
+                        ) { () async throws -> Void in }
+                    }
+                }
+            }
+            task.cancel()
+            do { try await task.value; XCTFail("\(mode): a cancelled request must not proceed") }
+            catch is CancellationError {} catch { XCTFail("\(mode): expected CancellationError, got \(error)") }
+            XCTAssertEqual(safari.reads + safari.writes, 0, "\(mode): nothing was read or written")
+        }
+    }
+
     func testTheMarkerIsAppliedAndRemovedInsideTheProfile() async {
         // The control: with the profile unchanged the same calls run to the end.
         let safari = TitledSafari(renameAfter: (Int.max, Int.max))

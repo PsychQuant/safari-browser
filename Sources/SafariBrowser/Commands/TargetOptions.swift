@@ -298,6 +298,15 @@ struct TargetOptions: ParsableArguments {
         }
     }
 
+    /// True when a flag that names a tab was given (#210). `--profile` and
+    /// `--first-match` only narrow or relax a selection; on their own they name
+    /// nothing, so a command that refuses to act without an explicit target
+    /// must not count them.
+    var hasExplicitTarget: Bool {
+        url != nil || urlExact != nil || urlEndswith != nil || urlRegex != nil
+            || window != nil || tab != nil || document != nil
+    }
+
     /// Convert the parsed flags into a `TargetDocument`. Precedence
     /// (already checked as mutually exclusive by `validate()`):
     /// 1. `--window + --tab-in-window` → `.windowTab(w, m)`
