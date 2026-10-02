@@ -3,8 +3,8 @@ import XCTest
 @testable import SafariBrowser
 
 /// #170 re-review: a cancelled `exec` request, and what the shared target and the compile cache are
-/// keyed by. The daemon cancels a request when its client goes away; a step with side effects must
-/// not run for a caller that has left, whichever way the step names its target.
+/// keyed by. A cancelled request (the daemon cancels in-flight requests when it shuts down) must
+/// not run a step with side effects, whichever way the step names its target.
 final class ExecCancellationAndKeyTests: XCTestCase, @unchecked Sendable {
     typealias Fake = ExecSharedTargetTests.Fake
 
@@ -36,7 +36,10 @@ final class ExecCancellationAndKeyTests: XCTestCase, @unchecked Sendable {
         let recorder = Recorder()
         let parsed = try steps(3)
         let target = try target()
-        let task = Task { try await ScriptInterpreter(dispatcher: recorder).runSteps(parsed, target: target) }
+        let task = Task { () throws -> [StepResult] in
+            while !Task.isCancelled { await Task.yield() }   // start only once cancelled, whatever the scheduling
+            return try await ScriptInterpreter(dispatcher: recorder).runSteps(parsed, target: target)
+        }
         task.cancel()
         do {
             _ = try await task.value
@@ -98,7 +101,8 @@ final class ExecCancellationAndKeyTests: XCTestCase, @unchecked Sendable {
         // Cancelled before the step: no enumeration, no command.
         let early = Fake()
         let task = Task { () -> String in
-            try await self.inFake(early) {
+            while !Task.isCancelled { await Task.yield() }   // start only once cancelled
+            return try await self.inFake(early) {
                 try await dispatcher.dispatch(cmd: "js", args: ["1+1", "--url", "w1.example/2"], sharedTargetArgs: [])
             }
         }
@@ -128,7 +132,8 @@ final class ExecCancellationAndKeyTests: XCTestCase, @unchecked Sendable {
     func testADocumentsStepStartsNothingWhenCancelled() async throws {
         let fake = Fake()
         let task = Task { () -> String in
-            try await self.inFake(fake) {
+            while !Task.isCancelled { await Task.yield() }   // start only once cancelled
+            return try await self.inFake(fake) {
                 try await InProcessStepDispatcher().dispatch(cmd: "documents", args: [], sharedTargetArgs: [])
             }
         }

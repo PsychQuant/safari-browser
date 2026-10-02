@@ -37,8 +37,9 @@ struct ScriptInterpreter {
         results.reserveCapacity(steps.count)
 
         for (index, step) in steps.enumerated() {
-            // A cancelled run (the daemon cancels the request when its client goes away) starts no
-            // further step: a step with side effects must not run for a caller that has left.
+            // A cancelled run starts no further step: a step with side effects must not run for a
+            // caller that has gone. The daemon cancels in-flight requests when it shuts down or its
+            // listener fails; it does not yet notice a client that disconnects mid-request (#242).
             try Task.checkCancellation()
             // Evaluate `if:` first — skipped steps never substitute or run.
             if let condition = step.ifExpression {

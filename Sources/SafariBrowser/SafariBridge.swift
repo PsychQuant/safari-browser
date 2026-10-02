@@ -1797,6 +1797,8 @@ enum SafariBridge {
             return try await operation()
 
         case .persist:
+            // A cancelled request does not wrap a title for a caller that has gone.
+            try Task.checkCancellation()
             // Read via document.title (NOT window title) so the value
             // round-trips symmetrically with setTabTitle. Safari's
             // window title prepends the macOS username, which would
@@ -1811,6 +1813,8 @@ enum SafariBridge {
             return try await operation()
 
         case .ephemeral:
+            // As for `.persist`; the restore below still runs when the operation is cancelled.
+            try Task.checkCancellation()
             let original = try await getDocumentTitle(
                 target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
             )

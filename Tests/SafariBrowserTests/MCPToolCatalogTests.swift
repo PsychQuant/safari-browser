@@ -10,11 +10,14 @@ final class MCPToolCatalogTests: XCTestCase {
 
     func testCurrentCatalogCoversEveryPublicLeafAndExpandedOptions() throws {
         let catalog = try current()
-        XCTAssertEqual(catalog.tools.count, 77)
+        XCTAssertEqual(catalog.tools.count, 79)
         XCTAssertEqual(catalog.tools.map(\.name), catalog.tools.map(\.name).sorted())
         XCTAssertTrue(catalog.tools.contains { $0.name == "safari.daemon.start" })
         XCTAssertTrue(catalog.tools.contains { $0.name == "safari.setup" })
         XCTAssertTrue(catalog.tools.contains { $0.name == "safari.help" })
+        // #210: the cached-PDF commands are public leaves like history/downloads, so an MCP client can use them.
+        XCTAssertTrue(catalog.tools.contains { $0.path == ["pdf-cache", "list"] })
+        XCTAssertTrue(catalog.tools.contains { $0.path == ["pdf-cache", "get"] })
         XCTAssertFalse(catalog.tools.contains { $0.path.contains("__serve") || $0.path.contains("__mcp-exec") || $0.path.first == "mcp" || $0.path == ["tab", "switch"] })
         let open = try XCTUnwrap(catalog.tools.first { $0.name == "safari.open" })
         let schema = try XCTUnwrap(open.descriptor["inputSchema"])

@@ -2,7 +2,7 @@
 
 ### Requirement: Daemon uses pre-compiled NSAppleScript handles, not process warmth, for latency reduction
 
-The daemon SHALL compile AppleScript source blocks into `NSAppleScript` objects held in memory and route all Safari interactions through these cached handles rather than spawning `osascript` subprocesses per request. The cache SHALL hold at most 256 distinct sources; when a new source would exceed that bound, the least recently used handle SHALL be evicted.
+The daemon SHALL compile AppleScript source blocks into `NSAppleScript` objects held in memory and route all Safari interactions through these cached handles rather than spawning `osascript` subprocesses per request. The cache SHALL hold at most 256 distinct sources, distinct by the UTF-8 bytes of the source (two sources that differ only in Unicode normalisation are two entries); when a new source would exceed that bound, the least recently used handle SHALL be evicted.
 
 #### Scenario: Repeated commands do not re-compile AppleScript
 
