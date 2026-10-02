@@ -51,6 +51,25 @@ final class DaemonLogRedactionTests: XCTestCase {
         XCTAssertTrue(s.contains("<redacted"), "must use redaction marker: \(s)")
     }
 
+    /// #219: an exec script's steps carry typed text, stored values and the code of `js` steps.
+    func testRedactParams_execRunScript_redactsEveryStepArgumentAndCondition() throws {
+        let params = ##"{"steps":[{"cmd":"fill","args":["#password","hunter2"],"var":"v"},{"cmd":"storage local set","args":["token","s3cr3t"],"if":"$u contains \"secretword\""},{"cmd":"js","args":["document.cookie"]},{"cmd":"get url"}],"targetArgs":["--url","plaud"],"maxSteps":1000}"##
+        let redacted = DaemonLog.redactParams(method: "exec.runScript", paramsJSON: Data(params.utf8), logFull: false)
+        let s = String(data: redacted, encoding: .utf8) ?? ""
+        for leaked in ["hunter2", "s3cr3t", "secretword", "document.cookie", "#password"] {
+            XCTAssertFalse(s.contains(leaked), "\(leaked) must not reach the log: \(s)")
+        }
+        // What shows which step failed stays.
+        for kept in ["fill", "storage local set", "get url", "\"v\"", "plaud", "--url", "1000"] {
+            XCTAssertTrue(s.contains(kept), "\(kept) must stay: \(s)")
+        }
+        XCTAssertTrue(s.contains("<redacted 7 bytes>"), "hunter2 is 7 bytes: \(s)")
+        XCTAssertTrue(s.contains("<redacted 6 bytes>"), "s3cr3t is 6 bytes: \(s)")
+        // The operator opt-out keeps the full request.
+        let full = String(data: DaemonLog.redactParams(method: "exec.runScript", paramsJSON: Data(params.utf8), logFull: true), encoding: .utf8) ?? ""
+        XCTAssertTrue(full.contains("hunter2"))
+    }
+
     func testRedactParams_methodWithoutSensitiveField_passthrough() throws {
         let params = #"{"timeout":30}"#
         let redacted = DaemonLog.redactParams(

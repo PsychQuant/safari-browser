@@ -126,6 +126,23 @@ enum DaemonLog {
             }
         }
 
+        // #219: an exec script's steps carry what the person typed (`fill`, `type`, `storage set`), the code
+        // of a `js` step and the literals of an `if:` expression, none of which is a top-level `source` or
+        // `code`. The command names, the variable names and the target arguments stay: they are what a
+        // reader of the log needs to see which step failed.
+        if method == "exec.runScript", let steps = dict["steps"] as? [[String: Any]] {
+            func redacted(_ value: Any) -> Any {
+                guard let text = value as? String else { return value }
+                return "<redacted \(text.utf8.count) bytes>"
+            }
+            dict["steps"] = steps.map { step -> [String: Any] in
+                var step = step
+                if let args = step["args"] as? [Any] { step["args"] = args.map(redacted) }
+                if let condition = step["if"] { step["if"] = redacted(condition) }
+                return step
+            }
+        }
+
         // #66: neutralize control chars / ANSI escapes in any remaining
         // (non-redacted) param value — defense-in-depth for future loggers
         // that surface params such as exec.runScript's targetArgs.

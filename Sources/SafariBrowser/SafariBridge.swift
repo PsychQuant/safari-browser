@@ -4032,7 +4032,9 @@ extension String {
     /// Otherwise, uses document.querySelector.
     var resolveRefJS: String {
         if let match = self.wholeMatch(of: /^@e([1-9]\d*)$/) {
-            let index = Int(match.1)! - 1
+            // A number too large for `Int` names no ref: it reads past the end of `__sbRefs` and finds
+            // nothing, instead of trapping (#219: in-process, a trap would take the daemon down).
+            let index = (Int(match.1) ?? Int.max) - 1
             return "(function(){ if (!window.__sbRefs) return null; return window.__sbRefs[\(index)] || null; })()"
         } else {
             return "document.querySelector('\(self.escapedForJS)')"

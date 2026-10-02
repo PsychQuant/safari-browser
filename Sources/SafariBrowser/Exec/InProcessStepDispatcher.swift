@@ -144,7 +144,11 @@ struct InProcessStepDispatcher: StepDispatcher {
         case "documents":
             // In-process is always JSON, and so is a `documents` child under exec (#220).
             return rest.isEmpty || rest == ["--json"]
-        case "click", "press", "storage local get", "storage local remove",
+        case "press":
+            // As below, and the key must have a name: an empty key or one made only of `+` is reported
+            // by the CLI command's own error, so a child process runs it.
+            return rest.count == 1 && !rest[0].hasPrefix("-") && rest[0].contains { $0 != "+" }
+        case "click", "storage local get", "storage local remove",
              "storage session get", "storage session remove":
             // Exactly one positional; a value that starts like an option is misread by a child's parser (#219).
             return rest.count == 1 && !rest[0].hasPrefix("-")

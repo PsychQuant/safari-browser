@@ -1,3 +1,4 @@
+import ArgumentParser
 import Foundation
 import XCTest
 @testable import SafariBrowser
@@ -20,7 +21,7 @@ final class ExecMoreStepsInProcessTests: XCTestCase, @unchecked Sendable {
             ("click", ["#go"]), ("click", ["@e3"]),
             ("fill", ["#q", "hello"]), ("fill", ["#q", ""]),
             ("type", ["#q", "abc"]),
-            ("press", ["Enter"]), ("press", ["Shift+Tab"]),
+            ("press", ["Enter"]), ("press", ["Shift+Tab"]), ("press", ["Control+Shift+a"]),
             ("storage local get", ["k"]), ("storage session get", ["k"]),
             ("storage local remove", ["k"]), ("storage session remove", ["k"]),
             ("storage local set", ["k", "v"]), ("storage session set", ["k", "v"]),
@@ -49,7 +50,13 @@ final class ExecMoreStepsInProcessTests: XCTestCase, @unchecked Sendable {
             ("type", [], "no arguments"),
             ("type", ["#a", "-v"], "text that starts like an option"),
             ("press", [], "no key"),
+            ("press", [""], "an empty key has no name: the CLI command reports it, a child runs it (#219)"),
+            ("press", ["+"], "a key made only of `+` has no name"),
+            ("press", ["++"], "a key made only of `+` has no name"),
             ("press", ["-"], "a key that starts like an option"),
+            ("fill", ["#q", "--url"], "a target flag with no value is the CLI's error"),
+            ("click", ["--window"], "a target flag with no value is the CLI's error"),
+            ("storage local set", ["k", "--first-match"], "step-level --first-match with no target flag"),
             ("press", ["Enter", "Tab"], "a stray positional"),
             ("storage local get", [], "no key"),
             ("storage local get", ["k", "extra"], "a stray positional"),
@@ -111,13 +118,18 @@ final class ExecMoreStepsInProcessTests: XCTestCase, @unchecked Sendable {
     /// The fake Safari, with what `do JavaScript` answers set by the test. The dialog observation and the
     /// background-tab query are answered, so nothing here looks at the real Safari.
     private func withFake<T>(_ fake: Fake, javaScriptAnswer: String, _ body: () async throws -> T) async throws -> T {
+        try await withFake(fake, javaScript: { _ in javaScriptAnswer }, body)
+    }
+
+    private func withFake<T>(_ fake: Fake, javaScript answer: @escaping @Sendable (String) -> String,
+                             _ body: () async throws -> T) async throws -> T {
         let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         return try await BackgroundTabDiagnostics.$query.withValue({ _ in "" }) {
             try await DaemonRequestContext.$current.withValue(context) {
                 try await WindowDialogObservation.$provider.withValue({ WindowDialogObservation.unavailable(reason: "test") }) {
                     try await DaemonRequestContext.$appleScriptRunner.withValue({ script in
                         let base = try fake.respond(script)
-                        return script.contains("do JavaScript") ? javaScriptAnswer : base
+                        return script.contains("do JavaScript") ? answer(script) : base
                     }) { try await body() }
                 }
             }
@@ -153,14 +165,19 @@ final class ExecMoreStepsInProcessTests: XCTestCase, @unchecked Sendable {
 
     private let differentialCases: [(cmd: String, args: [String])] = [
         ("click", ["#go"]), ("click", ["@e3"]), ("click", ["a[href=\"x\"]"]),
-        ("fill", ["#q", "hello"]), ("fill", ["#q", "it's \"quoted\" \\ back\nline"]),
+        // A number too large for `Int` names no ref; it used to trap, which would take the daemon down.
+        ("click", ["@e99999999999999999999"]),
+        ("fill", ["#q", ""]), ("fill", ["#q", "hello"]), ("fill", ["#q", "it's \"quoted\" \\ back\nline"]),
         ("type", ["#q", "abc"]), ("type", ["#q", "日本語 🎌"]),
-        ("press", ["Enter"]), ("press", ["Shift+Tab"]), ("press", ["Control+a"]),
-        ("storage local get", ["k"]), ("storage local set", ["k", "it's"]), ("storage local remove", ["k"]), ("storage local clear", []),
+        ("press", ["Enter"]), ("press", ["Shift+Tab"]), ("press", ["Control+a"]), ("press", ["Control+Shift+a"]),
+        ("storage local get", ["k"]), ("storage local set", ["k", ""]), ("storage local set", ["k", "it's"]), ("storage local remove", ["k"]), ("storage local clear", []),
         ("storage session get", ["k"]), ("storage session set", ["k", "v"]), ("storage session remove", ["k"]), ("storage session clear", []),
     ]
 
     func testEachStepSendsTheJavaScriptTheCLICommandSendsAndReturnsWhatItPrints() async throws {
+        // `click` reads the environment for the tab marker, which would add title scripts to the CLI side only.
+        try XCTSkipIf(ProcessInfo.processInfo.environment["SAFARI_BROWSER_MARK_TAB"] != nil,
+                      "SAFARI_BROWSER_MARK_TAB is set: the CLI click would wrap the tab title")
         for (cmd, args) in differentialCases {
             XCTAssertTrue(InProcessStepDispatcher.runsInProcess(cmd: cmd, args: args), "\(cmd) \(args) is a shape the dispatcher runs")
             let cliFake = Fake()
@@ -246,5 +263,193 @@ final class ExecMoreStepsInProcessTests: XCTestCase, @unchecked Sendable {
             XCTAssertEqual(cmd, "fill")
         }
         XCTAssertEqual(fake.scripts, [], "nothing was resolved or sent")
+    }
+
+    // MARK: - What the two ways of sending a step leave to the shared function
+
+    /// The shared function builds the JavaScript from its own arguments; the dispatcher chooses the target, the
+    /// profile and the first-match rule it passes in. These tests look at those, which the JavaScript text cannot.
+    func testTheJavaScriptGoesToTheTabTheTargetNames() async throws {
+        let steps: [(String, [String])] = [("click", ["#go"]), ("fill", ["#q", "x"]), ("type", ["#q", "x"]),
+                                           ("press", ["Enter"]), ("storage local get", ["k"]), ("storage session clear", [])]
+        for (cmd, args) in steps {
+            // The exec-level target.
+            let shared = Fake()
+            _ = try await withFake(shared, javaScriptAnswer: "OK") {
+                try await InProcessStepDispatcher().dispatch(cmd: cmd, args: args, sharedTargetArgs: targetArgs)
+            }
+            XCTAssertTrue(shared.scripts.contains { $0.contains("do JavaScript") && $0.contains("tab 2 of window id 101") },
+                          "\(cmd): the exec-level target is window 1 tab 2\n\(shared.scripts.joined(separator: "\n---\n"))")
+            // A target flag of the step's own replaces it.
+            let own = Fake()
+            _ = try await withFake(own, javaScriptAnswer: "OK") {
+                try await InProcessStepDispatcher().dispatch(cmd: cmd, args: args + ["--window", "2", "--tab-in-window", "3"], sharedTargetArgs: targetArgs)
+            }
+            XCTAssertTrue(own.scripts.contains { $0.contains("do JavaScript") && $0.contains("tab 3 of window id 102") },
+                          "\(cmd): the step's own target is window 2 tab 3")
+            XCTAssertFalse(own.scripts.contains { $0.contains("do JavaScript") && $0.contains("window id 101") }, "\(cmd): not the exec-level one")
+        }
+    }
+
+    /// `--profile` restricts the resolution (every window of the fake belongs to profile 個人).
+    func testTheProfileRestrictsTheResolutionOfTheNewSteps() async throws {
+        for (cmd, args) in [("click", ["#go"]), ("storage local get", ["k"])] {
+            let inProfile = Fake()
+            _ = try await withFake(inProfile, javaScriptAnswer: "OK") {
+                try await InProcessStepDispatcher().dispatch(cmd: cmd, args: args, sharedTargetArgs: ["--url-exact", "https://w1.example/2", "--profile", "個人"])
+            }
+            XCTAssertTrue(inProfile.scripts.contains { $0.contains("do JavaScript") }, "\(cmd): found in its own profile")
+            let elsewhere = Fake()
+            do {
+                _ = try await withFake(elsewhere, javaScriptAnswer: "OK") {
+                    try await InProcessStepDispatcher().dispatch(cmd: cmd, args: args, sharedTargetArgs: ["--url-exact", "https://w1.example/2", "--profile", "其他"])
+                }
+                XCTFail("\(cmd): a window of another profile must not be found")
+            } catch SafariBrowserError.documentNotFound {
+            }
+            XCTAssertFalse(elsewhere.scripts.contains { $0.contains("do JavaScript") }, "\(cmd): nothing was sent")
+        }
+    }
+
+    /// An ambiguous `--url` fails closed for these steps as for any command; a step's own `--first-match`
+    /// (with a target flag) takes the first match, and the JavaScript goes to that tab.
+    func testAnAmbiguousURLFailsClosedAndFirstMatchTakesTheFirstTab() async throws {
+        let ambiguous = Fake()
+        do {
+            _ = try await withFake(ambiguous, javaScriptAnswer: "OK") {
+                try await InProcessStepDispatcher().dispatch(cmd: "click", args: ["#go"], sharedTargetArgs: ["--url", "w1.example"])
+            }
+            XCTFail("three tabs match: the step must not pick one")
+        } catch SafariBrowserError.ambiguousWindowMatch {
+        }
+        XCTAssertFalse(ambiguous.scripts.contains { $0.contains("do JavaScript") }, "nothing was sent to either tab")
+
+        let first = Fake()
+        _ = try await withFake(first, javaScriptAnswer: "OK") {
+            try await InProcessStepDispatcher().dispatch(cmd: "click", args: ["#go", "--url", "w1.example", "--first-match"], sharedTargetArgs: [])
+        }
+        XCTAssertTrue(first.scripts.contains { $0.contains("do JavaScript") && $0.contains("tab 1 of window id 101") }, "the first match")
+    }
+
+    // MARK: - Nothing the person typed can leave the string it is in
+
+    /// The AppleScript-literal escaping `doJavaScript` applies, undone, so what Safari would run can be read.
+    private func unescapedAppleScript(_ text: String) -> String {
+        var out = "", escaped = false
+        for ch in text {
+            if escaped { out.append(ch); escaped = false } else if ch == "\\" { escaped = true } else { out.append(ch) }
+        }
+        return out
+    }
+
+    /// The expected JavaScript is written out by hand here, not built by the code under test, so dropping an
+    /// escape from a shared builder fails: the argument is `it's "quoted" \ back` and a newline.
+    func testTypedTextIsEscapedIntoItsJavaScriptStringLiteral() async throws {
+        let text = "it's \"quoted\" \\ back\nline"
+        let js = "'it\\'s \"quoted\" \\\\ back\\nline'"
+        let cases: [(String, [String], String)] = [
+            ("fill", ["#q", text], "el.value = \(js);"),
+            ("type", ["#q", text], "el.value += \(js);"),
+            ("storage local set", ["k", text], "localStorage.setItem('k', \(js))"),
+            ("storage session set", ["k", text], "sessionStorage.setItem('k', \(js))"),
+            ("storage local get", [text], "localStorage.getItem(\(js)) || ''"),
+            ("storage session remove", [text], "sessionStorage.removeItem(\(js))"),
+        ]
+        for (cmd, args, expected) in cases {
+            let fake = Fake()
+            _ = try await withFake(fake, javaScriptAnswer: "OK") {
+                try await InProcessStepDispatcher().dispatch(cmd: cmd, args: args, sharedTargetArgs: targetArgs)
+            }
+            let sent = javaScripts(fake).map(unescapedAppleScript)
+            XCTAssertEqual(sent.count, 1, cmd)
+            XCTAssertTrue(sent[0].contains(expected), "\(cmd): expected\n\(expected)\nin\n\(sent[0])")
+        }
+    }
+
+    // MARK: - Nothing here may bring the daemon down
+
+    /// A key with no name used to trap on a force-unwrap; in the daemon that is the whole process.
+    func testAKeyWithNoNameIsAnErrorNotACrash() async throws {
+        for key in ["", "+", "++"] {
+            do {
+                try await withFake(Fake(), javaScriptAnswer: "OK") {
+                    try await PressCommand.perform(key: key, target: .frontWindow, firstMatch: false, warnWriter: nil, profile: nil)
+                }
+                XCTFail("press \"\(key)\" must fail")
+            } catch is ValidationError {
+            }
+            // And the dispatcher does not run it: a child process reports the CLI command's own error.
+            do {
+                _ = try await withFake(Fake(), javaScriptAnswer: "OK") {
+                    try await InProcessStepDispatcher().dispatch(cmd: "press", args: [key], sharedTargetArgs: [])
+                }
+                XCTFail("press \"\(key)\" is not a shape the dispatcher runs")
+            } catch ScriptDispatchError.unsupportedArguments {
+            }
+        }
+    }
+
+    func testARefTooLargeForIntNamesNothingInsteadOfTrapping() async throws {
+        let fake = Fake()
+        do {
+            _ = try await withFake(fake, javaScriptAnswer: "NOT_FOUND") {
+                try await InProcessStepDispatcher().dispatch(cmd: "click", args: ["@e99999999999999999999"], sharedTargetArgs: targetArgs)
+            }
+            XCTFail("no such ref")
+        } catch SafariBrowserError.elementNotFound(let selector) {
+            XCTAssertEqual(selector, "@e99999999999999999999")
+        }
+        XCTAssertTrue(javaScripts(fake).first?.contains("__sbRefs[9223372036854775806]") == true, "an index past the end, not a crash")
+    }
+
+    // MARK: - Inside a script: variables, conditions, errors and the route
+
+    /// `var`, `if:` and `onError` work for the new steps as for the others, through the real interpreter.
+    func testTheNewStepsWorkWithVariablesConditionsAndOnError() async throws {
+        let steps = try ScriptInterpreter.parseScript(source: ##"""
+            [{"cmd":"storage local get","args":["k"],"var":"v"},
+             {"cmd":"click","args":["#nope"],"onError":"continue"},
+             {"cmd":"storage local get","args":["k"],"if":"$v equals \"stored\"","var":"w"},
+             {"cmd":"fill","args":["#q","$w"]}]
+            """##, maxSteps: 50)
+        XCTAssertTrue(ExecCommand.allStepsRunInProcess(Array(steps.prefix(3))), "the first three are runnable shapes")
+        let results = try await withFake(Fake(), javaScript: { $0.contains("localStorage.getItem") ? "stored" : "NOT_FOUND" }) {
+            try await ScriptInterpreter(dispatcher: InProcessStepDispatcher()).runSteps(steps, target: try TargetOptions.parse(targetArgs))
+        }
+        XCTAssertEqual(results.map(\.status), [.ok, .error, .ok, .error])
+        XCTAssertEqual(results[0].value, "stored")
+        XCTAssertEqual(results[0].varName, "v")
+        XCTAssertEqual(results[1].errorCode, "elementNotFound")
+        XCTAssertEqual(results[2].value, "stored", "the condition on $v held")
+        // The last step fills `#q`, which is not there in this fake: the run reports it, nothing is lost earlier.
+        XCTAssertEqual(results[3].errorCode, "elementNotFound")
+    }
+
+    /// The route `ExecCommand` takes: a script of the new steps goes to the daemon, one with a `wait` does not.
+    func testExecSendsAScriptOfTheNewStepsToTheDaemonAndKeepsAWaitLocal() async throws {
+        final class Sent: @unchecked Sendable {
+            private let lock = NSLock(); private var items: [[String]] = []
+            func add(_ steps: [ScriptStep]) { lock.withLock { items.append(steps.map(\.cmd)) } }
+            var all: [[String]] { lock.withLock { items } }
+        }
+        func route(_ source: String, pacing: Bool = false) async throws -> [[String]] {
+            let sent = Sent()
+            _ = try await printed {
+                try await ExecCommand.parse([]).execute(source: source, pacingEnabled: pacing, daemonOptedIn: true) { steps in
+                    sent.add(steps); return "[]"
+                }
+            }
+            return sent.all
+        }
+        // Guarded by an `if` that is false, so a local run touches nothing in Safari.
+        let never = #""if":"$never exists""#
+        let runnable = "[{\"cmd\":\"click\",\"args\":[\"#go\"],\(never)},{\"cmd\":\"storage local set\",\"args\":[\"k\",\"v\"],\(never)}]"
+        let sentRunnable = try await route(runnable)
+        XCTAssertEqual(sentRunnable, [["click", "storage local set"]])
+        let withWait = "[{\"cmd\":\"click\",\"args\":[\"#go\"],\(never)},{\"cmd\":\"wait\",\"args\":[\"--for-url\",\"x\"],\(never)}]"
+        let sentWait = try await route(withWait)
+        XCTAssertEqual(sentWait, [], "one wait keeps the whole script off the daemon")
+        let sentPaced = try await route(runnable, pacing: true)
+        XCTAssertEqual(sentPaced, [], "pacing on runs step by step")
     }
 }
