@@ -469,27 +469,53 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(fake.verifications, 2)
     }
 
-    func testNoCheckIsMadeForTargetFormsWithNothingToCheckBy() async {
+    func testNoCheckIsMadeForTargetFormsWithNothingToCheckBy() async throws {
         // `--document`, `--tab`, `--window`, `--window --tab-in-window`,
         // `--profile` alone and no flag name no URL, so there is nothing a
-        // check could confirm: none of them issues the guard script. Whether a
-        // step succeeds against the fake is not the point, so errors are ignored.
-        let forms: [[String]] = [["--document", "2"], ["--tab", "2"], ["--window", "1"],
-                                 ["--window", "1", "--tab-in-window", "2"], ["--profile", "個人"], []]
-        for shared in forms {
+        // check could confirm: none of them issues the guard script. Every step
+        // must succeed (a throw fails the test, nothing is swallowed), and each
+        // form's resolution count is pinned: how many times the three steps
+        // enumerated windows. `answer` is what a bare `get url` yields on the
+        // fake: a URL where the fake can resolve a tab, otherwise its generic "ok".
+        struct Form { let args: [String]; let enumerations: Int; let answersWithURL: Bool }
+        let forms = [
+            Form(args: ["--document", "2"], enumerations: 3, answersWithURL: true),
+            Form(args: ["--tab", "2"], enumerations: 3, answersWithURL: true),
+            Form(args: ["--window", "1"], enumerations: 0, answersWithURL: false),
+            Form(args: ["--window", "1", "--tab-in-window", "2"], enumerations: 3, answersWithURL: true),
+            Form(args: ["--window", "1", "--profile", "個人"], enumerations: 3, answersWithURL: false),
+            Form(args: ["--profile", "個人"], enumerations: 3, answersWithURL: false),
+            Form(args: [], enumerations: 0, answersWithURL: false),
+        ]
+        for form in forms {
             let fake = Fake()
-            let dispatcher = InProcessStepDispatcher()
-            let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
-            await DaemonRequestContext.$current.withValue(context) {
-                await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
-                    for _ in 1...3 { _ = try? await dispatcher.dispatch(cmd: "get url", args: [], sharedTargetArgs: shared) }
-                }
-            }
-            XCTAssertEqual(fake.verifications, 0, "\(shared): no check before reuse")
-            if shared.first == "--document" || shared.first == "--tab" || shared == ["--profile", "個人"] {
-                XCTAssertEqual(fake.enumerations, 3, "\(shared): resolved afresh for each of the 3 steps")
-            }
+            let answers = try await run([("get url", []), ("get url", []), ("get url", [])], shared: form.args, on: fake)
+            XCTAssertEqual(answers.count, 3, "\(form.args): every step answered")
+            XCTAssertEqual(answers.allSatisfy { $0.hasPrefix("https://") }, form.answersWithURL, "\(form.args): \(answers)")
+            XCTAssertEqual(fake.verifications, 0, "\(form.args): no check before reuse")
+            XCTAssertEqual(fake.enumerations, form.enumerations, "\(form.args): enumerations over the 3 steps")
         }
+    }
+
+
+    /// Characterization (#170 re-review): a step that names its own target flag *replaces* the exec-level
+    /// target, it does not merge with it, so the exec-level `--profile` does not reach such a step. That
+    /// is how the stateless path reads it too (a step's flags are the step's whole target). Pinned so a
+    /// change to merging is a decision, not an accident. Every window of the fake is in profile "個人".
+    func testAStepWithItsOwnTargetFlagDoesNotInheritTheExecLevelProfile() async throws {
+        let shared = ["--profile", "其他"]
+        // The step names its own --url: the exec-level profile restriction is not applied to it.
+        let ownTarget = Fake()
+        do {
+            _ = try await run([("get url", ["--url", "w1.example/2"])], shared: shared, on: ownTarget)
+        } catch { XCTFail("a step with its own --url must resolve, not fail: \(error)") }
+        // A step that names nothing uses the shared target, restricted to a profile no window is in.
+        let none = Fake()
+        do {
+            _ = try await run([("get url", [])], shared: ["--url", "w1.example/2", "--profile", "其他"], on: none)
+            XCTFail("the shared target is restricted to a profile no window is in")
+        } catch SafariBrowserError.documentNotFound {
+        } catch { XCTFail("expected documentNotFound, got \(error)") }
     }
 
 
@@ -623,10 +649,8 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
     }
 
     func testTheFormsThatCanRunHereSucceedWithoutACheck() async throws {
-        // The forms whose steps the fake can answer with a URL carry a success
-        // assertion; `testNoCheckIsMadeForTargetFormsWithNothingToCheckBy` ignores
-        // errors and covers the rest (the fake answers a bare `--profile` read with
-        // a generic "ok", so only its enumeration count is asserted there).
+        // A narrower pin on the two forms that resolve to a URL; the table in
+        // `testNoCheckIsMadeForTargetFormsWithNothingToCheckBy` covers every form.
         for shared in [["--document", "2"], ["--tab", "2"]] {
             let fake = Fake()
             let urls = try await run([("get url", []), ("get url", []), ("get url", [])], shared: shared, on: fake)
