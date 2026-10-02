@@ -28,3 +28,10 @@
 - [x] 4.2 編譯快取以 UTF-8 位元組為鍵，而非 Swift `String` 的標準等價比較（NFC 與 NFD 是兩個來源）（Requirement: Daemon uses pre-compiled NSAppleScript handles, not process warmth, for latency reduction）；共用目標的參數同樣以位元組為鍵，那是防禦性的（同一個 run 內 exec 層級參數不會改變），不是真實 run 會走的路徑
 - [x] 4.3 測試：`--mark-tab` 的 profile 轉送涵蓋六個呼叫點、無可檢查依據的目標形式逐形式斷言結果與列舉次數、步驟自帶 target 旗標不繼承 exec 層級 `--profile`、被 `if:` 跳過與 `documents` 步驟不觸發解析
 - [x] 4.4 規格：target 旗標為封閉列表且不含 `--first-match` 與 `--mark-tab`；「只在一種情形重用」改為必要條件；位置被接手的分頁不被偵測；step-level profile 與 marker 的範圍；daemon 模式的位置重用對 human-emulation「Daemon mode behavioural parity with stateless mode」與 document-targeting「Unified urlContains fail-closed policy」寫成明確例外
+
+## 5. 更多指令在 daemon 內執行（#219）
+
+- [x] 5.1 `click`、`fill`、`type`、`press` 與 `storage` 子指令是「一次 JavaScript 呼叫」：腳本與結果處理抽成 CLI 與 dispatcher 共用的函式（`perform`、`StorageScripts`），封閉的參數形狀列表擴充；`wait` 與 `snapshot` 不納入，含它們的腳本仍整份走 subprocess（Requirement: Daemon-routed execution when available）
+- [x] 5.2 測試：形狀表（接受與拒絕）、與 CLI 指令送出相同的 JavaScript／回傳相同的值／以相同方式失敗、共用 `--url` 目標一次解析、整份腳本的路由
+- [x] 5.3 量測：混合腳本 before／after（見 docs/performance.md；Safari 只有 1 個分頁，量不到列舉成本）
+

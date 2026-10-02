@@ -333,7 +333,7 @@ Multi-step automation in single invocation。Agents 用 JSON 描述 step sequenc
 
 V1 dispatch 透過 subprocess 跑同個 binary（不是 design 原本的 daemon-shared-connection）。當 daemon mode opt-in 時每個 step 還是 ~50ms 透過 warm daemon。Connection-sharing 是 v2 enhancement。
 
-之後（#170）：腳本全部由 `js`、`documents`、`get url/title/text/source` 組成、且 daemon 可用時，整份腳本以一個 `exec.runScript` 請求在 daemon 內執行（`InProcessStepDispatcher`），不再每步一個子行程。`--url` 類目標在第一個需要它的步驟解析並在該請求內重用（每次重用前做一次檢查，只比對該位置顯示的網址，不比對是否仍是原本那個分頁）；其他目標形式每步解析。請求被取消時不再開始新的步驟。兩條路徑不保證結果相同，已知差異追蹤於 #220；規格見 `openspec/specs/script-exec/spec.md`。
+之後（#170）：腳本全部由 `js`、`documents`、`get url/title/text/source`、`click`、`fill`、`type`、`press`、`storage` 子指令（#219；參數形狀為封閉列表，不得以 `-` 開頭）組成、且 daemon 可用時，整份腳本以一個 `exec.runScript` 請求在 daemon 內執行（`InProcessStepDispatcher`），不再每步一個子行程。`--url` 類目標在第一個需要它的步驟解析並在該請求內重用（每次重用前做一次檢查，只比對該位置顯示的網址，不比對是否仍是原本那個分頁）；其他目標形式每步解析。請求被取消時不再開始新的步驟。兩條路徑不保證結果相同，已知差異追蹤於 #220；規格見 `openspec/specs/script-exec/spec.md`。
 
 `screenshot` / `pdf` / `upload` 觸發 `unsupportedInExec`（keystroke / CG / AX path 不適合 exec script）。
 

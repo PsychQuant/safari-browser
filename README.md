@@ -1325,7 +1325,7 @@ restart each existing daemon namespace with `daemon stop` followed by `daemon st
 before relying on these settings: a daemon still running the older executable
 ignores the new options.
 
-Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). With the daemon active, a script made only of `js`, `documents` and `get url/title/text/source` runs in one request on the daemon (a `--url` target is resolved at the first step that needs it and reused after a check, #170); any other script runs one subprocess per step, so daemon opt-in still amortizes per-step cost. The two paths are not guaranteed to give the same results (#220). `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
+Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). With the daemon active, a script made only of `js`, `documents`, `get url/title/text/source`, `click`, `fill`, `type`, `press` and the `storage` subcommands (for the argument shapes `exec` accepts; no argument may start with `-`) runs in one request on the daemon (a `--url` target is resolved at the first step that needs it and reused after a check, #170); any other script runs one subprocess per step, so daemon opt-in still amortizes per-step cost. The two paths are not guaranteed to give the same results (#220). `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
 
 ### Tab ownership marker (opt-in)
 

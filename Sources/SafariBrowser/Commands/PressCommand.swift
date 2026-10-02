@@ -12,6 +12,16 @@ struct PressCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        try await Self.perform(
+            key: key, target: target.resolve(), firstMatch: target.firstMatch,
+            warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
+    }
+
+    /// Shared by this command and the in-process `exec` dispatcher (#219).
+    static func perform(
+        key: String, target: SafariBridge.TargetDocument, firstMatch: Bool,
+        warnWriter: ((String) -> Void)?, profile: String?
+    ) async throws {
         let parts = key.split(separator: "+").map(String.init)
         let keyName: String
         var ctrlKey = false
@@ -67,6 +77,6 @@ struct PressCommand: AsyncParsableCommand {
                 return 'OK';
             })()
             """
-        _ = try await SafariBridge.doJavaScript(js, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
+        _ = try await SafariBridge.doJavaScript(js, target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
     }
 }
