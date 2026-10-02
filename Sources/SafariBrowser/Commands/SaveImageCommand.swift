@@ -43,7 +43,8 @@ struct SaveImageCommand: AsyncParsableCommand {
         // #51: scope to --profile up front so the concrete target carries the
         // profile resolution into resolveElementResource / fetchResourceWithCookies
         // / doJavaScript without each needing a profile: parameter.
-        let docTarget = try await target.resolveProfileScoped()
+        // #231: and `--first-match` is honoured (`resolveFirstMatchOnce` says how).
+        let docTarget = try await target.resolveFirstMatchOnce()
 
         // Resolve the target window (validates target options + raises
         // background-tab error if applicable — reuse #26 machinery).
