@@ -188,6 +188,64 @@ final class PDFCacheSafetyTests: XCTestCase {
         XCTAssertEqual(try names(in: pdfFolder), ["doc.pdf"])
     }
 
+    /// `--source webkit-pdfs` copies out of the temporary folders, and Safari's network cache is still
+    /// a folder this command only reads: a destination inside it is refused for that source too.
+    func testTheNetworkCacheIsProtectedWhenTheSourceIsAWebKitPDFsFolder() throws {
+        let tmp = dir.appendingPathComponent("tmp", isDirectory: true)
+        let pdfFolder = tmp.appendingPathComponent("WebKitPDFs-abc", isDirectory: true)
+        try FileManager.default.createDirectory(at: pdfFolder, withIntermediateDirectories: true)
+        try PDFCacheTests.makePDF(pages: 1).write(to: pdfFolder.appendingPathComponent("doc.pdf"))
+        let cacheRoot = dir.appendingPathComponent("cache", isDirectory: true)
+        let records = cacheRoot.appendingPathComponent("Version 17/Records", isDirectory: true)
+        try FileManager.default.createDirectory(at: records, withIntermediateDirectories: true)
+        let record = records.appendingPathComponent("record-file")
+        try Data("record".utf8).write(to: record)
+        let paths = PDFCachePaths(cacheRoot: cacheRoot, temporaryRoot: tmp)
+        XCTAssertThrowsError(try PDFCacheService.retrieve(
+            form: .file("doc.pdf"), tabURL: nil, paths: paths, destination: record.path, force: true)
+        ) {
+            guard case SafariBrowserError.pdfCache(.destinationWriteFailed(_, let detail)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertTrue(detail.contains("inside Safari's own cache folder"), detail)
+        }
+        XCTAssertEqual(try Data(contentsOf: record), Data("record".utf8), "the record was not replaced")
+    }
+
+    /// A protected folder that cannot be looked at is a refusal, not a pass.
+    func testAProtectedFolderThatCannotBeCheckedRefusesTheCopy() throws {
+        let locked = try folder("locked")
+        let inner = locked.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: inner, withIntermediateDirectories: true)
+        let out = try folder("out")
+        let source = try pdfSource("blob")
+        XCTAssertEqual(chmod(locked.path, 0o000), 0)
+        defer { chmod(locked.path, 0o700) }
+        XCTAssertThrowsError(try PDFCacheOutput.copyVerified(
+            from: source, to: out.appendingPathComponent("a.pdf").path, force: false, protectedFolders: [inner])
+        ) {
+            guard case SafariBrowserError.pdfCache(.destinationWriteFailed(_, let detail)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertTrue(detail.contains("could not be checked"), detail)
+        }
+        XCTAssertEqual(try names(in: out), [], "nothing was written")
+    }
+
+    /// The copy must be as long as the record said the body is.
+    func testACopyWhoseLengthIsNotTheRecordsIsRefusedAndNothingIsPublished() throws {
+        let out = try folder("out")
+        let source = try pdfSource("blob")
+        let actual = Int64(try Data(contentsOf: source).count)
+        XCTAssertThrowsError(try PDFCacheOutput.copyVerified(
+            from: source, to: out.appendingPathComponent("a.pdf").path, force: false,
+            expectedSize: actual + 1, expectedKey: "ABCD")
+        ) {
+            guard case SafariBrowserError.pdfCache(.recordDisagrees(let key)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertEqual(key, "ABCD")
+        }
+        XCTAssertEqual(try names(in: out), [], "no destination and no temporary file")
+        // The same length is accepted.
+        XCTAssertNoThrow(try PDFCacheOutput.copyVerified(
+            from: source, to: out.appendingPathComponent("b.pdf").path, force: false, expectedSize: actual, expectedKey: "ABCD"))
+    }
+
     // MARK: - The source is checked again right before a forced publish
 
     /// A link from the cached file to the destination, made after the first look, would have the
@@ -347,7 +405,22 @@ final class PDFCacheSafetyTests: XCTestCase {
         }
     }
 
-    func testARecordThatEndsBeforeTheBodyFieldsIsUnreadable() throws {
+    /// A `/` followed by a combining mark is one `Character` that is not "/", and the kernel still
+    /// splits on the byte: the folder is what comes before that last `/`.
+    func testTheDestinationIsSplitOnTheLastSlashByte() throws {
+        let split = try PDFCacheOutput.splitDestination("/x/out/\u{301}a.pdf")
+        XCTAssertEqual(split.parent, "/x/out")
+        XCTAssertEqual(split.name, "\u{301}a.pdf")
+        let plain = try PDFCacheOutput.splitDestination("/x/out/a.pdf")
+        XCTAssertEqual(plain.parent, "/x/out")
+        XCTAssertEqual(plain.name, "a.pdf")
+        // Neither side of the split loses a byte.
+        XCTAssertEqual(Array((split.parent + "/" + split.name).utf8), Array("/x/out/\u{301}a.pdf".utf8))
+    }
+
+    /// The spec leaves a record that ends before the body fields out and counts it with the ones whose
+    /// length disagrees ("Safari was probably writing it"); it is not a failure class of the run.
+    func testARecordThatEndsBeforeTheBodyFieldsIsOutOfSyncNotUnreadable() throws {
         let reader = WebKitCacheReaderTests()
         reader.root = dir.appendingPathComponent("cache", isDirectory: true)
         try FileManager.default.createDirectory(at: reader.root, withIntermediateDirectories: true)
@@ -357,8 +430,23 @@ final class PDFCacheSafetyTests: XCTestCase {
         try reader.addRecord(key: "AAAA1111", identifier: "x", body: WebKitCacheReaderTests.pdfBody, recordBytes: short)
         try reader.addRecord(key: "BBBB2222", identifier: "https://e.org/b.pdf", body: WebKitCacheReaderTests.pdfBody)
         let scan = try WebKitCacheReader.scan(cacheRoot: reader.root)
-        XCTAssertEqual(scan.unreadableKeys, [name])
+        XCTAssertEqual(scan.outOfSyncKeys, [name])
+        XCTAssertEqual(scan.unreadableKeys, [])
         XCTAssertEqual(scan.pdfs.count, 1)
+    }
+
+    /// One record that parses but disagrees with its body shows the layout is understood: another
+    /// that does not parse at all must not turn the run into "unsupported layout".
+    func testAnOutOfSyncRecordNextToAnUnparsableOneIsNotLayoutDrift() throws {
+        let reader = WebKitCacheReaderTests()
+        reader.root = dir.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(at: reader.root, withIntermediateDirectories: true)
+        try reader.addRecord(key: "AAAA1111", identifier: "https://e.org/a.pdf", body: WebKitCacheReaderTests.pdfBody, bodySizeOverride: 7)
+        try reader.addRecord(key: "BBBB2222", identifier: "garbage", body: WebKitCacheReaderTests.pdfBody, recordBytes: Data("not a record".utf8))
+        let scan = try WebKitCacheReader.scan(cacheRoot: reader.root)
+        XCTAssertEqual(scan.pdfs, [])
+        XCTAssertEqual(scan.outOfSyncKeys, [WebKitCacheReaderTests.fullKey("AAAA1111")])
+        XCTAssertEqual(scan.unreadableKeys, [WebKitCacheReaderTests.fullKey("BBBB2222")])
     }
 
     func testTheBodyFieldsAreReadAtTheObservedOffsets() throws {

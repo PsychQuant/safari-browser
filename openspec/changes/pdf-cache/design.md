@@ -22,4 +22,4 @@ WebKit 網路快取在 `~/Library/Containers/com.apple.Safari/Data/Library/Cache
 - 這個快取含所有站台的資源 → 只讀 PDF 命中者的 record，`list` 只列 PDF，預設上限 50。
 - 回應本體內嵌在 record 內的小回應沒有 `-blob` → 不在範圍內，找不到時訊息提到這一點。
 - Safari 每個具名 profile 有自己的網路快取 store（2026-10-01 在這台機器上量到 21 個 `Version 17` store：預設一個、其餘每個 profile 一個）；只讀預設 profile 的那一個，所以 `get` 拒絕 `--profile`，否則會拿具名 profile 分頁的 URL 去比對預設 store，可能複製到預設 profile 的同一 URL 的另一版。把 profile 對應到它的 store 是另案。
-- 暫存檔的 owner-only 靠 0600 與去掉 ACL 項目；發布前的 inode 檢查只證明身分。同使用者的行程若在執行期間改寫暫存檔或目的地資料夾，不在威脅模型內。
+- 暫存檔的 owner-only 靠 0600 與去掉 ACL 項目（檔案從建立到去掉 ACL 之間帶著繼承來的 ACL，該瞬間持有描述元的其他使用者不在威脅模型內）；發布前的 inode 檢查只證明身分；複製的位元組數必須等於 record 記載的本體長度（掃描後被換成另一長度的本體會被拒絕，同長度的不會被偵測）。同使用者的行程若在執行期間改寫暫存檔或目的地資料夾，不在威脅模型內。

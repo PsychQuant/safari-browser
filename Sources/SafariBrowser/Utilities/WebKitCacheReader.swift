@@ -337,7 +337,8 @@ enum WebKitCacheReader {
                 }
             }
         }
-        if pdfs.isEmpty && partial.isEmpty && (!unreadable.isEmpty || malformed > 0) {
+        // A record that parsed but disagrees with its body shows the layout is understood.
+        if pdfs.isEmpty && partial.isEmpty && outOfSync.isEmpty && (!unreadable.isEmpty || malformed > 0) {
             throw SafariBrowserError.pdfCache(.recordLayoutUnsupported(
                 detail: "\(unreadable.count + malformed) PDF body file(s) have no record that parses as version \(supportedVersion) with a 'Resource' key and a hash equal to its file name"))
         }
@@ -421,8 +422,8 @@ enum WebKitCacheReader {
         else { return .unreadable }
         guard parsed.range == nil else { return .partial }
         // The record must carry the fields that describe its body; one that ends before them is
-        // not the layout that was observed.
-        guard let described = try? parseRecordBody(head) else { return .unreadable }
+        // one Safari is probably still writing, left out and counted like a length that disagrees.
+        guard let described = try? parseRecordBody(head) else { return .outOfSync }
         guard described.bodySize == UInt64(bodySize) else { return .outOfSync }
         return .pdf(WebKitCachedPDF(
             key: key, partitionDirectory: partitionDirectory, partition: parsed.partition,

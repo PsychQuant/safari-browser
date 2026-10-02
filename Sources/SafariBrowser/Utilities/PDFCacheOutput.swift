@@ -49,6 +49,7 @@ enum PDFCacheOutput {
     /// alone.
     static func copyVerified(
         from source: URL, to destination: String, force: Bool, protectedFolders: [URL] = [],
+        expectedSize: Int64? = nil, expectedKey: String = "",
         afterParentOpened: () -> Void = {}, beforePublish: (String) -> Void = { _ in }
     ) throws -> Result {
         let split = try splitDestination(destination)
@@ -66,7 +67,12 @@ enum PDFCacheOutput {
         defer { close(parentFD) }
         afterParentOpened()
 
-        let parentPath = canonicalPath(of: parentFD) ?? split.parent
+        // The folder must be identified by the kernel: a comparison against the protected folders
+        // by the typed text would miss a symlink or another spelling, so there is no fallback.
+        guard let parentPath = canonicalPath(of: parentFD) else {
+            throw SafariBrowserError.pdfCache(.destinationWriteFailed(
+                path: typedPath, detail: "the destination folder could not be identified"))
+        }
         let name = split.name
         // A constant, so that `writeFailure(destinationPath, errno)` evaluates nothing but
         // a local between the failing call and the read of errno.
@@ -94,6 +100,9 @@ enum PDFCacheOutput {
         do {
             try restrictToOwner(temporaryFD, destination: destinationPath)
             let size = try copy(from: sourceFD, to: temporaryFD, sourceName: source.lastPathComponent, destination: destinationPath)
+            // What was copied must be as long as the record said the body is. A body that was replaced
+            // after the scan and has another length is refused; one of the same length is not caught.
+            if let expectedSize, size != expectedSize { throw SafariBrowserError.pdfCache(.recordDisagrees(key: expectedKey)) }
             guard fsync(temporaryFD) == 0 else { throw writeFailure(destinationPath, errno) }
             let pages = try verifiedPageCount(fd: temporaryFD, size: size)
             beforePublish(temporaryName)
@@ -159,14 +168,18 @@ enum PDFCacheOutput {
         func refuse(_ detail: String) -> SafariBrowserError {
             .pdfCache(.destinationWriteFailed(path: destination, detail: detail))
         }
-        guard !destination.isEmpty else { throw refuse("the destination is empty") }
-        guard !destination.hasSuffix("/") else { throw refuse("it must name a file, not a folder") }
-        guard let slash = destination.lastIndex(of: "/") else {
+        // By bytes, not by `Character`: a `/` followed by a combining mark is one Character that is not
+        // equal to "/", and the kernel splits on the byte.
+        let bytes = Array(destination.utf8)
+        guard !bytes.isEmpty else { throw refuse("the destination is empty") }
+        guard bytes.last != 0x2F else { throw refuse("it must name a file, not a folder") }
+        func text(_ part: ArraySlice<UInt8>) -> String { String(decoding: part, as: UTF8.self) }
+        guard let slash = bytes.lastIndex(of: 0x2F) else {
             guard destination != ".", destination != ".." else { throw refuse("it must name a file, not a folder") }
             return (".", destination)
         }
-        let parent = String(destination[..<slash])
-        let name = String(destination[destination.index(after: slash)...])
+        let parent = text(bytes[..<slash])
+        let name = text(bytes[(slash + 1)...])
         guard name != ".", name != ".." else { throw refuse("it must name a file, not a folder") }
         return (parent.isEmpty ? "/" : parent, name)
     }
@@ -185,9 +198,19 @@ enum PDFCacheOutput {
     private static func refuseInside(_ folders: [URL], parentPath: String, destination: String) throws {
         for folder in folders {
             let fd = open(folder.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-            guard fd >= 0 else { continue }
+            guard fd >= 0 else {
+                // A protected folder that does not exist cannot contain the destination; one that
+                // cannot be looked at is not a pass.
+                let code = errno
+                if code == ENOENT || code == ENOTDIR { continue }
+                throw SafariBrowserError.pdfCache(.destinationWriteFailed(
+                    path: destination, detail: "Safari's cache folder could not be checked (errno \(code))"))
+            }
             defer { close(fd) }
-            guard let protected = canonicalPath(of: fd) else { continue }
+            guard let protected = canonicalPath(of: fd) else {
+                throw SafariBrowserError.pdfCache(.destinationWriteFailed(
+                    path: destination, detail: "Safari's cache folder could not be identified"))
+            }
             if parentPath == protected || parentPath.hasPrefix(protected == "/" ? "/" : protected + "/") {
                 throw SafariBrowserError.pdfCache(.destinationWriteFailed(
                     path: destination, detail: "it is inside Safari's own cache folder, which this command only reads"))
@@ -197,11 +220,13 @@ enum PDFCacheOutput {
 
     /// Owner-only: mode 0600 whatever the umask, and no ACL entries — a folder can hand down an
     /// inheritable ACL that grants other users access independently of the mode bits. Done
-    /// before a byte is written, so nothing private is ever in a file anyone else could open.
-    /// A file system without ACLs has nothing to remove.
+    /// before a byte is written, so no content of ours is in a file another user can read. The
+    /// file does exist, with whatever ACL it inherited, between its creation and this call; a
+    /// user the folder's ACL lets write could hold a descriptor opened in that instant, and
+    /// that is outside the threat model. A file system without ACLs has nothing to remove.
     private static func restrictToOwner(_ fd: Int32, destination: String) throws {
         guard fchmod(fd, 0o600) == 0 else { throw writeFailure(destination, errno) }
-        guard let empty = acl_init(0) else { return }
+        guard let empty = acl_init(0) else { throw writeFailure(destination, errno) }
         defer { acl_free(UnsafeMutableRawPointer(empty)) }
         if acl_set_fd_np(fd, empty, ACL_TYPE_EXTENDED) != 0 {
             let code = errno

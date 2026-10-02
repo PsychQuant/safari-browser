@@ -113,11 +113,12 @@ struct PDFCacheGet: AsyncParsableCommand {
     func validate() throws {
         guard !path.isEmpty else { throw ValidationError("The destination path must not be empty.") }
         // The network cache this command reads is the default profile's. A named profile keeps its
-        // own store, which is not read; matching its tab's URL against the default store could copy
-        // another profile's version of the same URL, so the flag is refused, not ignored.
+        // own store, which is not read, so the flag is refused, not ignored. It does not close the
+        // case of a tab of a named profile chosen by --url or --window: the profile of the resolved
+        // tab is not identified, and its URL is looked up in the default store (#243).
         if let profile = target.profile, !profile.isEmpty {
             throw ValidationError(
-                "pdf-cache reads the default profile's network cache only; --profile is not supported (a tab of another profile would be matched against the wrong cache).")
+                "pdf-cache reads the default profile's network cache only; --profile is not supported.")
         }
         do {
             _ = try selectionForm()

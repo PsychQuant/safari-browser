@@ -43,14 +43,15 @@ enum PDFCacheService {
             let chosen = try PDFCacheSelection.select(fileName: name, from: listed)
             let result = try PDFCacheOutput.copyVerified(
                 from: chosen.url, to: destination, force: force,
-                protectedFolders: [paths.temporaryRoot.appendingPathComponent(chosen.folder, isDirectory: true)])
+                protectedFolders: [paths.temporaryRoot.appendingPathComponent(chosen.folder, isDirectory: true), paths.cacheRoot])
             return Retrieved(result: result, origin: .temporaryPDFs(folder: chosen.folder, name: chosen.name))
         }
     }
 
     private static func copy(_ pdf: WebKitCachedPDF, destination: String, force: Bool, protecting cacheRoot: URL) throws -> Retrieved {
         let result = try PDFCacheOutput.copyVerified(
-            from: pdf.bodyURL, to: destination, force: force, protectedFolders: [cacheRoot])
+            from: pdf.bodyURL, to: destination, force: force, protectedFolders: [cacheRoot],
+            expectedSize: pdf.size, expectedKey: pdf.key)
         return Retrieved(
             result: result,
             origin: .networkCache(key: pdf.key, displayURL: PDFCacheURL.redact(pdf.requestURL).display))

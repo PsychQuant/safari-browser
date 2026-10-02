@@ -758,8 +758,9 @@ with or without `--force`. The destination is resolved the way `cp` resolves it
 (`link/../x.pdf` follows the link; a quoted `~` is a folder named `~`).
 
 Only the **default profile's** network cache is read: a named profile keeps its own
-store, so `pdf-cache get` refuses `--profile` instead of matching a named profile's tab
-against the wrong cache.
+store, so `pdf-cache get` refuses `--profile`. That flag is the only way the command is
+told about a profile: a tab chosen with `--url` or `--window` can still be a tab of a
+named profile, whose URL is then looked up in the default profile's cache (#243).
 
 URLs this command prints are shown without their query and fragment, because the
 query of a signed URL can be a credential. (When a tab flag matches no tab, the

@@ -431,8 +431,9 @@ used to read the target tab's URL when a tab flag is given).
 - **Selection is a closed list of three** (tab flag / `--key` / `--source webkit-pdfs --file`); no
   selection is refused before anything is read; two forms is a usage error; `--first-match` alone is not
   a selection (`TargetOptions.hasExplicitTarget`) and `--profile` is a usage error (only the default
-  profile's store is read; a named profile has its own, and matching its tab's URL against the default
-  store could copy the default profile's version of the same URL). Never "newest" or "the only one".
+  profile's store is read; a named profile has its own). That does not identify the profile of a tab
+  chosen with `--url` / `--window`: such a tab's URL is still looked up in the default store, so a miss or
+  the default profile's version of the same URL is possible (#243). Never "newest" or "the only one".
 - **Matching is byte equality** (UTF-8, not Swift's canonical-equivalence `==`) of the tab URL (fragment removed)
   with the record's request URL.
   Several matches stop and list the candidates; zero matches stop and say so (with a count of the PDFs
@@ -461,7 +462,7 @@ used to read the target tab's URL when a tab flag is given).
   does not describe its body is left out and counted (`outOfSyncKeys`), never copied. The file name must be **exactly 40 ASCII hex characters** (checked before any
   case-folding: `uppercased()` turns `ﬀ` into `FF`); a PDF body with any other name is only *counted*, its
   name never printed — and the name is judged **before** anything touches the file, because an I/O
-  error carries the path (a failure looking at such an entry is skipped, deliberately). Folder names under `Records/` must be hashes (hex) and the names a layout error prints must be of the layout's grammar; the rest are counted, never named. 16-bit strings with an unpaired surrogate are rejected, not repaired to U+FFFD. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
+  error carries the path (a failure looking at such an entry is skipped, deliberately). Folder names under `Records/` must be hashes (hex) and the names a layout error prints must be plain (ASCII letters, digits, space, `.`, `_`, `-`, at most 64 characters); the rest are counted, never named. 16-bit strings with an unpaired surrogate are rejected, not repaired to U+FFFD. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
   and is judged a PDF by its first five bytes; a record with a range holds part of a resource and is
   never listed. Any departure (other `Version N`, no `Records`, PDF bodies whose records all fail to
   parse) is an error that names what was seen — never an empty result. Small bodies stored inside the
