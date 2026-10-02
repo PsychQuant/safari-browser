@@ -172,6 +172,8 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
 
 **注意**：`documents` subcommand 列出 Safari `document` collection 的 MRU 順序，但 `--document N` 在 native path（#26）被解讀成「spatial window-major 第 N 個 tab」— 兩者在單視窗單 tab 等價，多 tab 情境下略有差異。JS path 保留 Safari 的 document-index semantics。
 
+**`--first-match` 的接法（#231）**：帶 `TargetOptions` 的指令有兩種：把旗標交給 bridge（`resolveWithFirstMatch()`，或 `doJavaScript(..., firstMatch:, warnWriter:)`；原始的 `.urlMatch` 目標在 `doJavaScript` 與 `doJavaScriptLarge` 的入口各解析一次，`doJavaScriptLarge` 之後的讀取用那個分頁），或用 `TargetOptions.resolveFirstMatchOnce()`：有 `--first-match`、沒有 `--profile`、目標是 URL 類旗標時只解析一次成具體分頁（一次列舉、多個匹配時一則警告），之後的讀取都跟著那個分頁；其他組合與 `resolveProfileScoped()` 相同。**兩種不要「統一」**：後者的單次解析與單一警告是刻意的。`FirstMatchResolutionTests` 有逐指令的行為測試與逐 struct 的形狀檢查（形狀檢查不是證明）；已知沒接的是 #233 列出的 `screenshot`、`open`、`tab`、`tabs`、`wait` 的旗標判斷與目標導航後的重新解析，不是一份完整清單。
+
 AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪些 documents，然後用 `--url <substring>` 明確指定。避免靠 `front window` 的 z-order 猜測。
 
 新抽象：
@@ -334,11 +336,13 @@ Multi-step automation in single invocation。Agents 用 JSON 描述 step sequenc
 
 ### Error codes
 
-`invalidScriptFormat` `invalidStepSchema` `undefinedVariable` `invalidCondition` `maxStepsExceeded` `unsupportedInExec` — 加上每 step 自己 dispatch 出來的標準 error codes（`elementNotFound`, `documentNotFound`, `ambiguousWindowMatch`, ...）。
+`invalidScriptFormat` `invalidStepSchema` `undefinedVariable` `invalidCondition` `maxStepsExceeded` `unsupportedInExec` `unsupportedArguments`（#220：指令 in-process 支援、但參數不是它認得的形狀，含沒有程式碼的 `js`；daemon 端的 dispatcher 才會丟，client 預檢會先把這樣的腳本送到 subprocess 路徑）— 加上每 step 自己 dispatch 出來的標準 error codes（`elementNotFound`, `documentNotFound`, `ambiguousWindowMatch`, ...）。
 
 ### v1 implementation note
 
 V1 dispatch 透過 subprocess 跑同個 binary（不是 design 原本的 daemon-shared-connection）。當 daemon mode opt-in 時每個 step 還是 ~50ms 透過 warm daemon。Connection-sharing 是 v2 enhancement。
+
+之後（#170）：腳本全部由 `js`、`documents`、`get url/title/text/source` 組成、且 daemon 可用時，整份腳本以一個 `exec.runScript` 請求在 daemon 內執行（`InProcessStepDispatcher`），不再每步一個子行程。`--url` 類目標在第一個需要它的步驟解析並在該請求內重用（每次重用前做一次檢查，只比對該位置顯示的網址，不比對是否仍是原本那個分頁）；其他目標形式每步解析。請求被取消時不再開始新的步驟。兩條路徑不保證結果相同，已知差異追蹤於 #220；規格見 `openspec/specs/script-exec/spec.md`。
 
 `screenshot` / `pdf` / `upload` 觸發 `unsupportedInExec`（keystroke / CG / AX path 不適合 exec script）。
 
@@ -423,6 +427,83 @@ V1 wires marker 到 `ClickCommand` 作為 reference integration。其他 30+ com
 
 完整 spec：`openspec/specs/local-data-query/spec.md`、`non-interference/spec.md`、
 `json-output/spec.md`（`local-safari-data-query` archive 後生成）。
+
+## Cached PDFs (`pdf-cache`, #210)
+
+`pdf-cache list` / `pdf-cache get <path>` read the PDFs that Safari's WebKit network cache already
+holds (`~/Library/Containers/com.apple.Safari/Data/Library/Caches/com.apple.Safari/WebKitCache/Version 17/`).
+The reason it exists: a page-level or script-level request to a publisher can be judged automated
+traffic, and a copy Safari already has cannot. **Nothing here may send a request or drive Safari** —
+`Tests/SafariBrowserTests/PDFCacheTests.swift` pins that structurally (the implementation files name no
+network, script, or UI-automation API; the command file's only `SafariBridge` call is `getCurrentURL`,
+used to read the target tab's URL when a tab flag is given).
+
+- **Non-interference**: Non-interfering (reads files; writes only the destination). Data sensitivity:
+  it exposes a record of every PDF viewed, so `list` has a default limit and `get` acts only on an
+  explicit selection. Needs Full Disk Access; errors reuse `SafariDataStore.ioError`.
+- **Selection is a closed list of three** (tab flag / `--key` / `--source webkit-pdfs --file`); no
+  selection is refused before anything is read; two forms is a usage error; `--first-match` alone is not
+  a selection (`TargetOptions.hasExplicitTarget`) and `--profile` is a usage error (only the default
+  profile's store is read; a named profile has its own). That does not identify the profile of a tab
+  chosen with `--url` / `--window`: such a tab's URL is still looked up in the default store, so a miss or
+  the default profile's version of the same URL is possible (#243). Never "newest" or "the only one".
+- **Matching is byte equality** (UTF-8, not Swift's canonical-equivalence `==`) of the tab URL (fragment removed)
+  with the record's request URL.
+  Several matches stop and list the candidates; zero matches stop and say so (with a count of the PDFs
+  the scan could not interpret, because the one meant may be among them); there is no near-match
+  fallback and no fallback between the two sources.
+- **URLs are shown without query or fragment** (`PDFCacheURL.redact`, delimiters found among Unicode
+  *scalars* — `String.firstIndex(of: "?")` compares grapheme clusters and misses a `?` followed by a
+  combining mark); matching uses the full string.
+  The tests plant a `SECRET` query and assert it appears in no row, JSON, or error message of this
+  command. The shared tab-resolution errors (`documentNotFound`, `ambiguousWindowMatch`) list open tabs'
+  URLs unredacted for every command; they are outside this guarantee (#227). `--file` names and filesystem paths are
+  printed as given (`--file` needs the exact name; they are local file names, not URLs). Sizes and times come
+  from the `lstat` that decided the entry is regular, never invented when a later lookup fails; the
+  `readdir` loop clears errno before each call and reads it right after; the verification provider latches
+  the first non-EINTR `pread` error so a read failure is never taken for end of file.
+- **The record format is WebKit-private.** Observed 2026-09-30 and pinned by a byte-literal test:
+  `uint32 version (17)`, then three strings — partition, `"Resource"`, identifier (= request URL) —
+  each `uint32 length`, one `is8Bit` byte, the characters, **no alignment padding**; then the range
+  (`0xFFFFFFFF` = none, else a string) and a 20-byte SHA-1 that **equals the record's file name**. That
+  last equality is the drift detector: if WebKit reshapes the key the bytes read as the hash stop being
+  the name and the record is rejected, not trusted. All 9221 records of the cache it was observed on fit
+  (8-bit 8572, 16-bit 649, non-empty partition 658, every range null, every hash = file name). After
+  the key only two fields are read: 56 bytes after the key hash the body's 20-byte SHA-1 and at 76 bytes its
+  length as `uint64` (observed 2026-10-01 on the default store: 4602 of 4603 records that have a `-blob`
+  agree with the file's size and with a `Blobs/` link that is the same inode; one disagreed). A record that
+  does not describe its body is left out and counted (`outOfSyncKeys`), never copied. The file name must be **exactly 40 ASCII hex characters** (checked before any
+  case-folding: `uppercased()` turns `ﬀ` into `FF`); a PDF body with any other name is only *counted*, its
+  name never printed — and the name is judged **before** anything touches the file, because an I/O
+  error carries the path (a failure looking at such an entry is skipped, deliberately). Folder names under `Records/` must be hashes (hex) and the names a layout error prints must be plain (ASCII letters, digits, space, `.`, `_`, `-`, at most 64 characters); the rest are counted, never named. 16-bit strings with an unpaired surrogate are rejected, not repaired to U+FFFD. The body is `<key>-blob` (a regular file — folders and symlinks are skipped)
+  and is judged a PDF by its first five bytes; a record with a range holds part of a resource and is
+  never listed. Any departure (other `Version N`, no `Records`, PDF bodies whose records all fail to
+  parse) is an error that names what was seen — never an empty result. Small bodies stored inside the
+  record (no `-blob`) are not covered; the eviction rules and private-browsing behaviour are unverified.
+- **Copy**: `PDFCacheOutput.copyVerified` — the destination folder is opened **once** and everything
+  after names entries relative to that fd (`fstatat`/`openat`/`renameatx_np`/`unlinkat`); source opened
+  read-only; exclusive `0600` temp file (fixed-length name); `%PDF-` check on the first chunk;
+  `CGPDFDocument` reads **the fd the copy was written with** (not the path) and every page's entry in the
+  page tree must read (CoreGraphics is lazy: content streams and images are not decoded, so a document
+  with an intact page tree and damaged content passes); the staging name must still be the verified inode;
+  then `renameatx_np(RENAME_EXCL)` (`renameat` with `--force`). The destination text is split at the last `/`
+  as plain text — never `standardizedFileURL`, which folds `..` lexically and expands a leading `~`, so
+  with `--force` it replaced a file the person did not name — and the staged file is `fchmod`ed to 0600 and
+  stripped of ACL entries before a byte is written (a folder can hand down an inheritable ACL). A
+  destination inside Safari's cache folder, or the chosen PDF's temporary folder, is refused with or
+  without `--force` (canonical paths through descriptors); the same-file check runs again right before the
+  rename. The early "destination exists" refusal
+  comes before the source is read, and a destination that is the source (same path, symlink or hard link,
+  by device and inode) is refused even with `--force` — the real cache bodies are hard-linked into
+  `Blobs/`. The staged-name check is an identity check, not a content check. A symlink destination is replaced as an entry; its target is never touched. If the staged file cannot be
+  removed after a failure (an ACL can allow creating and deny removing), the error says it was left and where. The
+  `beforePublish` parameter is a test seam that lets `PDFCacheTests` create the two races (destination
+  appears after the early check; staged file replaced). **Threat model**: mistakes and stale state, not
+  another same-user process rewriting the destination folder mid-run (it could read and write those
+  files directly); symlinks *inside* Safari's cache folder are not defended against for the same reason.
+- `--source webkit-pdfs` reads `WebKitPDFs-*` under the container's `tmp`. Those folders appeared after
+  "Open with Preview" was pressed (one observation, no controlled experiment); the command never
+  creates them or presses anything.
 
 ## Install-signature guard：suite 本身被 gate 管（#119, round 10）
 
