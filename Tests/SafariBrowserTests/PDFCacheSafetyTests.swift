@@ -304,6 +304,25 @@ final class PDFCacheSafetyTests: XCTestCase {
         XCTAssertEqual(counter.failed, 1)
     }
 
+    /// A password-protected PDF opens in CoreGraphics and has pages it cannot read: it is refused as
+    /// such, and nothing is published.
+    func testAPasswordProtectedPDFIsRefusedAndNothingIsPublished() throws {
+        let data = NSMutableData()
+        let consumer = CGDataConsumer(data: data as CFMutableData)!
+        var box = CGRect(x: 0, y: 0, width: 200, height: 200)
+        let info: [CFString: Any] = [kCGPDFContextUserPassword: "secret", kCGPDFContextOwnerPassword: "owner"]
+        let context = CGContext(consumer: consumer, mediaBox: &box, info as CFDictionary)!
+        context.beginPDFPage(nil); context.endPDFPage(); context.closePDF()
+        let source = dir.appendingPathComponent("locked-blob")
+        try (data as Data).write(to: source)
+        let out = try folder("out")
+        XCTAssertThrowsError(try PDFCacheOutput.copyVerified(from: source, to: out.appendingPathComponent("a.pdf").path, force: false)) {
+            guard case SafariBrowserError.pdfCache(.unreadablePDF(let detail)) = $0 else { return XCTFail("\($0)") }
+            XCTAssertTrue(detail.contains("password"), detail)
+        }
+        XCTAssertEqual(try names(in: out), [], "no destination and no temporary file")
+    }
+
     // MARK: - What a record says about its body
 
     func testARecordWhoseBodyLengthDisagreesIsNeitherListedNorTrusted() throws {

@@ -323,7 +323,10 @@ final class PDFCacheTests: XCTestCase {
         let asDirectory = out.appendingPathComponent("dest", isDirectory: true)
         try FileManager.default.createDirectory(at: asDirectory, withIntermediateDirectories: false)
         for force in [false, true] {
-            XCTAssertThrowsError(try PDFCacheOutput.copyVerified(from: src, to: asDirectory.path, force: force))
+            XCTAssertThrowsError(try PDFCacheOutput.copyVerified(from: src, to: asDirectory.path, force: force)) {
+                guard case SafariBrowserError.pdfCache(.destinationWriteFailed(_, let detail)) = $0 else { return XCTFail("\($0)") }
+                XCTAssertEqual(detail, "it is a folder", "a folder is refused as a folder, not by whatever fails later")
+            }
             XCTAssertEqual(try names(in: out), ["dest"])
             XCTAssertEqual(try names(in: asDirectory), [])
         }
