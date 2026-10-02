@@ -21,3 +21,10 @@
 
 - [x] 3.1 同工作負載前後量測，記錄於 docs/performance.md
 - [x] 3.2 CHANGELOG
+
+## 4. 重審（Sonnet 與 Codex）後的修正
+
+- [x] 4.1 取消在整個請求內成立：直譯器每步之前檢查、步驟自帶 target 或 `documents` 也在開始前與解析後檢查、步驟拋出的取消不記成步驟錯誤、`onError: continue` 不會越過（Requirement: Shared target resolution）
+- [x] 4.2 共用目標與編譯快取以 UTF-8 位元組為鍵，而非 Swift `String` 的標準等價比較（NFC 與 NFD 不同步驟、不同來源）（Requirement: Shared target resolution；Requirement: Daemon uses pre-compiled NSAppleScript handles, not process warmth, for latency reduction）
+- [x] 4.3 測試：`--mark-tab` 的 profile 轉送涵蓋六個呼叫點、無可檢查依據的目標形式逐形式斷言結果與列舉次數、步驟自帶 target 旗標不繼承 exec 層級 `--profile`、被 `if:` 跳過與 `documents` 步驟不觸發解析
+- [x] 4.4 規格：target 旗標為封閉列表且不含 `--first-match` 與 `--mark-tab`；「只在一種情形重用」改為必要條件；位置被接手的分頁不被偵測；step-level profile 與 marker 的範圍；daemon 模式的位置重用對 human-emulation「Daemon mode behavioural parity with stateless mode」與 document-targeting「Unified urlContains fail-closed policy」寫成明確例外

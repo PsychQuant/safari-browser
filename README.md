@@ -503,8 +503,11 @@ Two edge notes (#76 verify round):
   `js "function f(){}"` / `js "class A {}"` yield the source text instead of
   declaring anything.
 
-**The `exec` script `js` step and the CLI `js` command agree** — a snippet
-moves between them unchanged (#80, measured):
+**The `exec` script `js` step and the CLI `js` command agree for the snippets
+below** — they move between the two unchanged (#80, measured). Beyond these cases
+the daemon path of `exec` is not promised to match the CLI: the error channel,
+results above 1MB and the CLI-only options (`--file`, `--large`, `--output`) are not
+covered, and known result differences are tracked in #220:
 
 | Snippet | CLI `js` | `exec` `js` step |
 |---|---|---|
@@ -1270,7 +1273,7 @@ restart each existing daemon namespace with `daemon stop` followed by `daemon st
 before relying on these settings: a daemon still running the older executable
 ignores the new options.
 
-Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). v1 dispatches via subprocess to the same binary, so daemon opt-in still amortizes per-step cost. `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
+Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). With the daemon active, a script made only of `js`, `documents` and `get url/title/text/source` runs in one request on the daemon (a `--url` target is resolved at the first step that needs it and reused after a check, #170); any other script runs one subprocess per step, so daemon opt-in still amortizes per-step cost. The two paths are not guaranteed to give the same results (#220). `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
 
 ### Tab ownership marker (opt-in)
 

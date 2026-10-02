@@ -37,6 +37,9 @@ struct ScriptInterpreter {
         results.reserveCapacity(steps.count)
 
         for (index, step) in steps.enumerated() {
+            // A cancelled run (the daemon cancels the request when its client goes away) starts no
+            // further step: a step with side effects must not run for a caller that has left.
+            try Task.checkCancellation()
             // Evaluate `if:` first — skipped steps never substitute or run.
             if let condition = step.ifExpression {
                 do {
@@ -89,6 +92,10 @@ struct ScriptInterpreter {
                     message: err.errorDescription ?? "\(err)"
                 ))
                 if step.onError == .abort { break }
+            } catch is CancellationError {
+                // Not a step error: it must not be recorded as `internalError` and, under
+                // `onError: continue`, followed by the next step.
+                throw CancellationError()
             } catch {
                 results.append(.error(
                     step: index,
