@@ -126,6 +126,18 @@ enum DaemonLog {
             }
         }
 
+        // #219: an exec script's steps carry what the person typed (`fill`, `type`, `storage set`), the code
+        // of a `js` step and the literals of an `if:` expression, none of which is a top-level `source` or
+        // `code`. The command names, the variable names and the target arguments stay: they are what a
+        // reader of the log needs to see which step failed.
+        // The request is logged whether or not the handler accepts it, so a step the handler will reject
+        // (a typo'd key, `args` that is not an array, a number where text was expected, a step that is not
+        // an object) is redacted too: every value under a key other than `cmd`, `var` and `onError` is
+        // replaced, whatever its type, and a `steps` value that is not an array of objects is replaced whole.
+        if method == "exec.runScript", let steps = dict["steps"] {
+            dict["steps"] = redactedSteps(steps)
+        }
+
         // #66: neutralize control chars / ANSI escapes in any remaining
         // (non-redacted) param value — defense-in-depth for future loggers
         // that surface params such as exec.runScript's targetArgs.
@@ -135,6 +147,31 @@ enum DaemonLog {
             ?? Data(#"{"_log":"<redacted; serialization failed>"}"#.utf8)
     }
 
+    /// A value replaced by a placeholder that keeps only its size: a string by its byte count, a number,
+    /// a bool or null by the bare marker, a collection element by element.
+    private static func redactedValue(_ value: Any) -> Any {
+        switch value {
+        case let text as String: return "<redacted \(text.utf8.count) bytes>"
+        case let list as [Any]: return list.map(redactedValue)
+        case let object as [String: Any]: return object.mapValues(redactedValue)
+        default: return "<redacted>"
+        }
+    }
+
+    private static let keptStepKeys: Set<String> = ["cmd", "var", "onError"]
+
+    private static func redactedSteps(_ steps: Any) -> Any {
+        guard let list = steps as? [Any] else { return redactedValue(steps) }
+        return list.map { element -> Any in
+            guard let step = element as? [String: Any] else { return redactedValue(element) }
+            var out: [String: Any] = [:]
+            for (key, value) in step {
+                out[key] = keptStepKeys.contains(key) && value is String ? value : redactedValue(value)
+            }
+            return out
+        }
+    }
+
     // MARK: - Truncation
 
     /// Return a logger-safe rendering of the result payload. When
@@ -142,8 +179,9 @@ enum DaemonLog {
     /// every string value longer than `truncationLimit` bytes is
     /// truncated with a trailing `…(truncated)` marker. Short strings
     /// — including error messages — pass through unchanged.
-    static func truncateResult(resultJSON: Data, logFull: Bool) -> Data {
+    static func truncateResult(resultJSON: Data, logFull: Bool, method: String = "") -> Data {
         if logFull { return resultJSON }
+        if method == "exec.runScript" { return redactedExecResult(resultJSON) }
 
         guard let parsed = try? JSONSerialization.jsonObject(with: resultJSON, options: [.fragmentsAllowed]) else {
             return resultJSON
@@ -152,6 +190,33 @@ enum DaemonLog {
         let truncated = truncateAny(parsed)
         return (try? JSONSerialization.data(withJSONObject: truncated, options: [.fragmentsAllowed]))
             ?? resultJSON
+    }
+
+    /// An `exec.runScript` result is `{"results": "<a JSON array as text>"}`; each step's `value` is what the
+    /// step returned (a stored token, the page's text) and its error message can quote the selector or the
+    /// typed text. Both are replaced by their size; the step number, status, variable name, skip reason and
+    /// error code stay, since they say which step failed and why. A result that is not that shape is
+    /// replaced whole.
+    private static func redactedExecResult(_ resultJSON: Data) -> Data {
+        func placeholder(_ count: Int) -> Data { Data(#"{"results":"<redacted \#(count) bytes>"}"#.utf8) }
+        guard let object = try? JSONSerialization.jsonObject(with: resultJSON) as? [String: Any],
+              let text = object["results"] as? String,
+              let rows = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [[String: Any]]
+        else { return placeholder(resultJSON.count) }
+        let redactedRows = rows.map { row -> [String: Any] in
+            var out = row
+            if let value = row["value"] { out["value"] = redactedValue(value) }
+            if var error = row["error"] as? [String: Any] {
+                if let message = error["message"] { error["message"] = redactedValue(message) }
+                out["error"] = error
+            }
+            return out
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: redactedRows, options: [.sortedKeys]),
+              let encoded = String(data: data, encoding: .utf8),
+              let wrapped = try? JSONSerialization.data(withJSONObject: ["results": encoded], options: [])
+        else { return placeholder(resultJSON.count) }
+        return wrapped
     }
 
     /// Recursive helper: walks dicts / arrays, truncates long strings.

@@ -51,6 +51,73 @@ final class DaemonLogRedactionTests: XCTestCase {
         XCTAssertTrue(s.contains("<redacted"), "must use redaction marker: \(s)")
     }
 
+    /// #219: an exec script's steps carry typed text, stored values and the code of `js` steps.
+    func testRedactParams_execRunScript_redactsEveryStepArgumentAndCondition() throws {
+        let params = ##"{"steps":[{"cmd":"fill","args":["#password","hunter2"],"var":"v"},{"cmd":"storage local set","args":["token","s3cr3t"],"if":"$u contains \"secretword\""},{"cmd":"js","args":["document.cookie"]},{"cmd":"get url"}],"targetArgs":["--url","plaud"],"maxSteps":1000}"##
+        let redacted = DaemonLog.redactParams(method: "exec.runScript", paramsJSON: Data(params.utf8), logFull: false)
+        let s = String(data: redacted, encoding: .utf8) ?? ""
+        for leaked in ["hunter2", "s3cr3t", "secretword", "document.cookie", "#password"] {
+            XCTAssertFalse(s.contains(leaked), "\(leaked) must not reach the log: \(s)")
+        }
+        // What shows which step failed stays.
+        for kept in ["fill", "storage local set", "get url", "\"v\"", "plaud", "--url", "1000"] {
+            XCTAssertTrue(s.contains(kept), "\(kept) must stay: \(s)")
+        }
+        XCTAssertTrue(s.contains("<redacted 7 bytes>"), "hunter2 is 7 bytes: \(s)")
+        XCTAssertTrue(s.contains("<redacted 6 bytes>"), "s3cr3t is 6 bytes: \(s)")
+        // The operator opt-out keeps the full request.
+        let full = String(data: DaemonLog.redactParams(method: "exec.runScript", paramsJSON: Data(params.utf8), logFull: true), encoding: .utf8) ?? ""
+        XCTAssertTrue(full.contains("hunter2"))
+    }
+
+    /// The request is logged whether or not the handler accepts it: a malformed step is redacted too.
+    func testRedactParams_execRunScript_malformedStepsAreRedactedNotPassedThrough() throws {
+        let malformed: [String] = [
+            ##"{"steps":[{"cmd":"fill","arg":["#pw","hunter2"]}]}"##,              // a typo'd key
+            ##"{"steps":[{"cmd":"fill","args":"hunter2"}]}"##,                      // args is not an array
+            ##"{"steps":[{"cmd":"fill","args":["#pin",123456]}]}"##,               // a number where text was expected
+            ##"{"steps":[{"cmd":"fill","args":[["#pw","hunter2"]]}]}"##,            // nested
+            ##"{"steps":[{"cmd":"click","args":["#a"]},"hunter2"]}"##,              // a step that is not an object
+            ##"{"steps":"hunter2"}"##,                                               // steps is not an array
+            ##"{"steps":{"cmd":"fill","args":["#pw","hunter2"]}}"##,                // steps is an object
+            ##"{"steps":[{"cmd":"fill","unknown":{"deep":["hunter2"]},"args":[]}]}"##,
+        ]
+        for params in malformed {
+            let out = String(data: DaemonLog.redactParams(method: "exec.runScript", paramsJSON: Data(params.utf8), logFull: false), encoding: .utf8) ?? ""
+            for leaked in ["hunter2", "123456", "#pw", "#pin"] {
+                XCTAssertFalse(out.contains(leaked), "\(leaked) must not reach the log for \(params): \(out)")
+            }
+        }
+        // A well-formed step keeps its command, variable and onError names.
+        let ok = ##"{"steps":[{"cmd":"fill","args":["#pw","hunter2"],"var":"v","onError":"continue"}]}"##
+        let out = String(data: DaemonLog.redactParams(method: "exec.runScript", paramsJSON: Data(ok.utf8), logFull: false), encoding: .utf8) ?? ""
+        for kept in ["fill", "\"v\"", "continue"] { XCTAssertTrue(out.contains(kept), "\(kept) must stay: \(out)") }
+    }
+
+    /// What a step returned, and what its error message quotes, are redacted in the logged result; the
+    /// step number, status, variable name and error code stay.
+    func testTruncateResult_execRunScript_redactsValuesAndErrorMessages() throws {
+        let rows = #"[{"step":0,"status":"ok","value":"s3cr3t-token","var":"t"},{"step":1,"status":"error","error":{"code":"elementNotFound","message":"No element matches selector: #password"}},{"step":2,"status":"skipped","reason":"condition false"}]"#
+        let result = try JSONSerialization.data(withJSONObject: ["results": rows], options: [])
+        let out = String(data: DaemonLog.truncateResult(resultJSON: result, logFull: false, method: "exec.runScript"), encoding: .utf8) ?? ""
+        for leaked in ["s3cr3t-token", "#password", "No element matches"] {
+            XCTAssertFalse(out.contains(leaked), "\(leaked) must not reach the log: \(out)")
+        }
+        for kept in ["elementNotFound", "skipped", "condition false", "ok", "\\\"var\\\":\\\"t\\\""] {
+            XCTAssertTrue(out.contains(kept), "\(kept) must stay: \(out)")
+        }
+        XCTAssertTrue(out.contains("<redacted 12 bytes>"), "the token is 12 bytes: \(out)")
+        // Another method keeps the old behaviour: truncated, not redacted.
+        let other = String(data: DaemonLog.truncateResult(resultJSON: result, logFull: false, method: "applescript.execute"), encoding: .utf8) ?? ""
+        XCTAssertTrue(other.contains("s3cr3t-token"))
+        // The operator opt-out keeps everything.
+        let full = String(data: DaemonLog.truncateResult(resultJSON: result, logFull: true, method: "exec.runScript"), encoding: .utf8) ?? ""
+        XCTAssertTrue(full.contains("s3cr3t-token"))
+        // A result that is not the expected shape is replaced whole.
+        let odd = String(data: DaemonLog.truncateResult(resultJSON: Data(#"{"results":"not json s3cr3t"}"#.utf8), logFull: false, method: "exec.runScript"), encoding: .utf8) ?? ""
+        XCTAssertFalse(odd.contains("s3cr3t"), odd)
+    }
+
     func testRedactParams_methodWithoutSensitiveField_passthrough() throws {
         let params = #"{"timeout":30}"#
         let redacted = DaemonLog.redactParams(

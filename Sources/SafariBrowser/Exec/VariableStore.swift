@@ -81,6 +81,20 @@ actor VariableStore {
         reference(in: Array(input), at: 0) != nil
     }
 
+    /// Whether an argument has a `$name` reference anywhere (a `\\$` is a literal and does not count). Only
+    /// a step whose shape depends on every character of an argument needs this: a `press` key made only of
+    /// `+` has no name, and `+$k` becomes one when `$k` is empty (#219).
+    static func containsReference(_ input: String) -> Bool {
+        let chars = Array(input)
+        var i = 0
+        while i < chars.count {
+            if chars[i] == "\\", i + 1 < chars.count, chars[i + 1] == "$" { i += 2; continue }
+            if reference(in: chars, at: i) != nil { return true }
+            i += 1
+        }
+        return false
+    }
+
     private static func isIdentStart(_ c: Character) -> Bool {
         c.isLetter || c == "_"
     }

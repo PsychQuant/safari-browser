@@ -112,6 +112,9 @@ struct ExecCommand: AsyncParsableCommand {
             // already run and cannot fall back — so such a step is not sent to the daemon (#220).
             // A reference after the first character cannot change the shape.
             if step.args.contains(where: VariableStore.beginsWithReference) { return false }
+            // The key of a `press` has a name only if some character of it is not `+`, so its shape depends on
+            // every character: a reference anywhere in it (`+$k` with `$k` empty) can leave it nameless (#219).
+            if step.cmd == "press", step.args.contains(where: VariableStore.containsReference) { return false }
             if !InProcessStepDispatcher.runsInProcess(cmd: step.cmd, args: step.args) {
                 return false
             }

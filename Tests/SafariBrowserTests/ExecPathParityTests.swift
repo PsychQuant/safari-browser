@@ -45,12 +45,9 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
             ("get url", ["--first-match"], "step-level --first-match with no target flag is dropped in-process"),
             ("js", ["1+1", "--first-match"], "step-level --first-match with no target flag is dropped in-process"),
             ("get text", ["--mark-tab"], "a flag the in-process dispatcher does not read"),
-            ("click", ["#x"], "not an in-process command"),
             // Not in-process whatever the arguments: the command gate, not the shape rules, decides.
             ("snapshot", [], "not an in-process command, no arguments"),
             ("wait", [], "not an in-process command, no arguments"),
-            ("click", [], "not an in-process command, no arguments"),
-            ("type", [], "not an in-process command, no arguments"),
         ]
         for (cmd, args, why) in cases {
             XCTAssertFalse(InProcessStepDispatcher.runsInProcess(cmd: cmd, args: args), "\(cmd) \(args): \(why)")
@@ -271,7 +268,7 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
     func testTheDispatcherRefusesWithTheCodeTheSpecNames() async {
         let dispatcher = InProcessStepDispatcher()
         for (cmd, args, code) in [("js", [String](), "unsupportedArguments"), ("get text", ["#sel"], "unsupportedArguments"),
-                                  ("click", ["#x"], "unsupportedInExec")] {
+                                  ("wait", ["--for-url", "x"], "unsupportedInExec")] {
             do {
                 _ = try await dispatcher.dispatch(cmd: cmd, args: args, sharedTargetArgs: [])
                 XCTFail("\(cmd) \(args) must be refused")

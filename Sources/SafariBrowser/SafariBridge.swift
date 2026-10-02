@@ -4302,33 +4302,33 @@ enum SafariBridge {
 
 extension String {
     var escapedForAppleScript: String {
-        self.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\t", with: "\\t")
+        self.replacingOccurrences(of: "\\", with: "\\\\", options: .literal)
+            .replacingOccurrences(of: "\"", with: "\\\"", options: .literal)
+            .replacingOccurrences(of: "\n", with: "\\n", options: .literal)
+            .replacingOccurrences(of: "\r", with: "\\r", options: .literal)
+            .replacingOccurrences(of: "\t", with: "\\t", options: .literal)
     }
 
     var escapedForJS: String {
-        self.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\0", with: "\\0")
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+        self.replacingOccurrences(of: "\\", with: "\\\\", options: .literal)
+            .replacingOccurrences(of: "'", with: "\\'", options: .literal)
+            .replacingOccurrences(of: "\n", with: "\\n", options: .literal)
+            .replacingOccurrences(of: "\r", with: "\\r", options: .literal)
+            .replacingOccurrences(of: "\0", with: "\\0", options: .literal)
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028", options: .literal)
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029", options: .literal)
     }
 
     /// Returns a JS double-quoted string literal (with proper escaping for multi-line content)
     var jsStringLiteral: String {
         let escaped = self
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\0", with: "\\0")
-            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
-            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+            .replacingOccurrences(of: "\\", with: "\\\\", options: .literal)
+            .replacingOccurrences(of: "\"", with: "\\\"", options: .literal)
+            .replacingOccurrences(of: "\n", with: "\\n", options: .literal)
+            .replacingOccurrences(of: "\r", with: "\\r", options: .literal)
+            .replacingOccurrences(of: "\0", with: "\\0", options: .literal)
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028", options: .literal)
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029", options: .literal)
         return "\"\(escaped)\""
     }
 
@@ -4337,7 +4337,9 @@ extension String {
     /// Otherwise, uses document.querySelector.
     var resolveRefJS: String {
         if let match = self.wholeMatch(of: /^@e([1-9]\d*)$/) {
-            let index = Int(match.1)! - 1
+            // A number too large for `Int` names no ref: it reads past the end of `__sbRefs` and finds
+            // nothing, instead of trapping (#219: in-process, a trap would take the daemon down).
+            let index = (Int(match.1) ?? Int.max) - 1
             return "(function(){ if (!window.__sbRefs) return null; return window.__sbRefs[\(index)] || null; })()"
         } else {
             return "document.querySelector('\(self.escapedForJS)')"

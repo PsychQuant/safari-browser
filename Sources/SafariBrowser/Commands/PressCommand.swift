@@ -12,25 +12,34 @@ struct PressCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        try await Self.perform(
+            key: key, target: target.resolve(), firstMatch: target.firstMatch,
+            warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
+    }
+
+    /// Shared by this command and the in-process `exec` dispatcher (#219).
+    static func perform(
+        key: String, target: SafariBridge.TargetDocument, firstMatch: Bool,
+        warnWriter: ((String) -> Void)?, profile: String?
+    ) async throws {
         let parts = key.split(separator: "+").map(String.init)
-        let keyName: String
+        // An empty key, or one made only of `+`, has no key name. This used to trap on a force-unwrap,
+        // which kills a child process and, run in-process, would kill the daemon (#219).
+        guard let keyName = parts.last else {
+            throw ValidationError("The key must not be empty or made only of '+'.")
+        }
         var ctrlKey = false
         var shiftKey = false
         var altKey = false
         var metaKey = false
 
-        if parts.count == 1 {
-            keyName = parts[0]
-        } else {
-            keyName = parts.last!
-            for modifier in parts.dropLast() {
-                switch modifier.lowercased() {
-                case "control", "ctrl": ctrlKey = true
-                case "shift": shiftKey = true
-                case "alt": altKey = true
-                case "meta", "cmd", "command": metaKey = true
-                default: break
-                }
+        for modifier in parts.dropLast() {
+            switch modifier.lowercased() {
+            case "control", "ctrl": ctrlKey = true
+            case "shift": shiftKey = true
+            case "alt": altKey = true
+            case "meta", "cmd", "command": metaKey = true
+            default: break
             }
         }
 
@@ -67,6 +76,6 @@ struct PressCommand: AsyncParsableCommand {
                 return 'OK';
             })()
             """
-        _ = try await SafariBridge.doJavaScript(js, target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
+        _ = try await SafariBridge.doJavaScript(js, target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
     }
 }

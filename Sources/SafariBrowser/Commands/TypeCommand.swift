@@ -14,13 +14,23 @@ struct TypeCommand: AsyncParsableCommand {
 
     @OptionGroup var target: TargetOptions
 
-    func run() async throws {
+    /// Shared by this command and the in-process `exec` dispatcher (#219).
+    static func perform(
+        selector: String, text: String, target: SafariBridge.TargetDocument, firstMatch: Bool,
+        warnWriter: ((String) -> Void)?, profile: String?
+    ) async throws {
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.value += '\(text.escapedForJS)'; el.dispatchEvent(new Event('input', {bubbles: true})); return 'OK'; })()",
-            target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
+            target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
         )
         if result == "NOT_FOUND" {
             throw SafariBrowserError.elementNotFound(selector)
         }
+    }
+
+    func run() async throws {
+        try await Self.perform(
+            selector: selector, text: text, target: target.resolve(), firstMatch: target.firstMatch,
+            warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
     }
 }

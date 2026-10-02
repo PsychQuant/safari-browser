@@ -7,7 +7,8 @@ import Foundation
 /// trip; per-step subprocess overhead is eliminated.
 ///
 /// In-process (only for the argument shapes `runsInProcess` accepts, #220): `js`, `documents`, `get url`, `get title`, `get text`,
-/// `get source` (`supportedCommands`). Any other command throws
+/// `get source`, and, since #219, `click`, `fill`, `type`, `press` and the `storage local|session` subcommands
+/// (`supportedCommands`). `wait` and `snapshot` still run as child processes. Any other command throws
 /// `unsupportedInExec`, and a supported command with arguments outside those
 /// shapes throws `unsupportedArguments`; the client runs a script containing
 /// either through the subprocess path (`screenshot` / `pdf` / `upload` are
@@ -80,7 +81,11 @@ struct InProcessStepDispatcher: StepDispatcher {
 
     /// Phase 1 commands this dispatcher handles directly. v2.0 ships the
     /// most-common read commands; v2.1 adds `get text` and `get source`
-    /// which are also pure-read (no Safari state mutation).
+    /// which are also pure-read (no Safari state mutation). #219 adds the commands that are one
+    /// JavaScript call whose script and result handling the CLI command shares with this dispatcher
+    /// (`perform` / `StorageScripts`): `click`, `fill`, `type`, `press` and the `storage` subcommands.
+    /// `wait` (a polling loop with its own timeout) and `snapshot` (chunked reads and options) are not
+    /// here: a script that has one still runs as one child process per step.
     static let supportedCommands: Set<String> = [
         "js",
         "documents",
@@ -88,6 +93,18 @@ struct InProcessStepDispatcher: StepDispatcher {
         "get title",
         "get text",
         "get source",
+        "click",
+        "fill",
+        "type",
+        "press",
+        "storage local get",
+        "storage local set",
+        "storage local remove",
+        "storage local clear",
+        "storage session get",
+        "storage session set",
+        "storage session remove",
+        "storage session clear",
     ]
 
     /// Whether `cmd` is one of the in-process commands. Not enough to run a step in-process:
@@ -127,6 +144,16 @@ struct InProcessStepDispatcher: StepDispatcher {
         case "documents":
             // In-process is always JSON, and so is a `documents` child under exec (#220).
             return rest.isEmpty || rest == ["--json"]
+        case "press":
+            // As below, and the key must have a name: an empty key or one made only of `+` is reported
+            // by the CLI command's own error, so a child process runs it.
+            return rest.count == 1 && !rest[0].hasPrefix("-") && rest[0].contains { $0 != "+" }
+        case "click", "storage local get", "storage local remove",
+             "storage session get", "storage session remove":
+            // Exactly one positional; a value that starts like an option is misread by a child's parser (#219).
+            return rest.count == 1 && !rest[0].hasPrefix("-")
+        case "fill", "type", "storage local set", "storage session set":
+            return rest.count == 2 && !rest[0].hasPrefix("-") && !rest[1].hasPrefix("-")
         default:
             return rest.isEmpty
         }
@@ -204,6 +231,51 @@ struct InProcessStepDispatcher: StepDispatcher {
                 firstMatch: target.firstMatch,
                 warnWriter: nil
             )
+
+        case "click":
+            guard cmdArgs.count == 1 else { throw ScriptDispatchError.unsupportedArguments(cmd) }
+            try await ClickCommand.perform(
+                selector: cmdArgs[0], target: resolved, firstMatch: target.firstMatch,
+                warnWriter: nil, profile: target.resolveProfile())
+            return ""
+
+        case "fill":
+            guard cmdArgs.count == 2 else { throw ScriptDispatchError.unsupportedArguments(cmd) }
+            try await FillCommand.perform(
+                selector: cmdArgs[0], text: cmdArgs[1], target: resolved, firstMatch: target.firstMatch,
+                warnWriter: nil, profile: target.resolveProfile())
+            return ""
+
+        case "type":
+            guard cmdArgs.count == 2 else { throw ScriptDispatchError.unsupportedArguments(cmd) }
+            try await TypeCommand.perform(
+                selector: cmdArgs[0], text: cmdArgs[1], target: resolved, firstMatch: target.firstMatch,
+                warnWriter: nil, profile: target.resolveProfile())
+            return ""
+
+        case "press":
+            guard cmdArgs.count == 1 else { throw ScriptDispatchError.unsupportedArguments(cmd) }
+            try await PressCommand.perform(
+                key: cmdArgs[0], target: resolved, firstMatch: target.firstMatch,
+                warnWriter: nil, profile: target.resolveProfile())
+            return ""
+
+        case "storage local get", "storage local set", "storage local remove", "storage local clear",
+             "storage session get", "storage session set", "storage session remove", "storage session clear":
+            // The same script as the CLI subcommand (`StorageScripts`); only `get` has a value to return.
+            let parts = cmd.split(separator: " ").map(String.init)
+            let area = parts[1] == "local" ? "localStorage" : "sessionStorage"
+            let script: String
+            switch (parts[2], cmdArgs.count) {
+            case ("get", 1): script = StorageScripts.get(area, key: cmdArgs[0])
+            case ("set", 2): script = StorageScripts.set(area, key: cmdArgs[0], value: cmdArgs[1])
+            case ("remove", 1): script = StorageScripts.remove(area, key: cmdArgs[0])
+            case ("clear", 0): script = StorageScripts.clear(area)
+            default: throw ScriptDispatchError.unsupportedArguments(cmd)
+            }
+            let result = try await SafariBridge.doJavaScript(
+                script, target: resolved, firstMatch: target.firstMatch, warnWriter: nil, profile: target.resolveProfile())
+            return parts[2] == "get" ? result : ""
 
         case "get url":
             return try await SafariBridge.getCurrentURL(

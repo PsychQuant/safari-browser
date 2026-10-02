@@ -200,14 +200,14 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
             try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
                 let dispatcher = InProcessStepDispatcher()
                 var messages: [String] = []
-                for (cmd, args) in [("click", ["button"]), ("js", [String]())] {
+                for (cmd, args) in [("wait", ["--for-url", "x"]), ("js", [String]())] {
                     do {
                         _ = try await dispatcher.dispatch(cmd: cmd, args: args, sharedTargetArgs: ["--url", "w1.example/2"])
                         XCTFail("\(cmd) \(args) must not run in-process")
                     } catch let error as ScriptDispatchError { messages.append(error.message) }
                 }
                 // The texts a client sees: an unsupported command keeps its own message.
-                XCTAssertEqual(messages, ["command 'click' is not yet available in exec scripts",
+                XCTAssertEqual(messages, ["command 'wait' is not yet available in exec scripts",
                                           ScriptDispatchError.unsupportedArguments("js").message])
                 XCTAssertTrue(messages[1].hasPrefix("step 'js' is not one the in-process dispatcher runs exactly"), messages[1])
             }
