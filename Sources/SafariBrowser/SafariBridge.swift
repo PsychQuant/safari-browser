@@ -1591,6 +1591,31 @@ enum SafariBridge {
         """
     }
 
+    /// #170: does an identity-anchored tab still show a URL its matcher
+    /// accepts? One small AppleScript; false when the guard trips or the tab
+    /// or window is gone, and for a target with no matcher to check by.
+    static func verifyResolvedTab(_ target: TargetDocument) async throws -> Bool {
+        guard case .resolvedTab(let windowID, let tab, let matcher?, _) = target else { return false }
+        let reference = "tab \(tab) of window id \(windowID)"
+        do {
+            if let guardClause = urlGuardClause(for: matcher) {
+                _ = try await runAppleScript("""
+                    tell application "Safari"
+                        set _t to \(reference)
+                        \(guardClause)
+                        return "ok"
+                    end tell
+                    """)
+                return true
+            }
+            // A regex matcher has no AppleScript form: check the URL here.
+            let url = try await runAppleScript("tell application \"Safari\" to get URL of \(reference)")
+            return matcher.matches(url)
+        } catch let error as SafariBrowserError where isTargetDangleError(error) {
+            return false
+        }
+    }
+
     /// #79: does this error mean the identity-anchored target dangled
     /// (window closed / tab moved / guard tripped) — i.e. a bounded
     /// re-resolve is worth one attempt? Pure; drives the retry decision.
@@ -1772,26 +1797,35 @@ enum SafariBridge {
     /// consistent across multi-document Safari sessions.
     static func doJavaScriptLarge(
         _ code: String,
-        target: TargetDocument = .frontWindow,
+        target initialTarget: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil,
         profile: String? = nil
     ) async throws -> String {
-        // Store result in window variable. Only the first doJavaScript
-        // call forwards the warnWriter — subsequent chunked reads reuse
-        // the already-resolved tab, so re-emitting the multi-match
-        // warning each chunk would spam the caller. profile likewise
-        // only on the first call (filter validates once at resolution).
+        // #231: a raw `.urlMatch` / `.documentIndex` is resolved ONCE here, as `doJavaScript` does at
+        // its own boundary, so the reads that follow address the tab the first read used. Left raw,
+        // each follow-up read re-resolved without `firstMatch` and an ambiguous `--url` failed on
+        // the second read (`snapshot --first-match` on a page large enough to be read in chunks).
+        // The warning is emitted by this one resolution, not by the reads.
+        var target = initialTarget
+        switch target {
+        case .urlMatch, .documentIndex:
+            target = try await resolveToConcreteTarget(
+                target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+        default:
+            break
+        }
+
+        // Store result in window variable. The profile is validated at the resolution above.
         _ = try await doJavaScript(
             "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()",
             target: target,
             firstMatch: firstMatch,
-            warnWriter: warnWriter,
             profile: profile
         )
 
         // Get total length
-        let lenStr = try await doJavaScript("window.__sbResultLen", target: target)
+        let lenStr = try await doJavaScript("window.__sbResultLen", target: target, firstMatch: firstMatch)
         // AppleScript returns numbers as "9.0" — parse via Double then truncate.
         // Mirrors the non-large path in JSCommand.swift; #74. Int("5489.0")
         // returns nil → length parses to 0 → the whole chunked read returns ""
@@ -1814,14 +1848,15 @@ enum SafariBridge {
             let end = min(offset + chunkSize, totalLen)
             let chunk = try await doJavaScript(
                 "window.__sbResult.substring(\(offset), \(end))",
-                target: target
+                target: target,
+                firstMatch: firstMatch
             )
             result += chunk
             offset = end
         }
 
         // Cleanup
-        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen", target: target)
+        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen", target: target, firstMatch: firstMatch)
 
         return result
     }
@@ -2036,6 +2071,8 @@ enum SafariBridge {
             return try await operation()
 
         case .persist:
+            // A cancelled request does not wrap a title for a caller that has gone.
+            try Task.checkCancellation()
             // Read via document.title (NOT window title) so the value
             // round-trips symmetrically with setTabTitle. Safari's
             // window title prepends the macOS username, which would
@@ -2050,6 +2087,8 @@ enum SafariBridge {
             return try await operation()
 
         case .ephemeral:
+            // As for `.persist`; the restore below still runs when the operation is cancelled.
+            try Task.checkCancellation()
             let original = try await getDocumentTitle(
                 target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile
             )

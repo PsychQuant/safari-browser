@@ -53,6 +53,7 @@ struct SafariBrowser: AsyncParsableCommand {
             BookmarksCommand.self,
             CloudTabsCommand.self,
             DownloadsCommand.self,
+            PDFCacheCommand.self,
             MCPCommand.self,
             MCPWorkerCommand.self,
             MCPSupervisorCommand.self,
