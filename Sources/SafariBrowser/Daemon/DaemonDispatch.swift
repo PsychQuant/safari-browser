@@ -199,7 +199,8 @@ enum DaemonDispatch {
                     try await SafariBridge.markTabIfRequested(
                         target: resolved,
                         mode: markTabMode,
-                        firstMatch: target.firstMatch
+                        firstMatch: target.firstMatch,
+                        profile: target.resolveProfile()
                     ) {
                         try await interpreter.runSteps(parsedSteps, target: target)
                     }
