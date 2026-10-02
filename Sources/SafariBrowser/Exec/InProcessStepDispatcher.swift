@@ -34,7 +34,10 @@ struct InProcessStepDispatcher: StepDispatcher {
     /// and its read.
     final class SharedTargetResolution: @unchecked Sendable {
         private let lock = NSLock()
-        private var cached: (args: [String], target: SafariBridge.TargetDocument)?
+        /// Keyed by the target arguments' UTF-8 bytes, not by `String` equality: Swift treats canonically
+        /// equivalent text (NFC and NFD spellings of the same pattern) as equal, and a pattern that
+        /// differs in bytes is a different pattern to the matcher and to AppleScript.
+        private var cached: (args: [[UInt8]], target: SafariBridge.TargetDocument)?
 
         func resolve(
             args: [String],
@@ -45,7 +48,8 @@ struct InProcessStepDispatcher: StepDispatcher {
             // (verify R6, R7): cancellation is cooperative, so it is checked on
             // entry, whatever the check raised, and after the check returns.
             try Task.checkCancellation()
-            if let hit = lock.withLock({ cached }), hit.args == args {
+            let key = args.map { Array($0.utf8) }
+            if let hit = lock.withLock({ cached }), hit.args == key {
                 // Any failure of the check counts as "not verified": the
                 // daemon's NSAppleScript errors carry no -1719 / -1728 and are
                 // localized, so a closed tab or window cannot be recognised
@@ -55,7 +59,7 @@ struct InProcessStepDispatcher: StepDispatcher {
                 do {
                     verified = try await verify(hit.target)
                 } catch {
-                    if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                    if error is CancellationError { throw CancellationError() }
                     verified = false
                 }
                 try Task.checkCancellation()
@@ -66,7 +70,7 @@ struct InProcessStepDispatcher: StepDispatcher {
             // A request cancelled while it resolved caches and dispatches nothing
             // (verify R7, Codex).
             try Task.checkCancellation()
-            lock.withLock { cached = (args, target) }
+            lock.withLock { cached = (key, target) }
             return target
         }
     }
@@ -94,6 +98,8 @@ struct InProcessStepDispatcher: StepDispatcher {
         args: [String],
         sharedTargetArgs: [String]
     ) async throws -> String {
+        // Cancelled before the step starts: nothing is resolved or dispatched for it.
+        try Task.checkCancellation()
         BlockingDialogGate.shared.beginCommand()
 
         // Reconstruct the per-step target. If the step has its own
@@ -127,6 +133,10 @@ struct InProcessStepDispatcher: StepDispatcher {
         let resolved = cmd == "documents" ? target.resolve()
             : stepHasTargetFlag ? try await resolveConcrete()
             : try await sharedResolution.resolve(args: effectiveTargetArgs, resolveConcrete)
+        // A step with its own target flags resolves outside the shared object, and a resolver that
+        // finishes after the request was cancelled still returns a target: check again before the
+        // command runs, so no command's AppleScript follows a cancellation.
+        try Task.checkCancellation()
 
         switch cmd {
         case "js":

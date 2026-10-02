@@ -346,6 +346,8 @@ is established separately by the TERM/grace/host-death regressions.
 
 ## Daemon exec shared target (#170, 2026-09-29)
 
+Read the figures below as relative to the window enumeration that `main` had when they were taken, which does not include the batched enumeration of #180 (PR #189, not merged into `main` at the time). That change makes each enumeration cheaper, so the saving of this change on top of it is smaller than the tables show; it has not been measured. Neither is the tree after the later cancellation and profile-forwarding commits.
+
 What changed: the daemon's in-process exec dispatcher resolved a `--url` shared target once per step (one full window/tab enumeration each). It now resolves a URL-pattern target at the first step that needs it and, before each reuse, runs one small AppleScript that checks the tab still shows a URL the pattern accepts; any failed or erroring check resolves afresh. Other target forms are resolved every step (see Scope).
 
 Environment: Safari with 3 windows / 41 tabs; Developer-ID signed debug builds of `main` a26eda8 and of this branch built 2026-09-29 16:07 +08:00 from a tree between 4eca186 and 070939e (the exact tree was not recorded; the confirmation run below names its commit); one daemon per build under its own `SAFARI_BROWSER_NAME`; background load average 20–40.

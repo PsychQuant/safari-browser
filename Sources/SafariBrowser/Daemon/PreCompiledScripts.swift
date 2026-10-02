@@ -217,7 +217,10 @@ enum PreCompiledScripts {
             var lastUse: UInt64
         }
         private let capacity: Int
-        private var cache: [String: Entry] = [:]
+        /// Keyed by the source's UTF-8 bytes: `String` equality treats canonically equivalent text
+        /// (an NFC and an NFD spelling of the same literal) as equal, and the cache would then run one
+        /// request's compiled script for another's, though NSAppleScript tells the two apart.
+        private var cache: [[UInt8]: Entry] = [:]
         private var useClock: UInt64 = 0
 
         // No NSAppleScript work occurs until an isolated method is called.
@@ -253,7 +256,7 @@ enum PreCompiledScripts {
 
         /// Whether a given source string has been compiled and cached.
         func contains(source: String) -> Bool {
-            cache[source] != nil
+            cache[Array(source.utf8)] != nil
         }
 
         private func evictIfOverCapacity() {
@@ -267,9 +270,10 @@ enum PreCompiledScripts {
 
         private func compiledLocked(for source: String) throws -> NSAppleScript {
             useClock &+= 1
-            if var existing = cache[source] {
+            let key = Array(source.utf8)
+            if var existing = cache[key] {
                 existing.lastUse = useClock
-                cache[source] = existing
+                cache[key] = existing
                 return PerformanceTrace.span(.daemonCacheHit) { existing.script }
             }
             return try PerformanceTrace.span(.daemonCompile) {
@@ -282,7 +286,7 @@ enum PreCompiledScripts {
                         ?? String(describing: errorInfo)
                     throw Error.compilationFailed(message)
                 }
-                cache[source] = Entry(script: script, lastUse: useClock)
+                cache[key] = Entry(script: script, lastUse: useClock)
                 evictIfOverCapacity()
                 return script
             }

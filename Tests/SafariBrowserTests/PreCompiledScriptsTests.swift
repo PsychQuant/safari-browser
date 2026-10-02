@@ -162,4 +162,18 @@ final class PreCompiledScriptsTests: XCTestCase {
         XCTAssertFalse(oldest)
         XCTAssertTrue(newest)
     }
+
+    /// The test above builds its own cache; this one ties it to the daemon's. The daemon's server must
+    /// construct its cache with the default capacity: a literal `capacity:` argument there (an unbounded
+    /// cache, say) would pass every other test.
+    func testTheDaemonServerBuildsItsCacheWithTheDefaultCapacity() throws {
+        var url = URL(fileURLWithPath: #filePath)
+        for _ in 0..<3 { url.deleteLastPathComponent() }
+        url.appendPathComponent("Sources/SafariBrowser/Daemon/DaemonServeLoop.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let constructions = source.components(separatedBy: "PreCompiledScripts.CompileCache(").dropFirst()
+        XCTAssertEqual(constructions.count, 1, "the daemon server builds exactly one compile cache")
+        XCTAssertTrue(constructions.first?.hasPrefix(")") == true,
+                      "and builds it without a capacity argument, so the default bound applies")
+    }
 }
