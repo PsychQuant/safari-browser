@@ -1,0 +1,32 @@
+name: Isolated Print Environment Qualification
+on:
+  push:
+    branches: [codex/102-isolated-print-verification]
+    paths:
+      - .gitignore
+      - safari-vision/.xcodebuild/**
+      - .github/workflows/isolated-print-qualification.yml
+      - Tests/isolated-print-qualification.py
+      - Tests/isolated-print-qualification-test.py
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: xcode-27
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Test qualification decisions
+        run: python3 Tests/isolated-print-qualification-test.py
+      - name: Inspect platform and owned Safari automation (no Print action)
+        run: python3 Tests/isolated-print-qualification.py --output "$RUNNER_TEMP/issue102-qualification/report.json"
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: issue102-qualification-${{ github.run_id }}
+          path: ${{ runner.temp }}/issue102-qualification/report.json
+          if-no-files-found: error
