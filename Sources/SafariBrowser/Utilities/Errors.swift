@@ -35,7 +35,9 @@ enum SafariBrowserError: LocalizedError {
     case invalidTimeout(Double)
     case systemEventsNotResponding(underlying: String)
     case documentNotFound(pattern: String, availableDocuments: [String])
-    case ambiguousWindowMatch(pattern: String, matches: [(windowIndex: Int, url: String)])
+    /// `url` is already redacted by whoever builds the error (#227): the payload is what a daemon's
+    /// wire error and log line print, and they do not go through `errorDescription`.
+    case ambiguousWindowMatch(pattern: String, matches: [(windowIndex: Int, tabIndex: Int, url: String)])
     case backgroundTabNotCapturable(windowIndex: Int, tabIndex: Int)
     case noSafariWindow
     case guiSessionLocked
@@ -58,6 +60,8 @@ enum SafariBrowserError: LocalizedError {
     /// a future macOS reshaping them should be diagnosable in one read.
     case safariDataParseFailed(path: String, detail: String)
     case safariDataReadFailed(path: String, detail: String)
+    /// #210: a `pdf-cache` command stopped. The cases live in `PDFCacheFailure`.
+    case pdfCache(PDFCacheFailure)
     case screenRecordingRequired(postPreflight: Bool, underlying: String?)
     case webAreaNotFound(reason: String)
     case imageCroppingFailed(reason: String)
@@ -102,7 +106,15 @@ enum SafariBrowserError: LocalizedError {
     case unsupportedURLScheme(url: String, scheme: String)
     case axOperationFailed(String)
     case windowIdentityAmbiguous(reason: String)
-    case targetTabChanged(expected: String, actualURL: String?)
+    /// #227: `actualURL` is a `RedactedURL`, so the payload cannot hold a URL with its query.
+    case targetTabChanged(expected: String, actualURL: RedactedURL?)
+    /// #180: a positional target (`--window N --tab-in-window M`, `--window N`
+    /// or the default) was anchored to a stable window id + tab at command
+    /// start, and mid-command that tab closed, moved, or (for the default and
+    /// `--window N`) stopped being its window's current tab. Deliberately not
+    /// `documentNotFound`: that error lists every open tab of every profile,
+    /// which the default target never did before it was anchored.
+    case anchoredTargetChanged(target: String)
 
     var errorDescription: String? {
         switch self {
@@ -117,11 +129,21 @@ enum SafariBrowserError: LocalizedError {
             // #79: the identity-anchored target stopped matching mid-command
             // (window closed, or the tab moved/navigated within its window)
             // and one automatic re-resolve did not find it again.
-            let actualLine = actualURL.map { "Target position now shows: \($0)\n" } ?? ""
+            // #227: another tab's URL, shown without its query.
+            let actualLine = actualURL.map { "Target position now shows: \($0.text)\n" } ?? ""
             return """
                 Target tab changed mid-command: expected \(expected), but the tab no longer matches after one automatic re-resolve.
                 \(actualLine)The window may have closed, or the tab moved/navigated during execution.
                 Run `safari-browser documents` to re-discover targets, then retry.
+                """
+        case .anchoredTargetChanged(let target):
+            // #180: the command's JavaScript is not re-dispatched elsewhere — a
+            // positional target carries no URL to find the tab again by, and
+            // following the position would run the rest of the protocol in
+            // whatever tab slid into it. Steps already sent may have run.
+            return """
+                The target tab changed mid-command: \(target). It closed, moved, or stopped being its window's current tab while the command ran.
+                The command was not re-run in another tab; steps sent before the change may already have run in the original tab. Run `safari-browser documents` to re-discover targets, then retry.
                 """
         case .fileNotFound(let path):
             return "File not found: \(path)"
@@ -148,6 +170,7 @@ enum SafariBrowserError: LocalizedError {
             if availableDocuments.isEmpty {
                 listing = "  (no Safari documents are currently open)"
             } else {
+                // #227: the URLs in these strings were redacted where the strings were built.
                 listing = availableDocuments.enumerated()
                     .map { "  [\($0.offset + 1)] \($0.element)" }
                     .joined(separator: "\n")
@@ -157,7 +180,7 @@ enum SafariBrowserError: LocalizedError {
                 (The flag is supported and did run — this is a targeting miss, not an unknown option.)
                 Available documents:
                 \(listing)
-                \(SafariBrowserError.targetingHint(for: pattern))
+                \(availableDocuments.isEmpty ? "" : "(\(URLText.shortenedNote))\n")\(SafariBrowserError.targetingHint(for: pattern))
                 """
         case .elementNotScrollable(let selector):
             // #77: the element matched but carries no overflow, so scrollBy
@@ -230,15 +253,16 @@ enum SafariBrowserError: LocalizedError {
                 listing = "  (internal error: empty matches array)"
             } else {
                 listing = matches
-                    .map { "  [window \($0.windowIndex)] \($0.url)" }
+                    .map { "  [window \($0.windowIndex) tab \($0.tabIndex)] \(URLText.redactURL($0.url))" }
                     .joined(separator: "\n")
             }
             return """
                 Multiple Safari windows match "\(pattern)":
                 \(listing)
+                (\(URLText.shortenedNote))
                 Disambiguate by:
-                  1. Use a more specific --url substring (e.g., "plaud.ai/file/abc" instead of "plaud").
-                  2. Use --window N --tab-in-window M to target a specific tab by position.
+                  1. Use a more specific --url substring (e.g., "plaud.ai/file/abc" instead of "plaud"); the part that differs may be in the query or the fragment, which `safari-browser documents` shows.
+                  2. Use --window N --tab-in-window M, with the window and tab numbers listed above, to target a specific tab by position (with --profile, N counts only that profile's windows, whatever number is listed).
                   3. Pass --first-match to accept the first match (with a stderr warning listing all candidates).
                 """
         case .guiSessionLocked:
@@ -406,6 +430,8 @@ enum SafariBrowserError: LocalizedError {
             return "Could not read Safari data file '\(TerminalText.escaped(path))': \(TerminalText.escaped(detail))"
         case .safariDataParseFailed(let path, let detail):
             return "Could not parse Safari data file \(TerminalText.escaped(path)): \(TerminalText.escaped(detail))"
+        case .pdfCache(let failure):
+            return failure.message
 
         case .elementAmbiguous(let selector, let matches):
             let lines = matches.enumerated().map { (i, m) -> String in
@@ -678,15 +704,23 @@ extension SafariBrowserError {
         if positional {
             return """
                 Hint: each entry above shows its own coordinates — target one with
-                      --window N --tab-in-window M, or --document N for the [N] index.
+                      --window N --tab-in-window M. (With --profile, N counts only that
+                      profile's windows. --document N numbers the tabs as `safari-browser documents`
+                      does, which can differ from the [N] shown above.)
                 """
         }
         return """
             Hint: --url matches a *substring* of the URL, not the whole URL, and not the title —
-                  no tab's URL contained this text. Refine it against the URLs above, or target
-                  positionally with --window N --tab-in-window M (coordinates are shown per entry),
-                  or --document N for the [N] index. For stricter matching see
-                  --url-exact / --url-endswith / --url-regex.
+                  no tab's URL contained this text. Refine it against the URLs above, if any are listed
+                  (shown without their query or fragment — `safari-browser documents` prints them in
+                  full). An entry with a `…` marker (`?…`, `#…`, `…@`, `;…`) shows less than the URL
+                  and is not itself part of any URL: copy only what precedes its first marker (it can
+                  be short, as in `https://…@host`) into --url, and take the whole URL from
+                  `safari-browser documents` for --url-exact or --url-endswith. Or target
+                  positionally with --window N --tab-in-window M (coordinates are shown per entry;
+                  with --profile, N counts only that profile's windows; --document N numbers the
+                  tabs as `safari-browser documents` does, which can differ from the [N] shown above).
+                  For stricter matching see --url-exact / --url-endswith / --url-regex.
             """
     }
 }

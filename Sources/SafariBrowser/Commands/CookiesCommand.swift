@@ -32,17 +32,17 @@ struct CookiesGet: AsyncParsableCommand {
         if let name {
             let result = try await SafariBridge.doJavaScript(
                 "(function(){ var n = '\(name.escapedForJS)'.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&'); var m = document.cookie.match('(?:^|; )' + n + '=([^;]*)'); return m ? decodeURIComponent(m[1]) : ''; })()",
-                target: documentTarget, profile: profile
+                target: documentTarget, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile
             )
             print(result)
         } else if json {
             let result = try await SafariBridge.doJavaScript(
                 "(function(){ var o = {}; document.cookie.split(';').forEach(function(c){ var p = c.trim().split('='); if (p[0]) o[p[0]] = decodeURIComponent(p.slice(1).join('=')); }); return JSON.stringify(o); })()",
-                target: documentTarget, profile: profile
+                target: documentTarget, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile
             )
             print(result)
         } else {
-            print(try await SafariBridge.doJavaScript("document.cookie", target: documentTarget, profile: profile))
+            print(try await SafariBridge.doJavaScript("document.cookie", target: documentTarget, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile))
         }
     }
 }

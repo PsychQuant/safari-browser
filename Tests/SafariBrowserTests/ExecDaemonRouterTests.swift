@@ -18,23 +18,29 @@ final class ExecDaemonRouterTests: XCTestCase {
         XCTAssertTrue(InProcessStepDispatcher.isSupported("documents"))
     }
 
-    func testInProcessDispatcher_doesNotSupportV2DeferredCommands() {
-        // v2.1 added pure-read `get text` / `get source`; the mutating
-        // and stateful commands below stay subprocess until a future
-        // iteration covers them.
-        XCTAssertFalse(InProcessStepDispatcher.isSupported("click"))
-        XCTAssertFalse(InProcessStepDispatcher.isSupported("fill"))
-        XCTAssertFalse(InProcessStepDispatcher.isSupported("type"))
-        XCTAssertFalse(InProcessStepDispatcher.isSupported("press"))
+    /// #219: the commands that are one JavaScript call shared with the CLI command run in-process.
+    func testInProcessDispatcher_supportsTheOneCallInteractionAndStorageCommands() {
+        for cmd in ["click", "fill", "type", "press",
+                    "storage local get", "storage local set", "storage local remove", "storage local clear",
+                    "storage session get", "storage session set", "storage session remove", "storage session clear"] {
+            XCTAssertTrue(InProcessStepDispatcher.isSupported(cmd), cmd)
+        }
+    }
+
+    func testInProcessDispatcher_doesNotSupportWaitSnapshotOrTheUnsupportedCommands() {
+        // `wait` (a polling loop with its own timeout) and `snapshot` (chunked reads and options)
+        // stay subprocess; `screenshot`, `pdf` and `upload` are unsupported in exec on both paths.
         XCTAssertFalse(InProcessStepDispatcher.isSupported("wait"))
         XCTAssertFalse(InProcessStepDispatcher.isSupported("snapshot"))
-        XCTAssertFalse(InProcessStepDispatcher.isSupported("storage local get"))
+        XCTAssertFalse(InProcessStepDispatcher.isSupported("screenshot"))
+        XCTAssertFalse(InProcessStepDispatcher.isSupported("storage"))
+        XCTAssertFalse(InProcessStepDispatcher.isSupported("storage local"))
     }
 
     func testInProcessDispatcher_unsupportedThrowsUnsupportedInExec() async {
         let dispatcher = InProcessStepDispatcher()
         do {
-            _ = try await dispatcher.dispatch(cmd: "click", args: [".btn"], sharedTargetArgs: [])
+            _ = try await dispatcher.dispatch(cmd: "wait", args: ["--for-url", "x"], sharedTargetArgs: [])
             XCTFail("expected unsupportedInExec for unsupported command")
         } catch let err as ScriptDispatchError {
             XCTAssertEqual(err.code, "unsupportedInExec")

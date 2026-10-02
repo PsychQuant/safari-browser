@@ -34,7 +34,7 @@ Need login? ──── Yes → safari-browser
 ## MCP stdio
 
 Run `safari-browser mcp` from an MCP client using the installed executable's
-absolute path. The server provides all 77 public CLI leaf commands,
+absolute path. The server provides all 79 public CLI leaf commands,
 including `help`, `setup` and daemon controls. Names follow the command path:
 `wait` becomes `safari.wait`, and `tab focus` becomes `safari.tab.focus`.
 Hidden commands and the MCP transport are excluded. The catalog and input
@@ -503,8 +503,11 @@ Two edge notes (#76 verify round):
   `js "function f(){}"` / `js "class A {}"` yield the source text instead of
   declaring anything.
 
-**The `exec` script `js` step and the CLI `js` command agree** — a snippet
-moves between them unchanged (#80, measured):
+**The `exec` script `js` step and the CLI `js` command agree for the snippets
+below** — they move between the two unchanged (#80, measured). Beyond these cases
+the daemon path of `exec` is not promised to match the CLI: the error channel,
+results above 1MB and the CLI-only options (`--file`, `--large`, `--output`) are not
+covered, and known result differences are tracked in #220:
 
 | Snippet | CLI `js` | `exec` `js` step |
 |---|---|---|
@@ -634,7 +637,18 @@ unfinished worker prevents new work from being queued. A daemon exec step is
 one logical command, matching its subprocess counterpart. Window-ID resolution
 uses the normal AppleScript transport and is separate from this AX budget.
 Within a command, cached verdicts require the same key and a fresh monotonic
-TTL; another window's dialog is never used to classify the target's failure.
+TTL; another window's dialog is never used to classify the target's failure. A
+`js` subcommand invocation additionally permits at most one actual probe across target
+resolution and all protocol steps, including timeout diagnostics. Cache expiry,
+a changed window or forced refresh after that allowance is spent returns
+`unprobed`; it never extends an old clear/blocked verdict. A timeout retains its
+original error when no fresh evidence remains. Other commands retain their
+existing refresh behavior. The daemon's in-process `exec` JS dispatcher currently
+bypasses this subcommand wrapper and retains its original refresh policy.
+Checks skipped because the single-probe allowance was spent do not add an
+incomplete-inspection warning; debug mode labels them `skipped: invocation limit`.
+The underlying state remains `unprobed`. Time-budget exhaustion and genuinely
+incomplete probes retain their existing warning behavior.
 `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1` prints per-probe costs; the e2e harness
 asserts their per-command sum stays within 200 ms.
 
@@ -643,7 +657,7 @@ the warning, the fast-fail, and the "probe unavailable" notice — for scripts
 that accept going back to the pre-#126 behaviour; `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1`
 prints the probe's cost and verdict. A dialog that opens during an operation
 cannot be predicted by the entry probe. Target-aware timeout paths recheck
-only that window when probe budget remains; otherwise the original error stays. Safari only renders a dialog in a window's
+only that window when both probe time and invocation allowance remain; otherwise the original error stays. Safari only renders a dialog in a window's
 *active* tab: an alert pending in a background tab freezes that tab's JavaScript
 without any dialog to find — `tab focus` the tab first (#131). Without the Accessibility grant the probe cannot run, and it
 says so once rather than staying quiet — no permission means no information,
@@ -728,6 +742,58 @@ never enabled iCloud tab syncing exits 0 with an empty result and a note on
 stderr. These commands require **Full Disk Access**, which `setup` does not
 handle; see below.
 
+### Cached PDFs (#210)
+
+Publishers can treat a script-issued `fetch()` from the page as automated
+traffic. Safari does not need one to show a PDF: WebKit's network cache already
+holds the response body. `pdf-cache` reads that copy, so **no request leaves the
+machine and nothing in Safari is driven** — it only reads files (and, when you
+give a tab flag, asks Safari for that tab's URL).
+
+```bash
+safari-browser pdf-cache list                                   # PDFs in the cache (URL shown without query)
+safari-browser pdf-cache get paper.pdf --url example.org/a.pdf  # the tab whose URL matches
+safari-browser pdf-cache get paper.pdf --key 9F3A62C1           # a key (8+ hex chars) from `list`
+safari-browser pdf-cache list --source webkit-pdfs              # the WebKitPDFs-* temporaries
+safari-browser pdf-cache get paper.pdf --source webkit-pdfs --file paper.pdf
+```
+
+`get` acts only on an explicit selection — one of a tab flag, `--key`, or
+`--source webkit-pdfs --file` — and never picks a PDF for you, not even when only
+one is cached. A tab is matched by its **exact URL** (fragment removed); a URL
+with no cached record stops and says so (and says how many PDFs in the cache it could
+not read, because the one you mean may be among them); one cached in several
+partitions stops and lists the candidates rather than guessing. The copy is written
+`0600` with no ACL entries, only after it opens as a PDF whose pages can all be found
+in its page tree (content streams and images are not decoded), and is renamed into
+place, so a truncated file never appears under your name. An existing destination is
+kept unless `--force`. A destination **inside Safari's own cache folder** is refused,
+with or without `--force`. The destination is resolved the way `cp` resolves it
+(`link/../x.pdf` follows the link; a quoted `~` is a folder named `~`).
+
+Only the **default profile's** network cache is read: a named profile keeps its own
+store, so `pdf-cache get` refuses `--profile`. That flag is the only way the command is
+told about a profile: a tab chosen with `--url` or `--window` can still be a tab of a
+named profile, whose URL is then looked up in the default profile's cache (#243).
+
+URLs this command prints are shown without their query and fragment, because the
+query of a signed URL can be a credential. (When a tab flag matches no tab, the
+shared targeting error lists open tabs' URLs in full, as it does for every command;
+see #227.) `list` defaults to 50 rows (`--limit`).
+
+The record layout is WebKit's private format; only `Version 17` is understood, and
+anything else fails with what was seen instead of reporting an empty cache. Each
+record must name itself (an embedded hash equal to its file name) and must describe
+the body file beside it (its recorded body length equals the file's size; one that does
+not means Safari was writing or replacing it, and it is left out and counted); a record
+for a byte range — part of a resource — is never listed. A store Safari has never
+written to (an empty `Blobs` folder and `salt`) is an empty cache.
+Responses small enough to be stored inside the record itself (no `-blob` file)
+are not covered. The `WebKitPDFs-*` folders were seen to appear after someone pressed
+"Open with Preview" in Safari's PDF viewer (one observation), so that source is opt-in
+and the command never presses it for you. Requires **Full Disk Access**, like the
+local-data commands above.
+
 ### Permissions
 
 ```bash
@@ -742,7 +808,7 @@ Three macOS permissions gate part of the CLI:
 |---|---|---|---|
 | **Accessibility** | window resolution for `screenshot` / `pdf` / `upload --native`, blocked-dialog detection | those paths refuse; front-window resolution falls back to a heuristic and says so | yes |
 | **Screen Recording** | the pixel capture inside `screenshot` | `screenshot` refuses with guidance | yes |
-| **Full Disk Access** | reading `~/Library/Safari/` for `history` / `bookmarks` / `cloud-tabs` / `downloads` | those four refuse with guidance specific to how this binary is signed | **no** — see below |
+| **Full Disk Access** | reading `~/Library/Safari/` for `history` / `bookmarks` / `cloud-tabs` / `downloads`, and Safari's cache folders for `pdf-cache` | those commands refuse with guidance specific to how this binary is signed | **no** — see below |
 
 **Full Disk Access is deliberately not part of `setup`** (#109). It cannot be
 requested programmatically the way Accessibility can — you add the binary by
@@ -950,7 +1016,10 @@ URL matching is case-sensitive (AppleScript's native behavior).
 Substring match — no regex — so `--url plaud` matches any URL containing
 "plaud". If no document matches, you get a `documentNotFound` error
 whose description lists every currently open document so you can fix
-the pattern without running another command.
+the pattern (URLs are listed shortened, since a query can be a credential: a
+query or fragment, credentials, path parameters such as `;jsessionid=…`,
+`data:` / `javascript:` content and a long tail are replaced by `…`;
+`safari-browser documents` prints them in full).
 
 ```bash
 # Storage targeting (#23) — critical for per-origin tokens
@@ -1039,7 +1108,7 @@ it captures the current front Safari window via legacy CG name match.
 safari-browser wait <ms>                 # wait milliseconds
 safari-browser wait --for-url <pattern>  # wait for URL match
 safari-browser wait --js <expr>          # wait for JS truthy
-safari-browser wait --timeout <ms>       # custom timeout (default 30s)
+safari-browser wait --timeout <ms>       # bounds when a poll after the first may start (default 30s); the command can end later
 
 # Randomized pacing between steps (#182): one duration drawn from a Cauchy
 # distribution doubly truncated to [--min, --max] ms. --median is the median
@@ -1270,7 +1339,7 @@ restart each existing daemon namespace with `daemon stop` followed by `daemon st
 before relying on these settings: a daemon still running the older executable
 ignores the new options.
 
-Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). v1 dispatches via subprocess to the same binary, so daemon opt-in still amortizes per-step cost. `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
+Output: single JSON array on stdout, one entry per executed/skipped step (`{"step": N, "status": "ok"|"error"|"skipped", "value": ..., "var": "..."?}`). Default cap of 1000 steps (override with `--max-steps`). With the daemon active, a script made only of `js`, `documents`, `get url/title/text/source`, `click`, `fill`, `type`, `press` and the `storage` subcommands (for the argument shapes `exec` accepts; no positional argument may start with `-`) runs in one request on the daemon (a `--url` target is resolved at the first step that needs it and reused after a check, #170); any other script runs one subprocess per step, so daemon opt-in still amortizes per-step cost. The two paths are not guaranteed to give the same results (#220). `screenshot`, `pdf`, `upload` fall through with `unsupportedInExec`. See `openspec/specs/script-exec/spec.md`.
 
 ### Tab ownership marker (opt-in)
 

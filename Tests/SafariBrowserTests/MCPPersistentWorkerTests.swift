@@ -111,7 +111,7 @@ final class MCPPersistentWorkerTests: XCTestCase {
     func testEveryPublicToolHelpRunsInTheActualPersistentWorker() throws {
         let connection = try Connection()
         let catalog = try MCPToolCatalog(metadata: Data(SafariBrowser._dumpHelp().utf8))
-        XCTAssertEqual(catalog.tools.count, 77)
+        XCTAssertEqual(catalog.tools.count, 79)
         for tool in catalog.tools {
             let arguments = tool.name == "safari.help" ? ["--help"] : tool.path + ["--help"]
             let result = try connection.call(arguments)
@@ -188,7 +188,7 @@ final class MCPPersistentWorkerTests: XCTestCase {
         var byte: UInt8 = 0
         XCTAssertEqual(Darwin.read(connection.pair.diagnostics, &byte, 1), 0)
         let catalog = try MCPToolCatalog(metadata: Data(SafariBrowser._dumpHelp().utf8))
-        XCTAssertEqual(catalog.tools.count, 77)
+        XCTAssertEqual(catalog.tools.count, 79)
         XCTAssertFalse(catalog.tools.contains { $0.path.contains("__mcp-supervise") || $0.path.contains("__mcp-worker") })
         try connection.send(.shutdown)
         XCTAssertNil(try connection.next())
