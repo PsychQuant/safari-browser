@@ -35,8 +35,10 @@ struct InProcessStepDispatcher: StepDispatcher {
     final class SharedTargetResolution: @unchecked Sendable {
         private let lock = NSLock()
         /// Keyed by the target arguments' UTF-8 bytes, not by `String` equality: Swift treats canonically
-        /// equivalent text (NFC and NFD spellings of the same pattern) as equal, and a pattern that
-        /// differs in bytes is a different pattern to the matcher and to AppleScript.
+        /// equivalent text (NFC and NFD spellings of the same pattern) as equal, while AppleScript and
+        /// the JavaScript it embeds tell them apart. Within one run the exec-level arguments never change,
+        /// so this is a guard against serving one spelling's resolution for another, not a path a real
+        /// run takes; a spurious miss is the worst it can cost.
         private var cached: (args: [[UInt8]], target: SafariBridge.TargetDocument)?
 
         func resolve(
