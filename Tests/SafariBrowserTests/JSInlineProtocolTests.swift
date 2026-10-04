@@ -51,6 +51,8 @@ final class JSInlineProtocolTests: XCTestCase {
     func testAReplyWhoseLengthDisagreesWithItsPayloadIsDamagedNotAValue() {
         XCTAssertEqual(JSWrapper.parseInline("SB1:OK:10:hello\u{1E}"), .damaged(expected: 10, actual: 5))
         XCTAssertEqual(JSWrapper.parseInline("SB1:OK:7:hello\u{1E}"), .damaged(expected: 7, actual: 5))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:6:hello\u{1E}"), .damaged(expected: 6, actual: 5),
+                       "exact: there is no one-unit tolerance any more")
         XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:hello\u{1E}"), .damaged(expected: 2, actual: 5))
         // length is counted in UTF-16 units, as JavaScript counts it
         XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:\u{1F600}\u{1E}"), .value("\u{1F600}"))
@@ -161,7 +163,7 @@ final class JSInlineProtocolTests: XCTestCase {
     }
 
     func testCodeThatParsesNeitherWayKeepsBothFormsExpressionFirst() {
-        // Only here is a second attempt still safe: a form that did not parse cannot have run.
+        // Only here, and for inputs the hint skips, are both forms tried (the old behaviour).
         for code in ["1 +", "function (", "}{"] {
             XCTAssertEqual(JSSyntaxHint.formsToTry(for: code), [.expression, .statement], code)
         }

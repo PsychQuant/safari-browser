@@ -148,10 +148,11 @@ struct JSCommand: AsyncParsableCommand {
     /// (`JSWrapper.parseInline`), and the tab's URL is read in the same AppleScript, just before
     /// the code runs (`preNavURL`). It used to be seven round trips.
     ///
-    /// Which form runs is `JSSyntaxHint.formsToTry`: when one form is known to parse, only that
-    /// form runs, so a missing reply (it parsed, so it ran) is never answered by running the code
-    /// again. Only when neither parses, or the hint cannot tell, are both tried in turn — the
-    /// case where a form that produced no reply cannot have run.
+    /// Which form runs is `JSSyntaxHint.formsToTry`: when a form is known to compile, only that
+    /// form runs, so a missing reply is not answered by running the code again. When neither
+    /// form compiles locally, the input is over the hint's size limit, or the hint cannot be
+    /// computed, both are tried in turn (the old behaviour): a form Safari did parse but whose
+    /// reply was lost, with the URL unchanged, can still run twice.
     private func runNonLargePath(
         _ jsCode: String,
         target documentTarget: SafariBridge.TargetDocument,
@@ -257,7 +258,10 @@ struct JSCommand: AsyncParsableCommand {
     ///
     /// Same-URL navigation (`location.reload()`, a form post back to the same
     /// address) is invisible to this check by construction. Those cases still
-    /// fall through to the retry, so a reload can still fire twice — detecting
+    /// fall through to the retry when both forms are being tried (neither compiled
+    /// locally, input over the hint limit) and on the `--large` / `--output` path, so a
+    /// reload can still fire twice there; with a single hinted form the missing reply
+    /// is reported as `noReplyMessage`. Detecting
     /// it would need a page-side beacon that survives the very navigation it is
     /// meant to observe.
     static func navigatedAwayURL(

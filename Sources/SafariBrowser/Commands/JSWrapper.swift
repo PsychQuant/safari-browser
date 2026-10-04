@@ -11,7 +11,7 @@
 /// value (`js "1+1"` → "2"), while a statement sequence only parses as a
 /// function body (`return` yields the value). `JSSyntaxHint` compiles the code
 /// locally and JSCommand sends the one form that compiles; only when neither
-/// does are both tried (a form that did not parse cannot have run).
+/// does are both tried (a form Safari did not parse cannot have run, but "does not compile here" does not prove that).
 ///
 /// Parse-failure detection: `do JavaScript` swallows SyntaxError silently
 /// (returns no value at all and throws nothing — verified live), so a wrapper that parsed

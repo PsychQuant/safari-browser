@@ -11,15 +11,20 @@ import JavaScriptCore
 ///
 /// JavaScriptCore is the engine Safari itself uses, so compiling the code here says which form
 /// parses before anything is sent:
-/// - one form compiles -> it is the ONLY form tried. If its reply never comes back, the code
-///   parsed, so it did run (or the page navigated); the other form is not tried.
-/// - neither compiles (a genuine SyntaxError, or syntax this process's engine does not know)
-///   or the hint is unavailable -> both are tried, expression first, which is what `js` always
-///   did. Neither can run unless it parsed, so that is where a retry is still safe.
+/// - the expression form compiles -> only it is sent; else the statement form compiles -> only
+///   it is sent. If its reply never comes back the code parsed, so it most likely ran (or the
+///   page navigated); the other form is not tried.
+/// - neither compiles (a genuine SyntaxError, or syntax this process's engine does not know),
+///   the input is over `maxHintedLength`, or no JSContext can be made -> both are tried,
+///   expression first, which is what `js` always did. Only a genuine SyntaxError guarantees
+///   that the silent form did not run; otherwise a lost reply with an unchanged URL can still
+///   run the code twice (see `JSCommand.navigatedAwayURL`).
 ///
 /// The probe is `new Function(body)`, which compiles without running `body`: the user's code
 /// is never executed in this process. A different engine build in this process than in Safari
-/// is the one way the hint can be wrong, and then the cost is a clearer failure, not a re-run.
+/// is the expected way the hint is wrong: a form it accepts and Safari rejects ends in a "no
+/// reply" error, not a re-run; if it rejects both while Safari accepts one, both forms are tried
+/// and the re-run risk above applies.
 enum JSSyntaxHint {
     enum Form: Equatable {
         case expression

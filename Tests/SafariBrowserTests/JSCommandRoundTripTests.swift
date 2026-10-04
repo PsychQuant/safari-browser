@@ -417,7 +417,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         let urlRead = try XCTUnwrap(fake.scripts.indices.first { $0 > firstJS && !fake.scripts[$0].contains("do JavaScript") })
         let lastJS = try XCTUnwrap(fake.scripts.lastIndex { $0.contains("do JavaScript") })
         XCTAssertLessThan(urlRead, lastJS,
-                          "#82: the navigation check sits between the two forms, so a form that ran is never run twice")
+                          "#82: the navigation check sits between the two forms, so a form that ran and navigated is not run twice (a same-URL reload is not caught)")
     }
 
     func testCodeThatNavigatedIsReportedAndNeverRunAgain() async throws {
