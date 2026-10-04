@@ -9,58 +9,56 @@ import XCTest
 /// forms and the CSP-refusal hint detector.
 final class JSWrapperTests: XCTestCase {
 
-    // MARK: - expressionWrapper
+    // MARK: - inlineExpression (#255; the properties #76 pinned on the old expression wrapper)
 
-    func testExpressionWrapper_containsNoEval() {
-        let wrapper = JSWrapper.expressionWrapper("1 + 1")
+    func testInlineExpression_containsNoEval() {
+        let wrapper = JSWrapper.inlineExpression("1 + 1")
         XCTAssertFalse(wrapper.contains("eval("))
         XCTAssertFalse(wrapper.contains("new Function"))
     }
 
-    func testExpressionWrapper_inlinesCodeVerbatim() {
+    func testInlineExpression_inlinesCodeVerbatim() {
         let code = "document.querySelector('.msg').scrollTop"
-        let wrapper = JSWrapper.expressionWrapper(code)
-        XCTAssertTrue(wrapper.contains(code))
+        XCTAssertTrue(JSWrapper.inlineExpression(code).contains(code))
     }
 
-    func testExpressionWrapper_keepsResultProtocol() {
-        // The __sbLen / __sbResult protocol is what JSCommand reads back;
-        // both the success and the catch(e) runtime-error branch must set it.
-        let wrapper = JSWrapper.expressionWrapper("1")
-        XCTAssertTrue(wrapper.contains("window.__sbLen = r.length"))
-        XCTAssertTrue(wrapper.contains("window.__sbResult = r"))
-        XCTAssertTrue(wrapper.contains("window.__sbLen = -1"))
+    func testInlineExpression_reportsThroughItsOwnReply() {
+        // The success and the catch(e) runtime-error branch both answer with the prefixed reply
+        // JSCommand parses; the large-result branch parks the value for the slow path.
+        let wrapper = JSWrapper.inlineExpression("1")
+        XCTAssertTrue(wrapper.contains("'SB1:OK:' + r.length + ':' + r"))
+        XCTAssertTrue(wrapper.contains("'SB1:ERR:' + (e && e.message !== undefined ? e.message : e)"))
         XCTAssertTrue(wrapper.contains("catch"))
     }
 
-    func testExpressionWrapper_newlineGuardsAroundCode() {
+    func testInlineExpression_newlineGuardsAroundCode() {
         // A trailing line comment in user code must not swallow the closing
         // paren: `('' + (1+1 // c))` is a SyntaxError, `('' + (1+1 // c\n))`
         // is fine. Guard = newline between code and the closing paren.
-        let wrapper = JSWrapper.expressionWrapper("1+1 // trailing comment")
+        let wrapper = JSWrapper.inlineExpression("1+1 // trailing comment")
         XCTAssertTrue(wrapper.contains("1+1 // trailing comment\n"))
     }
 
-    // MARK: - statementWrapper
+    // MARK: - inlineStatement
 
-    func testStatementWrapper_containsNoEval() {
-        let wrapper = JSWrapper.statementWrapper("var a = 2; a + 3;")
+    func testInlineStatement_containsNoEval() {
+        let wrapper = JSWrapper.inlineStatement("var a = 2; a + 3;")
         XCTAssertFalse(wrapper.contains("eval("))
         XCTAssertFalse(wrapper.contains("new Function"))
     }
 
-    func testStatementWrapper_wrapsCodeAsFunctionBody() {
+    func testInlineStatement_wrapsCodeAsFunctionBody() {
         // Statements run as a function body so `return` yields a value.
         let code = "var a = 2;\nreturn a + 3;"
-        let wrapper = JSWrapper.statementWrapper(code)
+        let wrapper = JSWrapper.inlineStatement(code)
         XCTAssertTrue(wrapper.contains(code))
         XCTAssertTrue(wrapper.contains("function"))
-        XCTAssertTrue(wrapper.contains("window.__sbLen = r.length"))
-        XCTAssertTrue(wrapper.contains("window.__sbLen = -1"))
+        XCTAssertTrue(wrapper.contains("'SB1:OK:' + r.length + ':' + r"))
+        XCTAssertTrue(wrapper.contains("'SB1:ERR:' + (e && e.message !== undefined ? e.message : e)"))
     }
 
-    func testStatementWrapper_newlineGuardsAroundCode() {
-        let wrapper = JSWrapper.statementWrapper("doWork() // done")
+    func testInlineStatement_newlineGuardsAroundCode() {
+        let wrapper = JSWrapper.inlineStatement("doWork() // done")
         XCTAssertTrue(wrapper.contains("doWork() // done\n"))
     }
 

@@ -155,82 +155,88 @@ struct JSCommand: AsyncParsableCommand {
         warnWriter: ((String) -> Void)?,
         profile: String?
     ) async throws -> String? {
-        let preNavURL = try? await SafariBridge.getCurrentURL(
-            target: documentTarget, firstMatch: firstMatch, warnWriter: nil, profile: profile)
+        // #255: the success path is ONE `do JavaScript`. The wrapper returns its own outcome
+        // (`JSWrapper.parseInline`), and the tab's URL is read in the same AppleScript, just
+        // before the code runs, so there is no preset, no read-back, no cleanup and no separate
+        // URL read. (It used to be seven round trips.) `preNavURL` is that same-script URL read.
+        var preNavURL: String?
         do {
-            // #76: user code is inlined into the injected string instead of
-            // routed through page-context eval() — strict-CSP pages refuse
-            // eval, while `do JavaScript` itself is UA-privileged and exempt.
-            // The preset clears stale globals from a crashed prior run so the
-            // sentinel read only ever reflects this invocation.
-            _ = try await SafariBridge.doJavaScript(JSWrapper.presetProtocolGlobals, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-            _ = try await SafariBridge.doJavaScript(
-                JSWrapper.expressionWrapper(jsCode),
-                target: documentTarget,
-                firstMatch: firstMatch,
-                warnWriter: warnWriter
-            )
-            var lenStr = try await SafariBridge.doJavaScript("'' + window.__sbLen", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-            if lenStr.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                if let navURL = try await Self.navigatedAwayURL(
-                    from: preNavURL, target: documentTarget,
-                    firstMatch: firstMatch, profile: profile) {
-                    Self.reportNavigation(to: navURL)
-                    return nil
+            // #76: user code is inlined into the injected string instead of routed through
+            // page-context eval() — strict-CSP pages refuse eval, while `do JavaScript` itself
+            // is UA-privileged and exempt. The hint only decides which form to try first.
+            for (attempt, form) in JSSyntaxHint.preferredOrder(for: jsCode).enumerated() {
+                let wrapper = form == .expression
+                    ? JSWrapper.inlineExpression(jsCode) : JSWrapper.inlineStatement(jsCode)
+                let reply: String
+                if attempt == 0 {
+                    let split = JSWrapper.splitCapturedURL(try await SafariBridge.doJavaScript(
+                        wrapper, target: documentTarget, firstMatch: firstMatch,
+                        warnWriter: warnWriter, captureURL: true))
+                    preNavURL = split.url
+                    reply = split.output
+                } else {
+                    reply = try await SafariBridge.doJavaScript(
+                        wrapper, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
                 }
-                _ = try await SafariBridge.doJavaScript(
-                    JSWrapper.statementWrapper(jsCode),
-                    target: documentTarget,
-                    firstMatch: firstMatch,
-                    warnWriter: warnWriter
-                )
-                lenStr = try await SafariBridge.doJavaScript("'' + window.__sbLen", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                if lenStr.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                    // The statement form may itself have navigated — check
-                    // again before blaming the code for not parsing.
+                switch JSWrapper.parseInline(reply) {
+                case .value(let value):
+                    return value
+                case .error(let message):
+                    // #76: user code calling eval()/new Function() on a strict-CSP page surfaces
+                    // here as a caught EvalError — append the hint.
+                    throw SafariBrowserError.appleScriptFailed(
+                        "JavaScript error: \(message)\(JSWrapper.cspEvalHint(for: message) ?? "")")
+                case .stored(let length):
+                    return try await readStoredResult(
+                        length: length, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
+                case .notRun:
+                    // #82: nothing came back. Either the form did not parse (Safari swallows the
+                    // SyntaxError) or the code navigated the page and the reply went with the old
+                    // document. Check which before trying the other form, which would run the
+                    // code a second time if it had already taken effect.
                     if let navURL = try await Self.navigatedAwayURL(
                         from: preNavURL, target: documentTarget,
                         firstMatch: firstMatch, profile: profile) {
                         Self.reportNavigation(to: navURL)
                         return nil
                     }
-                    throw SafariBrowserError.appleScriptFailed(
-                        "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"
-                    )
                 }
             }
-            // AppleScript returns numbers as "9.0" — parse via Double then truncate
-            let len = Int(Double(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
-
-            let value: String
-            if len == -1 {
-                let errMsg = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                // #76: user code calling eval()/new Function() on a strict-CSP
-                // page surfaces here as a caught EvalError — append the hint.
-                throw SafariBrowserError.appleScriptFailed("JavaScript error: \(errMsg)\(JSWrapper.cspEvalHint(for: errMsg) ?? "")")
-            } else if len == 0 {
-                value = ""
-            } else {
-                let stored = try await SafariBridge.doJavaScript("window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                if stored.isEmpty && len > 0 {
-                    value = try await SafariBridge.doJavaScriptLarge("window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-                    FileHandle.standardError.write(Data("warning: output was large, used chunked read. Use --large to skip this.\n".utf8))
-                } else {
-                    value = stored
-                }
-            }
-            _ = try await SafariBridge.doJavaScript("delete window.__sbLen; delete window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-            return value
+            throw SafariBrowserError.appleScriptFailed(
+                "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"
+            )
         } catch let error as SafariBrowserError {
-            // The wrapper's own writes succeeded but a later round-trip found
-            // the tab somewhere else — settle it as navigation if the URL
-            // agrees, otherwise the original error stands.
+            // The wrapper ran but a later round-trip found the tab somewhere else — settle it as
+            // navigation if the URL agrees, otherwise the original error stands.
             try await Self.settleNavigationOrRethrow(
                 error, preNavURL: preNavURL, target: documentTarget,
                 firstMatch: firstMatch, profile: profile)
             return nil
         }
+    }
+
+    /// A result above `JSWrapper.inlineResultLimit` was parked in the page's globals by the
+    /// wrapper: read it (chunked when the plain read comes back empty), then clean up.
+    private func readStoredResult(
+        length: Int,
+        target documentTarget: SafariBridge.TargetDocument,
+        firstMatch: Bool,
+        warnWriter: ((String) -> Void)?
+    ) async throws -> String {
+        let stored = try await SafariBridge.doJavaScript(
+            "window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
+        let value: String
+        if stored.isEmpty && length > 0 {
+            value = try await SafariBridge.doJavaScriptLarge(
+                "window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
+            FileHandle.standardError.write(Data("warning: output was large, used chunked read. Use --large to skip this.\n".utf8))
+        } else {
+            value = stored
+        }
+        _ = try await SafariBridge.doJavaScript(
+            "delete window.__sbLen; delete window.__sbResult",
+            target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
+        return value
     }
 
     /// #82: the URL the target now sits on, if the user's code navigated away
