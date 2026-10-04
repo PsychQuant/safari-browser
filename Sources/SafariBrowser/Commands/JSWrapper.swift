@@ -107,14 +107,18 @@ enum JSWrapper {
     /// Report what the user's code threw. Turning the thrown value into text can itself throw
     /// (`throw Symbol('x')` has no implicit string conversion, `throw Object.create(null)` has
     /// no `toString`), and an exception escaping the `catch` would be swallowed by `do
-    /// JavaScript` like a SyntaxError and read as "no reply", so the conversion is guarded.
+    /// JavaScript` like a SyntaxError and read as "no reply", so the conversion is guarded in
+    /// two steps. No global names are used (page code can reassign `window.String`, #76).
     private static var inlineCatch: String {
-        "catch(e) { var m; try { m = String(e && e.message !== undefined ? e.message : e); } catch(x) { m = 'unprintable exception'; } return 'SB1:ERR:' + m; }"
+        "catch(e) { var m; try { m = '' + (e && e.message !== undefined ? e.message : e); } catch(x) { try { m = e.toString(); } catch(y) { m = 'unprintable exception'; } } return 'SB1:ERR:' + m; }"
     }
 
     /// Shared tail: return the result inline, or park it in the globals the slow path reads.
+    /// `toWellFormed()` first: a lone surrogate (`'😀'.slice(0, 1)`) is not text osascript can
+    /// print, and it silently drops it, so the reply would arrive shorter than it says. Replaced
+    /// by U+FFFD it is the same length and survives; the dropped character was lost either way.
     private static var inlineTail: String {
-        "if (r.length > \(inlineResultLimit)) { window.__sbLen = r.length; window.__sbResult = r; return 'SB1:BIG:' + r.length + ':'; } return 'SB1:OK:' + r.length + ':' + r;"
+        "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { window.__sbLen = r.length; window.__sbResult = r; return 'SB1:BIG:' + r.length + ':'; } return 'SB1:OK:' + r.length + ':' + r;"
     }
 
     /// Parse an inline wrapper's reply. Only the status and the length are parsed; the
@@ -132,10 +136,13 @@ enum JSWrapper {
         }
         if let body = removing("OK:", from: rest) {
             guard let (length, payload) = splitLength(body) else { return .notRun }
-            // The runner strips exactly one trailing newline (the one osascript adds), so an
-            // intact payload is exactly as long as the wrapper said.
+            // An intact payload is `length` UTF-16 units, or one fewer: the runner removes the
+            // newline osascript adds AND the result's own last newline (`replacingOccurrences`
+            // with `\n$` matches the last two), so a result that ends in a newline arrives one
+            // unit short, exactly as it always did. Anything else was cut or altered.
             let actual = String(payload).utf16.count
-            return actual == length ? .value(String(payload)) : .damaged(expected: length, actual: actual)
+            return actual == length || actual + 1 == length
+                ? .value(String(payload)) : .damaged(expected: length, actual: actual)
         }
         if let body = removing("BIG:", from: rest) {
             guard let (length, _) = splitLength(body) else { return .notRun }

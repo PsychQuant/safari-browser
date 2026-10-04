@@ -28,7 +28,7 @@ final class JSWrapperTests: XCTestCase {
         let wrapper = JSWrapper.inlineExpression("1")
         XCTAssertTrue(wrapper.contains("'SB1:OK:' + r.length + ':' + r"))
         XCTAssertTrue(wrapper.contains("'SB1:ERR:' + m"))
-        XCTAssertTrue(wrapper.contains("m = String(e && e.message !== undefined ? e.message : e)"),
+        XCTAssertTrue(wrapper.contains("m = '' + (e && e.message !== undefined ? e.message : e)"),
                       "the thrown value is turned into text inside its own try, so the catch cannot throw")
         XCTAssertTrue(wrapper.contains("catch"))
     }

@@ -50,10 +50,19 @@ final class JSInlineProtocolTests: XCTestCase {
 
     func testAReplyWhoseLengthDisagreesWithItsPayloadIsDamagedNotAValue() {
         XCTAssertEqual(JSWrapper.parseInline("SB1:OK:10:hello"), .damaged(expected: 10, actual: 5))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:7:hello"), .damaged(expected: 7, actual: 5))
         XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:hello"), .damaged(expected: 2, actual: 5))
         // length is counted in UTF-16 units, as JavaScript counts it
         XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:\u{1F600}"), .value("\u{1F600}"))
         XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\u{1F600}"), .damaged(expected: 1, actual: 2))
+    }
+
+    func testAResultThatEndedInANewlineArrivesOneUnitShortAndStillCounts() {
+        // Measured on a real Safari (#255): the runner strips the trailing newline osascript adds
+        // and the result's own last newline, so 'x\n' arrives as 'x' with length 2 announced.
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:x"), .value("x"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:3:a\n"), .value("a\n"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:"), .value(""))
     }
 
     func testAnythingElseMeansTheWrapperDidNotRun() {
@@ -106,7 +115,8 @@ final class JSInlineProtocolTests: XCTestCase {
             XCTAssertTrue(wrapper.contains("\n\(code)\n"),
                           "a trailing // comment must not swallow the closing paren: \(wrapper)")
             XCTAssertFalse(wrapper.contains("eval("), "strict-CSP pages refuse eval (#76)")
-            XCTAssertFalse(wrapper.contains("String("), "page code can reassign window.String (#76)")
+            XCTAssertNil(wrapper.range(of: #"(^|[^A-Za-z.])String\("#, options: .regularExpression),
+                         "page code can reassign window.String (#76); `e.toString()` is a method, not the global")
             XCTAssertTrue(wrapper.contains("'SB1:OK:'") && wrapper.contains("'SB1:ERR:'") && wrapper.contains("'SB1:BIG:'"))
         }
     }
@@ -210,7 +220,7 @@ final class JSInlineProtocolTests: XCTestCase {
                        "SB1:ERR:unprintable exception")
         XCTAssertEqual(execute(JSWrapper.inlineExpression(
             "(function(){ throw { get message() { throw new Error('nested') } } })()")).reply,
-                       "SB1:ERR:unprintable exception")
+                       "SB1:ERR:[object Object]")
     }
 
     func testAnOversizedResultIsParkedInTheGlobalsAndReportedBig() {
@@ -222,6 +232,15 @@ final class JSInlineProtocolTests: XCTestCase {
         // exactly at the limit still comes back inline
         XCTAssertEqual(execute(JSWrapper.inlineExpression("'x'.repeat(\(JSWrapper.inlineResultLimit))")).reply?
             .hasPrefix("SB1:OK:\(JSWrapper.inlineResultLimit):"), true)
+    }
+
+    func testALoneSurrogateIsReplacedSoTheReplyKeepsItsLength() {
+        // osascript silently drops a lone surrogate (measured on a real Safari); U+FFFD is the
+        // same length and survives.
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("'ab' + '\\uD83D'")).reply, "SB1:OK:3:ab\u{FFFD}")
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("'\\uDE00x'")).reply, "SB1:OK:2:\u{FFFD}x")
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("'\u{1F600}'")).reply, "SB1:OK:2:\u{1F600}",
+                       "a well-formed pair is left alone")
     }
 
     func testAnInlineResultLeavesNothingBehindInThePage() {
@@ -262,9 +281,30 @@ final class JSInlineProtocolTests: XCTestCase {
         XCTAssertTrue(read.contains("try\n        set _u to URL of _t\n    end try"),
                       "a tab that cannot answer a URL must not fail the run: \(read)")
         XCTAssertTrue(read.contains("if _u is missing value then set _u to \"\""), "a blank tab has no URL: \(read)")
-        XCTAssertTrue(run.contains("if _r is missing value then set _r to \"\""),
-                      "a swallowed SyntaxError returns nothing and `&` cannot concatenate it: \(run)")
+        XCTAssertTrue(run.hasPrefix("set _r to do JavaScript \"1\" in _t"), run)
         XCTAssertTrue(run.contains("return _u & (character id 29) & _r"), run)
+    }
+
+    /// Run AppleScript that never talks to an application and return its string result, or the
+    /// error number (as `error -N`).
+    private func runAppleScript(_ source: String) -> String {
+        var error: NSDictionary?
+        let result = NSAppleScript(source: source)?.executeAndReturnError(&error)
+        if let error { return "error \(error["NSAppleScriptErrorNumber"] ?? "?")" }
+        return result?.stringValue ?? "nil"
+    }
+
+    func testAReplyThatNeverCameBackBecomesAnEmptyReplyNotAnUndefinedVariable() {
+        // Measured on a real Safari: a SyntaxError makes `do JavaScript` return no value at all and
+        // `_r` is then undefined. `delay 0` is a command with no result, which behaves the same.
+        let tail = SafariBridge.captureReplyTail
+        XCTAssertEqual(runAppleScript("set _u to \"U\"\nset _r to (delay 0)\n" + tail), "U\u{1D}",
+                       "no value: an empty reply, never -2753 (a swallowed SyntaxError must reach the retry logic)")
+        XCTAssertEqual(runAppleScript("set _u to \"U\"\nset _r to \"ok\"\n" + tail), "U\u{1D}ok")
+        XCTAssertEqual(runAppleScript("set _u to \"U\"\nset _r to missing value\n" + tail), "U\u{1D}")
+        XCTAssertEqual(runAppleScript("set _u to \"U\"\nset _r to \"\"\n" + tail), "U\u{1D}")
+        // the control: without the guard the same script dies with -2753
+        XCTAssertEqual(runAppleScript("set _u to \"U\"\nset _r to (delay 0)\nreturn _u & _r"), "error -2753")
     }
 
     // MARK: - every dispatch shape: order, byte-identity without capture, and it compiles
@@ -311,7 +351,9 @@ final class JSInlineProtocolTests: XCTestCase {
         // No blank line, no `_u`: the stateless commands that share this dispatch are untouched.
         for (name, script) in shapes("1", capture: false) {
             XCTAssertFalse(script.contains("_u"), name)
-            XCTAssertFalse(script.contains("\n\n"), "no blank line: \(name)")
+            XCTAssertTrue(script.split(separator: "\n", omittingEmptySubsequences: false)
+                            .allSatisfy { !$0.trimmingCharacters(in: .whitespaces).isEmpty },
+                          "no blank or whitespace-only line: \(name)\n\(script)")
             XCTAssertTrue(script.hasPrefix("tell application \"Safari\"\n"), name)
             XCTAssertTrue(script.hasSuffix("\nend tell"), name)
             XCTAssertTrue(script.contains("\n    do JavaScript \"1\" in "), name)

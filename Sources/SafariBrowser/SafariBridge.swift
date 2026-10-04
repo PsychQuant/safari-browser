@@ -1904,18 +1904,30 @@ enum SafariBridge {
 
     /// The AppleScript statement that runs `code` in `ref`. With `captureURL` (#255) it answers
     /// `URL GS result` (`urlCaptureStatement` must already have run), so the caller learns where
-    /// the tab was BEFORE the code ran without a second round trip. A `do JavaScript` that
-    /// returned nothing (a swallowed SyntaxError) answers an empty result, so it cannot turn the
-    /// concatenation into an AppleScript error.
+    /// the tab was BEFORE the code ran without a second round trip.
     static func doJavaScriptStatement(_ code: String, in ref: String, captureURL: Bool) -> String {
         let escaped = code.escapedForAppleScript
         guard captureURL else { return "do JavaScript \"\(escaped)\" in \(ref)" }
         return [
             "set _r to do JavaScript \"\(escaped)\" in \(ref)",
-            "if _r is missing value then set _r to \"\"",
-            "return _u & (character id 29) & _r",
+            captureReplyTail,
         ].joined(separator: "\n    ")
     }
+
+    /// What follows `set _r to do JavaScript …` in a capturing script. Measured on a real Safari
+    /// (#255): when the code does not parse, `do JavaScript` returns NO value at all, and
+    /// `set _r to <no value>` leaves `_r` undefined (not `missing value`; assigning it first does
+    /// not help either), so the first reference to `_r` fails with -2753. The read is therefore
+    /// inside a `try` that turns "undefined" into an empty reply. A real AppleScript error from
+    /// `do JavaScript` itself (-1719, the identity guard) is thrown by the `set` line, outside it.
+    static let captureReplyTail = [
+        "try",
+        "    if _r is missing value then set _r to \"\"",
+        "on error",
+        "    set _r to \"\"",
+        "end try",
+        "return _u & (character id 29) & _r",
+    ].joined(separator: "\n    ")
 
     /// Execute JS and read large results via chunked transfer.
     /// Stores result in window.__sbResult, then reads back in 256KB chunks.
