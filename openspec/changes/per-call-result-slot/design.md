@@ -76,7 +76,7 @@ CLI 取名（`ResultSlot.make()`，UUID）：`--large` 需要在程式碼執行�
 - 沒有 `toWellFormed` 的舊 Safari，孤立 surrogate 會讓分塊讀取報錯而不是靜默丟字。
 - 頁面上留下一個數字 `window.__sbn`（計數器）。
 - 每個呼叫的槽腳本（存入、長度、每一塊、清除；`--large` 另有預設與錯誤讀取）都含槽名，所以各占 daemon 編譯快取（256 項、LRU）一項。一次 `--large` 呼叫新增約 5 加塊數個項目，所以迴圈裡跑幾十次 `--large --output` 就會把整個快取換過一輪。快取有界，不影響正確性，對暖啟動的影響沒有量測。
-- 這個 change 不知道 `--large` 的程式碼丟出非 Error 的值（`throw 'x'`、`throw null`）：`e.message` 是 `undefined`，結果為空、結束碼 0；`throw null` 還會讓 catch 自己丟錯而被當成「沒解析」、以語句形式再跑一次。兩者在 `main` 就存在，另開 issue。
+- 這個 change 不知道 `--large` 的程式碼丟出非 Error 的值（`throw 'x'`、`throw null`）：`e.message` 是 `undefined`，結果為空、結束碼 0；`throw null` 還會讓 catch 自己丟錯而被當成「沒解析」、以語句形式再跑一次。兩者在 `main` 就存在，在 JavaScriptCore 測試頁重現（不是真機），#260 追蹤；內嵌包裝宣告 `r`、`m` 的遮蔽是 #259。
 
 ## Open Questions
 
