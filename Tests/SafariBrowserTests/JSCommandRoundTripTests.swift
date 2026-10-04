@@ -273,26 +273,36 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         private let lock = NSLock()
         private var collected = Data()
         private var saved: Int32 = -1
+        private let drained = DispatchSemaphore(value: 0)
         init(_ fd: Int32) { self.fd = fd }
         func start() {
             fflush(fd == STDOUT_FILENO ? stdout : stderr)
             saved = dup(fd)
-            // Drained as it is written: a result of more than a pipe's worth (64 KiB) would otherwise
-            // block `print` for good, and the `--large` tests print several hundred KiB.
-            pipe.fileHandleForReading.readabilityHandler = { [self] handle in
-                let data = handle.availableData
-                lock.lock(); collected.append(data); lock.unlock()
+            // Drained as it is written, by a thread that is joined at end of file: a result of more than a
+            // pipe's worth (64 KiB) would otherwise block `print` for good, and the `--large` tests print
+            // several hundred KiB. A `readabilityHandler` was tried first and raced `stop()`: a callback in
+            // flight when the handler was removed appended after the final read, and the capture came back
+            // short in about one run in seven.
+            let readFD = pipe.fileHandleForReading.fileDescriptor
+            let reader = Thread { [self] in
+                var buffer = [UInt8](repeating: 0, count: 65_536)
+                while true {
+                    let count = read(readFD, &buffer, buffer.count)
+                    if count <= 0 { break }
+                    lock.lock(); collected.append(contentsOf: buffer[0..<count]); lock.unlock()
+                }
+                drained.signal()
             }
+            reader.start()
             dup2(pipe.fileHandleForWriting.fileDescriptor, fd)
         }
         func stop() -> String {
             fflush(fd == STDOUT_FILENO ? stdout : stderr)
             dup2(saved, fd); close(saved)
+            // `fd` no longer points into the pipe, so closing its own write end is the last one: end of file.
             try? pipe.fileHandleForWriting.close()
-            pipe.fileHandleForReading.readabilityHandler = nil
-            let rest = pipe.fileHandleForReading.readDataToEndOfFile()
+            drained.wait()
             lock.lock(); defer { lock.unlock() }
-            collected.append(rest)
             return String(decoding: collected, as: UTF8.self)
         }
     }

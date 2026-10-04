@@ -37,6 +37,10 @@
 - Sources/SafariBrowser/Commands/JSCommand.swift、JSWrapper.swift、GetCommand.swift
 - Tests/SafariBrowserTests/FakePage.swift（新增：在 JavaScriptCore 裡真的執行 CLI 送出的腳本）、ResultSlot*Tests.swift（新增）
 
-## 與 #192 的差別（刻意的）
+## 與 #192 與 #257 的差別（刻意的，細節見 design.md）
 
-沒有帶過來：一般路徑的 prepared／running／done／error 狀態機、`--output` 在導頁後保留舊檔並失敗、協作式取消的檢查點、daemon 的暫時編譯（ephemeral）政策與新 RPC、孤立 surrogate 報錯。理由見 design.md。
+沒有帶過來：一般路徑的 prepared／running／done／error 狀態機、協作式取消的檢查點、daemon 的暫時編譯（ephemeral）政策與新 RPC、孤立 surrogate 報錯（B7 決定換成 U+FFFD）。
+
+**與 #257 B2 的差異**：B2 說狀態機只留給仍存進頁面的路徑；這個 change 在那些路徑上也沒有帶狀態機或執行證據。`--large`／`--output` 仍靠 #76／#82 的哨兵加網址檢查，回覆遺失而網址沒變時可能再執行一次程式碼（`main` 就是如此）。B2 的後半沒有做完，要不要補由使用者決定。
+
+`--output` 在程式碼導頁後保留原檔並失敗，**有**帶（審查指出以前把檔案截成零位元組、結束碼 0，真機重現）。
