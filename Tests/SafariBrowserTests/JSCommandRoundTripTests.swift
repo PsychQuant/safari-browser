@@ -327,7 +327,8 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         let fake = FakeSafari()
         try await runJS(["--window", "1", "--tab-in-window", "53", "var a = 1; a"], on: fake)
         XCTAssertEqual(fake.javaScripts.count, 1, "the local hint saves the expression attempt that cannot parse:\n\(fake.transcript)")
-        XCTAssertTrue(fake.javaScripts[0].contains("var r = '' + (function(){"), fake.javaScripts[0])
+        let first = try XCTUnwrap(fake.javaScripts.first, fake.transcript)
+        XCTAssertTrue(first.contains("var r = '' + (function(){"), first)
     }
 
     func testAWrongHintCostsTheOtherFormAfterANavigationCheck() async throws {
@@ -335,11 +336,13 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         fake.expressionFormParses = false     // Safari disagrees with the local hint
         try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
         XCTAssertEqual(fake.javaScripts.count, 2, fake.transcript)
+        guard fake.javaScripts.count == 2 else { return }
         XCTAssertTrue(fake.javaScripts[1].contains("var r = '' + (function(){"), "the second form is the statement form")
         XCTAssertFalse(fake.javaScripts[1].contains("set _u to"), "only the first call reads the URL")
         let firstJS = try XCTUnwrap(fake.scripts.firstIndex { $0.contains("do JavaScript") })
         let urlRead = try XCTUnwrap(fake.scripts.indices.first { $0 > firstJS && !fake.scripts[$0].contains("do JavaScript") })
-        XCTAssertLessThan(urlRead, fake.scripts.lastIndex { $0.contains("do JavaScript") }!,
+        let lastJS = try XCTUnwrap(fake.scripts.lastIndex { $0.contains("do JavaScript") })
+        XCTAssertLessThan(urlRead, lastJS,
                           "#82: the navigation check sits between the two forms, so a form that ran is never run twice")
     }
 
@@ -397,6 +400,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         fake.inlineAnswer = "SB1:BIG:200000:"
         try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
         XCTAssertEqual(fake.javaScripts.count, 3, "wrapper, read the stored result, cleanup:\n\(fake.transcript)")
+        guard fake.javaScripts.count == 3 else { return }
         XCTAssertTrue(fake.javaScripts[1].contains("window.__sbResult"), fake.javaScripts[1])
         XCTAssertTrue(fake.javaScripts[2].contains("delete window.__sbLen; delete window.__sbResult"), fake.javaScripts[2])
     }

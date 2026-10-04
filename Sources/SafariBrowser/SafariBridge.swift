@@ -582,12 +582,14 @@ enum SafariBridge {
         case .resolvedTab, .anchoredCurrentTab, .urlMatch, .documentIndex:
             return concrete
         case .windowTab(let window, let tab):
-            // #255: without `--profile` the window index means the same thing to Safari as to
-            // us, so one small read (id + tab count) anchors the target. With `--profile` the
-            // index counts only that profile's windows, which only the enumeration knows.
-            if profile == nil || profile?.isEmpty == true,
-               let anchored = anchoredWindowTab(
-                   tab: tab, anchor: await readTabAnchor(windowIndex: window), profile: profile) {
+            // #255: one small read (window id + tab count) anchors the target. Reached only
+            // without `--profile`: `resolveToConcreteTarget` above already sent every
+            // profile-scoped target through the enumeration, because there the window index
+            // counts only that profile's windows, which only the enumeration knows. Anchoring
+            // such a target by Safari's own window index would pick another profile's window.
+            // `JSCommandRoundTripTests.testWindowTabWithAProfileStillEnumerates…` pins it.
+            if let anchored = anchoredWindowTab(
+                tab: tab, anchor: await readTabAnchor(windowIndex: window), profile: profile) {
                 return anchored
             }
             let resolved = try await resolveNativeTarget(
