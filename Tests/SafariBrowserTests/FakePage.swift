@@ -68,6 +68,11 @@ final class FakePage: @unchecked Sendable {
             .split(separator: ",").map(String.init)
     }
 
+    /// Every own property name of the page's global object.
+    func windowKeys() -> Set<String> {
+        Set((evaluate("Object.getOwnPropertyNames(window).join('\\n')") ?? "").split(separator: "\n").map(String.init))
+    }
+
     var javaScripts: [String] { lock.withLock { sent }.compactMap(Self.javaScript(in:)) }
 
     /// The runner to install with `DaemonRequestContext.$appleScriptRunner`.

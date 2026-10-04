@@ -1972,16 +1972,31 @@ enum SafariBridge {
             // distinguish "legitimately empty result" (0, set by the wrapper) from "wrapper never
             // parsed" (undefined, preset). A caller that passed its own slot removes it itself.
             guard let totalLen = ResultSlot.parseLength(lenStr), totalLen > 0 else {
-                if ownsSlot { _ = try? await doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch) }
+                if ownsSlot { await removeResultSlot(slot, target: target, firstMatch: firstMatch) }
                 return ""
             }
             let result = try await readResultSlot(slot, length: totalLen, target: target, firstMatch: firstMatch)
-            if ownsSlot { _ = try? await doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch) }
+            if ownsSlot { await removeResultSlot(slot, target: target, firstMatch: firstMatch) }
             return result
         } catch {
-            if ownsSlot { _ = try? await doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch) }
+            if ownsSlot { await removeResultSlot(slot, target: target, firstMatch: firstMatch, after: error) }
             throw error
         }
+    }
+
+    /// Remove a slot its caller made, best effort: a failed removal never changes what the call reports.
+    ///
+    /// Not tried after a timeout. The page's main thread is busy then, so the removal would wait out a
+    /// timeout of its own and the user would wait twice as long for the same error. Whatever the slot
+    /// holds stays until the page is left (#193).
+    static func removeResultSlot(
+        _ slot: ResultSlot,
+        target: TargetDocument,
+        firstMatch: Bool = false,
+        after error: Error? = nil
+    ) async {
+        if let error, !ResultSlot.removalIsWorthTrying(after: error) { return }
+        _ = try? await doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch)
     }
 
     /// Read a parked result back, one framed chunk per `do JavaScript`, and check every chunk.

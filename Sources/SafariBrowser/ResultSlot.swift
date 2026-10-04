@@ -58,16 +58,21 @@ struct ResultSlot: Equatable, Sendable {
 
     /// Evaluate `expression`, make it text, replace a lone surrogate with U+FFFD, and park it.
     ///
-    /// The slot object exists before the expression is evaluated, so an expression that throws leaves
+    /// The slot object is made BEFORE the expression is evaluated, so an expression that throws leaves
     /// a slot with no `len` (the "never ran or threw" sentinel) and an expression that does not parse
-    /// leaves no slot or an untouched preset. `toWellFormed()` first because osascript drops a lone
+    /// leaves no slot or an untouched preset. `toWellFormed()` because osascript drops a lone
     /// surrogate without a word (#255); U+FFFD has the same length and survives. A Safari without
     /// `toWellFormed` keeps the lone surrogate and the chunk read reports the length mismatch.
+    ///
+    /// The user's expression is an ARGUMENT of the function that stores it, so it is evaluated where
+    /// `do JavaScript` runs it, not inside a function that declares variables of its own: a `var s` or
+    /// `var r` there would shadow a page global named `s` or `r` and the expression would read
+    /// `undefined` without a word.
     func storeScript(_ expression: String) -> String {
         """
-        (function(){ var s = \(ref) || (\(ref) = {}); var r = '' + (
+        (\(ref) = \(ref) || {}, (function(r){ if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } var s = \(ref); s.text = r; s.len = r.length; })('' + (
         \(expression)
-        ); if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } s.text = r; s.len = r.length; })()
+        )))
         """
     }
 
@@ -82,6 +87,25 @@ struct ResultSlot: Equatable, Sendable {
     }
 
     var cleanupScript: String { "delete \(ref)" }
+
+    /// How the error of a transfer that did not complete starts. One place, so the commands can tell it from
+    /// a JavaScript error without matching text of their own.
+    static let incompleteTransferPrefix = "JavaScript result transfer was incomplete"
+
+    /// Whether `error` is a transfer that did not complete: the reply was cut or altered, or the slot was gone
+    /// when it was read (the page was left, or another call replaced it).
+    static func isIncompleteTransfer(_ error: Error) -> Bool {
+        guard case .appleScriptFailed(let message)? = error as? SafariBrowserError else { return false }
+        return message.hasPrefix(incompleteTransferPrefix)
+    }
+
+    /// Whether another round trip to remove the slot is worth it after `error`. After a timeout it is not.
+    static func removalIsWorthTrying(after error: Error) -> Bool {
+        switch error as? SafariBrowserError {
+        case .timeout?, .processTimedOut?: return false
+        default: return true
+        }
+    }
 
     /// One chunk: `<end>:<text><terminator>`.
     ///
@@ -119,7 +143,7 @@ struct ResultSlot: Equatable, Sendable {
     /// into one `Character`, and the frame would look like it had no separator.
     static func parseFrame(_ raw: String, offset: Int, total: Int) throws -> (end: Int, text: String) {
         func incomplete(_ why: String) -> SafariBrowserError {
-            .appleScriptFailed("JavaScript result transfer was incomplete at unit \(offset) of \(total): \(why). "
+            .appleScriptFailed("\(incompleteTransferPrefix) at unit \(offset) of \(total): \(why). "
                 + "The code ran and was not run again.")
         }
         let scalars = raw.unicodeScalars

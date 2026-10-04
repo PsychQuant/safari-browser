@@ -37,13 +37,13 @@ enum JSWrapper {
     /// so without this capture a runtime error would misread as a parse failure) and
     /// newline-guards the user code against trailing comments.
     static func largeExpression(_ code: String, slot: ResultSlot) -> String {
-        "(function(){ try { return ('' + (\n\(code)\n)); } catch(e) { var s = window.\(slot.key); if (s) { s.err = e.message; } return ''; } })()"
+        "(function(){ try { return ('' + (\n\(code)\n)); } catch(e) { if (window.\(slot.key)) { window.\(slot.key).err = e.message; } return ''; } })()"
     }
 
     /// Large-path statement form: user code runs as a function body (use
     /// `return` for a value), same in-band runtime-error capture.
     static func largeStatement(_ code: String, slot: ResultSlot) -> String {
-        "(function(){ try { return ('' + (function(){\n\(code)\n})()); } catch(e) { var s = window.\(slot.key); if (s) { s.err = e.message; } return ''; } })()"
+        "(function(){ try { return ('' + (function(){\n\(code)\n})()); } catch(e) { if (window.\(slot.key)) { window.\(slot.key).err = e.message; } return ''; } })()"
     }
 
     // MARK: - One-call protocol (#255)
@@ -119,9 +119,16 @@ enum JSWrapper {
         // Over the limit, the result is parked in a slot of this call's own whose NAME THE PAGE PICKS and the
         // reply carries (`SB1:BIG:<len>:<key>`). The CLI cannot pick it: the wrapper text would then differ
         // on every call, and the daemon would compile every `js` script anew instead of reusing it. The name
-        // is unique (time, a random part, a counter) and is checked against `ResultSlot.isValid` before it
-        // is used for anything.
-        "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { var k = '\(ResultSlot.keyPrefix)' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10) + ((window.__sbn = (window.__sbn | 0) + 1)).toString(36); window[k] = { text: r, len: r.length }; return 'SB1:BIG:' + r.length + ':' + k; } return 'SB1:OK:' + r.length + ':' + r + '\\u001e';"
+        // is checked against `ResultSlot.isValid` before it is used for anything.
+        //
+        // Unique because of a counter first (`window.__sbn`, forced to an unsigned integer so a page that
+        // set it to `-5` or `'abc'` still moves it forward), then the clock and a random part, which a page
+        // may stub or remove (fake timers, a privacy extension): they sit in a `try` and only add to the
+        // name. Anything outside `[0-9a-z]` is dropped and a fixed tail keeps the name long enough, so
+        // whatever the page does to its clock the name still passes the CLI's check.
+        // The naming runs in a function of its own: it is created after the user's code ran, but its `var`s
+        // are kept out of the function that encloses that code all the same.
+        "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { return (function(){ var n = (window.__sbn >>> 0) + 1, t = ''; window.__sbn = n; try { t = Date.now().toString(36) + Math.random().toString(36).slice(2, 10); } catch (x) {} var k = '\(ResultSlot.keyPrefix)' + (n.toString(36) + t).replace(/[^0-9a-z]/g, '').slice(0, 48) + 'sbslot00'; window[k] = { text: r, len: r.length }; return 'SB1:BIG:' + r.length + ':' + k; })(); } return 'SB1:OK:' + r.length + ':' + r + '\\u001e';"
     }
 
     /// Closes an `OK` reply. It is not whitespace, so it keeps the end of the result away from

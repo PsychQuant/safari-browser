@@ -68,19 +68,27 @@ struct JSCommand: AsyncParsableCommand {
             warnWriter: warnWriter,
             profile: profile
         )
-        let result: String
+        let outcome: String?
         do {
             if large || output != nil {
-                result = try await runLargePath(jsCode, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+                outcome = try await runLargePath(jsCode, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
             } else {
-                guard let nonLarge = try await runNonLargePath(
+                outcome = try await runNonLargePath(
                     jsCode, target: documentTarget, firstMatch: firstMatch,
-                    warnWriter: warnWriter, profile: profile
-                ) else { return }   // #82: the code navigated — reported, nothing to print
-                result = nonLarge
+                    warnWriter: warnWriter, profile: profile)
             }
         } catch let error as SafariBrowserError {
             throw Self.anchoredFailure(error, original: initialTarget, anchored: documentTarget)
+        }
+
+        // #82: the code navigated — reported, and there is no result. Printing nothing is right; writing
+        // nothing over a file the user named is too: `--output` used to truncate it to zero bytes and exit 0.
+        guard let result = outcome else {
+            if let output {
+                throw SafariBrowserError.appleScriptFailed(
+                    "The page navigated away while the code ran, so there is no result to write. \(output) was left as it was.")
+            }
+            return
         }
 
         if let output {
@@ -189,8 +197,20 @@ struct JSCommand: AsyncParsableCommand {
                     throw SafariBrowserError.appleScriptFailed(
                         "JavaScript error: \(message)\(JSWrapper.cspEvalHint(for: message) ?? "")")
                 case .stored(let slot, let length):
-                    return try await readStoredResult(
-                        slot: slot, length: length, target: documentTarget, firstMatch: firstMatch)
+                    do {
+                        return try await readStoredResult(
+                            slot: slot, length: length, target: documentTarget, firstMatch: firstMatch)
+                    } catch where ResultSlot.isIncompleteTransfer(error) {
+                        // #82: the page was left between the wrapper's reply and the read, so the slot went
+                        // with it. That is a navigation, not a damaged transfer.
+                        if let navURL = try await Self.navigatedAwayURL(
+                            from: preNavURL, target: documentTarget,
+                            firstMatch: firstMatch, profile: profile) {
+                            Self.reportNavigation(to: navURL)
+                            return nil
+                        }
+                        throw error
+                    }
                 case .invalidSlot:
                     throw SafariBrowserError.appleScriptFailed(
                         "JavaScript result slot: the reply named a place for the result that is not a valid slot name, so it was not read. The code ran; it was not run again. Use --large to read the result.")
@@ -246,12 +266,10 @@ struct JSCommand: AsyncParsableCommand {
         do {
             let value = try await SafariBridge.readResultSlot(
                 slot, length: length, target: documentTarget, firstMatch: firstMatch)
-            _ = try? await SafariBridge.doJavaScript(
-                slot.cleanupScript, target: documentTarget, firstMatch: firstMatch)
+            await SafariBridge.removeResultSlot(slot, target: documentTarget, firstMatch: firstMatch)
             return value
         } catch {
-            _ = try? await SafariBridge.doJavaScript(
-                slot.cleanupScript, target: documentTarget, firstMatch: firstMatch)
+            await SafariBridge.removeResultSlot(slot, target: documentTarget, firstMatch: firstMatch, after: error)
             throw error
         }
     }
@@ -362,18 +380,30 @@ struct JSCommand: AsyncParsableCommand {
         firstMatch: Bool,
         warnWriter: ((String) -> Void)?,
         profile: String?
-    ) async throws -> String {
+    ) async throws -> String? {
         // #190: the result, the runtime error and the "never ran" sentinel all live in a slot of this
         // call's own, made here because the error and the sentinel are read by name before any result
         // exists. It is removed on every way out.
         let slot = ResultSlot.make()
+        // #82: the URL before the code ran, to tell "ran, then navigated away and took the slot with it"
+        // from "never parsed".
+        let preNavURL = try? await SafariBridge.getCurrentURL(
+            target: target, firstMatch: firstMatch, warnWriter: nil, profile: profile)
         do {
             let result = try await runLargePath(
-                jsCode, slot: slot, target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
-            _ = try? await SafariBridge.doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch)
+                jsCode, slot: slot, preNavURL: preNavURL, target: target, firstMatch: firstMatch,
+                warnWriter: warnWriter, profile: profile)
+            await SafariBridge.removeResultSlot(slot, target: target, firstMatch: firstMatch)
             return result
         } catch {
-            _ = try? await SafariBridge.doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch)
+            await SafariBridge.removeResultSlot(slot, target: target, firstMatch: firstMatch, after: error)
+            // The page was left between the length read and a chunk read: a navigation, not a damaged transfer.
+            if ResultSlot.isIncompleteTransfer(error),
+               let navURL = try await Self.navigatedAwayURL(
+                from: preNavURL, target: target, firstMatch: firstMatch, profile: profile) {
+                Self.reportNavigation(to: navURL)
+                return nil
+            }
             throw error
         }
     }
@@ -381,17 +411,16 @@ struct JSCommand: AsyncParsableCommand {
     private func runLargePath(
         _ jsCode: String,
         slot: ResultSlot,
+        preNavURL: String?,
         target: SafariBridge.TargetDocument,
         firstMatch: Bool,
         warnWriter: ((String) -> Void)?,
         profile: String?
-    ) async throws -> String {
+    ) async throws -> String? {
         // #82: same navigation ambiguity as the non-large path — an unset
         // marker means either "never parsed" or "ran, then navigated away and
-        // took the slot with it". Capture the starting URL so the two can be
+        // took the slot with it". `preNavURL` is the starting URL, so the two can be
         // told apart before anything is retried.
-        let preNavURL = try? await SafariBridge.getCurrentURL(
-            target: target, firstMatch: firstMatch, warnWriter: nil, profile: profile)
         _ = try await SafariBridge.doJavaScript(slot.presetScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
         var result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeExpression(jsCode, slot: slot), target: target, firstMatch: firstMatch, warnWriter: warnWriter, slot: slot)
         if result.isEmpty {
@@ -408,7 +437,7 @@ struct JSCommand: AsyncParsableCommand {
                 if let navURL = try await Self.navigatedAwayURL(
                     from: preNavURL, target: target, firstMatch: firstMatch, profile: profile) {
                     Self.reportNavigation(to: navURL)
-                    return ""
+                    return nil
                 }
                 // Expression form never parsed (nothing ran) — retry as function body.
                 result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeStatement(jsCode, slot: slot), target: target, firstMatch: firstMatch, warnWriter: warnWriter, slot: slot)
@@ -419,7 +448,7 @@ struct JSCommand: AsyncParsableCommand {
                         if let navURL = try await Self.navigatedAwayURL(
                             from: preNavURL, target: target, firstMatch: firstMatch, profile: profile) {
                             Self.reportNavigation(to: navURL)
-                            return ""
+                            return nil
                         }
                         throw SafariBrowserError.appleScriptFailed(
                             "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"

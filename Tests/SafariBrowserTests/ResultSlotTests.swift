@@ -171,13 +171,17 @@ final class ResultSlotTests: XCTestCase {
 
     func testParseFrameRefusesAnythingThatIsNotWhatTheScriptSends() {
         let end = "\u{1E}"
-        let bad: [String] = ["", "5", "5:hello", "5:hello\(end)x", "6:hello\(end)", "4:hello\(end)", "5:hell\(end)",
+        let bad: [String] = ["", "5", "5:hello", "5:hello\(end)x",
+                             "5:hellox", "5:hello ", "5:hello\n", "5:hello:",   // the right length, but nothing ends it
+                             "6:hello\(end)", "4:hello\(end)", "5:hell\(end)",
                              ":hello\(end)", "-5:hello\(end)", "+5:hello\(end)", "5 :hello\(end)", "99:hello\(end)",
                              "0:\(end)", "undefined", "missing value"]
         for raw in bad {
             XCTAssertThrowsError(try ResultSlot.parseFrame(raw, offset: 0, total: 5), raw.debugDescription)
         }
         XCTAssertEqual(try ResultSlot.parseFrame("5:hello\(end)", offset: 0, total: 5).text, "hello")
+        // a position past the announced total is refused even when the text is as long as the frame says
+        XCTAssertThrowsError(try ResultSlot.parseFrame("8:hello\(end)", offset: 3, total: 5))
         // a frame must end at the position it announces, counted from where it started
         XCTAssertThrowsError(try ResultSlot.parseFrame("8:hello\(end)", offset: 4, total: 9))
         XCTAssertEqual(try ResultSlot.parseFrame("9:hello\(end)", offset: 4, total: 9).end, 9)

@@ -64,10 +64,11 @@ final class ResultSlotIsolationTests: XCTestCase, @unchecked Sendable {
 
     func testNothingIsLeftBehindInThePage() async throws {
         let page = FakePage()
+        let before = page.windowKeys()
         _ = try await large("'x'.repeat(300000)", page)
-        XCTAssertEqual(page.keys(withPrefix: "__sbr_"), [])
+        XCTAssertEqual(page.windowKeys(), before, "any new property on window is a leftover, not only one with the slot prefix")
         _ = try await large("''", page)
-        XCTAssertEqual(page.keys(withPrefix: "__sbr_"), [], "an empty result used to be the one case the cleanup skipped")
+        XCTAssertEqual(page.windowKeys(), before, "an empty result used to be the one case the cleanup skipped")
     }
 
     func testTheOldSharedNamesAreNeverTouched() async throws {
@@ -112,6 +113,7 @@ final class ResultSlotIsolationTests: XCTestCase, @unchecked Sendable {
             }
         }
         _ = try? await large("'a'.repeat(\(ResultSlot.chunkSize + 500))", page)
+        XCTAssertTrue(removed, "the second chunk was never read, so nothing was tested")
         XCTAssertEqual(page.keys(withPrefix: "__sbr_"), [], "a slot the call made must not outlive the call")
     }
 
