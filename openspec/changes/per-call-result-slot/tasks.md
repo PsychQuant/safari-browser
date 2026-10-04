@@ -11,8 +11,12 @@
 - [x] 2.3 GetCommand：帶 selector 的後備直接把運算式交給分塊讀取；ResultSlotGetTests。
 - [x] 2.4 「孤立 surrogate」：存入前 `toWellFormed()`，換成 U+FFFD，不報錯。
 
+- [x] 2.5 「包裝不在使用者的範圍裡宣告變數」：`storeScript` 把運算式當引數、大型包裝的 catch 不宣告變數、內嵌的命名放在自己的函式裡，且不依賴頁面的時鐘與亂數；ResultSlotShadowingTests。
+- [x] 2.6 「導頁」與 `--output keeps its file when there is no result`：`runLargePath` 回傳 `String?`，沒有結果時 `--output` 失敗並保留原檔；頁面在長度讀取與第一塊之間被換掉時網址不同就是導頁；ResultSlotCommandTests。
+- [x] 2.7 「逾時後不清除」：`SafariBridge.removeResultSlot` 在逾時之後不再多等一個逾時；ResultSlotCommandTests。
+
 ## 3. 驗證與交付
 
-- [x] 3.1 變異測試：每個保護被移除時至少一個具名測試失敗。
-- [ ] 3.2 「daemon」：確認沒有改 daemon，記錄快取壓力只在少見路徑的理由；完整單元與 smoke 測試、獨立審查。
-- [ ] 3.3 真 Safari 驗收（#257 的 B4）：原始 #190 情境、傳輸行為清單、不同路徑交錯呼叫、`SB1:BIG` 的往返次數與耗時。需要使用者的空檔。
+- [x] 3.1 變異測試：36 個保護各移除一次（腳本不在 repo 內），每個都有具名測試失敗；第一輪 27 個中有 1 個存活（結尾標記檢查），補了一個框架案例後 27/27；審查之後新增 9 個變異（遮蔽、導頁、逾時、讀取迴圈、位置上界等），全部被殺。
+- [x] 3.2 「daemon」：確認沒有改 daemon，記錄快取壓力的理由（design.md 的 Risks）；完整單元測試 2082 項中 1 項失敗（`MCPIsolatedBootstrapTests`，在 `origin/main` 與 #256 的 head 上同樣失敗，與本變更無關，另開 issue）、smoke 74/74；四位獨立審查者（協議與安全、行為等價與測試、文件誠實度、對照 #192 的反方），發現已處理或記錄。
+- [ ] 3.3 真 Safari 驗收（#257 的 B4）：**部分完成**。已做：兩個同時執行的 `js`（`--large` 與內嵌 BIG 各 20 輪）、34 個大型結果案例對照 `main` 與 #256、頁面全域遮蔽、時鐘與亂數被替換、`--output` 導頁、`window` 上殘留的屬性。沒做：`get text`／`snapshot`／`exec` 與其他呼叫的真機交錯、原始 #190 情境（未重現）、daemon 模式的大型結果、使用者在讀取途中切分頁。
