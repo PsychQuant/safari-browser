@@ -192,7 +192,7 @@ struct JSCommand: AsyncParsableCommand {
                         length: length, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
                 case .damaged(let expected, let actual):
                     throw SafariBrowserError.appleScriptFailed(
-                        "JavaScript reply damaged: the wrapper reported \(expected) UTF-16 units and \(actual) arrived. The code ran; it was not run again. Use --large to read the result in chunks.")
+                        "JavaScript reply damaged: the wrapper reported \(expected) UTF-16 units and \(actual) arrived, or the end of the reply is missing. The code ran; it was not run again. Use --large to read the result in chunks.")
                 case .notRun:
                     // #82: nothing came back. Check for a navigation first: the reply went
                     // with the old document.

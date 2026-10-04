@@ -59,7 +59,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         var expressionFormParses = true
         var statementFormParses = true
         /// #255: what a wrapper that parsed answers (the reply `JSWrapper.parseInline` reads).
-        var inlineAnswer = "SB1:OK:5:hello"
+        var inlineAnswer = "SB1:OK:5:hello\u{1E}"
         /// #255: the URL the tab had before the code ran, read in the same AppleScript.
         var capturedURL = "https://w1.example/53"
         /// #255: when set, a plain read of tab 53's URL answers this (the code navigated the page).
@@ -457,7 +457,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
 
     func testAReplyWhoseLengthDisagreesWithItsPayloadIsAnErrorAndNotRunAgain() async {
         let fake = FakeSafari()
-        fake.inlineAnswer = "SB1:OK:50:hello"
+        fake.inlineAnswer = "SB1:OK:50:hello\u{1E}"
         do {
             try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
             XCTFail("a cut reply must not print as if it were the result")
@@ -467,6 +467,15 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             XCTAssertTrue(message.contains("50") && message.contains("5"), message)
         } catch { XCTFail("\(error)") }
         XCTAssertEqual(fake.javaScripts.count, 1, fake.transcript)
+    }
+
+    func testAResultThatEndsInNewlinesPrintsWhatItAlwaysPrinted() async throws {
+        // The runner used to remove the result's own last newline; the reply now carries it intact
+        // and the command drops exactly one, so the output is byte for byte what it was.
+        let fake = FakeSafari()
+        fake.inlineAnswer = "SB1:OK:3:a\n\n\u{1E}"
+        let output = try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
+        XCTAssertEqual(output.stdout, "a\n\n", "the value `a\n` plus the newline `print` adds")
     }
 
     func testARuntimeErrorComesFromTheSingleReply() async {

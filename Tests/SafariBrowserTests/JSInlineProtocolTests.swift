@@ -10,17 +10,17 @@ final class JSInlineProtocolTests: XCTestCase {
     // MARK: - parseInline
 
     func testAValueComesBackWithItsPayloadIntact() {
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:5:hello"), .value("hello"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:5:hello\u{1E}"), .value("hello"))
     }
 
     func testAnEmptyResultIsAValueNotANonRun() {
         // A legitimately empty result must stay distinguishable from "the wrapper never ran".
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:0:"), .value(""))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:0:\u{1E}"), .value(""))
     }
 
     func testThePayloadMayContainColonsNewlinesAndTheFieldSeparator() {
         let payload = "a:b:c\nSB1:ERR:x\u{1D}y"
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:\(payload.utf16.count):\(payload)"), .value(payload),
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:\(payload.utf16.count):\(payload)\u{1E}"), .value(payload),
                        "only the status and the length are parsed; everything after is the payload")
     }
 
@@ -39,30 +39,43 @@ final class JSInlineProtocolTests: XCTestCase {
         for lead in ["\u{FE0F}", "\u{0301}", "\u{200D}", "\u{3099}", "\u{1F3FB}"] {
             let payload = lead + "x"
             let n = payload.utf16.count
-            XCTAssertEqual(JSWrapper.parseInline("SB1:OK:\(n):\(payload)"), .value(payload), lead.debugDescription)
+            XCTAssertEqual(JSWrapper.parseInline("SB1:OK:\(n):\(payload)\u{1E}"), .value(payload), lead.debugDescription)
             XCTAssertEqual(JSWrapper.parseInline("SB1:ERR:\(payload)"), .error(payload), lead.debugDescription)
         }
         // ...and a combining scalar glued to the `ERR` / `OK` / `BIG` status separators.
         XCTAssertEqual(JSWrapper.parseInline("SB1:ERR:\u{0301}"), .error("\u{0301}"))
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\u{0301}"), .value("\u{0301}"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\u{0301}\u{1E}"), .value("\u{0301}"))
         XCTAssertEqual(JSWrapper.parseInline("SB1:BIG:300000:\u{0301}"), .stored(length: 300000))
     }
 
     func testAReplyWhoseLengthDisagreesWithItsPayloadIsDamagedNotAValue() {
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:10:hello"), .damaged(expected: 10, actual: 5))
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:7:hello"), .damaged(expected: 7, actual: 5))
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:hello"), .damaged(expected: 2, actual: 5))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:10:hello\u{1E}"), .damaged(expected: 10, actual: 5))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:7:hello\u{1E}"), .damaged(expected: 7, actual: 5))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:hello\u{1E}"), .damaged(expected: 2, actual: 5))
         // length is counted in UTF-16 units, as JavaScript counts it
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:\u{1F600}"), .value("\u{1F600}"))
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\u{1F600}"), .damaged(expected: 1, actual: 2))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:\u{1F600}\u{1E}"), .value("\u{1F600}"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\u{1F600}\u{1E}"), .damaged(expected: 1, actual: 2))
+        // a reply whose end marker never arrived was cut, whatever its length says
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:5:hello"), .damaged(expected: 5, actual: 5))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:9:hel"), .damaged(expected: 9, actual: 3))
     }
 
-    func testAResultThatEndedInANewlineArrivesOneUnitShortAndStillCounts() {
+    func testTheEndMarkerKeepsTrailingWhitespaceIntactAndOneNewlineIsDroppedAsAlwaysBefore() {
         // Measured on a real Safari (#255): the runner strips the trailing newline osascript adds
-        // and the result's own last newline, so 'x\n' arrives as 'x' with length 2 announced.
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:x"), .value("x"))
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:3:a\n"), .value("a\n"))
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:"), .value(""))
+        // AND the result's own last one, and the daemon path trims all trailing whitespace. The end
+        // marker keeps the payload whole, so the length is compared exactly and a result such as
+        // 'a  ' is not mistaken for a cut reply. The value then loses ONE trailing newline, which is
+        // what `js` has always printed.
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:x\n\u{1E}"), .value("x"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:3:a\n\n\u{1E}"), .value("a\n"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\n\u{1E}"), .value(""))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:3:x\r\n\u{1E}"), .value("x\r"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:3:a\n\r\u{1E}"), .value("a\n\r"),
+                       "the runner's CRLF handling used to delete a newline here")
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:3:a  \u{1E}"), .value("a  "),
+                       "trailing spaces survive the daemon's whitespace trimming")
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\u{1E}\u{1E}"), .value("\u{1E}"),
+                       "only the LAST scalar is the end marker")
     }
 
     func testAnythingElseMeansTheWrapperDidNotRun() {
@@ -118,6 +131,7 @@ final class JSInlineProtocolTests: XCTestCase {
             XCTAssertNil(wrapper.range(of: #"(^|[^A-Za-z.])String\("#, options: .regularExpression),
                          "page code can reassign window.String (#76); `e.toString()` is a method, not the global")
             XCTAssertTrue(wrapper.contains("'SB1:OK:'") && wrapper.contains("'SB1:ERR:'") && wrapper.contains("'SB1:BIG:'"))
+            XCTAssertTrue(wrapper.contains("+ '\\u001e';"), "an OK reply ends with the end marker: \(wrapper)")
         }
     }
 
@@ -187,18 +201,18 @@ final class JSInlineProtocolTests: XCTestCase {
     }
 
     func testExpressionRunsAndReturnsItsValueInline() {
-        XCTAssertEqual(execute(JSWrapper.inlineExpression("1 + 1")).reply, "SB1:OK:1:2")
-        XCTAssertEqual(execute(JSWrapper.inlineExpression("''")).reply, "SB1:OK:0:")
-        XCTAssertEqual(execute(JSWrapper.inlineExpression("'a:b\\nc'")).reply, "SB1:OK:5:a:b\nc")
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("1 + 1")).reply, "SB1:OK:1:2\u{1E}")
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("''")).reply, "SB1:OK:0:\u{1E}")
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("'a:b\\nc'")).reply, "SB1:OK:5:a:b\nc\u{1E}")
     }
 
     func testATrailingCommentCannotSwallowTheClosingParen() {
-        XCTAssertEqual(execute(JSWrapper.inlineExpression("'a' + 'b' // trailing")).reply, "SB1:OK:2:ab")
-        XCTAssertEqual(execute(JSWrapper.inlineStatement("return 'q' // trailing")).reply, "SB1:OK:1:q")
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("'a' + 'b' // trailing")).reply, "SB1:OK:2:ab\u{1E}")
+        XCTAssertEqual(execute(JSWrapper.inlineStatement("return 'q' // trailing")).reply, "SB1:OK:1:q\u{1E}")
     }
 
     func testStatementsRunAsAFunctionBody() {
-        XCTAssertEqual(execute(JSWrapper.inlineStatement("var a = 2; return a + 3")).reply, "SB1:OK:1:5")
+        XCTAssertEqual(execute(JSWrapper.inlineStatement("var a = 2; return a + 3")).reply, "SB1:OK:1:5\u{1E}")
     }
 
     func testARuntimeErrorIsAReplyNotAThrow() {
@@ -244,16 +258,16 @@ final class JSInlineProtocolTests: XCTestCase {
             context.evaluateScript("var window = this;")
             context.evaluateScript("var __reply = \(JSWrapper.inlineExpression(code));")
             XCTAssertEqual(context.evaluateScript("__reply.isWellFormed()")?.toBool(), true, code)
-            XCTAssertEqual(context.evaluateScript("__reply.length")?.toInt32(), Int32("SB1:OK:\(units):".utf16.count + units), code)
+            XCTAssertEqual(context.evaluateScript("__reply.length")?.toInt32(), Int32("SB1:OK:\(units):".utf16.count + units + 1), code)
         }
-        XCTAssertEqual(execute(JSWrapper.inlineExpression("'ab' + '\\uD83D'")).reply, "SB1:OK:3:ab\u{FFFD}")
-        XCTAssertEqual(execute(JSWrapper.inlineExpression("'\u{1F600}'")).reply, "SB1:OK:2:\u{1F600}",
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("'ab' + '\\uD83D'")).reply, "SB1:OK:3:ab\u{FFFD}\u{1E}")
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("'\u{1F600}'")).reply, "SB1:OK:2:\u{1F600}\u{1E}",
                        "a well-formed pair is left alone")
     }
 
     func testAnInlineResultLeavesNothingBehindInThePage() {
         let run = execute(JSWrapper.inlineExpression("'hello'"))
-        XCTAssertEqual(run.reply, "SB1:OK:5:hello")
+        XCTAssertEqual(run.reply, "SB1:OK:5:hello\u{1E}")
         XCTAssertTrue(run.window.forProperty("__sbLen")?.isUndefined ?? false, "no globals on the success path")
         XCTAssertTrue(run.window.forProperty("__sbResult")?.isUndefined ?? false)
     }

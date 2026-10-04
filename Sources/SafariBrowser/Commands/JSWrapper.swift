@@ -118,8 +118,15 @@ enum JSWrapper {
     /// print, and it silently drops it, so the reply would arrive shorter than it says. Replaced
     /// by U+FFFD it is the same length and survives; the dropped character was lost either way.
     private static var inlineTail: String {
-        "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { window.__sbLen = r.length; window.__sbResult = r; return 'SB1:BIG:' + r.length + ':'; } return 'SB1:OK:' + r.length + ':' + r;"
+        "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { window.__sbLen = r.length; window.__sbResult = r; return 'SB1:BIG:' + r.length + ':'; } return 'SB1:OK:' + r.length + ':' + r + '\\u001e';"
     }
+
+    /// Closes an `OK` reply. It is not whitespace, so it keeps the end of the result away from
+    /// what happens to the end of osascript's output: the runner removes trailing newlines
+    /// (including the result's own last one, and with CRLF quirks), and the daemon path trims ALL
+    /// trailing whitespace. With it, the payload arrives byte for byte and its length can be
+    /// compared exactly; without it, a cut reply and a trimmed one look alike.
+    static let inlineTerminator: Unicode.Scalar = "\u{1E}"
 
     /// Parse an inline wrapper's reply. Only the status and the length are parsed; the
     /// rest of the reply is the payload, whatever it contains.
@@ -135,20 +142,31 @@ enum JSWrapper {
             return .error(String(message))
         }
         if let body = removing("OK:", from: rest) {
-            guard let (length, payload) = splitLength(body) else { return .notRun }
-            // An intact payload is `length` UTF-16 units, or one fewer: the runner removes the
-            // newline osascript adds AND the result's own last newline (`replacingOccurrences`
-            // with `\n$` matches the last two), so a result that ends in a newline arrives one
-            // unit short, exactly as it always did. Anything else was cut or altered.
-            let actual = String(payload).utf16.count
-            return actual == length || actual + 1 == length
-                ? .value(String(payload)) : .damaged(expected: length, actual: actual)
+            guard let (length, tail) = splitLength(body) else { return .notRun }
+            // The reply must end with the terminator and carry exactly `length` UTF-16 units
+            // before it; anything else was cut or altered on the way back.
+            guard tail.last == inlineTerminator else {
+                return .damaged(expected: length, actual: String(tail).utf16.count)
+            }
+            let payload = String(tail.dropLast())
+            let actual = payload.utf16.count
+            guard actual == length else { return .damaged(expected: length, actual: actual) }
+            return .value(droppingOneTrailingNewline(payload))
         }
         if let body = removing("BIG:", from: rest) {
             guard let (length, _) = splitLength(body) else { return .notRun }
             return .stored(length: length)
         }
         return .notRun
+    }
+
+    /// What `js` has always printed: the stateless runner removed the result's own last newline
+    /// along with the one osascript adds, so a result of `"x\n"` printed as `x`. The reply now
+    /// carries the result intact, and this keeps the output byte for byte what it was.
+    private static func droppingOneTrailingNewline(_ text: String) -> String {
+        var scalars = text.unicodeScalars
+        if scalars.last == "\n" { scalars.removeLast() }
+        return String(scalars)
     }
 
     /// `rest` without `prefix`, or `nil` when it does not start with it (scalar-wise).
