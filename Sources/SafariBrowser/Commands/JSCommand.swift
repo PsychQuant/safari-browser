@@ -56,9 +56,10 @@ struct JSCommand: AsyncParsableCommand {
         //
         // #180: positional targets (`--window N --tab-in-window M`,
         // `--window N`, no flag) are anchored here too. `.resolvedTab` and
-        // `.anchoredCurrentTab` skip repeated enumeration, and this command
-        // issues up to six round-trips.
-        // Before this, `.windowTab` cost one full enumeration per step.
+        // `.anchoredCurrentTab` skip repeated enumeration. Before this,
+        // `.windowTab` cost one full enumeration per step (six round-trips).
+        // #255: the default path now needs one `do JavaScript` after the
+        // anchor; `--large` / `--output` still issue several.
         let (initialTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let profile = target.resolveProfile()
         let documentTarget = try await SafariBridge.resolveToAnchoredTarget(

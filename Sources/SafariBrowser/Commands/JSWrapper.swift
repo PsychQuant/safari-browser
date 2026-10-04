@@ -9,12 +9,12 @@
 /// Two forms are needed because expressions and statement sequences cannot
 /// share one wrapper: an expression inlined as `'' + (code)` preserves its
 /// value (`js "1+1"` → "2"), while a statement sequence only parses as a
-/// function body (`return` yields the value). JSCommand tries one form and
-/// falls back to the other when the injected wrapper never ran
-/// (`JSSyntaxHint` decides which goes first).
+/// function body (`return` yields the value). `JSSyntaxHint` compiles the code
+/// locally and JSCommand sends the one form that compiles; only when neither
+/// does are both tried (a form that did not parse cannot have run).
 ///
 /// Parse-failure detection: `do JavaScript` swallows SyntaxError silently
-/// (returns empty, throws nothing — verified live), so a wrapper that parsed
+/// (returns no value at all and throws nothing — verified live), so a wrapper that parsed
 /// and ran answers with a reply that starts with `inlinePrefix`, and any
 /// other reply means it never ran (`parseInline`). Since #255 that reply IS
 /// the outcome (value, error, or a marker that a large result is parked in
@@ -84,9 +84,9 @@ enum JSWrapper {
         case notRun
     }
 
-    /// Expression form of the one-call protocol. Same shape as `expressionWrapper`, but
-    /// the outcome is the wrapper's own return value instead of two page globals read back
-    /// in later calls, so a successful run needs no preset, no read-back and no cleanup.
+    /// Expression form of the one-call protocol: the outcome is the wrapper's own return
+    /// value (before #255 it was two page globals, preset and read back in later calls), so a
+    /// successful run needs no preset, no read-back and no cleanup.
     static func inlineExpression(_ code: String) -> String {
         """
         (function(){ try { var r = '' + (

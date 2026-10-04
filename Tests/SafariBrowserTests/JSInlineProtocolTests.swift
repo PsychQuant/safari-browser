@@ -128,7 +128,7 @@ final class JSInlineProtocolTests: XCTestCase {
         XCTAssertTrue(wrapper.contains("r.length > \(JSWrapper.inlineResultLimit)"), wrapper)
     }
 
-    func testTheInlineLimitStaysUnderTheChunkSizeTheExistingReadAlreadyProves() {
+    func testTheInlineLimitIsNoLargerThanTheChunkTheSlowPathReads() {
         XCTAssertLessThanOrEqual(JSWrapper.inlineResultLimit, 262_144)
     }
 

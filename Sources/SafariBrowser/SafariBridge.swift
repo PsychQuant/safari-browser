@@ -529,7 +529,8 @@ enum SafariBridge {
     }
 
     /// `resolveToConcreteTarget` for commands that issue MANY bridge calls
-    /// per invocation (#180: `js` runs up to six `doJavaScript` round-trips).
+    /// per invocation (#180: `js` ran up to six `doJavaScript` round-trips; since
+    /// #255 its default path needs one, and `--large` / `--output` still several).
     ///
     /// `resolveToConcreteTarget` only collapses `.urlMatch` / `.documentIndex`
     /// into `.resolvedTab`; it returns `.frontWindow` / `.windowIndex` /
