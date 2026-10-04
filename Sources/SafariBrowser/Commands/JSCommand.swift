@@ -343,17 +343,19 @@ struct JSCommand: AsyncParsableCommand {
     /// #76: `--large` / `--output` path without page-context eval().
     /// doJavaScriptLarge wraps its argument as `'' + (code)`, so the
     /// expression form is just newline-guarded parens. Parse failure is
-    /// detected the same way as the non-large path: preset the protocol
-    /// globals, then check whether the wrapper ever set __sbResultLen.
+    /// detected by presetting this call's slot (#190), then checking
+    /// whether the wrapper ever set its length.
     ///
     /// INVARIANT (verify-round finding, #76): the empty-result vs
     /// parse-failure discrimination below requires that doJavaScriptLarge
-    /// does NOT delete __sbResultLen on its zero-length early return —
-    /// a legitimately-empty result must leave __sbResultLen == 0 (set by
+    /// does NOT delete a slot it was GIVEN on its zero-length early return —
+    /// a legitimately-empty result must leave the slot's length 0 (set by
     /// the wrapper), while a parse failure leaves it undefined (preset).
-    /// If doJavaScriptLarge is ever refactored to always run its cleanup,
-    /// every empty `--large` result would misread as a parse failure.
-    /// Pinned by the `--large ""` cases in Tests/e2e-csp.sh.
+    /// A slot is removed by its owner: here, by the caller of this method.
+    /// If doJavaScriptLarge is ever refactored to always remove it, every
+    /// empty `--large` result would misread as a parse failure.
+    /// Pinned by the `--large ""` cases in Tests/e2e-csp.sh and by
+    /// `ResultSlotCommandTests.testLargeEmptyResultIsEmptyNotAnError`.
     private func runLargePath(
         _ jsCode: String,
         target: SafariBridge.TargetDocument,

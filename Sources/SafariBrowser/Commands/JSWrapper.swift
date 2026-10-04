@@ -18,15 +18,16 @@
 /// and ran answers with a reply that starts with `inlinePrefix`, and any
 /// other reply means it never ran (`parseInline`). Since #255 that reply IS
 /// the outcome (value, error, or a marker that a large result is parked in
-/// `window.__sbLen` / `window.__sbResult`), so a successful run is a single
+/// a slot of the call's own, `ResultSlot`), so a successful run is a single
 /// `do JavaScript`. Before, the outcome went through page globals that were
 /// preset, read back twice and cleaned up — four more round trips. Coercion is
 /// `'' + x`, NOT `String(x)`, whose `window.String` binding page/user code can
 /// reassign.
 enum JSWrapper {
 
-    /// The large path reads `'' + window.__sbResultLen` after injection and
-    /// gets this when the wrapper never executed (parse failure of the whole string).
+    /// The large path reads the call's slot length (`ResultSlot.lengthScript`) after injection and
+    /// gets this when the wrapper never executed (parse failure of the whole string), or when
+    /// the slot is gone.
     static let lenUnsetSentinel = "undefined"
 
     /// Large-path expression form. `ResultSlot.storeScript` wraps its argument as
@@ -52,10 +53,10 @@ enum JSWrapper {
     static let inlinePrefix = "SB1:"
 
     /// Results longer than this (UTF-16 units) are not returned inline: the wrapper
-    /// stores them under `window.__sbLen` / `window.__sbResult` and returns a marker, and
-    /// `JSCommand` reads them with the existing read / chunked read / cleanup. The existing
-    /// chunked read already moves 256 KiB per `do JavaScript` return, so this stays well
-    /// inside what Safari is known to hand back.
+    /// parks them in a slot of the call's own and returns a marker that names it, and
+    /// `JSCommand` reads them with `SafariBridge.readResultSlot`. The chunked read already
+    /// moves 256 KiB per `do JavaScript` return, so this stays well inside what Safari is
+    /// known to hand back.
     static let inlineResultLimit = 131_072
 
     /// What an inline wrapper's reply means.
