@@ -73,9 +73,14 @@ enum JSWrapper {
         case error(String)
         /// The result is larger than `inlineResultLimit` and sits in the page's globals.
         case stored(length: Int)
+        /// The wrapper ran (it announced its length) but the payload that arrived is not that
+        /// long: the reply was cut or altered on its way back. Never returned as a value, never
+        /// a reason to run the code again.
+        case damaged(expected: Int, actual: Int)
         /// No recognisable reply: a SyntaxError (Safari's `do JavaScript` swallows it and
         /// returns nothing), a navigation that lost the reply, or anything unexpected.
-        /// Never read as a value; the caller falls back to the navigation / retry path.
+        /// Never read as a value; the caller decides between the navigation check, the other
+        /// form and a "no reply" error (see `JSCommand.runNonLargePath`).
         case notRun
     }
 
@@ -86,7 +91,7 @@ enum JSWrapper {
         """
         (function(){ try { var r = '' + (
         \(code)
-        ); \(inlineTail) } catch(e) { return 'SB1:ERR:' + (e && e.message !== undefined ? e.message : e); } })()
+        ); \(inlineTail) } \(inlineCatch) })()
         """
     }
 
@@ -95,8 +100,16 @@ enum JSWrapper {
         """
         (function(){ try { var r = '' + (function(){
         \(code)
-        })(); \(inlineTail) } catch(e) { return 'SB1:ERR:' + (e && e.message !== undefined ? e.message : e); } })()
+        })(); \(inlineTail) } \(inlineCatch) })()
         """
+    }
+
+    /// Report what the user's code threw. Turning the thrown value into text can itself throw
+    /// (`throw Symbol('x')` has no implicit string conversion, `throw Object.create(null)` has
+    /// no `toString`), and an exception escaping the `catch` would be swallowed by `do
+    /// JavaScript` like a SyntaxError and read as "no reply", so the conversion is guarded.
+    private static var inlineCatch: String {
+        "catch(e) { var m; try { m = String(e && e.message !== undefined ? e.message : e); } catch(x) { m = 'unprintable exception'; } return 'SB1:ERR:' + m; }"
     }
 
     /// Shared tail: return the result inline, or park it in the globals the slow path reads.
@@ -106,33 +119,65 @@ enum JSWrapper {
 
     /// Parse an inline wrapper's reply. Only the status and the length are parsed; the
     /// rest of the reply is the payload, whatever it contains.
+    ///
+    /// Everything here walks Unicode SCALARS, never Characters. A payload that starts with a
+    /// combining mark, a variation selector or a joiner (`'\u{FE0F}x'`, an NFD string sliced
+    /// after its base letter) fuses with the `:` before it into ONE Character, so a
+    /// Character-based search for the separator finds none and a reply that did arrive reads as
+    /// "no reply". That would run the code again with the other form.
     static func parseInline(_ raw: String) -> InlineOutcome {
-        guard raw.hasPrefix(inlinePrefix) else { return .notRun }
-        let rest = raw.dropFirst(inlinePrefix.count)
-        if rest.hasPrefix("ERR:") {
-            return .error(String(rest.dropFirst("ERR:".count)))
+        guard let rest = removing(inlinePrefix, from: raw.unicodeScalars[...]) else { return .notRun }
+        if let message = removing("ERR:", from: rest) {
+            return .error(String(message))
         }
-        if rest.hasPrefix("OK:") {
-            let body = rest.dropFirst("OK:".count)
-            guard let colon = body.firstIndex(of: ":"), Int(body[..<colon]) != nil else { return .notRun }
-            return .value(String(body[body.index(after: colon)...]))
+        if let body = removing("OK:", from: rest) {
+            guard let (length, payload) = splitLength(body) else { return .notRun }
+            // The runner strips exactly one trailing newline (the one osascript adds), so an
+            // intact payload is exactly as long as the wrapper said.
+            let actual = String(payload).utf16.count
+            return actual == length ? .value(String(payload)) : .damaged(expected: length, actual: actual)
         }
-        if rest.hasPrefix("BIG:") {
-            let body = rest.dropFirst("BIG:".count)
-            guard let colon = body.firstIndex(of: ":"), let length = Int(body[..<colon]), length >= 0
-            else { return .notRun }
+        if let body = removing("BIG:", from: rest) {
+            guard let (length, _) = splitLength(body) else { return .notRun }
             return .stored(length: length)
         }
         return .notRun
     }
 
+    /// `rest` without `prefix`, or `nil` when it does not start with it (scalar-wise).
+    private static func removing(
+        _ prefix: String, from rest: Substring.UnicodeScalarView
+    ) -> Substring.UnicodeScalarView? {
+        var index = rest.startIndex
+        for scalar in prefix.unicodeScalars {
+            guard index < rest.endIndex, rest[index] == scalar else { return nil }
+            index = rest.index(after: index)
+        }
+        return rest[index...]
+    }
+
+    /// `<digits>:<payload>` -> (digits as an Int, payload). The digits must be 1-9 ASCII digits.
+    private static func splitLength(
+        _ body: Substring.UnicodeScalarView
+    ) -> (Int, Substring.UnicodeScalarView)? {
+        guard let colon = body.firstIndex(of: ":") else { return nil }
+        let digits = body[..<colon]
+        guard (1...9).contains(digits.count),
+              digits.allSatisfy({ $0.value >= 0x30 && $0.value <= 0x39 }),
+              let length = Int(String(digits)) else { return nil }
+        return (length, body[body.index(after: colon)...])
+    }
+
     /// The AppleScript that runs the inline wrapper reads the tab's URL first and answers
     /// `URL GS reply` (`SafariBridge.doJavaScript(captureURL:)`). Split at the first GS only:
-    /// the reply may itself contain the separator. An empty or missing URL is `nil`.
+    /// the reply may itself contain the separator. `url` is `nil` only when there is no
+    /// separator at all (the output did not come from a capturing script); a tab with no URL
+    /// reads as `""`, which is a real answer — a blank tab that the code then navigates away
+    /// from is still a navigation.
     static func splitCapturedURL(_ raw: String) -> (url: String?, output: String) {
-        guard let gs = raw.firstIndex(of: "\u{1D}") else { return (nil, raw) }
-        let url = String(raw[..<gs])
-        return (url.isEmpty ? nil : url, String(raw[raw.index(after: gs)...]))
+        let scalars = raw.unicodeScalars
+        guard let gs = scalars.firstIndex(of: "\u{1D}") else { return (nil, raw) }
+        return (String(scalars[..<gs]), String(scalars[scalars.index(after: gs)...]))
     }
 
     /// Detects a CSP eval refusal in a JS error message and returns an

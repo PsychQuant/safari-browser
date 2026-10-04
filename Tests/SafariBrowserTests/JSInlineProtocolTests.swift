@@ -19,8 +19,8 @@ final class JSInlineProtocolTests: XCTestCase {
     }
 
     func testThePayloadMayContainColonsNewlinesAndTheFieldSeparator() {
-        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:19:a:b:c\nSB1:ERR:x\u{1D}y"),
-                       .value("a:b:c\nSB1:ERR:x\u{1D}y"),
+        let payload = "a:b:c\nSB1:ERR:x\u{1D}y"
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:\(payload.utf16.count):\(payload)"), .value(payload),
                        "only the status and the length are parsed; everything after is the payload")
     }
 
@@ -32,12 +32,37 @@ final class JSInlineProtocolTests: XCTestCase {
         XCTAssertEqual(JSWrapper.parseInline("SB1:BIG:200000:"), .stored(length: 200000))
     }
 
+    func testAPayloadThatStartsWithACombiningScalarStillParses() {
+        // `:` followed by U+FE0F / U+0301 / a joiner is ONE Character, so a Character-based
+        // parse finds no separator and reads a reply that arrived as "no reply" — and the
+        // code would run again with the other form (#255 review).
+        for lead in ["\u{FE0F}", "\u{0301}", "\u{200D}", "\u{3099}", "\u{1F3FB}"] {
+            let payload = lead + "x"
+            let n = payload.utf16.count
+            XCTAssertEqual(JSWrapper.parseInline("SB1:OK:\(n):\(payload)"), .value(payload), lead.debugDescription)
+            XCTAssertEqual(JSWrapper.parseInline("SB1:ERR:\(payload)"), .error(payload), lead.debugDescription)
+        }
+        // ...and a combining scalar glued to the `ERR` / `OK` / `BIG` status separators.
+        XCTAssertEqual(JSWrapper.parseInline("SB1:ERR:\u{0301}"), .error("\u{0301}"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\u{0301}"), .value("\u{0301}"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:BIG:300000:\u{0301}"), .stored(length: 300000))
+    }
+
+    func testAReplyWhoseLengthDisagreesWithItsPayloadIsDamagedNotAValue() {
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:10:hello"), .damaged(expected: 10, actual: 5))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:hello"), .damaged(expected: 2, actual: 5))
+        // length is counted in UTF-16 units, as JavaScript counts it
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:2:\u{1F600}"), .value("\u{1F600}"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\u{1F600}"), .damaged(expected: 1, actual: 2))
+    }
+
     func testAnythingElseMeansTheWrapperDidNotRun() {
         // Safari's `do JavaScript` swallows a SyntaxError and returns nothing; a navigation
         // can lose the reply. Both must fall through to the existing slow path, never be
         // read as a value.
         for raw in ["", "undefined", "missing value", "5.0", "SB1:", "SB1:OK:", "SB1:OK:x:oops",
-                    "SB1:BIG:x:", "SB1:WAT:1:y", "sb1:OK:1:y", " SB1:OK:1:y"] {
+                    "SB1:OK:+5:hello", "SB1:OK:-1:", "SB1:OK:1234567890:x", "SB1:OK: 5:hello",
+                    "SB1:BIG:x:", "SB1:BIG:-3:", "SB1:WAT:1:y", "sb1:OK:1:y", " SB1:OK:1:y"] {
             XCTAssertEqual(JSWrapper.parseInline(raw), .notRun, "\(raw.debugDescription)")
         }
     }
@@ -56,11 +81,21 @@ final class JSInlineProtocolTests: XCTestCase {
         XCTAssertEqual(split.output, "SB1:OK:3:a\u{1D}b")
     }
 
-    func testAnEmptyURLIsNilAndAReplyWithoutASeparatorIsAllOutput() {
-        XCTAssertNil(JSWrapper.splitCapturedURL("\u{1D}SB1:OK:0:").url)
+    func testABlankTabsEmptyURLIsStillAnAnswerAndOnlyAMissingSeparatorIsNil() {
+        // A blank tab that the code then navigates away from IS a navigation: its URL before the
+        // run is "", not "unknown" (the old `try? getCurrentURL` also answered "").
+        let blank = JSWrapper.splitCapturedURL("\u{1D}SB1:OK:0:")
+        XCTAssertEqual(blank.url, "")
+        XCTAssertEqual(blank.output, "SB1:OK:0:")
         let bare = JSWrapper.splitCapturedURL("SB1:OK:0:")
         XCTAssertNil(bare.url)
         XCTAssertEqual(bare.output, "SB1:OK:0:")
+    }
+
+    func testAReplyThatStartsWithACombiningScalarKeepsItAfterTheSeparator() {
+        let split = JSWrapper.splitCapturedURL("https://a.example/\u{1D}\u{0301}tail")
+        XCTAssertEqual(split.url, "https://a.example/")
+        XCTAssertEqual(split.output, "\u{0301}tail")
     }
 
     // MARK: - wrapper text
@@ -89,39 +124,44 @@ final class JSInlineProtocolTests: XCTestCase {
 
     // MARK: - JSSyntaxHint
 
-    func testAnExpressionIsTriedAsAnExpressionFirst() {
+    func testAnExpressionIsRunAsAnExpressionOnly() {
         for code in ["1 + 1", "document.title", "location.host\n// comment", "({a: 1})", "[1,2,3].map(x => x * 2)"] {
-            XCTAssertEqual(JSSyntaxHint.preferredOrder(for: code), [.expression, .statement], code)
+            XCTAssertEqual(JSSyntaxHint.formsToTry(for: code), [.expression], code)
         }
     }
 
-    func testStatementsAreTriedAsStatementsFirst() {
+    func testStatementsAreRunAsStatementsOnly() {
         for code in ["var a = 1; a", "return 5", "const x = document.title; return x", "if (a) { b() }\nc()"] {
-            XCTAssertEqual(JSSyntaxHint.preferredOrder(for: code), [.statement, .expression], code)
+            XCTAssertEqual(JSSyntaxHint.formsToTry(for: code), [.statement], code)
         }
     }
 
-    func testCodeThatParsesNeitherWayKeepsTheExistingOrder() {
-        // The hint only orders the attempts; Safari stays the final judge, so an unparseable
-        // input must behave exactly as before (expression first, then statements).
+    func testCodeThatParsesNeitherWayKeepsBothFormsExpressionFirst() {
+        // Only here is a second attempt still safe: a form that did not parse cannot have run.
         for code in ["1 +", "function (", "}{"] {
-            XCTAssertEqual(JSSyntaxHint.preferredOrder(for: code), [.expression, .statement], code)
+            XCTAssertEqual(JSSyntaxHint.formsToTry(for: code), [.expression, .statement], code)
         }
     }
 
     func testTheHintCompilesButNeverRunsTheCode() {
-        // `new Function(body)` compiles; it must not execute the body. A side effect here would
-        // run the user's code in the CLI process.
-        let order = JSSyntaxHint.preferredOrder(for: "throw new Error('ran'); var x = 1")
-        XCTAssertEqual(order, [.statement, .expression])
-        XCTAssertEqual(JSSyntaxHint.preferredOrder(for: "(function(){ throw new Error('ran') })()"),
-                       [.expression, .statement])
+        // `new Function(body)` compiles; it must not execute the body. `for(;;){}` is a function
+        // body that parses and never returns: if the hint ran it, this call would never come back,
+        // which the deadline turns into a failure instead of a hung suite.
+        var forms: [JSSyntaxHint.Form]?
+        let done = expectation(description: "the hint returns")
+        DispatchQueue.global().async {
+            forms = JSSyntaxHint.formsToTry(for: "for(;;){}")
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10)
+        XCTAssertEqual(forms, [.statement])
     }
 
     func testAHugeInputSkipsTheHintInsteadOfCompilingIt() {
         let huge = String(repeating: "a", count: JSSyntaxHint.maxHintedLength + 1)
-        XCTAssertEqual(JSSyntaxHint.preferredOrder(for: huge), [.expression, .statement])
+        XCTAssertEqual(JSSyntaxHint.formsToTry(for: huge), [.expression, .statement])
     }
+
     // MARK: - the wrappers, executed (JavaScriptCore is the engine Safari uses)
 
     /// Run a wrapper the way `do JavaScript` would: as a script in a page whose global object is
@@ -162,6 +202,17 @@ final class JSInlineProtocolTests: XCTestCase {
         XCTAssertEqual(execute(JSWrapper.inlineStatement("throw null")).reply, "SB1:ERR:null")
     }
 
+    func testAThrownValueThatCannotBeTurnedIntoTextStillGetsAReply() {
+        // Converting the thrown value can itself throw; an exception escaping the `catch` is
+        // swallowed by `do JavaScript` like a SyntaxError and would read as "no reply".
+        XCTAssertEqual(execute(JSWrapper.inlineStatement("throw Symbol('s')")).reply, "SB1:ERR:Symbol(s)")
+        XCTAssertEqual(execute(JSWrapper.inlineStatement("throw Object.create(null)")).reply,
+                       "SB1:ERR:unprintable exception")
+        XCTAssertEqual(execute(JSWrapper.inlineExpression(
+            "(function(){ throw { get message() { throw new Error('nested') } } })()")).reply,
+                       "SB1:ERR:unprintable exception")
+    }
+
     func testAnOversizedResultIsParkedInTheGlobalsAndReportedBig() {
         let big = JSWrapper.inlineResultLimit + 1
         let run = execute(JSWrapper.inlineExpression("'x'.repeat(\(big))"))
@@ -190,11 +241,11 @@ final class JSInlineProtocolTests: XCTestCase {
         // The hint compiles the same bodies the wrappers contain, so it predicts what Safari does.
         for code in ["var a = 1; a", "return 5", "if (a) { b() }\nc()"] {
             XCTAssertNil(execute(JSWrapper.inlineExpression(code)).reply, code)
-            XCTAssertEqual(JSSyntaxHint.preferredOrder(for: code).first, .statement, code)
+            XCTAssertEqual(JSSyntaxHint.formsToTry(for: code), [.statement], code)
         }
         for code in ["1 + 1", "({a: 1})"] {
             XCTAssertNotNil(execute(JSWrapper.inlineExpression(code)).reply, code)
-            XCTAssertEqual(JSSyntaxHint.preferredOrder(for: code).first, .expression, code)
+            XCTAssertEqual(JSSyntaxHint.formsToTry(for: code), [.expression], code)
         }
     }
     // MARK: - the AppleScript that reads the URL in the same call
@@ -202,19 +253,80 @@ final class JSInlineProtocolTests: XCTestCase {
     func testWithoutCaptureTheStatementIsTheOriginalOne() {
         XCTAssertEqual(SafariBridge.doJavaScriptStatement("x\"y", in: "tab 3 of _w", captureURL: false),
                        "do JavaScript \"x\\\"y\" in tab 3 of _w")
+        XCTAssertEqual(SafariBridge.urlCaptureStatement(in: "_t", captureURL: false), "")
     }
 
     func testCaptureReadsTheURLFirstAndSurvivesMissingValues() {
-        let s = SafariBridge.doJavaScriptStatement("1", in: "_t", captureURL: true)
-        let urlRead = s.range(of: "set _u to URL of _t")
-        let run = s.range(of: "set _r to do JavaScript")
-        XCTAssertNotNil(urlRead); XCTAssertNotNil(run)
-        XCTAssertLessThan(urlRead!.lowerBound, run!.lowerBound, "the URL is the one BEFORE the code runs")
-        XCTAssertTrue(s.contains("try\n") && s.contains("end try"), "a tab that cannot answer a URL must not fail the run: \(s)")
-        XCTAssertTrue(s.contains("if _u is missing value then set _u to \"\""), "a blank tab has no URL: \(s)")
-        XCTAssertTrue(s.contains("if _r is missing value then set _r to \"\""),
-                      "a swallowed SyntaxError returns nothing and `&` cannot concatenate it: \(s)")
-        XCTAssertTrue(s.contains("return _u & (character id 29) & _r"), s)
+        let read = SafariBridge.urlCaptureStatement(in: "_t", captureURL: true)
+        let run = SafariBridge.doJavaScriptStatement("1", in: "_t", captureURL: true)
+        XCTAssertTrue(read.contains("try\n        set _u to URL of _t\n    end try"),
+                      "a tab that cannot answer a URL must not fail the run: \(read)")
+        XCTAssertTrue(read.contains("if _u is missing value then set _u to \"\""), "a blank tab has no URL: \(read)")
+        XCTAssertTrue(run.contains("if _r is missing value then set _r to \"\""),
+                      "a swallowed SyntaxError returns nothing and `&` cannot concatenate it: \(run)")
+        XCTAssertTrue(run.contains("return _u & (character id 29) & _r"), run)
+    }
+
+    // MARK: - every dispatch shape: order, byte-identity without capture, and it compiles
+
+    /// Quotes, a backslash, AppleScript keywords and a `//` comment: nothing in the user's code
+    /// may end the AppleScript string it is embedded in.
+    private let hostile = #"'"' + "\\" + 'tell application "System Events"' // end tell"#
+    private let urlMatch = SafariBridge.UrlMatcher.contains("plaud")
+
+    private func shapes(_ code: String, capture: Bool) -> [(name: String, script: String)] {
+        let cases: [(String, SafariBridge.TargetDocument)] = [
+            ("anchoredCurrentTab", .anchoredCurrentTab(windowID: 77, tabInWindow: 4, profile: nil)),
+            ("plain", .frontWindow),
+            ("resolvedTab without matcher", .resolvedTab(windowID: 77, tabInWindow: 4, rematch: nil, profile: nil)),
+            ("resolvedTab with substring guard",
+             .resolvedTab(windowID: 77, tabInWindow: 4, rematch: urlMatch, profile: nil)),
+            ("resolvedTab with regex matcher (script after the Swift pre-check)",
+             .resolvedTab(windowID: 77, tabInWindow: 4,
+                          rematch: SafariBridge.UrlMatcher.regex(try! NSRegularExpression(pattern: "p.+d")), profile: nil)),
+        ]
+        return cases.map { name, target in
+            (name, SafariBridge.jsDispatchScript(
+                code, docRef: "tab 4 of window id 77", target: target, captureURL: capture))
+        }
+    }
+
+    func testEveryShapeReadsTheURLBeforeAnyGuardAndRunsTheCodeRightAfterTheGuard() {
+        for (name, script) in shapes(hostile, capture: true) {
+            let urlRead = script.range(of: "set _u to URL of")
+            let guardAt = script.range(of: "SB_TARGET_CHANGED")
+            let run = script.range(of: "set _r to do JavaScript")
+            XCTAssertNotNil(urlRead, name); XCTAssertNotNil(run, name)
+            XCTAssertLessThan(urlRead!.lowerBound, run!.lowerBound, name)
+            if let guardAt {
+                XCTAssertLessThan(urlRead!.lowerBound, guardAt.lowerBound,
+                                  "the URL read must not sit between the guard and the code it protects: \(name)")
+                XCTAssertLessThan(guardAt.lowerBound, run!.lowerBound, name)
+            }
+            XCTAssertEqual(script.components(separatedBy: "set _r to do JavaScript").count, 2, "\(name): the code runs once")
+        }
+    }
+
+    func testWithoutCaptureEveryShapeIsExactlyTheScriptItWasBeforeThisChange() {
+        // No blank line, no `_u`: the stateless commands that share this dispatch are untouched.
+        for (name, script) in shapes("1", capture: false) {
+            XCTAssertFalse(script.contains("_u"), name)
+            XCTAssertFalse(script.contains("\n\n"), "no blank line: \(name)")
+            XCTAssertTrue(script.hasPrefix("tell application \"Safari\"\n"), name)
+            XCTAssertTrue(script.hasSuffix("\nend tell"), name)
+            XCTAssertTrue(script.contains("\n    do JavaScript \"1\" in "), name)
+        }
+    }
+
+    func testEveryShapeCompilesAsAppleScriptEvenWithHostileCode() {
+        // Compiling sends no Apple event. A shape that does not compile is a command that cannot
+        // run at all, which no fake-Safari test would ever notice.
+        for capture in [false, true] {
+            for (name, script) in shapes(hostile, capture: capture) {
+                var error: NSDictionary?
+                let ok = NSAppleScript(source: script)?.compileAndReturnError(&error) ?? false
+                XCTAssertTrue(ok, "\(name) capture=\(capture): \(String(describing: error?["NSAppleScriptErrorMessage"]))\n\(script)")
+            }
+        }
     }
 }
-

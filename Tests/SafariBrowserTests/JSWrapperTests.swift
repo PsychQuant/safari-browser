@@ -27,7 +27,9 @@ final class JSWrapperTests: XCTestCase {
         // JSCommand parses; the large-result branch parks the value for the slow path.
         let wrapper = JSWrapper.inlineExpression("1")
         XCTAssertTrue(wrapper.contains("'SB1:OK:' + r.length + ':' + r"))
-        XCTAssertTrue(wrapper.contains("'SB1:ERR:' + (e && e.message !== undefined ? e.message : e)"))
+        XCTAssertTrue(wrapper.contains("'SB1:ERR:' + m"))
+        XCTAssertTrue(wrapper.contains("m = String(e && e.message !== undefined ? e.message : e)"),
+                      "the thrown value is turned into text inside its own try, so the catch cannot throw")
         XCTAssertTrue(wrapper.contains("catch"))
     }
 
@@ -54,7 +56,7 @@ final class JSWrapperTests: XCTestCase {
         XCTAssertTrue(wrapper.contains(code))
         XCTAssertTrue(wrapper.contains("function"))
         XCTAssertTrue(wrapper.contains("'SB1:OK:' + r.length + ':' + r"))
-        XCTAssertTrue(wrapper.contains("'SB1:ERR:' + (e && e.message !== undefined ? e.message : e)"))
+        XCTAssertTrue(wrapper.contains("'SB1:ERR:' + m"))
     }
 
     func testInlineStatement_newlineGuardsAroundCode() {

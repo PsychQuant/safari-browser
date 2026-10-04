@@ -68,6 +68,12 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         /// answer the unchanged URL. nil = every read sees it.
         var navigatesFromURLRead: Int?
         private var plainURLReads = 0
+        /// #255: the first N wrapper dispatches raise the identity-guard sentinel, as Safari does when
+        /// the guarded tab stopped matching; later ones answer normally (the bounded retry).
+        var guardTripsOnFirstWrapperDispatches = 0
+        private var wrapperDispatches = 0
+        /// #255: answer an empty plain read of `window.__sbResult` (the chunked-read fallback).
+        var storedPlainReadIsEmpty = false
 
         init(tabCounts: [Int] = [96, 2, 6, 1, 4], failJSContaining: String? = nil) {
             self.tabCounts = tabCounts
@@ -222,6 +228,11 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                 }
                 if let waitPollAnswer { return waitPollAnswer }
                 if script.contains("'SB1:OK:'") {
+                    let dispatch = lock.withLock { () -> Int in wrapperDispatches += 1; return wrapperDispatches }
+                    if dispatch <= guardTripsOnFirstWrapperDispatches {
+                        throw SafariBrowserError.appleScriptFailed(
+                            "execution error: SB_TARGET_CHANGED: URL of target tab no longer matches (9001)")
+                    }
                     let isStatementForm = script.contains("var r = '' + (function(){")
                     let reply = (isStatementForm ? statementFormParses : expressionFormParses) ? inlineAnswer : ""
                     if script.contains("return _u & (character id 29) & _r") { return capturedURL + "\u{1D}" + reply }
@@ -230,7 +241,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                 if script.contains("window.__sbResult.substring(") { return "hello" }
                 if script.contains("do JavaScript \"window.__sbResultLen\"") { return "5.0" }
                 if script.contains("'' + window.__sbLen") { return "5.0" }
-                if script.contains("do JavaScript \"window.__sbResult\"") { return "hello" }
+                if script.contains("do JavaScript \"window.__sbResult\"") { return storedPlainReadIsEmpty ? "" : "hello" }
                 return ""
             }
             if script.contains("URL of tab 53 of window id 101") {
@@ -254,22 +265,57 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    /// Run `safari-browser js <args>` against `fake`, dialog probe answering clear.
-    private func runJS(_ args: [String], on fake: FakeSafari) async throws {
+    /// What a run wrote to stdout and stderr.
+    struct Output { var stdout: String; var stderr: String }
+
+    /// Redirects a file descriptor into a pipe for the duration of one command.
+    private final class FDCapture {
+        private let fd: Int32
+        private let pipe = Pipe()
+        private var saved: Int32 = -1
+        init(_ fd: Int32) { self.fd = fd }
+        func start() {
+            fflush(fd == STDOUT_FILENO ? stdout : stderr)
+            saved = dup(fd)
+            dup2(pipe.fileHandleForWriting.fileDescriptor, fd)
+        }
+        func stop() -> String {
+            fflush(fd == STDOUT_FILENO ? stdout : stderr)
+            dup2(saved, fd); close(saved)
+            try? pipe.fileHandleForWriting.close()
+            return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        }
+    }
+
+    /// Run `safari-browser js <args>` against `fake`, dialog probe answering clear, and return what
+    /// it printed. Asserting on the printed value is what keeps the protocol honest: a run that
+    /// "succeeds" while printing the wrong thing is the failure these tests exist to catch.
+    @discardableResult
+    private func runJS(_ args: [String], on fake: FakeSafari) async throws -> Output {
         let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         let command = try JSCommand.parse(args)
-        try await DaemonRequestContext.$current.withValue(context) {
-            try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
-                try await command.run()
+        let out = FDCapture(STDOUT_FILENO), err = FDCapture(STDERR_FILENO)
+        out.start(); err.start()
+        do {
+            try await DaemonRequestContext.$current.withValue(context) {
+                try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
+                    try await command.run()
+                }
             }
+        } catch {
+            _ = err.stop(); _ = out.stop()
+            throw error
         }
+        let stderr = err.stop()
+        return Output(stdout: out.stop(), stderr: stderr)
     }
 
     // MARK: - Round-trip bound at 109 tabs
 
     func testWindowTabTargetNeedsOneAnchorAndOneJavaScriptAt109Tabs() async throws {
         let fake = FakeSafari()
-        try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
+        let output = try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
+        XCTAssertEqual(output.stdout, "hello\n", "the value the wrapper answered is what gets printed")
         XCTAssertEqual(fake.enumerations, 0,
                        "#255: --window N --tab-in-window M anchors with one small read, not a 109-tab enumeration")
         XCTAssertEqual(fake.tabAnchors.count, 1, fake.transcript)
@@ -288,7 +334,8 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
 
     func testDefaultTargetNeverEnumerates() async throws {
         let fake = FakeSafari()
-        try await runJS(["location.host"], on: fake)
+        let output = try await runJS(["location.host"], on: fake)
+        XCTAssertEqual(output.stdout, "hello\n")
         XCTAssertEqual(fake.enumerations, 0, "the default target needs no enumeration at all")
         XCTAssertEqual(fake.anchors.count, 1, "one anchor round-trip at the command boundary")
         XCTAssertEqual(fake.scripts.count, 2,
@@ -323,20 +370,43 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
 
     // MARK: - #255: the one-call protocol
 
-    func testStatementCodeGoesStatementFirstAndStillCostsOneJavaScript() async throws {
+    func testStatementCodeRunsAsAStatementOnceAndPrintsItsValue() async throws {
         let fake = FakeSafari()
-        try await runJS(["--window", "1", "--tab-in-window", "53", "var a = 1; a"], on: fake)
+        let output = try await runJS(["--window", "1", "--tab-in-window", "53", "var a = 1; a"], on: fake)
+        XCTAssertEqual(output.stdout, "hello\n")
         XCTAssertEqual(fake.javaScripts.count, 1, "the local hint saves the expression attempt that cannot parse:\n\(fake.transcript)")
         let first = try XCTUnwrap(fake.javaScripts.first, fake.transcript)
         XCTAssertTrue(first.contains("var r = '' + (function(){"), first)
     }
 
-    func testAWrongHintCostsTheOtherFormAfterANavigationCheck() async throws {
+    func testAFormTheHintSaysParsesIsNeverFollowedByTheOtherOne() async {
+        // `location.host` parses as an expression, so if no reply comes back the code ran (or the
+        // page moved). Running it again as a statement would run it twice (#255 review).
         let fake = FakeSafari()
-        fake.expressionFormParses = false     // Safari disagrees with the local hint
-        try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
-        XCTAssertEqual(fake.javaScripts.count, 2, fake.transcript)
-        guard fake.javaScripts.count == 2 else { return }
+        fake.expressionFormParses = false     // the reply never arrives
+        fake.capturedURL = "https://w1.example/53"
+        do {
+            try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
+            XCTFail("a reply that never came back, with the URL unchanged, is an error")
+        } catch let error as SafariBrowserError {
+            guard case .appleScriptFailed(let message) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(message, JSCommand.noReplyMessage)
+        } catch { XCTFail("\(error)") }
+        XCTAssertEqual(fake.javaScripts.count, 1, "the code must not run a second time:\n\(fake.transcript)")
+    }
+
+    func testCodeThatParsesNowhereTriesBothFormsWithANavigationCheckBetween() async throws {
+        let fake = FakeSafari()
+        fake.expressionFormParses = false
+        fake.statementFormParses = false
+        do {
+            try await runJS(["--window", "1", "--tab-in-window", "53", "1 +"], on: fake)
+            XCTFail("expected the syntax error")
+        } catch let error as SafariBrowserError {
+            guard case .appleScriptFailed(let message) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(message.hasPrefix("JavaScript syntax error:"), message)
+        } catch { XCTFail("\(error)") }
+        XCTAssertEqual(fake.javaScripts.count, 2, "neither parsed here, so neither can have run: both are tried")
         XCTAssertTrue(fake.javaScripts[1].contains("var r = '' + (function(){"), "the second form is the statement form")
         XCTAssertFalse(fake.javaScripts[1].contains("set _u to"), "only the first call reads the URL")
         let firstJS = try XCTUnwrap(fake.scripts.firstIndex { $0.contains("do JavaScript") })
@@ -350,15 +420,28 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         let fake = FakeSafari()
         fake.expressionFormParses = false     // the reply was lost with the old document
         fake.navigatedURL = "https://w1.example/done"
-        try await runJS(["--window", "1", "--tab-in-window", "53", "location.href = '/done'"], on: fake)
+        let output = try await runJS(["--window", "1", "--tab-in-window", "53", "location.href = '/done'"], on: fake)
+        XCTAssertEqual(output.stdout, "", "a navigation prints no value")
         XCTAssertEqual(fake.javaScripts.count, 1,
                        "#82: a navigation is a successful outcome; retrying would run the code twice:\n\(fake.transcript)")
     }
 
+    func testNavigatingAwayFromABlankTabIsStillANavigation() async throws {
+        // A tab with no URL reads as "" before the run; leaving it must be detected, not
+        // mistaken for "URL unknown" (the reviewer's Start Page case).
+        let fake = FakeSafari()
+        fake.expressionFormParses = false
+        fake.capturedURL = ""
+        fake.navigatedURL = "https://w1.example/done"
+        let output = try await runJS(["--window", "1", "--tab-in-window", "53", "location.href = '/done'"], on: fake)
+        XCTAssertEqual(output.stdout, "")
+        XCTAssertEqual(fake.javaScripts.count, 1, fake.transcript)
+    }
+
     func testAFormThatNavigatedIsAlsoCaughtAfterTheSecondForm() async throws {
-        // #82: the statement form itself may be the one that navigated. The first check sees the
-        // tab where it was, the second form runs, and the second check finds it elsewhere: that is a
-        // navigation, not a syntax error.
+        // #82: with neither form known to parse, the statement form may be the one that navigated.
+        // The first check sees the tab where it was, the second form runs, and the second check
+        // finds it elsewhere: that is a navigation, not a syntax error.
         let fake = FakeSafari()
         fake.expressionFormParses = false
         fake.statementFormParses = false      // both replies are lost
@@ -368,18 +451,18 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(fake.javaScripts.count, 2, fake.transcript)
     }
 
-    func testCodeThatParsesNowhereThrowsTheSyntaxError() async {
+    func testAReplyWhoseLengthDisagreesWithItsPayloadIsAnErrorAndNotRunAgain() async {
         let fake = FakeSafari()
-        fake.expressionFormParses = false
-        fake.statementFormParses = false
+        fake.inlineAnswer = "SB1:OK:50:hello"
         do {
-            try await runJS(["--window", "1", "--tab-in-window", "53", "1 +"], on: fake)
-            XCTFail("expected the syntax error")
+            try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
+            XCTFail("a cut reply must not print as if it were the result")
         } catch let error as SafariBrowserError {
             guard case .appleScriptFailed(let message) = error else { return XCTFail("\(error)") }
-            XCTAssertTrue(message.hasPrefix("JavaScript syntax error:"), message)
+            XCTAssertTrue(message.hasPrefix("JavaScript reply damaged:"), message)
+            XCTAssertTrue(message.contains("50") && message.contains("5"), message)
         } catch { XCTFail("\(error)") }
-        XCTAssertEqual(fake.javaScripts.count, 2, "both forms were tried before giving up")
+        XCTAssertEqual(fake.javaScripts.count, 1, fake.transcript)
     }
 
     func testARuntimeErrorComesFromTheSingleReply() async {
@@ -398,11 +481,64 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
     func testAnOversizedResultIsReadFromTheGlobalsThenCleanedUp() async throws {
         let fake = FakeSafari()
         fake.inlineAnswer = "SB1:BIG:200000:"
-        try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
+        let output = try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
+        XCTAssertEqual(output.stdout, "hello\n")
         XCTAssertEqual(fake.javaScripts.count, 3, "wrapper, read the stored result, cleanup:\n\(fake.transcript)")
         guard fake.javaScripts.count == 3 else { return }
         XCTAssertTrue(fake.javaScripts[1].contains("window.__sbResult"), fake.javaScripts[1])
         XCTAssertTrue(fake.javaScripts[2].contains("delete window.__sbLen; delete window.__sbResult"), fake.javaScripts[2])
+    }
+
+    func testAnOversizedResultWhosePlainReadComesBackEmptyFallsBackToChunksAndSaysSo() async throws {
+        let fake = FakeSafari()
+        fake.inlineAnswer = "SB1:BIG:5:"
+        fake.storedPlainReadIsEmpty = true
+        let output = try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
+        XCTAssertEqual(output.stdout, "hello\n")
+        XCTAssertTrue(output.stderr.contains("output was large, used chunked read"), output.stderr)
+        XCTAssertTrue(fake.javaScripts.last?.contains("delete window.__sbLen; delete window.__sbResult") == true,
+                      "the cleanup still runs after the chunked read:\n\(fake.transcript)")
+    }
+
+    // MARK: - #255: `--url` targets (URL guard + bounded retry) carry the URL read too
+
+    func testAUrlTargetReadsTheURLBeforeItsGuardAndPrintsTheValue() async throws {
+        let fake = FakeSafari()
+        let output = try await runJS(["--url", "w1.example/53", "location.host"], on: fake)
+        XCTAssertEqual(output.stdout, "hello\n")
+        XCTAssertEqual(fake.javaScripts.count, 1, fake.transcript)
+        let script = try XCTUnwrap(fake.javaScripts.first)
+        let urlRead = try XCTUnwrap(script.range(of: "set _u to URL of"))
+        let guardAt = try XCTUnwrap(script.range(of: "SB_TARGET_CHANGED"))
+        let run = try XCTUnwrap(script.range(of: "set _r to do JavaScript"))
+        XCTAssertLessThan(urlRead.lowerBound, guardAt.lowerBound,
+                          "the guard must sit right before the code it protects: \(script)")
+        XCTAssertLessThan(guardAt.lowerBound, run.lowerBound, script)
+    }
+
+    func testTheBoundedRetryAfterAGuardTripStillReturnsTheCapturedURLAndTheValue() async throws {
+        let fake = FakeSafari()
+        fake.guardTripsOnFirstWrapperDispatches = 1
+        let output = try await runJS(["--url", "w1.example/53", "location.host"], on: fake)
+        XCTAssertEqual(output.stdout, "hello\n", "the retry's `URL GS reply` must be split, not printed raw")
+        XCTAssertEqual(fake.javaScripts.count, 2, fake.transcript)
+        for script in fake.javaScripts {
+            XCTAssertTrue(script.contains("return _u & (character id 29) & _r"), script)
+        }
+    }
+
+    func testAFlaglessRunWithNoReplyAndAnUnchangedURLIsAnErrorToo() async {
+        let fake = FakeSafari()
+        fake.expressionFormParses = false
+        fake.capturedURL = "https://w1.example/1"       // what the fake answers for a plain URL read
+        do {
+            try await runJS(["location.host"], on: fake)
+            XCTFail("expected the no-reply error")
+        } catch let error as SafariBrowserError {
+            guard case .appleScriptFailed(let message) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(message, JSCommand.noReplyMessage)
+        } catch { XCTFail("\(error)") }
+        XCTAssertEqual(fake.javaScripts.count, 1, fake.transcript)
     }
 
     func testWindowTabWithAProfileStillEnumeratesBecauseTheIndexCountsOnlyThatProfile() async throws {

@@ -582,13 +582,15 @@ enum SafariBridge {
         case .resolvedTab, .anchoredCurrentTab, .urlMatch, .documentIndex:
             return concrete
         case .windowTab(let window, let tab):
-            // #255: one small read (window id + tab count) anchors the target. Reached only
-            // without `--profile`: `resolveToConcreteTarget` above already sent every
-            // profile-scoped target through the enumeration, because there the window index
-            // counts only that profile's windows, which only the enumeration knows. Anchoring
-            // such a target by Safari's own window index would pick another profile's window.
-            // `JSCommandRoundTripTests.testWindowTabWithAProfileStillEnumerates…` pins it.
-            if let anchored = anchoredWindowTab(
+            // #255: one small read (window id + tab count) anchors the target. Never with
+            // `--profile`: there the window index counts only that profile's windows, which only
+            // the enumeration knows, so anchoring by Safari's own window index could pick another
+            // profile's window. `resolveToConcreteTarget` usually sends such a target through the
+            // enumeration already, but a legacy enumeration record without a window id can still
+            // hand a positional target back, so this guard is what keeps the cheap read from ever
+            // running with a profile. `JSCommandRoundTripTests` pins both.
+            if (profile ?? "").isEmpty,
+               let anchored = anchoredWindowTab(
                 tab: tab, anchor: await readTabAnchor(windowIndex: window), profile: profile) {
                 return anchored
             }
@@ -1827,74 +1829,92 @@ enum SafariBridge {
         diagnosticTarget: BackgroundTabDiagnosticTarget?, warnWriter: ((String) -> Void)?,
         captureURL: Bool = false
     ) async throws -> String {
-        if case .anchoredCurrentTab(let windowID, let tab, _) = target {
-            // #180 verify R2/R3: the check and the dispatch share one
-            // osascript run, so a tab change between two steps is caught. They
-            // are still two Apple events, not an atomic operation: a change
-            // landing in the gap between this check and `do JavaScript` inside
-            // one step is not detected. Safari exposes no stable tab identity
-            // to close that gap.
-            return try await runTargetedAppleScript("""
-                tell application "Safari"
-                    set _w to window id \(windowID)
-                    if (index of current tab of _w) is not \(tab) then error "SB_TARGET_CHANGED: tab \(tab) is no longer the current tab of window id \(windowID)" number 9001
-                    \(doJavaScriptStatement(code, in: "tab \(tab) of _w", captureURL: captureURL))
-                end tell
-                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
-        }
-        guard case .resolvedTab(_, _, .some(let matcher), _) = target else {
-            return try await runTargetedAppleScript("""
-                tell application "Safari"
-                    \(doJavaScriptStatement(code, in: docRef, captureURL: captureURL))
-                end tell
-                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
-        }
-        if let guardClause = urlGuardClause(for: matcher) {
-            return try await runTargetedAppleScript("""
-                tell application "Safari"
-                    set _t to \(docRef)
-                    \(guardClause)
-                    \(doJavaScriptStatement(code, in: "_t", captureURL: captureURL))
-                end tell
-                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
-        }
         // Regex matcher: Swift-side pre-check. The gap between check and
         // dispatch is far narrower than resolve-to-execute was, and a miss
         // still lands on the dangle/retry path via the thrown sentinel.
-        let currentURL = try await runTargetedAppleScript("""
-            tell application "Safari"
-                return URL of \(docRef)
-            end tell
-            """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
-        guard matcher.matches(currentURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
-            throw SafariBrowserError.appleScriptFailed(
-                "SB_TARGET_CHANGED: URL of target tab no longer matches \(matcher.description)")
+        if case .resolvedTab(_, _, .some(let matcher), _) = target, urlGuardClause(for: matcher) == nil {
+            let currentURL = try await runTargetedAppleScript("""
+                tell application "Safari"
+                    return URL of \(docRef)
+                end tell
+                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
+            guard matcher.matches(currentURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                throw SafariBrowserError.appleScriptFailed(
+                    "SB_TARGET_CHANGED: URL of target tab no longer matches \(matcher.description)")
+            }
         }
-        return try await runTargetedAppleScript("""
-            tell application "Safari"
-                \(doJavaScriptStatement(code, in: docRef, captureURL: captureURL))
-            end tell
-            """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
+        return try await runTargetedAppleScript(
+            jsDispatchScript(code, docRef: docRef, target: target, captureURL: captureURL),
+            target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
     }
 
-    /// The AppleScript that runs `code` in `ref`. With `captureURL` (#255) it first reads the tab's
-    /// URL and answers `URL GS result`, so the caller learns where the tab was BEFORE the code ran
-    /// without a second round trip. A tab with no URL (a blank tab) reads as empty, and a
-    /// `do JavaScript` that returned nothing (a swallowed SyntaxError) answers an empty result,
-    /// so neither can turn the concatenation into an AppleScript error.
+    /// The AppleScript for one JS dispatch (pure, so the four shapes can be pinned and compiled
+    /// by tests). #180 verify R2/R3: for an `.anchoredCurrentTab` target the check and the
+    /// dispatch share one osascript run, so a tab change between two steps is caught. They are
+    /// still two Apple events, not an atomic operation: a change landing in the gap between
+    /// this check and `do JavaScript` inside one step is not detected. Safari exposes no stable
+    /// tab identity to close that gap.
+    ///
+    /// With `captureURL` (#255) the URL read comes BEFORE any guard, so the guard and the
+    /// `do JavaScript` stay adjacent: whatever the guard confirmed is what the code runs in.
+    static func jsDispatchScript(
+        _ code: String, docRef: String, target: TargetDocument, captureURL: Bool
+    ) -> String {
+        let body: [String]
+        if case .anchoredCurrentTab(let windowID, let tab, _) = target {
+            let ref = "tab \(tab) of _w"
+            body = [
+                "set _w to window id \(windowID)",
+                urlCaptureStatement(in: ref, captureURL: captureURL),
+                "if (index of current tab of _w) is not \(tab) then error \"SB_TARGET_CHANGED: tab \(tab) is no longer the current tab of window id \(windowID)\" number 9001",
+                doJavaScriptStatement(code, in: ref, captureURL: captureURL),
+            ]
+        } else if case .resolvedTab(_, _, .some(let matcher), _) = target,
+                  let guardClause = urlGuardClause(for: matcher) {
+            body = [
+                "set _t to \(docRef)",
+                urlCaptureStatement(in: "_t", captureURL: captureURL),
+                guardClause,
+                doJavaScriptStatement(code, in: "_t", captureURL: captureURL),
+            ]
+        } else {
+            body = [
+                urlCaptureStatement(in: docRef, captureURL: captureURL),
+                doJavaScriptStatement(code, in: docRef, captureURL: captureURL),
+            ]
+        }
+        // Empty entries (no `captureURL`) leave no blank line, so the stateless scripts stay
+        // exactly what they were before #255.
+        let lines = body.filter { !$0.isEmpty }.map { "    " + $0 }
+        return (["tell application \"Safari\""] + lines + ["end tell"]).joined(separator: "\n")
+    }
+
+    /// #255: read the tab's URL into `_u` (empty when the tab has none or the read fails).
+    /// Empty without `captureURL`, so the stateless scripts stay what they were.
+    static func urlCaptureStatement(in ref: String, captureURL: Bool) -> String {
+        guard captureURL else { return "" }
+        return [
+            "set _u to \"\"",
+            "try",
+            "    set _u to URL of \(ref)",
+            "end try",
+            "if _u is missing value then set _u to \"\"",
+        ].joined(separator: "\n    ")
+    }
+
+    /// The AppleScript statement that runs `code` in `ref`. With `captureURL` (#255) it answers
+    /// `URL GS result` (`urlCaptureStatement` must already have run), so the caller learns where
+    /// the tab was BEFORE the code ran without a second round trip. A `do JavaScript` that
+    /// returned nothing (a swallowed SyntaxError) answers an empty result, so it cannot turn the
+    /// concatenation into an AppleScript error.
     static func doJavaScriptStatement(_ code: String, in ref: String, captureURL: Bool) -> String {
         let escaped = code.escapedForAppleScript
         guard captureURL else { return "do JavaScript \"\(escaped)\" in \(ref)" }
-        return """
-            set _u to ""
-                    try
-                        set _u to URL of \(ref)
-                    end try
-                    if _u is missing value then set _u to ""
-                    set _r to do JavaScript "\(escaped)" in \(ref)
-                    if _r is missing value then set _r to ""
-                    return _u & (character id 29) & _r
-            """
+        return [
+            "set _r to do JavaScript \"\(escaped)\" in \(ref)",
+            "if _r is missing value then set _r to \"\"",
+            "return _u & (character id 29) & _r",
+        ].joined(separator: "\n    ")
     }
 
     /// Execute JS and read large results via chunked transfer.

@@ -136,18 +136,21 @@ struct JSCommand: AsyncParsableCommand {
         }
     }
 
-    /// #76 non-large protocol: expression form first, statement form as the
-    /// parse-failure retry, with the sentinel distinguishing the two.
+    /// #76 non-large protocol, one-call form (#255).
     ///
-    /// #82: returns `nil` when the user's own code navigated the page. Every
-    /// channel this protocol reports through — the sentinel, the result global,
-    /// even the tab's identity guard — lives in the document that navigation
-    /// replaces, so a successful navigation is indistinguishable from failure
-    /// unless it is checked for explicitly. Both failure shapes are covered:
-    /// the sentinel reading unset (wrapper's writes wiped) and the #79 guard
-    /// throwing `targetTabChanged` (tab no longer matches). Reporting either as
-    /// an error would tell the caller a navigation that plainly succeeded had
-    /// failed, and retrying it would re-run code that already took effect.
+    /// #82: returns `nil` when the user's own code navigated the page. The reply travels in the
+    /// document that navigation replaces, so a successful navigation is indistinguishable from a
+    /// lost reply unless the URL is checked explicitly. Reporting it as an error would tell the
+    /// caller a navigation that plainly succeeded had failed.
+    ///
+    /// The success path is ONE `do JavaScript`: the wrapper returns its own outcome
+    /// (`JSWrapper.parseInline`), and the tab's URL is read in the same AppleScript, just before
+    /// the code runs (`preNavURL`). It used to be seven round trips.
+    ///
+    /// Which form runs is `JSSyntaxHint.formsToTry`: when one form is known to parse, only that
+    /// form runs, so a missing reply (it parsed, so it ran) is never answered by running the code
+    /// again. Only when neither parses, or the hint cannot tell, are both tried in turn — the
+    /// case where a form that produced no reply cannot have run.
     private func runNonLargePath(
         _ jsCode: String,
         target documentTarget: SafariBridge.TargetDocument,
@@ -155,16 +158,13 @@ struct JSCommand: AsyncParsableCommand {
         warnWriter: ((String) -> Void)?,
         profile: String?
     ) async throws -> String? {
-        // #255: the success path is ONE `do JavaScript`. The wrapper returns its own outcome
-        // (`JSWrapper.parseInline`), and the tab's URL is read in the same AppleScript, just
-        // before the code runs, so there is no preset, no read-back, no cleanup and no separate
-        // URL read. (It used to be seven round trips.) `preNavURL` is that same-script URL read.
         var preNavURL: String?
         do {
             // #76: user code is inlined into the injected string instead of routed through
             // page-context eval() — strict-CSP pages refuse eval, while `do JavaScript` itself
-            // is UA-privileged and exempt. The hint only decides which form to try first.
-            for (attempt, form) in JSSyntaxHint.preferredOrder(for: jsCode).enumerated() {
+            // is UA-privileged and exempt.
+            let forms = JSSyntaxHint.formsToTry(for: jsCode)
+            for (attempt, form) in forms.enumerated() {
                 let wrapper = form == .expression
                     ? JSWrapper.inlineExpression(jsCode) : JSWrapper.inlineStatement(jsCode)
                 let reply: String
@@ -189,16 +189,22 @@ struct JSCommand: AsyncParsableCommand {
                 case .stored(let length):
                     return try await readStoredResult(
                         length: length, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
+                case .damaged(let expected, let actual):
+                    throw SafariBrowserError.appleScriptFailed(
+                        "JavaScript reply damaged: the wrapper reported \(expected) UTF-16 units and \(actual) arrived. The code ran; it was not run again. Use --large to read the result in chunks.")
                 case .notRun:
-                    // #82: nothing came back. Either the form did not parse (Safari swallows the
-                    // SyntaxError) or the code navigated the page and the reply went with the old
-                    // document. Check which before trying the other form, which would run the
-                    // code a second time if it had already taken effect.
+                    // #82: nothing came back. Check for a navigation first: the reply went
+                    // with the old document.
                     if let navURL = try await Self.navigatedAwayURL(
                         from: preNavURL, target: documentTarget,
                         firstMatch: firstMatch, profile: profile) {
                         Self.reportNavigation(to: navURL)
                         return nil
+                    }
+                    // A form that parsed and produced no reply has run (see above): do not try
+                    // another. Only the unhinted both-forms case moves on to the second form.
+                    if forms.count == 1 {
+                        throw SafariBrowserError.appleScriptFailed(Self.noReplyMessage)
                     }
                 }
             }
@@ -214,6 +220,10 @@ struct JSCommand: AsyncParsableCommand {
             return nil
         }
     }
+
+    /// The code parsed and Safari returned nothing, and the tab's URL did not change.
+    static let noReplyMessage =
+        "JavaScript returned no reply. The code parsed, so it most likely ran, but its reply did not come back: the page may have reloaded or navigated to the same address, or the result could not be passed back. It was not run again. Use --large to read a large or unusual result in chunks."
 
     /// A result above `JSWrapper.inlineResultLimit` was parked in the page's globals by the
     /// wrapper: read it (chunked when the plain read comes back empty), then clean up.
