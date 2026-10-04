@@ -68,26 +68,42 @@ final class JSWrapperTests: XCTestCase {
 
     func testLargeExpression_capturesRuntimeErrorsInBand() {
         // `do JavaScript` swallows uncaught runtime throws silently, so the
-        // large forms must record them to __sbLargeErr in-band; user code
+        // large forms must record them in the call's own slot in-band; user code
         // stays newline-guarded against trailing comments.
-        let form = JSWrapper.largeExpression("1+1 // c")
+        let slot = ResultSlot.make()
+        let form = JSWrapper.largeExpression("1+1 // c", slot: slot)
         XCTAssertTrue(form.contains("(\n1+1 // c\n)"))
-        XCTAssertTrue(form.contains("window.__sbLargeErr = e.message"))
+        XCTAssertTrue(form.contains("var s = window.\(slot.key); if (s) { s.err = e.message; }"), form)
         XCTAssertTrue(form.contains("catch"))
         XCTAssertFalse(form.contains("eval("))
         XCTAssertFalse(form.contains("new Function"))
+        XCTAssertFalse(form.contains("__sbLargeErr"), "a name every call shares (#190)")
     }
 
     func testLargeStatement_isFunctionBodyWithErrorCapture() {
-        let form = JSWrapper.largeStatement("var a = 1;\nreturn a;")
+        let slot = ResultSlot.make()
+        let form = JSWrapper.largeStatement("var a = 1;\nreturn a;", slot: slot)
         XCTAssertTrue(form.contains("(function(){\nvar a = 1;\nreturn a;\n})()"))
-        XCTAssertTrue(form.contains("window.__sbLargeErr = e.message"))
+        XCTAssertTrue(form.contains("s.err = e.message"), form)
+        XCTAssertTrue(form.contains(slot.key))
         XCTAssertFalse(form.contains("eval("))
+        XCTAssertFalse(form.contains("__sbLargeErr"))
     }
 
-    func testPresetLargeProtocolGlobals_includesErrorSlot() {
-        XCTAssertTrue(JSWrapper.presetLargeProtocolGlobals.contains("__sbLargeErr"))
-        XCTAssertTrue(JSWrapper.presetLargeProtocolGlobals.contains("__sbResultLen"))
+    func testLargeFormsRecordTheirErrorInTheSlotTheyWereGiven() {
+        // run for real: the error ends up where `ResultSlot.errorScript` reads it
+        let forms: [(ResultSlot) -> String] = [
+            { JSWrapper.largeExpression("(function(){ throw new Error('boom') })()", slot: $0) },
+            { JSWrapper.largeStatement("throw new Error('boom')", slot: $0) },
+        ]
+        for form in forms {
+            let page = FakePage()
+            let slot = ResultSlot.make()
+            _ = page.evaluate(slot.presetScript)
+            _ = page.evaluate(slot.storeScript(form(slot)))
+            XCTAssertEqual(page.evaluate(slot.errorScript), "boom")
+            XCTAssertEqual(page.evaluate(slot.lengthScript), "0", "the wrapper returned '' after recording: a length of 0, not the sentinel")
+        }
     }
 
     // MARK: - cspEvalHint

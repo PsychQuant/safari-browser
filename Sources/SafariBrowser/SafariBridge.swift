@@ -1931,15 +1931,20 @@ enum SafariBridge {
     ].joined(separator: "\n    ")
 
     /// Execute JS and read large results via chunked transfer.
-    /// Stores result in window.__sbResult, then reads back in 256KB chunks.
+    /// Parks the result in a slot of this call's own (`ResultSlot`), then reads it back in 256KB chunks.
     /// All chunks are read from the same target document so results stay
     /// consistent across multi-document Safari sessions.
+    ///
+    /// - Parameter slot: the slot to park the result in, for a caller that needs its name beforehand
+    ///   (`js --large` records a runtime error there and reads the "never ran" sentinel from it). Such a
+    ///   caller also cleans it up. Without one the call makes its own and removes it, on every exit.
     static func doJavaScriptLarge(
         _ code: String,
         target initialTarget: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
         warnWriter: ((String) -> Void)? = nil,
-        profile: String? = nil
+        profile: String? = nil,
+        slot givenSlot: ResultSlot? = nil
     ) async throws -> String {
         // #231: a raw `.urlMatch` / `.documentIndex` is resolved ONCE here, as `doJavaScript` does at
         // its own boundary, so the reads that follow address the tab the first read used. Left raw,
@@ -1955,49 +1960,53 @@ enum SafariBridge {
             break
         }
 
-        // Store result in window variable. The profile is validated at the resolution above.
-        _ = try await doJavaScript(
-            "(function(){ window.__sbResult = '' + (\(code)); window.__sbResultLen = window.__sbResult.length; })()",
-            target: target,
-            firstMatch: firstMatch,
-            profile: profile
-        )
+        let slot = givenSlot ?? ResultSlot.make()
+        let ownsSlot = givenSlot == nil
+        do {
+            // Park the result in the slot. The profile is validated at the resolution above.
+            _ = try await doJavaScript(slot.storeScript(code), target: target, firstMatch: firstMatch, profile: profile)
 
-        // Get total length
-        let lenStr = try await doJavaScript("window.__sbResultLen", target: target, firstMatch: firstMatch)
-        // AppleScript returns numbers as "9.0" — parse via Double then truncate.
-        // Mirrors the non-large path in JSCommand.swift; #74. Int("5489.0")
-        // returns nil → length parses to 0 → the whole chunked read returns ""
-        // (silent data loss on every --large / --output / `get text` invocation).
-        let totalLen = Int(Double(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
-        // #76 INVARIANT: this early return must NOT delete the protocol
-        // globals — JSCommand.runLargePath reads __sbResultLen afterward to
-        // distinguish "legitimately empty result" (0, set by the wrapper)
-        // from "wrapper never parsed" (undefined, preset). Moving the
-        // cleanup above this guard breaks every empty `--large` result.
-        guard totalLen > 0 else {
-            return ""
+            let lenStr = try await doJavaScript(slot.lengthScript, target: target, firstMatch: firstMatch)
+            // #76 INVARIANT: an unset length (the sentinel) and an empty result both come back as "" and
+            // the slot is NOT removed here — JSCommand.runLargePath reads the length afterward to
+            // distinguish "legitimately empty result" (0, set by the wrapper) from "wrapper never
+            // parsed" (undefined, preset). A caller that passed its own slot removes it itself.
+            guard let totalLen = ResultSlot.parseLength(lenStr), totalLen > 0 else {
+                if ownsSlot { _ = try? await doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch) }
+                return ""
+            }
+            let result = try await readResultSlot(slot, length: totalLen, target: target, firstMatch: firstMatch)
+            if ownsSlot { _ = try? await doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch) }
+            return result
+        } catch {
+            if ownsSlot { _ = try? await doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch) }
+            throw error
         }
+    }
 
-        // Read in chunks
-        let chunkSize = 262144 // 256KB
+    /// Read a parked result back, one framed chunk per `do JavaScript`, and check every chunk.
+    /// A chunk that is missing, cut or altered is an error (`ResultSlot.parseFrame`); it is never
+    /// joined into the result as a shorter text. The result then loses ONE trailing newline, which
+    /// is what the runner has always done to the end of the last chunk, so what is printed is what
+    /// it was; a newline at the end of an earlier chunk now stays (it used to be removed too).
+    ///
+    /// Does not remove the slot: whoever made it does.
+    static func readResultSlot(
+        _ slot: ResultSlot,
+        length totalLen: Int,
+        target: TargetDocument,
+        firstMatch: Bool = false
+    ) async throws -> String {
         var result = ""
         var offset = 0
         while offset < totalLen {
-            let end = min(offset + chunkSize, totalLen)
-            let chunk = try await doJavaScript(
-                "window.__sbResult.substring(\(offset), \(end))",
-                target: target,
-                firstMatch: firstMatch
-            )
-            result += chunk
-            offset = end
+            let raw = try await doJavaScript(
+                slot.readScript(offset: offset, total: totalLen), target: target, firstMatch: firstMatch)
+            let frame = try ResultSlot.parseFrame(raw, offset: offset, total: totalLen)
+            result += frame.text
+            offset = frame.end
         }
-
-        // Cleanup
-        _ = try await doJavaScript("delete window.__sbResult; delete window.__sbResultLen", target: target, firstMatch: firstMatch)
-
-        return result
+        return JSWrapper.droppingOneTrailingNewline(result)
     }
 
     // MARK: - Page Info

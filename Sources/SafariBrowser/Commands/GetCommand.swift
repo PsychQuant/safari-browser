@@ -85,12 +85,11 @@ struct GetText: AsyncParsableCommand {
                 )
                 let len = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
                 if len > 0 {
-                    // Truncated — use chunked read (no re-execution)
-                    _ = try await SafariBridge.doJavaScript(
-                        "(function(){ var el = \(selector.resolveRefJS); window.__sbResult = el ? el.textContent : ''; window.__sbResultLen = window.__sbResult.length; })()",
-                        target: documentTarget
-                    )
-                    print(try await SafariBridge.doJavaScriptLarge("window.__sbResult", target: documentTarget))
+                    // Truncated — use chunked read. The element is looked up again (a read, with no
+                    // effect); the chunked read parks the text in a slot of its own (#190).
+                    print(try await SafariBridge.doJavaScriptLarge(
+                        "(function(){ var el = \(selector.resolveRefJS); return el ? el.textContent : ''; })()",
+                        target: documentTarget))
                 }
                 // else genuinely empty — print nothing
             } else {
@@ -151,11 +150,9 @@ struct GetHTML: AsyncParsableCommand {
             )
             let len = Int(lenStr.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
             if len > 0 {
-                _ = try await SafariBridge.doJavaScript(
-                    "(function(){ var el = \(selector.resolveRefJS); window.__sbResult = el ? el.innerHTML : ''; window.__sbResultLen = window.__sbResult.length; })()",
-                    target: documentTarget
-                )
-                print(try await SafariBridge.doJavaScriptLarge("window.__sbResult", target: documentTarget))
+                print(try await SafariBridge.doJavaScriptLarge(
+                    "(function(){ var el = \(selector.resolveRefJS); return el ? el.innerHTML : ''; })()",
+                    target: documentTarget))
                 return
             }
         }

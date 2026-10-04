@@ -188,9 +188,12 @@ struct JSCommand: AsyncParsableCommand {
                     // here as a caught EvalError — append the hint.
                     throw SafariBrowserError.appleScriptFailed(
                         "JavaScript error: \(message)\(JSWrapper.cspEvalHint(for: message) ?? "")")
-                case .stored(let length):
+                case .stored(let slot, let length):
                     return try await readStoredResult(
-                        length: length, target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
+                        slot: slot, length: length, target: documentTarget, firstMatch: firstMatch)
+                case .invalidSlot:
+                    throw SafariBrowserError.appleScriptFailed(
+                        "JavaScript result slot: the reply named a place for the result that is not a valid slot name, so it was not read. The code ran; it was not run again. Use --large to read the result.")
                 case .damaged(let expected, let actual):
                     throw SafariBrowserError.appleScriptFailed(
                         "JavaScript reply damaged: the wrapper reported \(expected) UTF-16 units and \(actual) arrived, or the end of the reply is missing. The code ran; it was not run again. Use --large to read the result in chunks.")
@@ -227,28 +230,30 @@ struct JSCommand: AsyncParsableCommand {
     static let noReplyMessage =
         "JavaScript returned no reply. The code parsed, so it most likely ran, but its reply did not come back: the page may have reloaded or navigated to the same address, or the result could not be passed back. It was not run again. Use --large to read a large or unusual result in chunks."
 
-    /// A result above `JSWrapper.inlineResultLimit` was parked in the page's globals by the
-    /// wrapper: read it (chunked when the plain read comes back empty), then clean up.
+    /// A result above `JSWrapper.inlineResultLimit` was parked by the wrapper in a slot of this call's own
+    /// (the page named it; `ResultSlot`): read it back chunk by chunk, checking every chunk, then remove it.
+    ///
+    /// The first read used to be one plain `do JavaScript` that fell back to chunks when it came back
+    /// empty. An empty answer cannot tell "too long to hand back" from "the slot is gone", and a plain
+    /// answer cannot be checked; chunks can, so every read is a chunk now (a result of 131073 to 262144
+    /// units is one chunk, so one read, as before).
     private func readStoredResult(
+        slot: ResultSlot,
         length: Int,
         target documentTarget: SafariBridge.TargetDocument,
-        firstMatch: Bool,
-        warnWriter: ((String) -> Void)?
+        firstMatch: Bool
     ) async throws -> String {
-        let stored = try await SafariBridge.doJavaScript(
-            "window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-        let value: String
-        if stored.isEmpty && length > 0 {
-            value = try await SafariBridge.doJavaScriptLarge(
-                "window.__sbResult", target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-            FileHandle.standardError.write(Data("warning: output was large, used chunked read. Use --large to skip this.\n".utf8))
-        } else {
-            value = stored
+        do {
+            let value = try await SafariBridge.readResultSlot(
+                slot, length: length, target: documentTarget, firstMatch: firstMatch)
+            _ = try? await SafariBridge.doJavaScript(
+                slot.cleanupScript, target: documentTarget, firstMatch: firstMatch)
+            return value
+        } catch {
+            _ = try? await SafariBridge.doJavaScript(
+                slot.cleanupScript, target: documentTarget, firstMatch: firstMatch)
+            throw error
         }
-        _ = try await SafariBridge.doJavaScript(
-            "delete window.__sbLen; delete window.__sbResult",
-            target: documentTarget, firstMatch: firstMatch, warnWriter: warnWriter)
-        return value
     }
 
     /// #82: the URL the target now sits on, if the user's code navigated away
@@ -356,22 +361,45 @@ struct JSCommand: AsyncParsableCommand {
         warnWriter: ((String) -> Void)?,
         profile: String?
     ) async throws -> String {
+        // #190: the result, the runtime error and the "never ran" sentinel all live in a slot of this
+        // call's own, made here because the error and the sentinel are read by name before any result
+        // exists. It is removed on every way out.
+        let slot = ResultSlot.make()
+        do {
+            let result = try await runLargePath(
+                jsCode, slot: slot, target: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+            _ = try? await SafariBridge.doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch)
+            return result
+        } catch {
+            _ = try? await SafariBridge.doJavaScript(slot.cleanupScript, target: target, firstMatch: firstMatch)
+            throw error
+        }
+    }
+
+    private func runLargePath(
+        _ jsCode: String,
+        slot: ResultSlot,
+        target: SafariBridge.TargetDocument,
+        firstMatch: Bool,
+        warnWriter: ((String) -> Void)?,
+        profile: String?
+    ) async throws -> String {
         // #82: same navigation ambiguity as the non-large path — an unset
         // marker means either "never parsed" or "ran, then navigated away and
-        // took the globals with it". Capture the starting URL so the two can be
+        // took the slot with it". Capture the starting URL so the two can be
         // told apart before anything is retried.
         let preNavURL = try? await SafariBridge.getCurrentURL(
             target: target, firstMatch: firstMatch, warnWriter: nil, profile: profile)
-        _ = try await SafariBridge.doJavaScript(JSWrapper.presetLargeProtocolGlobals, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-        var result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeExpression(jsCode), target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+        _ = try await SafariBridge.doJavaScript(slot.presetScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+        var result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeExpression(jsCode, slot: slot), target: target, firstMatch: firstMatch, warnWriter: warnWriter, slot: slot)
         if result.isEmpty {
             // Order matters: a runtime error is captured in-band (the wrapper
-            // returns '' after recording __sbLargeErr, so __sbResultLen reads
+            // returns '' after recording the error in the slot, so its length reads
             // 0, not the sentinel) — check it BEFORE the parse-failure marker,
             // and never retry after it: re-running user code that already
             // executed would double its side effects.
-            try await throwLargeRuntimeErrorIfAny(target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-            let marker = try await SafariBridge.doJavaScript("'' + window.__sbResultLen", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+            try await throwLargeRuntimeErrorIfAny(slot: slot, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+            let marker = try await SafariBridge.doJavaScript(slot.lengthScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
             if marker.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
                 // #82: navigation before the retry, or the retry re-runs code
                 // that already took effect.
@@ -381,10 +409,10 @@ struct JSCommand: AsyncParsableCommand {
                     return ""
                 }
                 // Expression form never parsed (nothing ran) — retry as function body.
-                result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeStatement(jsCode), target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+                result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeStatement(jsCode, slot: slot), target: target, firstMatch: firstMatch, warnWriter: warnWriter, slot: slot)
                 if result.isEmpty {
-                    try await throwLargeRuntimeErrorIfAny(target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-                    let marker2 = try await SafariBridge.doJavaScript("'' + window.__sbResultLen", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+                    try await throwLargeRuntimeErrorIfAny(slot: slot, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+                    let marker2 = try await SafariBridge.doJavaScript(slot.lengthScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
                     if marker2.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
                         if let navURL = try await Self.navigatedAwayURL(
                             from: preNavURL, target: target, firstMatch: firstMatch, profile: profile) {
@@ -402,20 +430,20 @@ struct JSCommand: AsyncParsableCommand {
     }
 
     /// #76: `do JavaScript` swallows uncaught runtime throws as silently as
-    /// SyntaxErrors, so the large-path wrappers record them to
-    /// window.__sbLargeErr in-band. Throws the normalized `JavaScript
+    /// SyntaxErrors, so the large-path wrappers record them in the call's
+    /// slot in-band. Throws the normalized `JavaScript
     /// error:` form (matching the non-large path) with the CSP hint when
     /// the user code itself called eval()/new Function() on a strict-CSP
     /// page.
     private func throwLargeRuntimeErrorIfAny(
+        slot: ResultSlot,
         target: SafariBridge.TargetDocument,
         firstMatch: Bool,
         warnWriter: ((String) -> Void)?
     ) async throws {
-        let errMsg = try await SafariBridge.doJavaScript("'' + window.__sbLargeErr", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+        let errMsg = try await SafariBridge.doJavaScript(slot.errorScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
         let trimmed = errMsg.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != JSWrapper.lenUnsetSentinel, !trimmed.isEmpty else { return }
-        _ = try? await SafariBridge.doJavaScript("delete window.__sbLargeErr", target: target, firstMatch: firstMatch, warnWriter: warnWriter)
         throw SafariBrowserError.appleScriptFailed("JavaScript error: \(errMsg)\(JSWrapper.cspEvalHint(for: errMsg) ?? "")")
     }
 }

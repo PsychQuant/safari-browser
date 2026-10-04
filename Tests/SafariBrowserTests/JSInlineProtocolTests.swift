@@ -28,8 +28,18 @@ final class JSInlineProtocolTests: XCTestCase {
         XCTAssertEqual(JSWrapper.parseInline("SB1:ERR:boom: it broke"), .error("boom: it broke"))
     }
 
-    func testAnOversizedResultIsReportedAsStored() {
-        XCTAssertEqual(JSWrapper.parseInline("SB1:BIG:200000:"), .stored(length: 200000))
+    func testAnOversizedResultIsReportedAsStoredInTheSlotTheReplyNames() throws {
+        let slot = try XCTUnwrap(ResultSlot(pageKey: "__sbr_k3j2h1g0abcd"))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:BIG:200000:__sbr_k3j2h1g0abcd"), .stored(slot: slot, length: 200000))
+    }
+
+    func testAnOversizedResultNamingAnInvalidSlotIsNeverReadAndNeverRunAgain() {
+        // the name is pasted into scripts, so only the exact shape is accepted; the code did run, so
+        // this is not `.notRun` (which two-form callers answer by running it again)
+        for name in ["", "x", "__sbr_", "__sbr_short", "__sbr_k3j2h1g0abcd';alert(1);'", "__SBR_k3j2h1g0abcd",
+                     "window.__sbr_k3j2h1g0abcd", "__sbr_k3j2h1g0abcd\n"] {
+            XCTAssertEqual(JSWrapper.parseInline("SB1:BIG:200000:\(name)"), .invalidSlot, name.debugDescription)
+        }
     }
 
     func testAPayloadThatStartsWithACombiningScalarStillParses() {
@@ -45,7 +55,8 @@ final class JSInlineProtocolTests: XCTestCase {
         // ...and a combining scalar glued to the `ERR` / `OK` / `BIG` status separators.
         XCTAssertEqual(JSWrapper.parseInline("SB1:ERR:\u{0301}"), .error("\u{0301}"))
         XCTAssertEqual(JSWrapper.parseInline("SB1:OK:1:\u{0301}\u{1E}"), .value("\u{0301}"))
-        XCTAssertEqual(JSWrapper.parseInline("SB1:BIG:300000:\u{0301}"), .stored(length: 300000))
+        XCTAssertEqual(JSWrapper.parseInline("SB1:BIG:300000:\u{0301}"), .invalidSlot,
+                       "a name that starts with a combining mark is not a slot name; it is parsed by scalar and refused")
     }
 
     func testAReplyWhoseLengthDisagreesWithItsPayloadIsDamagedNotAValue() {
@@ -86,7 +97,7 @@ final class JSInlineProtocolTests: XCTestCase {
         // read as a value.
         for raw in ["", "undefined", "missing value", "5.0", "SB1:", "SB1:OK:", "SB1:OK:x:oops",
                     "SB1:OK:+5:hello", "SB1:OK:-1:", "SB1:OK:1234567890:x", "SB1:OK: 5:hello",
-                    "SB1:BIG:x:", "SB1:BIG:-3:", "SB1:WAT:1:y", "sb1:OK:1:y", " SB1:OK:1:y"] {
+                    "SB1:BIG:x:__sbr_k3j2h1g0abcd", "SB1:BIG:-3:__sbr_k3j2h1g0abcd", "SB1:WAT:1:y", "sb1:OK:1:y", " SB1:OK:1:y"] {
             XCTAssertEqual(JSWrapper.parseInline(raw), .notRun, "\(raw.debugDescription)")
         }
     }
@@ -137,11 +148,21 @@ final class JSInlineProtocolTests: XCTestCase {
         }
     }
 
-    func testAnOversizedResultIsStoredUnderTheNamesTheSlowPathReads() {
+    func testAnOversizedResultIsParkedInASlotTheWrapperNames() {
         let wrapper = JSWrapper.inlineExpression("x")
-        XCTAssertTrue(wrapper.contains("window.__sbLen = r.length") && wrapper.contains("window.__sbResult = r"),
-                      "the stored branch hands off to the existing read / chunked read / cleanup")
+        XCTAssertTrue(wrapper.contains("window[k] = { text: r, len: r.length }"), wrapper)
+        XCTAssertTrue(wrapper.contains("'SB1:BIG:' + r.length + ':' + k"), wrapper)
         XCTAssertTrue(wrapper.contains("r.length > \(JSWrapper.inlineResultLimit)"), wrapper)
+        for old in ["__sbResult", "__sbLen", "__sbResultLen"] {
+            XCTAssertFalse(wrapper.contains(old), "\(old) is shared by every call (#190)")
+        }
+    }
+
+    func testTheWrapperTextDoesNotDependOnTheCall() {
+        // The name is picked by the page. A name picked by the CLI would sit in the text, make every
+        // `js` script unique, and the daemon would compile each anew instead of reusing it.
+        XCTAssertEqual(JSWrapper.inlineExpression("document.title"), JSWrapper.inlineExpression("document.title"))
+        XCTAssertEqual(JSWrapper.inlineStatement("return 1"), JSWrapper.inlineStatement("return 1"))
     }
 
     func testTheInlineLimitIsNoLargerThanTheChunkTheSlowPathReads() {
@@ -239,15 +260,35 @@ final class JSInlineProtocolTests: XCTestCase {
                        "SB1:ERR:[object Object]")
     }
 
-    func testAnOversizedResultIsParkedInTheGlobalsAndReportedBig() {
+    func testAnOversizedResultIsParkedInItsOwnSlotAndReportedBig() throws {
         let big = JSWrapper.inlineResultLimit + 1
         let run = execute(JSWrapper.inlineExpression("'x'.repeat(\(big))"))
-        XCTAssertEqual(run.reply, "SB1:BIG:\(big):")
-        XCTAssertEqual(run.window.forProperty("__sbLen")?.toInt32(), Int32(big))
-        XCTAssertEqual(run.window.forProperty("__sbResult")?.toString()?.count, big)
+        let reply = try XCTUnwrap(run.reply)
+        XCTAssertTrue(reply.hasPrefix("SB1:BIG:\(big):"), String(reply.prefix(60)))
+        let name = String(reply.dropFirst("SB1:BIG:\(big):".count))
+        let slot = try XCTUnwrap(ResultSlot(pageKey: name), "the name the page picks must be one the CLI accepts: \(name)")
+        XCTAssertEqual(run.window.forProperty(slot.key)?.forProperty("len")?.toInt32(), Int32(big))
+        XCTAssertEqual(run.window.forProperty(slot.key)?.forProperty("text")?.toString()?.count, big)
+        for old in ["__sbLen", "__sbResult", "__sbResultLen"] {
+            XCTAssertTrue(run.window.forProperty(old)?.isUndefined ?? false, "\(old) must not be written any more")
+        }
         // exactly at the limit still comes back inline
         XCTAssertEqual(execute(JSWrapper.inlineExpression("'x'.repeat(\(JSWrapper.inlineResultLimit))")).reply?
             .hasPrefix("SB1:OK:\(JSWrapper.inlineResultLimit):"), true)
+    }
+
+    func testTwoOversizedResultsOnOnePageGetTwoSlots() throws {
+        let context = JSContext()!
+        context.evaluateScript("var window = this;")
+        let big = JSWrapper.inlineResultLimit + 1
+        let a = try XCTUnwrap(context.evaluateScript(JSWrapper.inlineExpression("'a'.repeat(\(big))"))?.toString())
+        let b = try XCTUnwrap(context.evaluateScript(JSWrapper.inlineExpression("'b'.repeat(\(big))"))?.toString())
+        XCTAssertNotEqual(a, b, "the same name would be the shared slot of #190")
+        for (reply, letter) in [(a, "a"), (b, "b")] {
+            let name = String(reply.dropFirst("SB1:BIG:\(big):".count))
+            let slot = try XCTUnwrap(ResultSlot(pageKey: name))
+            XCTAssertEqual(context.evaluateScript("window.\(slot.key).text.charAt(0)")?.toString(), letter)
+        }
     }
 
     func testALoneSurrogateIsReplacedSoTheReplyKeepsItsLength() {

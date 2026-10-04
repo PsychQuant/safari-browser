@@ -404,10 +404,11 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
     /// with native text and for one whose native text is empty.
     func testAGetTextStepReturnsWhatTheChildCommandPrints() async throws {
         for native in ["native words", ""] {
+            let page = FakePage()
+            page.setDocument(innerText: "inner")
             let answer: @Sendable (String) -> String = { source in
                 if source.contains("get text of") { return native }
-                if source.contains("window.__sbResultLen") && !source.contains("window.__sbResult =") { return "5.0" }
-                if source.contains("window.__sbResult.substring(") { return "inner" }
+                if source.contains("do JavaScript") { return (try? page.respond(source)) ?? "" }
                 return ""
             }
             let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
@@ -445,10 +446,10 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
     }
 
     func testAnEmptyNativeTextFallsBackToInnerTextLikeTheCLI() async throws {
+        let page = FakePage()
+        page.setDocument(innerText: "hello")
         let (text, scripts) = try await runGetText(nativeText: "") { source in
-            if source.contains("window.__sbResultLen") && !source.contains("window.__sbResult =") { return "5.0" }
-            if source.contains("window.__sbResult.substring(") { return "hello" }
-            return ""
+            source.contains("do JavaScript") ? (try? page.respond(source)) ?? "" : ""
         }
         XCTAssertEqual(text, "hello")
         XCTAssertTrue(scripts.contains { $0.contains("document.body.innerText") }, scripts.joined(separator: "\n---\n"))
@@ -469,14 +470,15 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
             var all: [String] { lock.withLock { items } }
         }
         let fake = FakeSafari()
+        let page = FakePage()
+        page.setDocument(innerText: "hello")
         let log = Log()
         let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         let text = try await DaemonRequestContext.$current.withValue(context) {
             try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
                 log.add(source)
                 if source.contains("get text of") { return "" }
-                if source.contains("window.__sbResultLen") && !source.contains("window.__sbResult =") { return "5.0" }
-                if source.contains("window.__sbResult.substring(") { return "hello" }
+                if source.contains("do JavaScript") { return try page.respond(source) }
                 return try fake.respond(source)
             }) {
                 try await InProcessStepDispatcher().dispatch(cmd: "get text", args: [], sharedTargetArgs: ["--url", "w2.example/2"])
