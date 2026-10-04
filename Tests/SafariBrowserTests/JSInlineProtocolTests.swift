@@ -236,9 +236,17 @@ final class JSInlineProtocolTests: XCTestCase {
 
     func testALoneSurrogateIsReplacedSoTheReplyKeepsItsLength() {
         // osascript silently drops a lone surrogate (measured on a real Safari); U+FFFD is the
-        // same length and survives.
+        // same length and survives. Checked INSIDE JavaScript: bridging a JS string to a Swift
+        // String replaces a lone surrogate itself, so a Swift-side comparison cannot tell whether
+        // the wrapper did it.
+        for (code, units) in [("'ab' + '\\uD83D'", 3), ("'\\uDE00x'", 2), ("'\\uD83D\\uD83D'", 2)] {
+            let context = JSContext()!
+            context.evaluateScript("var window = this;")
+            context.evaluateScript("var __reply = \(JSWrapper.inlineExpression(code));")
+            XCTAssertEqual(context.evaluateScript("__reply.isWellFormed()")?.toBool(), true, code)
+            XCTAssertEqual(context.evaluateScript("__reply.length")?.toInt32(), Int32("SB1:OK:\(units):".utf16.count + units), code)
+        }
         XCTAssertEqual(execute(JSWrapper.inlineExpression("'ab' + '\\uD83D'")).reply, "SB1:OK:3:ab\u{FFFD}")
-        XCTAssertEqual(execute(JSWrapper.inlineExpression("'\\uDE00x'")).reply, "SB1:OK:2:\u{FFFD}x")
         XCTAssertEqual(execute(JSWrapper.inlineExpression("'\u{1F600}'")).reply, "SB1:OK:2:\u{1F600}",
                        "a well-formed pair is left alone")
     }

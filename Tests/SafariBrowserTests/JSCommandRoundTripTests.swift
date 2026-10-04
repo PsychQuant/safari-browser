@@ -74,6 +74,9 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         private var wrapperDispatches = 0
         /// #255: answer an empty plain read of `window.__sbResult` (the chunked-read fallback).
         var storedPlainReadIsEmpty = false
+        /// #255: enumerate in the legacy 6-field shape, without the window-id column; the resolved
+        /// target then stays positional even with `--profile`.
+        var legacyEnumeration = false
 
         init(tabCounts: [Int] = [96, 2, 6, 1, 4], failJSContaining: String? = nil) {
             self.tabCounts = tabCounts
@@ -125,8 +128,9 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                 let w = offset + 1
                 for t in 1...count {
                     let url = (w == 1 && t == 53 && tab53HasNavigated) ? "https://w1.example/done" : "https://w\(w).example/\(t)"
-                    out += ["\(w)", "\(t)", t == 1 ? "1" : "0", url,
-                            "Tab \(t)", "個人 — Tab 1", "\(idBase + w)"].joined(separator: gs) + rs
+                    var fields = ["\(w)", "\(t)", t == 1 ? "1" : "0", url, "Tab \(t)", "個人 — Tab 1"]
+                    if !legacyEnumeration { fields.append("\(idBase + w)") }
+                    out += fields.joined(separator: gs) + rs
                 }
             }
             return out
@@ -546,6 +550,18 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         try await runJS(["--profile", "個人", "--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
         XCTAssertEqual(fake.enumerations, 1, fake.transcript)
         XCTAssertEqual(fake.tabAnchors.count, 0, fake.transcript)
+    }
+
+    func testWindowTabWithAProfileNeverTakesTheCheapAnchorEvenWithoutWindowIDs() async throws {
+        // A legacy enumeration record has no window id, so the profile-scoped target comes back
+        // positional. The window index counts only that profile's windows, so Safari's own index
+        // must not be used to anchor it: this guard is the only thing standing between the cheap
+        // read and another profile's window.
+        let fake = FakeSafari()
+        fake.legacyEnumeration = true
+        try await runJS(["--profile", "個人", "--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
+        XCTAssertEqual(fake.tabAnchors.count, 0, "no cheap anchor with a profile:\n\(fake.transcript)")
+        XCTAssertGreaterThanOrEqual(fake.enumerations, 1, fake.transcript)
     }
 
     func testATabOutsideTheWindowFallsBackToTheEnumerationAndItsError() async {
