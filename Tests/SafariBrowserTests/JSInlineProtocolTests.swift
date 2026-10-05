@@ -150,7 +150,7 @@ final class JSInlineProtocolTests: XCTestCase {
 
     func testAnOversizedResultIsParkedInASlotTheWrapperNames() {
         let wrapper = JSWrapper.inlineExpression("x")
-        XCTAssertTrue(wrapper.contains("window[k] = { text: r, len: r.length }"), wrapper)
+        XCTAssertTrue(wrapper.contains("window[k] = { text: r, len: r.length, u: "), wrapper)   // stamped for the sweep (#193)
         XCTAssertTrue(wrapper.contains("'SB1:BIG:' + r.length + ':' + k"), wrapper)
         XCTAssertTrue(wrapper.contains("r.length > \(JSWrapper.inlineResultLimit)"), wrapper)
         for old in ["__sbResult", "__sbLen", "__sbResultLen"] {

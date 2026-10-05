@@ -50,12 +50,43 @@ struct ResultSlot: Equatable, Sendable {
 
     private var ref: String { "window.\(key)" }
 
+    // MARK: - bounded retention (#193)
+
+    /// How long a slot may go unused before a later call that makes a slot removes it, in milliseconds of the
+    /// page's own clock. A call touches its slot at every round trip (well under a second apart), so only a slot
+    /// nobody is using, or one whose call stalled for this long, is ever removed.
+    static let retentionMilliseconds = 600_000
+
+    /// The page's clock as a number, or `undefined` when it cannot be read: `Date.now` may be replaced by a
+    /// page (fake timers, a privacy extension), may throw, and may answer something that is not a number.
+    /// `n === n` is false only for `NaN`. No global other than `Date` is used (page code can reassign them, #76).
+    private static let nowExpression =
+        "(function(){ try { var n = Date.now(); return typeof n === 'number' && n === n ? n : undefined; } catch (x) { return undefined; } })()"
+
+    /// The time stamp of a new slot: the clock, or nothing when it cannot be read (such a slot is never removed).
+    static let stampExpression = nowExpression
+
+    /// Record a use of the slot `s`, which must be in scope. A clock that cannot be read leaves the stamp as it was.
+    private static let touchStatement =
+        "try { var q = \(nowExpression); if (q !== undefined) { s.u = q; } } catch (x) {}"
+
+    /// Remove every property of `window` that is an abandoned slot: its name starts with `__sbr_`, its value is an
+    /// object, and its stamp `u` is a number older than `retentionMilliseconds`. A slot without a stamp (made by a
+    /// CLI that did not stamp), a stamp that is not a number, and any other property are left alone, and so is
+    /// everything when the clock cannot be read. The whole walk is in a `try`: a page that makes it fail loses
+    /// nothing but the removal. It declares nothing in the scope of the user's code (it is a function of its own).
+    static let sweepExpression = """
+        (function(){ try { var q = \(nowExpression); if (q === undefined) { return; } var names = Object.keys(window); \
+        for (var i = 0; i < names.length; i++) { if (names[i].indexOf('\(keyPrefix)') === 0) { var v = window[names[i]]; \
+        if (v && typeof v === 'object' && typeof v.u === 'number' && v.u < q - \(retentionMilliseconds)) { delete window[names[i]]; } } } } catch (x) {} })()
+        """
+
     // MARK: - scripts
 
     /// Marks the slot as "nothing stored yet and nothing started": `progressScript` reports it as `idle:undefined`, and a
     /// page that was replaced has no slot at all, which it reports as `gone`. `lengthScript` reports both as
     /// `JSWrapper.lenUnsetSentinel`.
-    var presetScript: String { "\(ref) = {}" }
+    var presetScript: String { "(\(Self.sweepExpression), \(ref) = { u: \(Self.stampExpression) })" }
 
     /// Evaluate `expression`, make it text, replace a lone surrogate with U+FFFD, and park it.
     ///
@@ -71,7 +102,7 @@ struct ResultSlot: Equatable, Sendable {
     /// `undefined` without a word.
     func storeScript(_ expression: String) -> String {
         """
-        (\(ref) = \(ref) || {}, (function(r){ if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } var s = \(ref); s.text = r; s.len = r.length; })('' + (
+        (\(Self.sweepExpression), \(ref) = \(ref) || { u: \(Self.stampExpression) }, (function(r){ if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } var s = \(ref); s.text = r; s.len = r.length; \(Self.touchStatement) })('' + (
         \(expression)
         )))
         """
@@ -79,14 +110,14 @@ struct ResultSlot: Equatable, Sendable {
 
     /// The length as text, or `JSWrapper.lenUnsetSentinel` when the slot is missing or nothing was stored.
     var lengthScript: String {
-        "(function(){ var s = \(ref); return s ? '' + s.len : 'undefined'; })()"
+        "(function(){ var s = \(ref); if (s) { \(Self.touchStatement) } return s ? '' + s.len : 'undefined'; })()"
     }
 
     /// The error a `--large` wrapper recorded, as `E:<text>` (the text may be empty), or
     /// `JSWrapper.lenUnsetSentinel` when nothing was recorded. The prefix is what tells an error whose message is
     /// empty (`throw ''`) from no error.
     var errorScript: String {
-        "(function(){ var s = \(ref); return s && s.err !== undefined ? 'E:' + s.err : 'undefined'; })()"
+        "(function(){ var s = \(ref); if (s) { \(Self.touchStatement) } return s && s.err !== undefined ? 'E:' + s.err : 'undefined'; })()"
     }
 
     /// The message of a recorded error, or nil when the reply says there is none. The prefix is read by Unicode
@@ -132,7 +163,7 @@ struct ResultSlot: Equatable, Sendable {
     }
 
     var progressScript: String {
-        "(function(){ var s = \(ref); return s ? (s.threw ? 'threw:' : s.started ? 'started:' : 'idle:') + (s.len === undefined ? 'undefined' : '' + s.len) : 'gone'; })()"
+        "(function(){ var s = \(ref); if (s) { \(Self.touchStatement) } return s ? (s.threw ? 'threw:' : s.started ? 'started:' : 'idle:') + (s.len === undefined ? 'undefined' : '' + s.len) : 'gone'; })()"
     }
 
     /// Anything that is not one of the four answers reads as `gone`, which is the answer that never runs anything again.
@@ -189,6 +220,7 @@ struct ResultSlot: Equatable, Sendable {
     func readScript(offset: Int, total: Int) -> String {
         """
         (function(){ var s = \(ref); if (!s || typeof s.text !== 'string' || s.text.length !== \(total)) return '';
+        \(Self.touchStatement)
         var t = s.text, a = \(offset), e = Math.min(a + \(Self.chunkSize), t.length);
         if (e < t.length) { var c = t.charCodeAt(e - 1), d = t.charCodeAt(e); if (c >= 55296 && c <= 56319 && d >= 56320 && d <= 57343) { e--; } }
         return e + ':' + t.substring(a, e) + '\\u001e'; })()
