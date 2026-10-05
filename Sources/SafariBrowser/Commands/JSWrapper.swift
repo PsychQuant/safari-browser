@@ -18,38 +18,32 @@
 /// and ran answers with a reply that starts with `inlinePrefix`, and any
 /// other reply means it never ran (`parseInline`). Since #255 that reply IS
 /// the outcome (value, error, or a marker that a large result is parked in
-/// `window.__sbLen` / `window.__sbResult`), so a successful run is a single
+/// a slot of the call's own, `ResultSlot`), so a successful run is a single
 /// `do JavaScript`. Before, the outcome went through page globals that were
 /// preset, read back twice and cleaned up — four more round trips. Coercion is
 /// `'' + x`, NOT `String(x)`, whose `window.String` binding page/user code can
 /// reassign.
 enum JSWrapper {
 
-    /// The large path reads `'' + window.__sbResultLen` after injection and
-    /// gets this when the wrapper never executed (parse failure of the whole string).
+    /// The large path reads the call's slot length (`ResultSlot.lengthScript`) after injection and
+    /// gets this when the wrapper never executed (parse failure of the whole string), or when
+    /// the slot is gone.
     static let lenUnsetSentinel = "undefined"
 
-    /// Preset for the large path's protocol globals (doJavaScriptLarge
-    /// uses __sbResult / __sbResultLen; __sbLargeErr carries runtime
-    /// errors in-band — `do JavaScript` swallows uncaught runtime throws
-    /// just as silently as SyntaxErrors, so without this capture a
-    /// runtime error would misread as a parse failure).
-    static let presetLargeProtocolGlobals =
-        "window.__sbResult = void 0; window.__sbResultLen = void 0; window.__sbLargeErr = void 0"
-
-    /// Large-path expression form. doJavaScriptLarge wraps its argument as
+    /// Large-path expression form. `ResultSlot.storeScript` wraps its argument as
     /// `'' + (code)`, so this stays an expression: an IIFE with try/catch
-    /// that records runtime errors to __sbLargeErr in-band (uncaught
-    /// throws vanish silently in `do JavaScript`) and newline-guards the
-    /// user code against trailing comments.
-    static func largeExpression(_ code: String) -> String {
-        "(function(){ try { return ('' + (\n\(code)\n)); } catch(e) { window.__sbLargeErr = e.message; return ''; } })()"
+    /// that records runtime errors in the call's own slot in-band (uncaught
+    /// throws vanish silently in `do JavaScript` — just as silently as SyntaxErrors,
+    /// so without this capture a runtime error would misread as a parse failure) and
+    /// newline-guards the user code against trailing comments.
+    static func largeExpression(_ code: String, slot: ResultSlot) -> String {
+        "(function(){ \(slot.startedStatement) try { return ('' + (\n\(code)\n)); } catch(e) { \(slot.recordErrorStatement) return ''; } })()"
     }
 
     /// Large-path statement form: user code runs as a function body (use
     /// `return` for a value), same in-band runtime-error capture.
-    static func largeStatement(_ code: String) -> String {
-        "(function(){ try { return ('' + (function(){\n\(code)\n})()); } catch(e) { window.__sbLargeErr = e.message; return ''; } })()"
+    static func largeStatement(_ code: String, slot: ResultSlot) -> String {
+        "(function(){ \(slot.startedStatement) try { return ('' + (function(){\n\(code)\n})()); } catch(e) { \(slot.recordErrorStatement) return ''; } })()"
     }
 
     // MARK: - One-call protocol (#255)
@@ -59,10 +53,10 @@ enum JSWrapper {
     static let inlinePrefix = "SB1:"
 
     /// Results longer than this (UTF-16 units) are not returned inline: the wrapper
-    /// stores them under `window.__sbLen` / `window.__sbResult` and returns a marker, and
-    /// `JSCommand` reads them with the existing read / chunked read / cleanup. The existing
-    /// chunked read already moves 256 KiB per `do JavaScript` return, so this stays well
-    /// inside what Safari is known to hand back.
+    /// parks them in a slot of the call's own and returns a marker that names it, and
+    /// `JSCommand` reads them with `SafariBridge.readResultSlot`. The chunked read already
+    /// moves 256 KiB per `do JavaScript` return, so this stays well inside what Safari is
+    /// known to hand back.
     static let inlineResultLimit = 131_072
 
     /// What an inline wrapper's reply means.
@@ -71,8 +65,12 @@ enum JSWrapper {
         case value(String)
         /// The user's code threw; the message is the payload.
         case error(String)
-        /// The result is larger than `inlineResultLimit` and sits in the page's globals.
-        case stored(length: Int)
+        /// The result is larger than `inlineResultLimit` and sits in a slot of this call's own, which the
+        /// page named (`ResultSlot`).
+        case stored(slot: ResultSlot, length: Int)
+        /// The wrapper ran and parked a result, but the name it announced is not one a slot can have.
+        /// The name is never used. The code ran, so it is never a reason to run it again.
+        case invalidSlot
         /// The wrapper ran (it announced its length) but the payload that arrived is not that
         /// long: the reply was cut or altered on its way back. Never returned as a value, never
         /// a reason to run the code again.
@@ -113,12 +111,24 @@ enum JSWrapper {
         "catch(e) { var m; try { m = '' + (e && e.message !== undefined ? e.message : e); } catch(x) { try { m = e.toString(); } catch(y) { m = 'unprintable exception'; } } return 'SB1:ERR:' + m; }"
     }
 
-    /// Shared tail: return the result inline, or park it in the globals the slow path reads.
+    /// Shared tail: return the result inline, or park it in a slot the slow path reads.
     /// `toWellFormed()` first: a lone surrogate (`'😀'.slice(0, 1)`) is not text osascript can
     /// print, and it silently drops it, so the reply would arrive shorter than it says. Replaced
     /// by U+FFFD it is the same length and survives; the dropped character was lost either way.
     private static var inlineTail: String {
-        "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { window.__sbLen = r.length; window.__sbResult = r; return 'SB1:BIG:' + r.length + ':'; } return 'SB1:OK:' + r.length + ':' + r + '\\u001e';"
+        // Over the limit, the result is parked in a slot of this call's own whose NAME THE PAGE PICKS and the
+        // reply carries (`SB1:BIG:<len>:<key>`). The CLI cannot pick it: the wrapper text would then differ
+        // on every call, and the daemon would compile every `js` script anew instead of reusing it. The name
+        // is checked against `ResultSlot.isValid` before it is used for anything.
+        //
+        // Unique because of a counter first (`window.__sbn`, forced to an unsigned integer so a page that
+        // set it to `-5` or `'abc'` still moves it forward), then the clock and a random part, which a page
+        // may stub or remove (fake timers, a privacy extension): they sit in a `try` and only add to the
+        // name. Anything outside `[0-9a-z]` is dropped and a fixed tail keeps the name long enough, so
+        // whatever the page does to its clock the name still passes the CLI's check.
+        // The naming runs in a function of its own: it is created after the user's code ran, but its `var`s
+        // are kept out of the function that encloses that code all the same.
+        "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { return (function(){ var n = (window.__sbn >>> 0) + 1, t = ''; window.__sbn = n; try { t = Date.now().toString(36) + Math.random().toString(36).slice(2, 10); } catch (x) {} var k = '\(ResultSlot.keyPrefix)' + (n.toString(36) + t).replace(/[^0-9a-z]/g, '').slice(0, 48) + 'sbslot00'; window[k] = { text: r, len: r.length }; return 'SB1:BIG:' + r.length + ':' + k; })(); } return 'SB1:OK:' + r.length + ':' + r + '\\u001e';"
     }
 
     /// Closes an `OK` reply. It is not whitespace, so it keeps the end of the result away from
@@ -154,8 +164,9 @@ enum JSWrapper {
             return .value(droppingOneTrailingNewline(payload))
         }
         if let body = removing("BIG:", from: rest) {
-            guard let (length, _) = splitLength(body) else { return .notRun }
-            return .stored(length: length)
+            guard let (length, name) = splitLength(body) else { return .notRun }
+            guard let slot = ResultSlot(pageKey: String(String.UnicodeScalarView(name))) else { return .invalidSlot }
+            return .stored(slot: slot, length: length)
         }
         return .notRun
     }
@@ -163,7 +174,7 @@ enum JSWrapper {
     /// What `js` has always printed: the stateless runner removed the result's own last newline
     /// along with the one osascript adds, so a result of `"x\n"` printed as `x`. The reply now
     /// carries the result intact, and this keeps the output byte for byte what it was.
-    private static func droppingOneTrailingNewline(_ text: String) -> String {
+    static func droppingOneTrailingNewline(_ text: String) -> String {
         var scalars = text.unicodeScalars
         if scalars.last == "\n" { scalars.removeLast() }
         return String(scalars)

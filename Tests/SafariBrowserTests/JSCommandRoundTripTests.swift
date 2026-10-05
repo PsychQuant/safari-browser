@@ -72,8 +72,6 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         /// the guarded tab stopped matching; later ones answer normally (the bounded retry).
         var guardTripsOnFirstWrapperDispatches = 0
         private var wrapperDispatches = 0
-        /// #255: answer an empty plain read of `window.__sbResult` (the chunked-read fallback).
-        var storedPlainReadIsEmpty = false
         /// #255: enumerate in the legacy 6-field shape, without the window-id column; the resolved
         /// target then stays positional even with `--profile`.
         var legacyEnumeration = false
@@ -242,10 +240,9 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                     if script.contains("return _u & (character id 29) & _r") { return capturedURL + "\u{1D}" + reply }
                     return reply
                 }
-                if script.contains("window.__sbResult.substring(") { return "hello" }
-                if script.contains("do JavaScript \"window.__sbResultLen\"") { return "5.0" }
-                if script.contains("'' + window.__sbLen") { return "5.0" }
-                if script.contains("do JavaScript \"window.__sbResult\"") { return storedPlainReadIsEmpty ? "" : "hello" }
+                // #257: the large path reads how far the call got from its slot; this fake keeps no page, so it says
+                // the code ran and its result was empty (the same as what it answered before: nothing).
+                if script.contains("'idle:'") { return "started:0" }
                 return ""
             }
             if script.contains("URL of tab 53 of window id 101") {
@@ -273,21 +270,43 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
     struct Output { var stdout: String; var stderr: String }
 
     /// Redirects a file descriptor into a pipe for the duration of one command.
-    private final class FDCapture {
+    final class FDCapture: @unchecked Sendable {
         private let fd: Int32
         private let pipe = Pipe()
+        private let lock = NSLock()
+        private var collected = Data()
         private var saved: Int32 = -1
+        private let drained = DispatchSemaphore(value: 0)
         init(_ fd: Int32) { self.fd = fd }
         func start() {
             fflush(fd == STDOUT_FILENO ? stdout : stderr)
             saved = dup(fd)
+            // Drained as it is written, by a thread that is joined at end of file: a result of more than a
+            // pipe's worth (64 KiB) would otherwise block `print` for good, and the `--large` tests print
+            // several hundred KiB. A `readabilityHandler` was tried first and raced `stop()`: a callback in
+            // flight when the handler was removed appended after the final read, and the capture came back
+            // short in about one run in seven.
+            let readFD = pipe.fileHandleForReading.fileDescriptor
+            let reader = Thread { [self] in
+                var buffer = [UInt8](repeating: 0, count: 65_536)
+                while true {
+                    let count = read(readFD, &buffer, buffer.count)
+                    if count <= 0 { break }
+                    lock.lock(); collected.append(contentsOf: buffer[0..<count]); lock.unlock()
+                }
+                drained.signal()
+            }
+            reader.start()
             dup2(pipe.fileHandleForWriting.fileDescriptor, fd)
         }
         func stop() -> String {
             fflush(fd == STDOUT_FILENO ? stdout : stderr)
             dup2(saved, fd); close(saved)
+            // `fd` no longer points into the pipe, so closing its own write end is the last one: end of file.
             try? pipe.fileHandleForWriting.close()
-            return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            drained.wait()
+            lock.lock(); defer { lock.unlock() }
+            return String(decoding: collected, as: UTF8.self)
         }
     }
 
@@ -491,27 +510,8 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(fake.javaScripts.count, 1, "no read-back and no cleanup for an error either:\n\(fake.transcript)")
     }
 
-    func testAnOversizedResultIsReadFromTheGlobalsThenCleanedUp() async throws {
-        let fake = FakeSafari()
-        fake.inlineAnswer = "SB1:BIG:200000:"
-        let output = try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
-        XCTAssertEqual(output.stdout, "hello\n")
-        XCTAssertEqual(fake.javaScripts.count, 3, "wrapper, read the stored result, cleanup:\n\(fake.transcript)")
-        guard fake.javaScripts.count == 3 else { return }
-        XCTAssertTrue(fake.javaScripts[1].contains("window.__sbResult"), fake.javaScripts[1])
-        XCTAssertTrue(fake.javaScripts[2].contains("delete window.__sbLen; delete window.__sbResult"), fake.javaScripts[2])
-    }
-
-    func testAnOversizedResultWhosePlainReadComesBackEmptyFallsBackToChunksAndSaysSo() async throws {
-        let fake = FakeSafari()
-        fake.inlineAnswer = "SB1:BIG:5:"
-        fake.storedPlainReadIsEmpty = true
-        let output = try await runJS(["--window", "1", "--tab-in-window", "53", "location.host"], on: fake)
-        XCTAssertEqual(output.stdout, "hello\n")
-        XCTAssertTrue(output.stderr.contains("output was large, used chunked read"), output.stderr)
-        XCTAssertTrue(fake.javaScripts.last?.contains("delete window.__sbLen; delete window.__sbResult") == true,
-                      "the cleanup still runs after the chunked read:\n\(fake.transcript)")
-    }
+    // The oversized-result path (`SB1:BIG`) is exercised against a page that really runs what it is sent in
+    // `ResultSlotCommandTests`: a canned answer cannot say whether the slot read back is the call's own.
 
     // MARK: - #255: `--url` targets (URL guard + bounded retry) carry the URL read too
 
