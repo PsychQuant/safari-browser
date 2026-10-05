@@ -126,6 +126,10 @@ final class ResultSlotRetentionTests: XCTestCase, @unchecked Sendable {
             window.__sbr_legacyslot01 = { text: 'x', len: 1 };
             window.__sbr_stringstamp1 = { text: 'x', len: 1, u: 'old' };
             window.__sbr_nanstamp0001 = { text: 'x', len: 1, u: NaN };
+            window.__sbr_nullstamp001 = { text: 'x', len: 1, u: null };
+            window.__sbr_zerostring01 = { text: 'x', len: 1, u: '0' };
+            window.__sbr_truestamp001 = { text: 'x', len: 1, u: true };
+            window.__sbr_arraystamp01 = { text: 'x', len: 1, u: [] };
             window.__sbr_notanobject1 = 5;
             window.__sbr_nothing00001 = null;
             window.__sbr_functionval1 = Object.assign(function(){}, { u: 0 });
@@ -134,7 +138,8 @@ final class ResultSlotRetentionTests: XCTestCase, @unchecked Sendable {
             """)
         setClock(page, 1_000_000 + 5 * retention)
         let next = try makeSlot(page, by: .inline)
-        XCTAssertEqual(slots(page), ["__sbr_legacyslot01", "__sbr_stringstamp1", "__sbr_nanstamp0001", "__sbr_notanobject1",
+        XCTAssertEqual(slots(page), ["__sbr_legacyslot01", "__sbr_stringstamp1", "__sbr_nanstamp0001", "__sbr_nullstamp001",
+                                     "__sbr_zerostring01", "__sbr_truestamp001", "__sbr_arraystamp01", "__sbr_notanobject1",
                                      "__sbr_nothing00001", "__sbr_functionval1", next])
         XCTAssertTrue(page.has("other_slot"))
         XCTAssertTrue(page.has("__sbrnotprefixed1"))
@@ -143,27 +148,74 @@ final class ResultSlotRetentionTests: XCTestCase, @unchecked Sendable {
     // MARK: - a page that does not keep a clock
 
     func testAClockThatDoesNotTellTheTimeRemovesNothingAndBreaksNothing() throws {
-        let stubs = ["Date.now = function(){ return 0; }",
-                     "Date.now = function(){ throw new Error('no clock'); }",
+        // `Infinity` and `-Infinity` are the inputs a number check alone does not stop: every stamp is older than
+        // `Infinity - 600000`. A numeric string and `null` are numbers to a careless comparison.
+        let stubs = ["Date.now = function(){ throw new Error('no clock'); }",
                      "Date.now = function(){ return 'noon'; }",
-                     "Date.now = function(){ return NaN; }"]
+                     "Date.now = function(){ return '1e15'; }",
+                     "Date.now = function(){ return null; }",
+                     "Date.now = function(){ return NaN; }",
+                     "Date.now = function(){ return Infinity; }",
+                     "Date.now = function(){ return -Infinity; }"]
         for stub in stubs {
             let page = page()
             let abandoned = try makeSlot(page, by: .inline)
+            let inUse = try makeSlot(page, by: .store)
             _ = page.evaluate(stub)
             for maker in Maker.allCases {
                 let key = try makeSlot(page, by: maker)           // the call completes
                 XCTAssertTrue(page.has(key), "\(stub) / \(maker)")
+                XCTAssertEqual(page.evaluate("typeof window.\(key).u"), "undefined", "\(stub) / \(maker): no stamp from a clock that cannot be read")
             }
             XCTAssertTrue(page.has(abandoned), "\(stub): nothing is removed because of a clock that cannot be read")
+            XCTAssertTrue(page.has(inUse), stub)
         }
     }
 
-    func testAPageWithoutAnyClockStillParksAndReadsAResult() throws {
+    /// A slot made under a clock that could not be read has no stamp and stays; the slots that have one are
+    /// reclaimed again as soon as the clock is readable.
+    func testReclaimingWorksAgainWhenTheClockComesBack() throws {
+        let page = page()
+        let old = try makeSlot(page, by: .inline)
+        _ = page.evaluate("Date.now = function(){ return Infinity; }")
+        let unstamped = try makeSlot(page, by: .inline)
+        _ = page.evaluate("Date.now = function(){ return __clock; }")
+        setClock(page, 1_000_000 + retention + 1)
+        let next = try makeSlot(page, by: .inline)
+        XCTAssertEqual(slots(page), [unstamped, next])
+        XCTAssertFalse(page.has(old))
+    }
+
+    /// The stated limit, pinned: a clock that jumps forward by more than the retention makes a slot in use look
+    /// old, and the next call that makes a slot removes it. The call that was reading it fails closed.
+    func testAClockThatJumpsForwardRemovesASlotThatIsInUse() throws {
+        let page = page()
+        let reading = ResultSlot.make()
+        _ = page.evaluate(reading.storeScript("'stored'"))
+        setClock(page, 1_000_000 + 10 * retention)
+        _ = try makeSlot(page, by: .inline)
+        XCTAssertFalse(page.has(reading.key))
+        XCTAssertEqual(page.evaluate(reading.readScript(offset: 0, total: 6)), "", "a read of a slot that is gone answers an empty text, which the reader reports as an incomplete transfer")
+    }
+
+    func testAClockThatStandsStillOrRunsBehindRemovesNothing() throws {
+        for later in [1_000_000, 1_000_000 - retention, 0] {
+            let page = page()
+            let slot = try makeSlot(page, by: .inline)
+            setClock(page, later)
+            _ = try makeSlot(page, by: .inline)
+            XCTAssertTrue(page.has(slot), "clock \(later)")
+        }
+    }
+
+    func testAPageWithoutAnyClockStillParksAndReadsAResult() async throws {
         let page = FakePage()
         _ = page.evaluate("Date = undefined;")
         let reply = try XCTUnwrap(page.evaluate(JSWrapper.inlineExpression("'x'.repeat(200000)")))
-        guard case .stored = JSWrapper.parseInline(reply) else { return XCTFail("not parked: \(reply.prefix(60))") }
+        guard case .stored(let slot, _) = JSWrapper.parseInline(reply) else { return XCTFail("not parked: \(reply.prefix(60))") }
+        XCTAssertEqual(page.evaluate("typeof window.\(slot.key).u"), "undefined")
+        let read = try await withBridge(page) { try await SafariBridge.doJavaScriptLarge("'y'.repeat(300000)") }
+        XCTAssertEqual(read.utf16.count, 300_000)
     }
 
     // MARK: -

@@ -59,9 +59,10 @@ struct ResultSlot: Equatable, Sendable {
 
     /// The page's clock as a number, or `undefined` when it cannot be read: `Date.now` may be replaced by a
     /// page (fake timers, a privacy extension), may throw, and may answer something that is not a number.
-    /// `n === n` is false only for `NaN`. No global other than `Date` is used (page code can reassign them, #76).
+    /// `n - n === 0` holds only for a finite number (`NaN`, `Infinity` and `-Infinity` give `NaN`): an infinite clock
+    /// would make every stamp look old. No global other than `Date` is used (page code can reassign them, #76).
     private static let nowExpression =
-        "(function(){ try { var n = Date.now(); return typeof n === 'number' && n === n ? n : undefined; } catch (x) { return undefined; } })()"
+        "(function(){ try { var n = Date.now(); return typeof n === 'number' && n - n === 0 ? n : undefined; } catch (x) { return undefined; } })()"
 
     /// The time stamp of a new slot: the clock, or nothing when it cannot be read (such a slot is never removed).
     static let stampExpression = nowExpression

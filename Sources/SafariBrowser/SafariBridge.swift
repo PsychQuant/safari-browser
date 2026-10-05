@@ -1988,7 +1988,7 @@ enum SafariBridge {
     ///
     /// Not tried after a timeout. The page's main thread is busy then, so the removal would wait out a
     /// timeout of its own and the user would wait twice as long for the same error. Whatever the slot
-    /// holds stays until the page is left (#193).
+    /// holds stays until a later call that makes a slot reclaims it (unused for ten minutes, `ResultSlot.sweepExpression`, #193) or the page is left.
     static func removeResultSlot(
         _ slot: ResultSlot,
         target: TargetDocument,

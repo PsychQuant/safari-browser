@@ -8,7 +8,7 @@
 
 ## Proposed Solution
 
-槽帶一個最後使用時間 `u`（毫秒，`Date.now()`）。建立時寫入，每次讀取（長度、錯誤、進度、每一塊）更新。任何呼叫**建立新槽時**，順便刪除頁面上以 `__sbr_` 開頭、且 `u` 是數字、且早於保留期限（10 分鐘）的槽。進行中的呼叫每次往返都更新 `u`（往返間隔是亞秒），所以不會被刪；沒有 `u` 的槽（舊版 CLI 建的）不動；頁面時鐘被改寫或拋錯時只會不回收，不會讀到錯的資料。全部寫在既有的腳本裡，不增加任何 `do JavaScript` 往返。
+槽帶一個最後使用時間 `u`（毫秒，`Date.now()`）。建立時寫入，每次讀取（長度、錯誤、進度、每一塊）更新。任何呼叫**建立新槽時**，順便刪除頁面上以 `__sbr_` 開頭、且 `u` 是數字、且早於保留期限（10 分鐘）的槽。進行中的呼叫每次往返都更新 `u`（往返間隔是亞秒），所以不會被刪；沒有 `u` 的槽（舊版 CLI 建的）不動；頁面時鐘讀不到（拋錯、非有限數字）時不回收也不寫時間戳。時間是頁面的 `Date.now()`，所以時鐘往前跳超過期限、或呼叫停滯那麼久時，仍在使用的槽會被刪，失敗關閉，規格如實寫出。全部寫在既有的腳本裡，不增加任何 `do JavaScript` 往返。
 
 ## Non-Goals
 
@@ -23,13 +23,13 @@
 - 孤兒槽（建立後未清除）在下一個建立槽的呼叫、且距其最後使用超過 10 分鐘時被刪除；未超過時保留。
 - 進行中的槽（最後使用在期限內，含分塊讀取的每一塊）不被另一個呼叫的掃描刪除；兩個並行呼叫互不影響。
 - 沒有 `u` 的槽、不以 `__sbr_` 開頭的屬性、`u` 不是數字的槽，一律不動。
-- 頁面把 `Date.now` 換成常數、拋錯或回傳非數字時：呼叫照常完成，掃描不刪任何東西。
+- 頁面的 `Date.now` 拋錯或回傳非有限數字（字串、`NaN`、`Infinity`、`null`）時：呼叫照常完成，掃描不刪任何東西，新槽不帶時間戳。常數不晚於既有時間戳時同樣不刪。時鐘往前跳超過期限時會刪到仍在使用的槽，規格如實寫出。
 - 一般 `js`、大型路徑與內嵌大結果路徑的 `do JavaScript` 往返次數不變；回覆協定（`SB1:*`、塊格式）不變。
 - 規格寫明回收時點、期限、受保護對象與限制。
 
 ## Impact
 
-- Affected code: `Sources/SafariBrowser/ResultSlot.swift`（`presetScript`、`storeScript`、`lengthScript`、`errorScript`、`progressScript`、`readScript`；新增 `sweepStatement`、`touch`、保留期限常數）、`Sources/SafariBrowser/Commands/JSWrapper.swift`（`inlineTail` 的大結果分支）
+- Affected code: `Sources/SafariBrowser/ResultSlot.swift`（`presetScript`、`storeScript`、`lengthScript`、`errorScript`、`progressScript`、`readScript`；新增 `sweepExpression`、`touchStatement`、`stampExpression`、`retentionMilliseconds`）、`Sources/SafariBrowser/SafariBridge.swift`（`removeResultSlot` 的說明）、`Sources/SafariBrowser/Commands/JSWrapper.swift`（`inlineTail` 的大結果分支）
 - Affected tests: `Tests/SafariBrowserTests/`（新增 `ResultSlotRetentionTests`；`FakePage` 無需改動，頁面時鐘由測試以 `Date.now = …` 控制）
 - Affected specs: `js-execution`（修改 Per-call result slot）
 - Affected docs: `CHANGELOG.md`、`CLAUDE.md`（#190 條目的「孤兒槽」句子）

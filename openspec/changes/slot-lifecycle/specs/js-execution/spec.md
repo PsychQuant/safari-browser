@@ -4,7 +4,7 @@
 
 A result that is not returned inline, whether from `js --large`, `js --output`, a `js` result over the inline limit, `get text`, `get html`, `snapshot`, or an `exec` step, SHALL be parked in the page in a slot named for that call alone and read back from it. Two calls on one page SHALL NOT read each other's result. When the call ends, whether it succeeded, found nothing, or failed, it SHALL try to remove the slot it made. The removal is best effort: a failed removal SHALL NOT change what the call reports, and none is tried after a timeout. The call SHALL remove nothing it did not make, except an abandoned slot as described below.
 
-A slot SHALL carry the time of its last use as a number of milliseconds in a property `u`, written when the slot is made and rewritten by every read of it (its length, its recorded error, its progress, each chunk). A call that makes a slot SHALL, in the same script and without an extra round trip, remove every property of `window` whose name starts with `__sbr_`, whose value is an object, and whose `u` is a number older than 600000 milliseconds before the time the page's `Date.now` reports. Nothing else SHALL be removed: a slot without `u`, a `u` that is not a number, and a property whose name does not start with `__sbr_` SHALL be left alone. The reclaiming is bounded, not guaranteed: it happens when a later call makes a slot, not on a timer, so abandoned slots stay until then or until the page is left.
+A slot SHALL carry the time of its last use as a number of milliseconds in a property `u`, written when the slot is made and rewritten by every read of it (its length, its recorded error, its progress, each chunk). A call that makes a slot SHALL, in the same script and without an extra round trip, remove every property of `window` whose name starts with `__sbr_`, whose value is an object, and whose `u` is a finite number older than 600000 milliseconds before the time the page's `Date.now` reports. A page whose `Date.now` throws or answers anything but a finite number SHALL make the call remove nothing and stamp nothing. Nothing else SHALL be removed: a slot without `u`, a `u` that is not a number, and a property whose name does not start with `__sbr_` SHALL be left alone. The reclaiming is bounded, not guaranteed: it happens when a later call makes a slot, not on a timer, so abandoned slots stay until then or until the page is left. It also depends on the page's clock: a slot SHALL be treated as unused when the page's clock says so, so a clock moved forward by more than 600000 milliseconds, or a call that stalls that long between two of its round trips, lets another call remove a slot that is still in use.
 
 #### Scenario: Another call stores in the middle of a read
 - **GIVEN** call A has stored its result and is reading it back in chunks
@@ -50,10 +50,28 @@ A slot SHALL carry the time of its last use as a number of milliseconds in a pro
 - **WHEN** a call reclaims abandoned slots in a page that has a slot without `u`, a slot whose `u` is not a number, and a property `other_x` with an old numeric `u`
 - **THEN** none of the three SHALL be removed
 
-#### Scenario: A page that stubs its clock
-- **WHEN** the page's `Date.now` is replaced by a constant, throws, or returns something that is not a number
+#### Scenario: A page whose clock cannot be read
+- **WHEN** the page's `Date.now` throws, or returns something that is not a finite number (a string, `NaN`, `Infinity`, `null`)
 - **THEN** the call SHALL complete as usual
 - **AND** no slot SHALL be removed because of it
+- **AND** a slot made under that clock SHALL carry no stamp, so it is never reclaimed
+
+#### Scenario: A clock that stands still or runs behind
+- **WHEN** the page's `Date.now` is replaced by a constant that is not later than the stamps of the slots in the page
+- **THEN** no slot SHALL be removed because of it
+
+#### Scenario: A clock that moves forward
+- **GIVEN** a slot stamped at one time, and a page whose `Date.now` then reports a time more than 600000 milliseconds later (fake timers, a constant set in the future, a system clock that jumped)
+- **WHEN** another call makes a slot
+- **THEN** the slot SHALL be removed even if its call is still reading it
+- **AND** that call SHALL report an incomplete transfer or that the page was replaced, and SHALL NOT run the code again
+
+#### Scenario: A call that stalls beyond the retention
+- **GIVEN** a call that has made its slot and does not make its next round trip for more than 600000 milliseconds of page time
+- **WHEN** another call makes a slot in that time
+- **THEN** the slot SHALL be removed
+- **AND** `js` in any of its paths, and a chunk read of any call, SHALL report an incomplete transfer or that the page was replaced
+- **AND** `get text`, `get html`, `snapshot` and `exec`, whose own slot is gone between the store and the length read, SHALL behave as when the page was replaced at that moment: an empty result and exit status 0
 
 #### Scenario: The wrappers do not hide page globals
 - **GIVEN** a page with globals named `s`, `r` and `k`
