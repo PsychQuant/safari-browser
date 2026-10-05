@@ -23,8 +23,9 @@ import Foundation
 ///   #180 took out of `SafariBridge.listAllWindowsScript`. The daemon enumerates windows
 ///   by receiving that script's already rendered text through `applescript.execute`.
 ///
-/// Actual Safari-side execution of these compiled handles happens in the
-/// daemon dispatch layer (task 4.1) and in routing (task 7.1).
+/// Nothing in `Sources/` reads `known` (#266). The daemon dispatch layer receives already rendered
+/// AppleScript text through `applescript.execute` and compiles it by source string; the catalog is read
+/// only by tests.
 enum PreCompiledScripts {
 
     enum Error: Swift.Error, CustomStringConvertible {
@@ -68,10 +69,9 @@ enum PreCompiledScripts {
         }
     }
 
-    /// Phase 1 seed templates. Additional entries (e.g. `getTabUrl`,
-    /// `setCurrentTab`, `dispatchMouseEvent`, `dispatchKeyEvent`) land in
-    /// task 7.1 where the corresponding command paths switch to the
-    /// daemon-routed code path.
+    /// Phase 1 seed templates. The command paths did not switch to them as
+    /// planned (#266 records the open question); no template loops
+    /// (`PreCompiledScriptsTests.testNoCatalogTemplateLoopsUnlessItIsListed`).
     static let known: [String: Template] = [
         "activateWindow": Template.parse(
             name: "activateWindow",
