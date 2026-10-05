@@ -73,7 +73,10 @@ final class JSWrapperTests: XCTestCase {
         let slot = ResultSlot.make()
         let form = JSWrapper.largeExpression("1+1 // c", slot: slot)
         XCTAssertTrue(form.contains("(\n1+1 // c\n)"))
-        XCTAssertTrue(form.contains("if (window.\(slot.key)) { window.\(slot.key).err = e.message; }"), form)
+        XCTAssertTrue(form.contains("window.\(slot.key).err = (function(x){"), "the thrown value is recorded whatever it is: \(form)")
+        XCTAssertTrue(form.contains("window.\(slot.key).started = true;"), "the slot is marked before the code runs: \(form)")
+        XCTAssertLessThan(try XCTUnwrap(form.range(of: ".started = true")).lowerBound, try XCTUnwrap(form.range(of: "1+1 // c")).lowerBound,
+                          "the mark comes before the user's code")
         XCTAssertFalse(form.contains("var "), "a `var` in the wrapper shadows a page global of that name inside the user's code")
         XCTAssertTrue(form.contains("catch"))
         XCTAssertFalse(form.contains("eval("))
@@ -85,7 +88,8 @@ final class JSWrapperTests: XCTestCase {
         let slot = ResultSlot.make()
         let form = JSWrapper.largeStatement("var a = 1;\nreturn a;", slot: slot)
         XCTAssertTrue(form.contains("(function(){\nvar a = 1;\nreturn a;\n})()"))
-        XCTAssertTrue(form.contains("window.\(slot.key).err = e.message"), form)
+        XCTAssertTrue(form.contains("window.\(slot.key).err = (function(x){"), form)
+        XCTAssertTrue(form.contains("window.\(slot.key).started = true;"), form)
         XCTAssertFalse(form.replacingOccurrences(of: "var a = 1;", with: "").contains("var "), "the wrapper itself declares nothing")
         XCTAssertTrue(form.contains(slot.key))
         XCTAssertFalse(form.contains("eval("))
@@ -103,8 +107,50 @@ final class JSWrapperTests: XCTestCase {
             let slot = ResultSlot.make()
             _ = page.evaluate(slot.presetScript)
             _ = page.evaluate(slot.storeScript(form(slot)))
-            XCTAssertEqual(page.evaluate(slot.errorScript), "boom")
+            XCTAssertEqual(page.evaluate(slot.errorScript), "E:boom")
             XCTAssertEqual(page.evaluate(slot.lengthScript), "0", "the wrapper returned '' after recording: a length of 0, not the sentinel")
+            XCTAssertEqual(page.evaluate(slot.progressScript), "started:0")
+        }
+    }
+
+    func testALargeFormThatDoesNotParseLeavesTheSlotUnstarted() {
+        // nothing ran, so nothing is marked: this is what lets the other form be tried
+        let page = FakePage()
+        let slot = ResultSlot.make()
+        _ = page.evaluate(slot.presetScript)
+        _ = page.evaluate(slot.storeScript(JSWrapper.largeExpression("var a = 1; a", slot: slot)))
+        XCTAssertEqual(page.evaluate(slot.progressScript), "idle:undefined")
+    }
+
+    func testALargeFormMarksTheSlotBeforeTheCodeRunsAndTheMarkSurvivesAThrow() {
+        let page = FakePage()
+        let slot = ResultSlot.make()
+        _ = page.evaluate(slot.presetScript)
+        // the code reads the mark: it must already be there
+        _ = page.evaluate(slot.storeScript(JSWrapper.largeExpression("window.\(slot.key).started === true ? 'marked' : 'unmarked'", slot: slot)))
+        XCTAssertEqual(page.evaluate("window.\(slot.key).text"), "marked")
+    }
+
+    func testTheMarkIsNotMadeInAPageThatWasReplaced() {
+        // a page without the slot gets no slot saying the code ran
+        let page = FakePage()
+        let slot = ResultSlot.make()
+        _ = page.evaluate(JSWrapper.largeExpression("1", slot: slot))
+        XCTAssertFalse(page.has(slot.key))
+    }
+
+    func testEveryKindOfThrownValueIsRecorded() {
+        let cases: [(code: String, recorded: String)] = [
+            ("throw 'boom'", "E:boom"), ("throw null", "E:null"), ("throw undefined", "E:undefined"), ("throw 42", "E:42"),
+            ("throw ''", "E:"), ("throw {message: 'in object'}", "E:in object"), ("throw {code: 7}", "E:[object Object]"),
+            ("throw Symbol('s')", "E:Symbol(s)"), ("throw Object.create(null)", "E:unprintable exception"),
+        ]
+        for (code, recorded) in cases {
+            let page = FakePage()
+            let slot = ResultSlot.make()
+            _ = page.evaluate(slot.presetScript)
+            _ = page.evaluate(slot.storeScript(JSWrapper.largeStatement(code, slot: slot)))
+            XCTAssertEqual(page.evaluate(slot.errorScript), recorded, code)
         }
     }
 

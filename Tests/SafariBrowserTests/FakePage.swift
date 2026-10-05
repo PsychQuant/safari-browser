@@ -26,7 +26,7 @@ final class FakePage: @unchecked Sendable {
     }
 
     private let lock = NSLock()
-    private let context: JSContext
+    private var context: JSContext
     private(set) var sent: [String] = []
     var transport: Transport = .stateless
     /// What `URL of <tab>` answered before the code ran (the capturing scripts of #255 return it first).
@@ -40,10 +40,32 @@ final class FakePage: @unchecked Sendable {
     /// call in between, which is how an interleaving is made deterministic.
     var beforeRun: ((String) -> Void)?
 
+    /// How many times the page's code called `__count()`. It survives a page replacement, so a test can say
+    /// how many times the user's code ran even when the document that ran it is gone.
+    private var counted = 0
+    private var replaceAfterRun = false
+    var executions: Int { lock.withLock { counted } }
+
     init() {
-        context = JSContext()!
+        context = Self.makeContext(owner: nil)
+        installNatives()
+    }
+
+    private static func makeContext(owner: FakePage?) -> JSContext {
+        let context = JSContext()!
         context.exceptionHandler = { _, _ in }
         context.evaluateScript("var window = this;")
+        return context
+    }
+
+    /// `__count()` and `__reload()` for the page's code: the first counts runs, the second replaces the
+    /// document once the current script has finished (a same-URL `location.reload()`: the globals are gone,
+    /// the address is the same).
+    private func installNatives() {
+        let count: @convention(block) () -> Void = { [unowned self] in self.counted += 1 }
+        let reload: @convention(block) () -> Void = { [unowned self] in self.replaceAfterRun = true }
+        context.setObject(count, forKeyedSubscript: "__count" as NSString)
+        context.setObject(reload, forKeyedSubscript: "__reload" as NSString)
     }
 
     /// Give the page a `document` with this text, enough for `document.body.innerText`.
@@ -99,6 +121,11 @@ final class FakePage: @unchecked Sendable {
         context.exceptionHandler = { _, _ in threw = true }
         let value = context.evaluateScript(js)
         context.exceptionHandler = { _, _ in }
+        if replaceAfterRun {
+            replaceAfterRun = false
+            context = Self.makeContext(owner: self)
+            installNatives()
+        }
         if threw { return "" }
         guard let value else { return "" }
         if value.isUndefined || value.isNull { return "missing value" }

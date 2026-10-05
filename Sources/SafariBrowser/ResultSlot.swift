@@ -81,9 +81,59 @@ struct ResultSlot: Equatable, Sendable {
         "(function(){ var s = \(ref); return s ? '' + s.len : 'undefined'; })()"
     }
 
-    /// The error a `--large` wrapper recorded, or `JSWrapper.lenUnsetSentinel` when there is none.
+    /// The error a `--large` wrapper recorded, as `E:<text>` (the text may be empty), or
+    /// `JSWrapper.lenUnsetSentinel` when nothing was recorded. The prefix is what tells an error whose message is
+    /// empty (`throw ''`) from no error.
     var errorScript: String {
-        "(function(){ var s = \(ref); return s && s.err !== undefined ? '' + s.err : 'undefined'; })()"
+        "(function(){ var s = \(ref); return s && s.err !== undefined ? 'E:' + s.err : 'undefined'; })()"
+    }
+
+    /// The message of a recorded error, or nil when the reply says there is none.
+    static func parseError(_ raw: String) -> String? {
+        raw.hasPrefix("E:") ? String(raw.dropFirst(2)) : nil
+    }
+
+    // MARK: - evidence that the user's code started (#257 B2, #260)
+
+    /// Run first inside a `--large` wrapper, before the user's code: the slot says the code started. A wrapper
+    /// that does not parse never gets here, so a slot without this mark is a slot nothing ran for. It writes to
+    /// the slot that is there and makes none, so a page that was replaced does not get a slot saying the code ran.
+    var startedStatement: String {
+        "if (window.\(key)) { window.\(key).started = true; }"
+    }
+
+    /// Run in the catch block of a `--large` wrapper: record what was thrown, whatever it is. The conversion can
+    /// itself throw (`Symbol('x')` has no implicit string conversion, `Object.create(null)` has no `toString`), so it
+    /// is guarded in two steps, and it declares nothing in the scope of the user's code. Same text as the plain
+    /// path reports (`JavaScript error: null` for `throw null`).
+    var recordErrorStatement: String {
+        "if (window.\(key)) { window.\(key).err = (function(x){ try { return '' + (x && x.message !== undefined ? x.message : x); } catch(y) { try { return x.toString(); } catch(z) { return 'unprintable exception'; } } })(e); }"
+    }
+
+    /// How far a call got, from the slot alone.
+    enum Progress: Equatable {
+        /// No slot: the page was replaced since the slot was made (navigation, a same-address reload), or the read was lost.
+        case gone
+        /// The slot is there and the wrapper never started: nothing ran, and the other form may be tried.
+        case notStarted
+        /// The user's code started. `length` is the length of the result parked, nil if none was.
+        case started(length: Int?)
+    }
+
+    var progressScript: String {
+        "(function(){ var s = \(ref); return s ? (s.started ? 'started:' : 'idle:') + (s.len === undefined ? 'undefined' : '' + s.len) : 'gone'; })()"
+    }
+
+    /// Anything that is not one of the three answers reads as `gone`, which is the answer that never runs anything again.
+    static func parseProgress(_ raw: String) -> Progress {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("started:") { return .started(length: parseLength(String(text.dropFirst("started:".count)))) }
+        if text.hasPrefix("idle:") {
+            // A length without a start cannot come from a wrapper; if it ever does, something ran.
+            let length = parseLength(String(text.dropFirst("idle:".count)))
+            return length == nil ? .notStarted : .started(length: length)
+        }
+        return .gone
     }
 
     var cleanupScript: String { "delete \(ref)" }

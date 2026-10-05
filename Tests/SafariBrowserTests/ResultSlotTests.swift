@@ -200,6 +200,39 @@ final class ResultSlotTests: XCTestCase {
         XCTAssertEqual(try ResultSlot.parseFrame("3:a\(end)b\(end)", offset: 0, total: 3).text, "a\(end)b")
     }
 
+    // MARK: - evidence that the code started (#257 B2)
+
+    func testProgressIsReadFromTheSlotAlone() {
+        let page = FakePage()
+        let slot = ResultSlot.make()
+        XCTAssertEqual(ResultSlot.parseProgress(page.evaluate(slot.progressScript) ?? ""), .gone, "no slot: the page was replaced")
+        _ = page.evaluate(slot.presetScript)
+        XCTAssertEqual(ResultSlot.parseProgress(page.evaluate(slot.progressScript) ?? ""), .notStarted)
+        _ = page.evaluate("window.\(slot.key).started = true")
+        XCTAssertEqual(ResultSlot.parseProgress(page.evaluate(slot.progressScript) ?? ""), .started(length: nil))
+        _ = page.evaluate(slot.storeScript("'abc'"))
+        XCTAssertEqual(ResultSlot.parseProgress(page.evaluate(slot.progressScript) ?? ""), .started(length: 3))
+    }
+
+    func testAnAnswerThatIsNotOneOfTheThreeReadsAsGoneWhichNeverRunsAnything() {
+        for raw in ["", "missing value", "garbage", "started", "idle", "Started:1"] {
+            let progress = ResultSlot.parseProgress(raw)
+            XCTAssertTrue(progress == .gone || { if case .started = progress { return true }; return false }(), "\(raw.debugDescription) → \(progress)")
+            XCTAssertNotEqual(progress, .notStarted, "\(raw.debugDescription): only a clear 'idle:undefined' may let the other form run")
+        }
+        XCTAssertEqual(ResultSlot.parseProgress(" idle:undefined \n"), .notStarted)
+        XCTAssertEqual(ResultSlot.parseProgress("idle:5"), .started(length: 5), "a length without a start cannot come from a wrapper; if it does, something ran")
+        XCTAssertEqual(ResultSlot.parseProgress("started:5.0"), .started(length: 5))
+    }
+
+    func testAnErrorIsToldFromNoErrorByItsPrefix() {
+        XCTAssertEqual(ResultSlot.parseError("E:boom"), "boom")
+        XCTAssertEqual(ResultSlot.parseError("E:"), "", "an error whose message is empty is still an error")
+        XCTAssertNil(ResultSlot.parseError("undefined"))
+        XCTAssertNil(ResultSlot.parseError(""))
+        XCTAssertNil(ResultSlot.parseError("boom"))
+    }
+
     // MARK: - lengths
 
     func testParseLengthReadsWhatAppleScriptPrintsForANumber() {

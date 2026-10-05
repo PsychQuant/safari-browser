@@ -417,47 +417,45 @@ struct JSCommand: AsyncParsableCommand {
         warnWriter: ((String) -> Void)?,
         profile: String?
     ) async throws -> String? {
-        // #82: same navigation ambiguity as the non-large path — an unset
-        // marker means either "never parsed" or "ran, then navigated away and
-        // took the slot with it". `preNavURL` is the starting URL, so the two can be
-        // told apart before anything is retried.
+        // #82 / #257 B2: whether the user's code ran is read from the slot, not inferred from there being no
+        // result. The wrapper marks the slot before it evaluates the code, so a slot that is there and unmarked
+        // means nothing ran and the other form may be tried; a slot that is gone means the page was replaced
+        // (navigation, a reload of the same address) and the code may have run, so it is never run again.
         _ = try await SafariBridge.doJavaScript(slot.presetScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-        var result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeExpression(jsCode, slot: slot), target: target, firstMatch: firstMatch, warnWriter: warnWriter, slot: slot)
-        if result.isEmpty {
-            // Order matters: a runtime error is captured in-band (the wrapper
-            // returns '' after recording the error in the slot, so its length reads
-            // 0, not the sentinel) — check it BEFORE the parse-failure marker,
-            // and never retry after it: re-running user code that already
-            // executed would double its side effects.
+        let attempts = [
+            JSWrapper.largeExpression(jsCode, slot: slot),     // an expression, if it parses as one
+            JSWrapper.largeStatement(jsCode, slot: slot),      // else the body of a function
+        ]
+        for wrapper in attempts {
+            let result = try await SafariBridge.doJavaScriptLarge(
+                wrapper, target: target, firstMatch: firstMatch, warnWriter: warnWriter, slot: slot)
+            if !result.isEmpty { return result }
+            // Empty: an error recorded in-band, a legitimately empty result, or a wrapper that never ran.
+            // Check the error FIRST: a thrown value leaves the length unset like a wrapper that never ran.
             try await throwLargeRuntimeErrorIfAny(slot: slot, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-            let marker = try await SafariBridge.doJavaScript(slot.lengthScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-            if marker.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                // #82: navigation before the retry, or the retry re-runs code
-                // that already took effect.
+            let progress = ResultSlot.parseProgress(try await SafariBridge.doJavaScript(
+                slot.progressScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter))
+            switch progress {
+            case .started(let length) where length == 0:
+                return ""                                        // the code ran and its result is empty
+            case .started:
+                throw SafariBrowserError.appleScriptFailed(
+                    "JavaScript result: the code started but no result was recorded. It ran; it was not run again.")
+            case .gone:
                 if let navURL = try await Self.navigatedAwayURL(
                     from: preNavURL, target: target, firstMatch: firstMatch, profile: profile) {
                     Self.reportNavigation(to: navURL)
                     return nil
                 }
-                // Expression form never parsed (nothing ran) — retry as function body.
-                result = try await SafariBridge.doJavaScriptLarge(JSWrapper.largeStatement(jsCode, slot: slot), target: target, firstMatch: firstMatch, warnWriter: warnWriter, slot: slot)
-                if result.isEmpty {
-                    try await throwLargeRuntimeErrorIfAny(slot: slot, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-                    let marker2 = try await SafariBridge.doJavaScript(slot.lengthScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-                    if marker2.trimmingCharacters(in: .whitespacesAndNewlines) == JSWrapper.lenUnsetSentinel {
-                        if let navURL = try await Self.navigatedAwayURL(
-                            from: preNavURL, target: target, firstMatch: firstMatch, profile: profile) {
-                            Self.reportNavigation(to: navURL)
-                            return nil
-                        }
-                        throw SafariBrowserError.appleScriptFailed(
-                            "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"
-                        )
-                    }
-                }
+                throw SafariBrowserError.appleScriptFailed(
+                    "JavaScript result: the page was replaced while the command ran (the result slot is gone and the address is the same), so it cannot be known whether the code ran. It was not run again.")
+            case .notStarted:
+                continue                                         // nothing ran for this form: try the next
             }
         }
-        return result
+        throw SafariBrowserError.appleScriptFailed(
+            "JavaScript syntax error: the provided code parses neither as an expression nor as a function body. (Safari's `do JavaScript` swallows the SyntaxError detail; check the code with a linter.)"
+        )
     }
 
     /// #76: `do JavaScript` swallows uncaught runtime throws as silently as
@@ -472,9 +470,8 @@ struct JSCommand: AsyncParsableCommand {
         firstMatch: Bool,
         warnWriter: ((String) -> Void)?
     ) async throws {
-        let errMsg = try await SafariBridge.doJavaScript(slot.errorScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-        let trimmed = errMsg.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed != JSWrapper.lenUnsetSentinel, !trimmed.isEmpty else { return }
+        let raw = try await SafariBridge.doJavaScript(slot.errorScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
+        guard let errMsg = ResultSlot.parseError(raw) else { return }
         throw SafariBrowserError.appleScriptFailed("JavaScript error: \(errMsg)\(JSWrapper.cspEvalHint(for: errMsg) ?? "")")
     }
 }

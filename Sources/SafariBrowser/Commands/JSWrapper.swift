@@ -37,13 +37,13 @@ enum JSWrapper {
     /// so without this capture a runtime error would misread as a parse failure) and
     /// newline-guards the user code against trailing comments.
     static func largeExpression(_ code: String, slot: ResultSlot) -> String {
-        "(function(){ try { return ('' + (\n\(code)\n)); } catch(e) { if (window.\(slot.key)) { window.\(slot.key).err = e.message; } return ''; } })()"
+        "(function(){ \(slot.startedStatement) try { return ('' + (\n\(code)\n)); } catch(e) { \(slot.recordErrorStatement) return ''; } })()"
     }
 
     /// Large-path statement form: user code runs as a function body (use
     /// `return` for a value), same in-band runtime-error capture.
     static func largeStatement(_ code: String, slot: ResultSlot) -> String {
-        "(function(){ try { return ('' + (function(){\n\(code)\n})()); } catch(e) { if (window.\(slot.key)) { window.\(slot.key).err = e.message; } return ''; } })()"
+        "(function(){ \(slot.startedStatement) try { return ('' + (function(){\n\(code)\n})()); } catch(e) { \(slot.recordErrorStatement) return ''; } })()"
     }
 
     // MARK: - One-call protocol (#255)

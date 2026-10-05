@@ -240,6 +240,9 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                     if script.contains("return _u & (character id 29) & _r") { return capturedURL + "\u{1D}" + reply }
                     return reply
                 }
+                // #257: the large path reads how far the call got from its slot; this fake keeps no page, so it says
+                // the code ran and its result was empty (the same as what it answered before: nothing).
+                if script.contains("(s.started ? 'started:' : 'idle:')") { return "started:0" }
                 return ""
             }
             if script.contains("URL of tab 53 of window id 101") {

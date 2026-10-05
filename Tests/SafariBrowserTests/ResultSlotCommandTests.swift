@@ -58,8 +58,8 @@ final class ResultSlotCommandTests: XCTestCase, @unchecked Sendable {
         defer { try? FileManager.default.removeItem(atPath: path) }
         let page = FakePage()
         do {
-            // does not parse in this page, and the tab is somewhere else when the check is made: the code ran and left
-            try await run(["--output", path] + target + ["1 +"], page: page, fake: navigatingSafari())
+            // the code replaces the page (the slot goes with it) and the tab is somewhere else when the check is made
+            try await run(["--output", path] + target + ["__reload(), 1"], page: page, fake: navigatingSafari())
             XCTFail("no result exists to write, which must not be a success")
         } catch let error as SafariBrowserError {
             guard case .appleScriptFailed(let message) = error else { return XCTFail("\(error)") }
@@ -72,7 +72,7 @@ final class ResultSlotCommandTests: XCTestCase, @unchecked Sendable {
     }
 
     func testLargeWithoutOutputStillTreatsANavigationAsAnOutcomeNotAnError() async throws {
-        let output = try await run(["--large"] + target + ["1 +"], page: FakePage(), fake: navigatingSafari())
+        let output = try await run(["--large"] + target + ["__reload(), 1"], page: FakePage(), fake: navigatingSafari())
         XCTAssertEqual(output.stdout, "", "a navigation prints no value (#82)")
         XCTAssertTrue(output.stderr.contains("navigated"), output.stderr)
     }
