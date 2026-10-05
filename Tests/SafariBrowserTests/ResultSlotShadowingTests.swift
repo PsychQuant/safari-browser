@@ -153,13 +153,19 @@ final class ResultSlotShadowingTests: XCTestCase, @unchecked Sendable {
     }
 
     /// The wrapper must not leave anything behind in the page either: it assigns no global of its own except
-    /// the counter that names a big result's slot, and it does not change one the page already has.
+    /// the counter that names a big result's slot and the slot, and it does not change one the page already has.
+    /// The big result is part of this: its naming function declares `n`, `t` and `k` (#259 verify: a mutant that
+    /// dropped the `var` of those two survived a test that never ran that branch).
     func testTheInlineWrappersDoNotChangeThePageGlobals() async throws {
         let page = pageWithEveryLetter()
+        let before = page.windowKeys()
         _ = try await run(target + ["1 + 1"], page: page)
         _ = try await run(target + ["return 2;"], page: page)
         _ = try? await run(target + ["(function(){ throw new Error('x') })()"], page: page)
+        let reply = try XCTUnwrap(page.evaluate(JSWrapper.inlineExpression("'x'.repeat(200000)")))
+        guard case .stored(let slot, _) = JSWrapper.parseInline(reply) else { return XCTFail("not parked: \(reply.prefix(60))") }
         XCTAssertEqual(page.evaluate(Self.readAllLetters), Self.allLetters)
+        XCTAssertEqual(page.windowKeys().subtracting(before), ["__sbn", slot.key])
     }
 
     // MARK: -

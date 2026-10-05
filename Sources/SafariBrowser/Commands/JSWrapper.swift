@@ -90,8 +90,12 @@ enum JSWrapper {
     /// (#259, the way `ResultSlot.storeScript` does it). The function that encloses the code declares nothing:
     /// a `var r` or `var m` there would shadow a page global of that name and the code would read
     /// `undefined` with no error. A code with an unbalanced `)` is one more argument here, not a syntax
-    /// error as it was after `var r = '' + (`: `a), (b` now runs both and keeps the text of the first.
-    /// `JSSyntaxHint` compiles the same shape.
+    /// error as it was after `var r = '' + (`: `a), (b` now runs both and keeps the text of the first, and a
+    /// `;` after an early `)` no longer parses. A name that is not a page global is now an error where it read the
+    /// wrapper's own hoisted `undefined`, and an assignment writes to the page. `arguments` is still the enclosing
+    /// function's own (the page's global of that name is hidden, as before). The `--large` wrappers keep the code
+    /// in `return ('' + (code))`, so the two paths differ for such inputs. `JSSyntaxHint` compiles each path's shape
+    /// (`JSSyntaxHint.Shape`); `JSInlineProtocolTests.testWhatChangedWithTheCallArgumentShape` pins the list.
     static func inlineExpression(_ code: String) -> String {
         """
         (function(){ try { return (function(r){ \(inlineTail) })('' + (
@@ -117,7 +121,7 @@ enum JSWrapper {
     /// The conversion runs in a function of its own, so the `catch` declares only its own parameter:
     /// no `var` is visible to the user's code (#259).
     private static var inlineCatch: String {
-        "catch(e) { return 'SB1:ERR:' + (function(e){ var m; try { m = '' + (e && e.message !== undefined ? e.message : e); } catch(x) { try { m = e.toString(); } catch(y) { m = 'unprintable exception'; } } return m; })(e); }"
+        "catch(e) { return 'SB1:ERR:' + (function(e){ var m; try { m = '' + (e && e.message !== undefined ? e.message : e); } catch(x) { try { m = '' + e.toString(); } catch(y) { m = 'unprintable exception'; } } return m; })(e); }"
     }
 
     /// Shared tail: return the result inline, or park it in a slot the slow path reads.

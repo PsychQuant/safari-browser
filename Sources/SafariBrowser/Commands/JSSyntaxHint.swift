@@ -34,20 +34,28 @@ enum JSSyntaxHint {
     /// Above this many UTF-16 units the hint is skipped (both forms are tried).
     static let maxHintedLength = 1_000_000
 
+    /// Which wrappers the hint is for. The code sits in a different position in the two (#259): the inline
+    /// wrappers pass it as the argument of a call, the `--large` wrappers keep it inside `return ('' + (code))`.
+    /// The two accept different inputs where a `)` closes the code early (`a), (b` is one more argument in the
+    /// first and a comma expression in the second), so each path is checked against its own shape.
+    enum Shape {
+        case inline
+        case large
+    }
+
     /// Each `js` call that reaches this builds a `JSContext` (a JavaScript VM): milliseconds,
     /// against the ~120 ms floor of the osascript round trip it can save.
-    static func formsToTry(for code: String) -> [Form] {
+    static func formsToTry(for code: String, shape: Shape = .inline) -> [Form] {
         let unknown: [Form] = [.expression, .statement]
         guard code.utf16.count <= maxHintedLength, let context = JSContext() else { return unknown }
         context.exceptionHandler = { _, _ in }
         context.setObject(code, forKeyedSubscript: "__sbcode" as NSString)
-        // The two bodies have the shape the wrappers in `JSWrapper` give the code: the argument of a call
-        // (#259). That is not the `var r = '' + (` of before, and the two differ for a code such as `a), (b`,
-        // which is one more argument here and was a syntax error there.
+        context.setObject(shape == .inline ? "(function(r){})" : "", forKeyedSubscript: "__sbhead" as NSString)
+        // The two bodies have the shape the wrappers in `JSWrapper` give the code (see `Shape`).
         let probe = """
         (function(){
-          try { new Function("return (function(r){})('' + (\\n" + __sbcode + "\\n));"); return 'E'; } catch (e) {}
-          try { new Function("return (function(r){})('' + (function(){\\n" + __sbcode + "\\n})());"); return 'S'; } catch (e) {}
+          try { new Function("return " + __sbhead + "('' + (\\n" + __sbcode + "\\n));"); return 'E'; } catch (e) {}
+          try { new Function("return " + __sbhead + "('' + (function(){\\n" + __sbcode + "\\n})());"); return 'S'; } catch (e) {}
           return 'N';
         })()
         """

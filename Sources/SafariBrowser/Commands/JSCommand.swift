@@ -423,7 +423,7 @@ struct JSCommand: AsyncParsableCommand {
         // cannot parse is then never what meets a page that was replaced between two of the calls. When neither
         // compiles here, or the code is too long to check, both are tried, expression first; the slot's mark is what
         // stops the second from running when the first did.
-        let attempts = JSSyntaxHint.formsToTry(for: jsCode).map { form in
+        let attempts = JSSyntaxHint.formsToTry(for: jsCode, shape: .large).map { form in
             form == .expression ? JSWrapper.largeExpression(jsCode, slot: slot) : JSWrapper.largeStatement(jsCode, slot: slot)
         }
         for wrapper in attempts {
