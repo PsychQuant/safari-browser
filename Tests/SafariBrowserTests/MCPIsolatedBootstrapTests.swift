@@ -95,15 +95,18 @@ final class MCPIsolatedBootstrapTests: XCTestCase, @unchecked Sendable {
             XCTAssertGreaterThan(accepted, 0)
             for (count, succeeds) in [(accepted, true), (rejected, false)] {
                 // The timeout is not what this test checks (the exact argv/environment admission is), so it is
-                // wide. It was 3 s and a full run once failed with `Command timed out` (#258): in that run every
-                // spawn with a ~1 MiB argv took about 1.2 s instead of ~3 ms (this test 60.9 s instead of
-                // 1.25 s; the other tests that spawn with a large argv were 8 to 31 times slower, ordinary
-                // spawns were not), and no setting of the same machine afterwards reproduced it. 30 s is about
-                // five times the slowest run seen. A supervised run that really hangs now fails after 30 s.
+                // wide. It was 3 s and the test failed with `Command timed out` in runs made on one occasion
+                // (#258): in the full run that was measured, every spawn with a ~1 MiB argv took about 1.2 s
+                // instead of ~3 ms (this test 60.9 s instead of 1.25 s). Nothing afterwards reproduced it, so
+                // 30 s is a wide figure, not a measured one; a supervised run that really hangs now fails after
+                // 30 s, and the failure message says how long the run took. Other large-argv tests keep their own
+                // short timeouts (#268).
+                let startedAt = ContinuousClock.now
                 let result = await MCPProcessRunner(executable: helper, environment: environment, timeout: 30)
                     .run(arguments: ["wait", String(repeating: "0", count: count)], input: Data(), expectedImage: image)
+                let took = startedAt.duration(to: .now)
                 if succeeds {
-                    XCTAssertEqual(result.exitCode, 0, "Original kernel admitted exactly this argv/environment")
+                    XCTAssertEqual(result.exitCode, 0, "Original kernel admitted exactly this argv/environment (supervised run took \(took))")
                     XCTAssertNil(result.failure, String(decoding: result.stderr, as: UTF8.self))
                 } else {
                     XCTAssertNil(result.exitCode)
