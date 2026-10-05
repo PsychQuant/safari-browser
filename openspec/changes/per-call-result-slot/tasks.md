@@ -14,6 +14,7 @@
 - [x] 2.5 「包裝不在使用者的範圍裡宣告變數」：`storeScript` 把運算式當引數、大型包裝的 catch 不宣告變數、內嵌的命名放在自己的函式裡，且不依賴頁面的時鐘與亂數；ResultSlotShadowingTests。
 - [x] 2.6 「導頁」與 `--output keeps its file when there is no result`：`runLargePath` 回傳 `String?`，沒有結果時 `--output` 失敗並保留原檔；頁面在長度讀取與第一塊之間被換掉時網址不同就是導頁；ResultSlotCommandTests。
 - [x] 2.7 「逾時後不清除」：`SafariBridge.removeResultSlot` 在逾時之後不再多等一個逾時；ResultSlotCommandTests。
+- [x] 2.8 「執行證據」（#257 B2 後半、#260）：包裝在使用者的程式碼之前標記槽、被丟出的值不論是什麼都記成錯誤；`runLargePath` 依槽（未開始／已開始／不在）決定要不要試另一種形式、要不要再執行；ResultSlotExecutionEvidenceTests、JSWrapperTests、ResultSlotTests。
 
 ## 3. 驗證與交付
 

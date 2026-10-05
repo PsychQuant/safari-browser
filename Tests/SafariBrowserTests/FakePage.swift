@@ -75,6 +75,14 @@ final class FakePage: @unchecked Sendable {
         _ = evaluate("var document = { body: { innerText: \(array)[0] } };")
     }
 
+    /// The document is replaced right now (what a navigation or a reload does between two of the CLI's calls): every
+    /// global is gone, the address is the same.
+    func replaceDocument() {
+        lock.lock(); defer { lock.unlock() }
+        context = Self.makeContext(owner: self)
+        installNatives()
+    }
+
     /// Run `body` against the page's global object, e.g. to read what a call left behind.
     func evaluate(_ source: String) -> String? {
         lock.lock(); defer { lock.unlock() }

@@ -144,6 +144,20 @@ final class ResultSlotExecutionEvidenceTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(page.executions, 1, "an answer that is not understood must never let the code run again")
     }
 
+    func testAPageReplacedBetweenThePresetAndTheStoreStillReportsWhatTheCodeThrew() async {
+        // The slot the preset made went with the old document. The store makes it again BEFORE the code runs, so the
+        // new document records the mark and the error. Made after, an error thrown here would be lost and read as nothing.
+        let page = FakePage()
+        var replaced = false
+        page.beforeRun = { script in
+            if !replaced, script.contains("s.text = r") { replaced = true; page.replaceDocument() }
+        }
+        let message = await failure(["--large"] + target + ["(__count(), (function(){ throw 'boom' })())"], page: page)
+        XCTAssertTrue(replaced, "the store was never reached, so nothing was tested")
+        XCTAssertEqual(message, "JavaScript error: boom")
+        XCTAssertEqual(page.executions, 1)
+    }
+
     func testTheSlotIsGoneAfterEveryOutcome() async {
         for code in ["throw 'x'", "(__count(), __reload(), 1)", "1 +", "'ok'.repeat(3)"] {
             let page = FakePage()

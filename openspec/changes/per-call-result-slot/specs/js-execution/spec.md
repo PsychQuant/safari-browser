@@ -92,3 +92,41 @@ Each chunk of a result read from a slot SHALL carry the position at which it end
 #### Scenario: The code navigates and nothing is written to the screen either
 - **WHEN** `js --large` (without `--output`) runs code that navigates the page
 - **THEN** the command SHALL report the navigation and exit 0 with no value, as before
+
+### Requirement: Execution evidence for the code `--large` and `--output` run
+
+For `js --large` and `js --output`, the slot SHALL also say whether the user's code started. The wrapper SHALL mark the slot before it evaluates the code and SHALL mark only a slot that exists. Whether to try the other form, and whether to run anything again, SHALL be decided from the slot (not marked; marked; gone), never from the absence of a result.
+
+#### Scenario: The expression form does not parse
+- **WHEN** the code is a statement and the expression form of the wrapper does not parse
+- **THEN** the slot SHALL still be there and unmarked
+- **AND** the statement form SHALL be tried, and the code SHALL run once
+
+#### Scenario: Neither form parses
+- **WHEN** the slot is unmarked after both forms
+- **THEN** the command SHALL report a syntax error and the code SHALL NOT have run
+
+#### Scenario: The page is replaced by a reload of the same address
+- **WHEN** the code started and the page was replaced, so the slot is gone, and the tab's address is the one it had before the code ran
+- **THEN** the command SHALL fail with a message that it cannot be known whether the code ran and that it was not run again
+- **AND** SHALL NOT try the other form
+- **AND** `--output` SHALL leave its file as it was
+
+#### Scenario: The page is replaced by a navigation
+- **WHEN** the slot is gone and the tab's address is not the one it had before
+- **THEN** the command SHALL report the navigation and succeed without a value (#82)
+
+#### Scenario: What was thrown, whatever it is
+- **WHEN** the code throws a string, `null`, `undefined`, a number, a symbol, an object without `message`, an object without a prototype, or an `Error`
+- **THEN** the command SHALL fail with `JavaScript error: <text>`, the same text the plain path reports
+- **AND** an error whose message is empty SHALL still be an error
+- **AND** the code SHALL have run once
+
+#### Scenario: An answer that is not understood
+- **WHEN** the read of how far the call got comes back empty, lost, or in a form the CLI does not know
+- **THEN** it SHALL be treated as a page that was replaced, and the code SHALL NOT be run again
+
+#### Scenario: Started, no result, no error
+- **WHEN** the slot is marked, holds no result and no error
+- **THEN** the command SHALL fail and SHALL NOT run the code again
+
