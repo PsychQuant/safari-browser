@@ -218,11 +218,15 @@ final class WaitCommandRoundTripTests: XCTestCase, @unchecked Sendable {
     }
 
     func testPositionNamedTargetsAreReadAtTheirPosition() async {
-        for (args, window) in [(["--document", "5"], "window id 101"),
-                               (["--window", "1", "--tab-in-window", "53"], "window id 101")] {
+        // `--document N` still resolves through one enumeration; `--window N --tab-in-window M`
+        // anchors with one small read of the window id and tab count instead (#255).
+        for (args, window, enumerations, tabAnchors) in [
+            (["--document", "5"], "window id 101", 1, 0),
+            (["--window", "1", "--tab-in-window", "53"], "window id 101", 0, 1)] {
             let fake = FakeSafari()
             await expectTimeout(["--for-url", "/never", "--timeout", "1200"] + args, on: fake, "\(args)")
-            XCTAssertEqual(fake.enumerations, 1, "\(args): one resolution\n\(fake.transcript)")
+            XCTAssertEqual(fake.enumerations, enumerations, "\(args): resolution\n\(fake.transcript)")
+            XCTAssertEqual(fake.tabAnchors.count, tabAnchors, "\(args): anchors\n\(fake.transcript)")
             XCTAssertGreaterThanOrEqual(fake.windowURLReads.count, 2, "\(args)")
             XCTAssertTrue(fake.windowURLReads.allSatisfy { $0.contains(window) }, fake.transcript)
         }
