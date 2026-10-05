@@ -13,8 +13,30 @@ final class PreCompiledScriptsTests: XCTestCase {
     func testKnownTemplates_containPhase1Seeds() {
         let known = PreCompiledScripts.known
         XCTAssertNotNil(known["activateWindow"])
-        XCTAssertNotNil(known["enumerateWindows"])
         XCTAssertNotNil(known["runJSInCurrentTab"])
+    }
+
+    /// #262: the catalog once held an `enumerateWindows` template that read `URL of` and `name of` once per
+    /// tab, inside a loop. That is one Apple event per property per tab — the cost #180 took out of
+    /// `SafariBridge.listAllWindowsScript` by reading them as one list per window. Nothing ran the template,
+    /// so nothing was slow; the risk was that wiring it up later would bring the cost back unnoticed.
+    ///
+    /// Closed list of what this checks (it does not generalise to other loop costs): inside a `repeat … end
+    /// repeat` block, a line that reads `URL of` or `name of`. A read outside a loop (`URL of {{DOC_REF}}`)
+    /// is one event and passes.
+    func testKnownTemplates_doNotReadURLOrNameOncePerIteration() {
+        for (key, template) in PreCompiledScripts.known.sorted(by: { $0.key < $1.key }) {
+            var depth = 0
+            for (offset, line) in template.source.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+                let code = line.trimmingCharacters(in: .whitespaces)
+                if code.hasPrefix("repeat ") || code == "repeat" { depth += 1 }
+                if depth > 0, code.contains("URL of") || code.contains("name of") {
+                    XCTFail("template \(key), line \(offset + 1): reads a tab property inside a repeat block "
+                            + "(one Apple event per iteration; read the list once, as listAllWindowsScript does, #180/#262): \(code)")
+                }
+                if code == "end repeat" { depth -= 1 }
+            }
+        }
     }
 
     func testTemplate_placeholdersAreDerivedFromSource() {

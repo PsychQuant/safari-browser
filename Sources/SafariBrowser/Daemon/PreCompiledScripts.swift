@@ -16,10 +16,12 @@ import Foundation
 /// - `CompileCache` compiles on miss on the main actor and caches by source
 ///   string, at most 256 of them. Identical rendered sources reuse the same
 ///   handle.
-/// - `known` registers three Phase 1 seed templates (`activateWindow`,
-///   `enumerateWindows`, `runJSInCurrentTab`); the remaining 4–7 templates
-///   mentioned in design.md will be ported from `SafariBridge.swift` in
-///   task 7.1 where the routing lands.
+/// - `known` registers the seed templates (`activateWindow`, `runJSInCurrentTab`,
+///   and the four read-path templates below). It once held an `enumerateWindows`
+///   template as well; it read `URL of` and `name of` once per tab, nothing ran it, and
+///   it was removed (#262) so wiring it up later could not bring back the per-tab cost
+///   #180 took out of `SafariBridge.listAllWindowsScript`. The daemon enumerates windows
+///   by receiving that script's already rendered text through `applescript.execute`.
 ///
 /// Actual Safari-side execution of these compiled handles happens in the
 /// daemon dispatch layer (task 4.1) and in routing (task 7.1).
@@ -77,30 +79,6 @@ enum PreCompiledScripts {
                 tell application "Safari"
                     set index of window {{WINDOW_INDEX}} to 1
                     activate
-                end tell
-                """
-        ),
-        "enumerateWindows": Template.parse(
-            name: "enumerateWindows",
-            // Walks every Safari window and emits "wN|tM|URL|TITLE" lines.
-            // Mirrors the shape produced by `SafariBridge.listAllWindows()`
-            // so the daemon path can be plugged in without changing
-            // downstream parsing.
-            source: """
-                tell application "Safari"
-                    set output to ""
-                    set winCount to count of windows
-                    repeat with w from 1 to winCount
-                        set theWindow to window w
-                        try
-                            set tabCount to count of tabs of theWindow
-                            repeat with t from 1 to tabCount
-                                set theTab to tab t of theWindow
-                                set output to output & "w" & w & "|t" & t & "|" & (URL of theTab) & "|" & (name of theTab) & linefeed
-                            end repeat
-                        end try
-                    end repeat
-                    return output
                 end tell
                 """
         ),
