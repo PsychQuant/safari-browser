@@ -94,7 +94,13 @@ final class MCPIsolatedBootstrapTests: XCTestCase, @unchecked Sendable {
             }
             XCTAssertGreaterThan(accepted, 0)
             for (count, succeeds) in [(accepted, true), (rejected, false)] {
-                let result = await MCPProcessRunner(executable: helper, environment: environment, timeout: 3)
+                // The timeout is not what this test checks (the exact argv/environment admission is), so it is
+                // wide. It was 3 s and a full run once failed with `Command timed out` (#258): in that run every
+                // spawn with a ~1 MiB argv took about 1.2 s instead of ~3 ms (this test 60.9 s instead of
+                // 1.25 s; the other tests that spawn with a large argv were 8 to 31 times slower, ordinary
+                // spawns were not), and no setting of the same machine afterwards reproduced it. 30 s is about
+                // five times the slowest run seen. A supervised run that really hangs now fails after 30 s.
+                let result = await MCPProcessRunner(executable: helper, environment: environment, timeout: 30)
                     .run(arguments: ["wait", String(repeating: "0", count: count)], input: Data(), expectedImage: image)
                 if succeeds {
                     XCTAssertEqual(result.exitCode, 0, "Original kernel admitted exactly this argv/environment")
