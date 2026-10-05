@@ -123,8 +123,35 @@ For `js --large` and `js --output`, the slot SHALL also say whether the user's c
 - **AND** the code SHALL have run once
 
 #### Scenario: An answer that is not understood
-- **WHEN** the read of how far the call got comes back empty, lost, or in a form the CLI does not know
+- **WHEN** the read of how far the call got comes back empty, lost, with a tail that is neither `undefined` nor a length, or in a form the CLI does not know
 - **THEN** it SHALL be treated as a page that was replaced, and the code SHALL NOT be run again
+- **AND** only the exact answer for a slot that is there and unmarked SHALL let the other form be sent
+
+#### Scenario: A message that cannot be read back
+- **WHEN** the code throws and the message is too long to read in one answer, starts with a combining mark, or cannot be turned into text
+- **THEN** the message SHALL be cut, read by Unicode scalar, or replaced by a fixed text, so that it is reported
+- **AND** if it still cannot be read, the command SHALL fail saying that the code threw and what it threw could not be read back, never exit 0 with an empty result
+
+#### Scenario: A result that was recorded and not read back
+- **WHEN** the slot holds a result of two or more units and nothing came back (a read was lost)
+- **THEN** the command SHALL fail with a transfer-incomplete message and SHALL NOT print nothing and exit 0
+
+#### Scenario: A result that is one newline
+- **WHEN** the code returns exactly one newline
+- **THEN** the command SHALL succeed and print nothing, as the one newline the output has always lost
+
+#### Scenario: Only the form that compiles is sent
+- **WHEN** the code compiles as exactly one of the two forms in the command's own JavaScript engine
+- **THEN** only that form SHALL be sent
+- **AND** when neither compiles there, or the code is longer than 1,000,000 units, both SHALL be tried, expression first, the second only if the slot shows the first never started
+
+#### Scenario: A read that fails
+- **WHEN** the read of the length, the error or the progress fails or times out
+- **THEN** the command SHALL fail with that error and SHALL NOT run the code again
+
+#### Scenario: Code that throws and then navigates
+- **WHEN** the code throws and the page is replaced at another address before the error is read
+- **THEN** the command SHALL report the navigation and succeed without a value (the error went with the old document)
 
 #### Scenario: Started, no result, no error
 - **WHEN** the slot is marked, holds no result and no error
