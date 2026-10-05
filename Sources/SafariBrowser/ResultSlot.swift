@@ -24,7 +24,7 @@ struct ResultSlot: Equatable, Sendable {
     let key: String
 
     /// A slot named by the CLI. The `--large` path needs the name before its code runs, to read the
-    /// error the code recorded and to tell "the code never ran" from "the code found nothing".
+    /// error the code recorded and to read from the slot how far the call got (`progressScript`).
     static func make() -> ResultSlot {
         ResultSlot(validKey: keyPrefix + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased())
     }
@@ -52,15 +52,16 @@ struct ResultSlot: Equatable, Sendable {
 
     // MARK: - scripts
 
-    /// Marks the slot as "nothing stored yet": its `len` is undefined, which `lengthScript` reports as
-    /// `JSWrapper.lenUnsetSentinel`. A page that navigated away has no slot at all, which reads the same.
+    /// Marks the slot as "nothing stored yet and nothing started": `progressScript` reports it as `idle:undefined`, and a
+    /// page that was replaced has no slot at all, which it reports as `gone`. `lengthScript` reports both as
+    /// `JSWrapper.lenUnsetSentinel`.
     var presetScript: String { "\(ref) = {}" }
 
     /// Evaluate `expression`, make it text, replace a lone surrogate with U+FFFD, and park it.
     ///
-    /// The slot object is made BEFORE the expression is evaluated, so an expression that throws leaves
-    /// a slot with no `len` (the "never ran or threw" sentinel) and an expression that does not parse
-    /// leaves no slot or an untouched preset. `toWellFormed()` because osascript drops a lone
+    /// The slot object is made BEFORE the expression is evaluated, so the wrapper can mark it and record an error
+    /// even in a page that was replaced after the preset, and an expression that does not parse leaves no slot or an
+    /// untouched preset. `toWellFormed()` because osascript drops a lone
     /// surrogate without a word (#255); U+FFFD has the same length and survives. A Safari without
     /// `toWellFormed` keeps the lone surrogate and the chunk read reports the length mismatch.
     ///
@@ -88,26 +89,34 @@ struct ResultSlot: Equatable, Sendable {
         "(function(){ var s = \(ref); return s && s.err !== undefined ? 'E:' + s.err : 'undefined'; })()"
     }
 
-    /// The message of a recorded error, or nil when the reply says there is none.
+    /// The message of a recorded error, or nil when the reply says there is none. The prefix is read by Unicode
+    /// SCALAR: a message that starts with a combining mark, a variation selector or a joiner fuses with the `:` into one
+    /// `Character`, and a Character-based `hasPrefix("E:")` would read that error as no error (#255).
     static func parseError(_ raw: String) -> String? {
-        raw.hasPrefix("E:") ? String(raw.dropFirst(2)) : nil
+        let prefix = "E:".unicodeScalars
+        guard raw.unicodeScalars.starts(with: prefix) else { return nil }
+        return String(String.UnicodeScalarView(raw.unicodeScalars.dropFirst(prefix.count)))
     }
 
     // MARK: - evidence that the user's code started (#257 B2, #260)
 
     /// Run first inside a `--large` wrapper, before the user's code: the slot says the code started. A wrapper
-    /// that does not parse never gets here, so a slot without this mark is a slot nothing ran for. It writes to
-    /// the slot that is there and makes none, so a page that was replaced does not get a slot saying the code ran.
+    /// that does not parse never gets here, so a slot without this mark is a slot nothing ran for. It writes to the
+    /// slot that is there and makes none. (`storeScript` makes the slot before it evaluates the wrapper, so in practice
+    /// the slot is always there; the guard keeps a wrapper that is evaluated on its own from inventing one.)
     var startedStatement: String {
         "if (window.\(key)) { window.\(key).started = true; }"
     }
 
-    /// Run in the catch block of a `--large` wrapper: record what was thrown, whatever it is. The conversion can
-    /// itself throw (`Symbol('x')` has no implicit string conversion, `Object.create(null)` has no `toString`), so it
-    /// is guarded in two steps, and it declares nothing in the scope of the user's code. Same text as the plain
-    /// path reports (`JavaScript error: null` for `throw null`).
+    /// Run in the catch block of a `--large` wrapper: say that the code threw, then record what was thrown, whatever it
+    /// is. The flag comes first and cannot fail, so an error whose text cannot be recorded or read back is still an error
+    /// and never reads as a result that is empty. The conversion can itself throw (`Symbol('x')` has no implicit string
+    /// conversion, `Object.create(null)` has no `toString`, a getter can throw), so it is guarded in three steps and
+    /// always yields a string; it declares nothing in the scope of the user's code (the helper functions have their own).
+    /// The text is cut at 16384 units so it can be read back in one answer: a longer plain answer comes back empty.
+    /// Same text as the plain path reports (`JavaScript error: null` for `throw null`).
     var recordErrorStatement: String {
-        "if (window.\(key)) { window.\(key).err = (function(x){ try { return '' + (x && x.message !== undefined ? x.message : x); } catch(y) { try { return x.toString(); } catch(z) { return 'unprintable exception'; } } })(e); }"
+        "if (window.\(key)) { window.\(key).threw = true; window.\(key).err = (function(m){ m = m.length > 16384 ? m.slice(0, 16384) + '\u{2026}' : m; return typeof m.toWellFormed === 'function' ? m.toWellFormed() : m; })((function(x){ try { return '' + (x && x.message !== undefined ? x.message : x); } catch(y) { try { return '' + x.toString(); } catch(z) { return 'unprintable exception'; } } })(e)); }"
     }
 
     /// How far a call got, from the slot alone.
@@ -118,20 +127,32 @@ struct ResultSlot: Equatable, Sendable {
         case notStarted
         /// The user's code started. `length` is the length of the result parked, nil if none was.
         case started(length: Int?)
+        /// The user's code started and threw (whether or not what it threw could be read back).
+        case threw
     }
 
     var progressScript: String {
-        "(function(){ var s = \(ref); return s ? (s.started ? 'started:' : 'idle:') + (s.len === undefined ? 'undefined' : '' + s.len) : 'gone'; })()"
+        "(function(){ var s = \(ref); return s ? (s.threw ? 'threw:' : s.started ? 'started:' : 'idle:') + (s.len === undefined ? 'undefined' : '' + s.len) : 'gone'; })()"
     }
 
-    /// Anything that is not one of the three answers reads as `gone`, which is the answer that never runs anything again.
+    /// Anything that is not one of the four answers reads as `gone`, which is the answer that never runs anything again.
+    /// What follows the colon has to be `undefined` or a length; a tail that is neither is a damaged answer. Only the
+    /// exact `idle:undefined` lets the other form run.
     static func parseProgress(_ raw: String) -> Progress {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.hasPrefix("started:") { return .started(length: parseLength(String(text.dropFirst("started:".count)))) }
-        if text.hasPrefix("idle:") {
+        func tail(of prefix: String) -> (length: Int?, ok: Bool)? {
+            guard text.hasPrefix(prefix) else { return nil }
+            let rest = String(text.dropFirst(prefix.count))
+            if rest == JSWrapper.lenUnsetSentinel { return (nil, true) }
+            if let length = parseLength(rest) { return (length, true) }
+            return (nil, false)
+        }
+        if let t = tail(of: "threw:") { return t.ok ? .threw : .gone }
+        if let t = tail(of: "started:") { return t.ok ? .started(length: t.length) : .gone }
+        if let t = tail(of: "idle:") {
             // A length without a start cannot come from a wrapper; if it ever does, something ran.
-            let length = parseLength(String(text.dropFirst("idle:".count)))
-            return length == nil ? .notStarted : .started(length: length)
+            if !t.ok { return .gone }
+            return t.length == nil ? .notStarted : .started(length: t.length)
         }
         return .gone
     }

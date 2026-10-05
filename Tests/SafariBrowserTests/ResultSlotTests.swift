@@ -124,7 +124,7 @@ final class ResultSlotTests: XCTestCase {
         let slot = ResultSlot.make()
         store(page, slot, "(function(){ throw new Error('x') })()")
         XCTAssertEqual(page.evaluate(slot.lengthScript), "undefined",
-                       "the sentinel JSCommand reads to tell 'never ran' from 'ran and found nothing'")
+                       "no length: the slot holds no result (`progressScript` says whether the code started)")
     }
 
     // MARK: - chunks
@@ -223,6 +223,37 @@ final class ResultSlotTests: XCTestCase {
         XCTAssertEqual(ResultSlot.parseProgress(" idle:undefined \n"), .notStarted)
         XCTAssertEqual(ResultSlot.parseProgress("idle:5"), .started(length: 5), "a length without a start cannot come from a wrapper; if it does, something ran")
         XCTAssertEqual(ResultSlot.parseProgress("started:5.0"), .started(length: 5))
+    }
+
+    func testProgressSaysWhenTheCodeThrew() {
+        let page = FakePage()
+        let slot = ResultSlot.make()
+        _ = page.evaluate(slot.presetScript)
+        _ = page.evaluate("window.\(slot.key).started = true; window.\(slot.key).threw = true")
+        XCTAssertEqual(ResultSlot.parseProgress(page.evaluate(slot.progressScript) ?? ""), .threw)
+    }
+
+    func testAnAnswerWhoseTailIsNotAnumberOrUndefinedReadsAsGone() {
+        for raw in ["started:garbage", "started:", "threw:garbage", "threw:", "started:5x", "started:-3"] {
+            XCTAssertEqual(ResultSlot.parseProgress(raw), .gone, raw)
+        }
+        XCTAssertEqual(ResultSlot.parseProgress("started:undefined"), .started(length: nil))
+        XCTAssertEqual(ResultSlot.parseProgress("started:12.0"), .started(length: 12))
+        XCTAssertEqual(ResultSlot.parseProgress("threw:0"), .threw)
+        XCTAssertEqual(ResultSlot.parseProgress("threw:undefined"), .threw)
+    }
+
+    func testOnlyAnExactIdleAnswerLetsTheOtherFormRun() {
+        XCTAssertEqual(ResultSlot.parseProgress("idle:undefined"), .notStarted)
+        for raw in ["idle:undefined\nnoise", "idle:undefinedx", "idle:", "idle:abc", "idle:-1", "idle: undefined x"] {
+            XCTAssertNotEqual(ResultSlot.parseProgress(raw), .notStarted, raw.debugDescription)
+        }
+    }
+
+    func testAnErrorPrefixIsReadByScalarSoACombiningMarkAfterItDoesNotHideIt() {
+        XCTAssertEqual(ResultSlot.parseError("E:\u{0301}boom"), "\u{0301}boom")
+        XCTAssertEqual(ResultSlot.parseError("E:\u{200D}x"), "\u{200D}x")
+        XCTAssertEqual(ResultSlot.parseError("E:\u{FE0F}x"), "\u{FE0F}x")
     }
 
     func testAnErrorIsToldFromNoErrorByItsPrefix() {

@@ -73,7 +73,8 @@ final class JSWrapperTests: XCTestCase {
         let slot = ResultSlot.make()
         let form = JSWrapper.largeExpression("1+1 // c", slot: slot)
         XCTAssertTrue(form.contains("(\n1+1 // c\n)"))
-        XCTAssertTrue(form.contains("window.\(slot.key).err = (function(x){"), "the thrown value is recorded whatever it is: \(form)")
+        XCTAssertTrue(form.contains("window.\(slot.key).threw = true;"), "the throw is flagged before anything that can fail: \(form)")
+        XCTAssertTrue(form.contains("window.\(slot.key).err = (function(m){"), "the thrown value is recorded whatever it is: \(form)")
         XCTAssertTrue(form.contains("window.\(slot.key).started = true;"), "the slot is marked before the code runs: \(form)")
         XCTAssertLessThan(try XCTUnwrap(form.range(of: ".started = true")).lowerBound, try XCTUnwrap(form.range(of: "1+1 // c")).lowerBound,
                           "the mark comes before the user's code")
@@ -88,7 +89,8 @@ final class JSWrapperTests: XCTestCase {
         let slot = ResultSlot.make()
         let form = JSWrapper.largeStatement("var a = 1;\nreturn a;", slot: slot)
         XCTAssertTrue(form.contains("(function(){\nvar a = 1;\nreturn a;\n})()"))
-        XCTAssertTrue(form.contains("window.\(slot.key).err = (function(x){"), form)
+        XCTAssertTrue(form.contains("window.\(slot.key).threw = true;"), form)
+        XCTAssertTrue(form.contains("window.\(slot.key).err = (function(m){"), form)
         XCTAssertTrue(form.contains("window.\(slot.key).started = true;"), form)
         XCTAssertFalse(form.replacingOccurrences(of: "var a = 1;", with: "").contains("var "), "the wrapper itself declares nothing")
         XCTAssertTrue(form.contains(slot.key))
@@ -109,7 +111,7 @@ final class JSWrapperTests: XCTestCase {
             _ = page.evaluate(slot.storeScript(form(slot)))
             XCTAssertEqual(page.evaluate(slot.errorScript), "E:boom")
             XCTAssertEqual(page.evaluate(slot.lengthScript), "0", "the wrapper returned '' after recording: a length of 0, not the sentinel")
-            XCTAssertEqual(page.evaluate(slot.progressScript), "started:0")
+            XCTAssertEqual(page.evaluate(slot.progressScript), "threw:0", "the code threw: the flag says so even if the message cannot be read back")
         }
     }
 

@@ -280,13 +280,12 @@ struct JSCommand: AsyncParsableCommand {
     /// so the existing parse-failure path still runs).
     ///
     /// Same-URL navigation (`location.reload()`, a form post back to the same
-    /// address) is invisible to this check by construction. Those cases still
+    /// address) is invisible to this check by construction. On the plain path those cases still
     /// fall through to the retry when both forms are being tried (neither compiled
-    /// locally, input over the hint limit) and on the `--large` / `--output` path, so a
-    /// reload can still fire twice there; with a single hinted form the missing reply
-    /// is reported as `noReplyMessage`. Detecting
-    /// it would need a page-side beacon that survives the very navigation it is
-    /// meant to observe.
+    /// locally, input over the hint limit), so a reload can still fire twice there; with a
+    /// single hinted form the missing reply is reported as `noReplyMessage`. The
+    /// `--large` / `--output` path does not depend on this check for that: it reads from
+    /// its slot whether the code started (#257 B2, #260) and never sends it twice.
     static func navigatedAwayURL(
         from preURL: String?,
         target: SafariBridge.TargetDocument,
@@ -360,18 +359,16 @@ struct JSCommand: AsyncParsableCommand {
 
     /// #76: `--large` / `--output` path without page-context eval().
     /// doJavaScriptLarge wraps its argument as `'' + (code)`, so the
-    /// expression form is just newline-guarded parens. Parse failure is
-    /// detected by presetting this call's slot (#190), then checking
-    /// whether the wrapper ever set its length.
+    /// expression form is just newline-guarded parens. Whether the code ran is
+    /// read from this call's slot (#190, #257 B2): it is preset, the wrapper marks it
+    /// `started` before the code runs, and `ResultSlot.progressScript` says which of
+    /// "unmarked", "marked" or "gone" the slot is in.
     ///
-    /// INVARIANT (verify-round finding, #76): the empty-result vs
-    /// parse-failure discrimination below requires that doJavaScriptLarge
-    /// does NOT delete a slot it was GIVEN on its zero-length early return —
-    /// a legitimately-empty result must leave the slot's length 0 (set by
-    /// the wrapper), while a parse failure leaves it undefined (preset).
-    /// A slot is removed by its owner: here, by the caller of this method.
-    /// If doJavaScriptLarge is ever refactored to always remove it, every
-    /// empty `--large` result would misread as a parse failure.
+    /// INVARIANT (verify-round finding, #76): the progress read below requires that
+    /// doJavaScriptLarge does NOT delete a slot it was GIVEN on its zero-length early
+    /// return: the slot is what says the code ran, and a slot that is removed reads as
+    /// `gone`, which is "the page was replaced" and an error. A slot is removed by its
+    /// owner: here, by the caller of this method.
     /// Pinned by the `--large ""` cases in Tests/e2e-csp.sh and by
     /// `ResultSlotCommandTests.testLargeEmptyResultIsEmptyNotAnError`.
     private func runLargePath(
@@ -381,12 +378,12 @@ struct JSCommand: AsyncParsableCommand {
         warnWriter: ((String) -> Void)?,
         profile: String?
     ) async throws -> String? {
-        // #190: the result, the runtime error and the "never ran" sentinel all live in a slot of this
-        // call's own, made here because the error and the sentinel are read by name before any result
+        // #190: the result, the runtime error and the evidence that the code started all live in a slot of this
+        // call's own, made here because the error and the progress are read by name before any result
         // exists. It is removed on every way out.
         let slot = ResultSlot.make()
-        // #82: the URL before the code ran, to tell "ran, then navigated away and took the slot with it"
-        // from "never parsed".
+        // #82: the URL before the code ran, to tell a navigation (the slot went with the old document)
+        // from a page that was replaced at the same address.
         let preNavURL = try? await SafariBridge.getCurrentURL(
             target: target, firstMatch: firstMatch, warnWriter: nil, profile: profile)
         do {
@@ -422,24 +419,36 @@ struct JSCommand: AsyncParsableCommand {
         // means nothing ran and the other form may be tried; a slot that is gone means the page was replaced
         // (navigation, a reload of the same address) and the code may have run, so it is never run again.
         _ = try await SafariBridge.doJavaScript(slot.presetScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
-        let attempts = [
-            JSWrapper.largeExpression(jsCode, slot: slot),     // an expression, if it parses as one
-            JSWrapper.largeStatement(jsCode, slot: slot),      // else the body of a function
-        ]
+        // Only the form that compiles here is sent when one does (`JSSyntaxHint`, as on the plain path): the form that
+        // cannot parse is then never what meets a page that was replaced between two of the calls. When neither
+        // compiles here, or the code is too long to check, both are tried, expression first; the slot's mark is what
+        // stops the second from running when the first did.
+        let attempts = JSSyntaxHint.formsToTry(for: jsCode).map { form in
+            form == .expression ? JSWrapper.largeExpression(jsCode, slot: slot) : JSWrapper.largeStatement(jsCode, slot: slot)
+        }
         for wrapper in attempts {
             let result = try await SafariBridge.doJavaScriptLarge(
                 wrapper, target: target, firstMatch: firstMatch, warnWriter: warnWriter, slot: slot)
             if !result.isEmpty { return result }
             // Empty: an error recorded in-band, a legitimately empty result, or a wrapper that never ran.
-            // Check the error FIRST: a thrown value leaves the length unset like a wrapper that never ran.
+            // Read the error FIRST: a throw leaves the wrapper's `''` as the stored result, so the length is 0 and
+            // progress alone cannot tell it from an empty result; only the recorded message (or the `threw` flag) can.
             try await throwLargeRuntimeErrorIfAny(slot: slot, target: target, firstMatch: firstMatch, warnWriter: warnWriter)
             let progress = ResultSlot.parseProgress(try await SafariBridge.doJavaScript(
                 slot.progressScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter))
             switch progress {
-            case .started(let length) where length != nil:
-                // The code ran and a result of `length` units was recorded. What came back is empty: the result is
-                // empty, or it was one newline, which the output has always lost.
+            case .threw:
+                // The message read above found nothing to report, so it could not be read back; the flag says it threw.
+                throw SafariBrowserError.appleScriptFailed(
+                    "JavaScript error: the code threw, and what it threw could not be read back. It ran; it was not run again.")
+            case .started(let length) where length == 0 || length == 1:
+                // The code ran and its result is empty, or it is one newline, which the output has always lost.
                 return ""
+            case .started(let length?):
+                // A result of two or more units is in the slot and nothing came back: the read was lost, and printing
+                // nothing would pass a result that exists off as an empty one.
+                throw SafariBrowserError.appleScriptFailed(
+                    "\(ResultSlot.incompleteTransferPrefix): the slot holds a result of \(length) units that was not read back. The code ran; it was not run again.")
             case .started:
                 throw SafariBrowserError.appleScriptFailed(
                     "JavaScript result: the code started but no result was recorded. It ran; it was not run again.")
@@ -450,7 +459,7 @@ struct JSCommand: AsyncParsableCommand {
                     return nil
                 }
                 throw SafariBrowserError.appleScriptFailed(
-                    "JavaScript result: the page was replaced while the command ran (the result slot is gone and the address is the same), so it cannot be known whether the code ran. It was not run again.")
+                    "JavaScript result: the page was replaced while the command ran (the result slot is gone and the address was not seen to change), so it cannot be known whether the code ran. It was not run again.")
             case .notStarted:
                 continue                                         // nothing ran for this form: try the next
             }

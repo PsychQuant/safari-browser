@@ -1936,7 +1936,7 @@ enum SafariBridge {
     /// consistent across multi-document Safari sessions.
     ///
     /// - Parameter slot: the slot to park the result in, for a caller that needs its name beforehand
-    ///   (`js --large` records a runtime error there and reads the "never ran" sentinel from it). Such a
+    ///   (`js --large` records a runtime error there and reads from it how far the call got). Such a
     ///   caller also cleans it up. Without one the call makes its own and removes it, on every exit.
     static func doJavaScriptLarge(
         _ code: String,
@@ -1967,10 +1967,10 @@ enum SafariBridge {
             _ = try await doJavaScript(slot.storeScript(code), target: target, firstMatch: firstMatch, profile: profile)
 
             let lenStr = try await doJavaScript(slot.lengthScript, target: target, firstMatch: firstMatch)
-            // #76 INVARIANT: an unset length (the sentinel) and an empty result both come back as "" and
-            // the slot is NOT removed here — JSCommand.runLargePath reads the length afterward to
-            // distinguish "legitimately empty result" (0, set by the wrapper) from "wrapper never
-            // parsed" (undefined, preset). A caller that passed its own slot removes it itself.
+            // #76 INVARIANT: an unset length and an empty result both come back as "" and the slot is NOT
+            // removed here — JSCommand.runLargePath reads the slot's progress afterward to tell "the code
+            // ran and its result is empty" from "the wrapper never started". A caller that passed its own
+            // slot removes it itself.
             guard let totalLen = ResultSlot.parseLength(lenStr), totalLen > 0 else {
                 if ownsSlot { await removeResultSlot(slot, target: target, firstMatch: firstMatch) }
                 return ""
