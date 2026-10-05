@@ -120,6 +120,19 @@ final class ResultSlotExecutionEvidenceTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(page.executions, 1)
     }
 
+    func testAResultThatIsOnlyOneNewlineIsAnEmptyResultNotAnError() async throws {
+        // The slot holds one unit; the one trailing newline the output has always lost leaves nothing. That is the
+        // recorded result, not "the code started and recorded nothing". (Found on a real Safari, not by the unit tests.)
+        for code in ["'\\n'", "(__count(), '\\n')"] {
+            let page = FakePage()
+            let output = try await run(["--large"] + target + [code], page: page)
+            XCTAssertEqual(output.stdout, "", code)
+        }
+        let page = FakePage()
+        let two = try await run(["--large"] + target + ["'\\n\\n'"], page: page)
+        XCTAssertEqual(two.stdout, "\n\n", "two newlines lose one and print the other")
+    }
+
     func testAnEmptyResultFromAStatementFormIsAnEmptyResultToo() async throws {
         let page = FakePage()
         let output = try await run(["--large"] + target + ["__count(); return '';"], page: page)

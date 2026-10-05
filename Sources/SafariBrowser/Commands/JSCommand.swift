@@ -436,8 +436,10 @@ struct JSCommand: AsyncParsableCommand {
             let progress = ResultSlot.parseProgress(try await SafariBridge.doJavaScript(
                 slot.progressScript, target: target, firstMatch: firstMatch, warnWriter: warnWriter))
             switch progress {
-            case .started(let length) where length == 0:
-                return ""                                        // the code ran and its result is empty
+            case .started(let length) where length != nil:
+                // The code ran and a result of `length` units was recorded. What came back is empty: the result is
+                // empty, or it was one newline, which the output has always lost.
+                return ""
             case .started:
                 throw SafariBrowserError.appleScriptFailed(
                     "JavaScript result: the code started but no result was recorded. It ran; it was not run again.")
