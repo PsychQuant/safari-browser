@@ -332,6 +332,34 @@ final class JSInlineProtocolTests: XCTestCase {
             XCTAssertEqual(JSSyntaxHint.formsToTry(for: code), [.expression], code)
         }
     }
+    /// #259: the hint and the wrappers must agree on whether a code compiles, in each form, or the CLI would send
+    /// a form that cannot run and report "no reply" for code that the other form would have run. They agree
+    /// because the hint compiles the shape the wrapper builds; this is the check that they still do, over inputs
+    /// that tell the shapes apart (an unbalanced `)` is where the old `var r = '' + (` and the call argument of
+    /// today differ).
+    func testTheHintAgreesWithTheWrappersOnWhatCompilesInEachForm() {
+        let codes = ["1 + 1", "a), (b", "1), (2", "1) + (2", "x = 1", "var a = 1", "return 1", "a;\nb", "/* unterminated",
+                     "`${1}`", "1\n)\n,(\n2", "{}", "let x = 5", "(1, 2", "'a' // c", "if (1) { 2 }", "), (", "1 ,", ")"]
+        for code in codes {
+            let hint = JSSyntaxHint.formsToTry(for: code)
+            let expressionRuns = execute(JSWrapper.inlineExpression(code)).reply != nil
+            XCTAssertEqual(expressionRuns, hint == [.expression], "expression form of \(code.debugDescription), hint \(hint)")
+            if !expressionRuns {
+                let statementRuns = execute(JSWrapper.inlineStatement(code)).reply != nil
+                XCTAssertEqual(statementRuns, hint == [.statement], "statement form of \(code.debugDescription), hint \(hint)")
+            }
+        }
+    }
+
+    /// The code is the argument of a call (#259), so a `)` that closes it early starts one more argument instead
+    /// of being a syntax error. Pinned because it is a behaviour change, and the comment on `inlineExpression`
+    /// says so: both run, the text of the first is the result.
+    func testACodeWithAnUnbalancedParenIsOneMoreArgumentAndKeepsTheFirstText() {
+        let run = execute(JSWrapper.inlineExpression("'1'), ('2'"))
+        XCTAssertEqual(run.reply, "SB1:OK:1:1\u{1E}")
+        XCTAssertEqual(JSSyntaxHint.formsToTry(for: "'1'), ('2'"), [.expression])
+    }
+
     // MARK: - the AppleScript that reads the URL in the same call
 
     func testWithoutCaptureTheStatementIsTheOriginalOne() {

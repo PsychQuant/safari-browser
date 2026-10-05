@@ -235,7 +235,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                         throw SafariBrowserError.appleScriptFailed(
                             "execution error: SB_TARGET_CHANGED: URL of target tab no longer matches (9001)")
                     }
-                    let isStatementForm = script.contains("var r = '' + (function(){")
+                    let isStatementForm = script.contains("'' + (function(){")
                     let reply = (isStatementForm ? statementFormParses : expressionFormParses) ? inlineAnswer : ""
                     if script.contains("return _u & (character id 29) & _r") { return capturedURL + "\u{1D}" + reply }
                     return reply
@@ -399,7 +399,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(output.stdout, "hello\n")
         XCTAssertEqual(fake.javaScripts.count, 1, "the local hint saves the expression attempt that cannot parse:\n\(fake.transcript)")
         let first = try XCTUnwrap(fake.javaScripts.first, fake.transcript)
-        XCTAssertTrue(first.contains("var r = '' + (function(){"), first)
+        XCTAssertTrue(first.contains("'' + (function(){"), first)
     }
 
     func testAFormTheHintSaysParsesIsNeverFollowedByTheOtherOne() async {
@@ -430,7 +430,7 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
             XCTAssertTrue(message.hasPrefix("JavaScript syntax error:"), message)
         } catch { XCTFail("\(error)") }
         XCTAssertEqual(fake.javaScripts.count, 2, "neither parsed here, so neither can have run: both are tried")
-        XCTAssertTrue(fake.javaScripts[1].contains("var r = '' + (function(){"), "the second form is the statement form")
+        XCTAssertTrue(fake.javaScripts[1].contains("'' + (function(){"), "the second form is the statement form")
         XCTAssertFalse(fake.javaScripts[1].contains("set _u to"), "only the first call reads the URL")
         let firstJS = try XCTUnwrap(fake.scripts.firstIndex { $0.contains("do JavaScript") })
         let urlRead = try XCTUnwrap(fake.scripts.indices.first { $0 > firstJS && !fake.scripts[$0].contains("do JavaScript") })

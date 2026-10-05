@@ -41,11 +41,13 @@ enum JSSyntaxHint {
         guard code.utf16.count <= maxHintedLength, let context = JSContext() else { return unknown }
         context.exceptionHandler = { _, _ in }
         context.setObject(code, forKeyedSubscript: "__sbcode" as NSString)
-        // The two bodies are the ones the wrappers in `JSWrapper` build around the code.
+        // The two bodies have the shape the wrappers in `JSWrapper` give the code: the argument of a call
+        // (#259). That is not the `var r = '' + (` of before, and the two differ for a code such as `a), (b`,
+        // which is one more argument here and was a syntax error there.
         let probe = """
         (function(){
-          try { new Function("var r = '' + (\\n" + __sbcode + "\\n);"); return 'E'; } catch (e) {}
-          try { new Function("var r = '' + (function(){\\n" + __sbcode + "\\n})();"); return 'S'; } catch (e) {}
+          try { new Function("return (function(r){})('' + (\\n" + __sbcode + "\\n));"); return 'E'; } catch (e) {}
+          try { new Function("return (function(r){})('' + (function(){\\n" + __sbcode + "\\n})());"); return 'S'; } catch (e) {}
           return 'N';
         })()
         """
