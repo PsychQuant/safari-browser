@@ -332,6 +332,79 @@ final class JSInlineProtocolTests: XCTestCase {
             XCTAssertEqual(JSSyntaxHint.formsToTry(for: code), [.expression], code)
         }
     }
+    /// #259: the hint and the wrappers must agree on whether a code compiles, in each form, or the CLI would send
+    /// a form that cannot run and report "no reply" for code that the other form would have run. They agree
+    /// because the hint compiles the shape the wrapper builds; this is the check that they still do, over inputs
+    /// that tell the shapes apart (a `)` that closes the code early is where the old `var r = '' + (`, the call
+    /// argument of the inline wrappers and the `return ('' + (` of the `--large` wrappers differ).
+    private static let shapeCodes = [
+        "1 + 1", "a), (b", "1), (2", "1) + (2", "x = 1", "var a = 1", "return 1", "a;\nb", "/* unterminated", "`${1}`",
+        "1\n)\n,(\n2", "{}", "let x = 5", "(1, 2", "'a' // c", "if (1) { 2 }", "), (", "1 ,", ")",
+        "1); (2", "1); foo(2", "}); f(); (function(){", "return 'A' }), (function(){ return 'B'", "1), ...[2], (3", "1), y = (2",
+    ]
+
+    func testTheHintAgreesWithTheInlineWrappersOnWhatCompilesInEachForm() {
+        for code in Self.shapeCodes {
+            let hint = JSSyntaxHint.formsToTry(for: code, shape: .inline)
+            let expressionRuns = execute(JSWrapper.inlineExpression(code)).reply != nil
+            XCTAssertEqual(expressionRuns, hint == [.expression], "expression form of \(code.debugDescription), hint \(hint)")
+            if !expressionRuns {
+                let statementRuns = execute(JSWrapper.inlineStatement(code)).reply != nil
+                XCTAssertEqual(statementRuns, hint == [.statement], "statement form of \(code.debugDescription), hint \(hint)")
+            }
+        }
+    }
+
+    /// The same for the `--large` wrappers, which keep the code inside `return ('' + (code))` and so accept `a), (b`
+    /// as a comma expression where the inline wrappers take it as a second argument. A wrapper that did not parse
+    /// never runs, so its slot is still unmarked; one that parsed marks it first thing.
+    func testTheHintAgreesWithTheLargeWrappersOnWhatCompilesInEachForm() {
+        func parses(_ wrapper: (ResultSlot) -> String) -> Bool {
+            let page = FakePage()
+            let slot = ResultSlot.make()
+            _ = page.evaluate(slot.presetScript)
+            _ = page.evaluate(wrapper(slot))
+            return page.evaluate(slot.progressScript) != "idle:undefined"
+        }
+        for code in Self.shapeCodes {
+            let hint = JSSyntaxHint.formsToTry(for: code, shape: .large)
+            let expressionRuns = parses { JSWrapper.largeExpression(code, slot: $0) }
+            XCTAssertEqual(expressionRuns, hint == [.expression], "large expression form of \(code.debugDescription), hint \(hint)")
+            if !expressionRuns {
+                let statementRuns = parses { JSWrapper.largeStatement(code, slot: $0) }
+                XCTAssertEqual(statementRuns, hint == [.statement], "large statement form of \(code.debugDescription), hint \(hint)")
+            }
+        }
+    }
+
+    /// The behaviours that changed when the code became the argument of a call (#259), as a closed list, each pinned.
+    /// All of them are inputs that are not what the user meant to write (an early `)`), and none changes a code
+    /// that is balanced.
+    func testWhatChangedWithTheCallArgumentShape() {
+        let page = FakePage()
+        // 1. an early `)` is one more argument: both parts run, the result is the text of the first
+        let two = page.evaluate(JSWrapper.inlineExpression("'1'), (window.ran = 1, '2'"))
+        XCTAssertEqual(two, "SB1:OK:1:1\u{1E}")
+        XCTAssertEqual(page.evaluate("window.ran"), "1", "the second argument was evaluated")
+        // 2. the statement form takes `}), (function(){` the same way, and answers with the text of a function
+        XCTAssertEqual(execute(JSWrapper.inlineStatement("return 'A' }), (function(){ return 'B'")).reply?.hasPrefix("SB1:OK:"), true)
+        // 3. a `;` after an early `)` no longer parses (it was spliced into the wrapper's own statement before)
+        XCTAssertNil(execute(JSWrapper.inlineExpression("1); foo(2")).reply)
+        // 4. a name that is not a page global is an error, no longer the wrapper's own hoisted `undefined`; and an
+        //    assignment goes to the page, as it does in the console
+        XCTAssertEqual(execute(JSWrapper.inlineExpression("r")).reply, "SB1:ERR:Can't find variable: r")
+        let assigned = FakePage()
+        _ = assigned.evaluate(JSWrapper.inlineExpression("r = 5"))
+        XCTAssertEqual(assigned.evaluate("window.r"), "5")
+    }
+
+    /// The thrown value is turned into text inside the catch, and that must not throw out of the wrapper (a reply
+    /// that never comes back reads as "no reply" and, for code the hint could not check, runs the code a second time).
+    func testAThrownObjectWhoseToStringAnswersAnUnprintableObjectStillReports() {
+        let run = execute(JSWrapper.inlineStatement("throw { toString: function(){ return Object.create(null); } }"))
+        XCTAssertEqual(run.reply, "SB1:ERR:unprintable exception")
+    }
+
     // MARK: - the AppleScript that reads the URL in the same call
 
     func testWithoutCaptureTheStatementIsTheOriginalOne() {
