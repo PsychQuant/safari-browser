@@ -104,6 +104,70 @@ final class ResultSlotShadowingTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    // MARK: - the inline wrappers (#259)
+
+    /// #259: `inlineExpression` / `inlineStatement` ran the user's code inside a function that declared `var r`
+    /// (the result) and, through `inlineCatch`, `var m` (the message). `var` is function-scoped, so a page that
+    /// had a global `r` or `m` made the user's expression read `undefined`, with no error. The slot wrappers
+    /// were fixed in #190 by passing the code as an argument of a function that has its own parameter; the
+    /// inline ones were not.
+    ///
+    /// Every single-letter global is defined, not only the two names the wrapper used: the next variable a
+    /// wrapper declares will be another short name, and a test that names only the known ones does not see it.
+    private static let letters = Array("abcdefghijklmnopqrstuvwxyz").map(String.init)
+    private static let allLetters = letters.map { "PAGE-\($0)" }.joined(separator: ",")
+    private static var readAllLetters: String { "[\(letters.joined(separator: ","))].join(',')" }
+
+    private func pageWithEveryLetter() -> FakePage {
+        let page = FakePage()
+        _ = page.evaluate(Self.letters.map { "var \($0) = 'PAGE-\($0)';" }.joined())
+        return page
+    }
+
+    func testInlineExpressionReadsEveryPageGlobalNamedWithOneLetter() async throws {
+        let out = try await run(target + [Self.readAllLetters], page: pageWithEveryLetter())
+        XCTAssertEqual(out, Self.allLetters + "\n")
+    }
+
+    func testInlineStatementReadsEveryPageGlobalNamedWithOneLetter() async throws {
+        let out = try await run(target + ["return \(Self.readAllLetters);"], page: pageWithEveryLetter())
+        XCTAssertEqual(out, Self.allLetters + "\n")
+    }
+
+    func testABigInlineResultReadsEveryPageGlobalNamedWithOneLetter() async throws {
+        let page = pageWithEveryLetter()
+        let out = try await run(target + [Self.readAllLetters + " + 'x'.repeat(200000)"], page: page)
+        XCTAssertEqual(out, Self.allLetters + String(repeating: "x", count: 200_000) + "\n")
+        XCTAssertEqual(page.keys(withPrefix: "__sbr_"), [])
+    }
+
+    func testAnInlineErrorMessageIsBuiltFromTheUsersCodeNotFromAShadowedGlobal() async {
+        let page = pageWithEveryLetter()
+        do {
+            _ = try await run(target + ["(function(){ throw new Error(\(Self.readAllLetters)) })()"], page: page)
+            XCTFail("a runtime error must be reported")
+        } catch let error as SafariBrowserError {
+            guard case .appleScriptFailed(let message) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(message, "JavaScript error: " + Self.allLetters)
+        } catch { XCTFail("\(error)") }
+    }
+
+    /// The wrapper must not leave anything behind in the page either: it assigns no global of its own except
+    /// the counter that names a big result's slot and the slot, and it does not change one the page already has.
+    /// The big result is part of this: its naming function declares `n`, `t` and `k` (#259 verify: a mutant that
+    /// dropped the `var` of those two survived a test that never ran that branch).
+    func testTheInlineWrappersDoNotChangeThePageGlobals() async throws {
+        let page = pageWithEveryLetter()
+        let before = page.windowKeys()
+        _ = try await run(target + ["1 + 1"], page: page)
+        _ = try await run(target + ["return 2;"], page: page)
+        _ = try? await run(target + ["(function(){ throw new Error('x') })()"], page: page)
+        let reply = try XCTUnwrap(page.evaluate(JSWrapper.inlineExpression("'x'.repeat(200000)")))
+        guard case .stored(let slot, _) = JSWrapper.parseInline(reply) else { return XCTFail("not parked: \(reply.prefix(60))") }
+        XCTAssertEqual(page.evaluate(Self.readAllLetters), Self.allLetters)
+        XCTAssertEqual(page.windowKeys().subtracting(before), ["__sbn", slot.key])
+    }
+
     // MARK: -
 
     private func withBridge<T: Sendable>(_ page: FakePage, _ body: @Sendable () async throws -> T) async rethrows -> T {

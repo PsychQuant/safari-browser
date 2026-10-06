@@ -85,20 +85,31 @@ enum JSWrapper {
     /// Expression form of the one-call protocol: the outcome is the wrapper's own return
     /// value (before #255 it was two page globals, preset and read back in later calls), so a
     /// successful run needs no preset, no read-back and no cleanup.
+    ///
+    /// The user's code is evaluated as the ARGUMENT of a function that has the result as its own parameter
+    /// (#259, the way `ResultSlot.storeScript` does it). The function that encloses the code declares nothing:
+    /// a `var r` or `var m` there would shadow a page global of that name and the code would read
+    /// `undefined` with no error. A code with an unbalanced `)` is one more argument here, not a syntax
+    /// error as it was after `var r = '' + (`: `a), (b` now runs both and keeps the text of the first, and a
+    /// `;` after an early `)` no longer parses. A name that is not a page global is now an error where it read the
+    /// wrapper's own hoisted `undefined`, and an assignment writes to the page. `arguments` is still the enclosing
+    /// function's own (the page's global of that name is hidden, as before). The `--large` wrappers keep the code
+    /// in `return ('' + (code))`, so the two paths differ for such inputs. `JSSyntaxHint` compiles each path's shape
+    /// (`JSSyntaxHint.Shape`); `JSInlineProtocolTests.testWhatChangedWithTheCallArgumentShape` pins the list.
     static func inlineExpression(_ code: String) -> String {
         """
-        (function(){ try { var r = '' + (
+        (function(){ try { return (function(r){ \(inlineTail) })('' + (
         \(code)
-        ); \(inlineTail) } \(inlineCatch) })()
+        )); } \(inlineCatch) })()
         """
     }
 
     /// Statement form of the one-call protocol (user code as a function body).
     static func inlineStatement(_ code: String) -> String {
         """
-        (function(){ try { var r = '' + (function(){
+        (function(){ try { return (function(r){ \(inlineTail) })('' + (function(){
         \(code)
-        })(); \(inlineTail) } \(inlineCatch) })()
+        })()); } \(inlineCatch) })()
         """
     }
 
@@ -107,8 +118,10 @@ enum JSWrapper {
     /// no `toString`), and an exception escaping the `catch` would be swallowed by `do
     /// JavaScript` like a SyntaxError and read as "no reply", so the conversion is guarded in
     /// two steps. No global names are used (page code can reassign `window.String`, #76).
+    /// The conversion runs in a function of its own, so the `catch` declares only its own parameter:
+    /// no `var` is visible to the user's code (#259).
     private static var inlineCatch: String {
-        "catch(e) { var m; try { m = '' + (e && e.message !== undefined ? e.message : e); } catch(x) { try { m = e.toString(); } catch(y) { m = 'unprintable exception'; } } return 'SB1:ERR:' + m; }"
+        "catch(e) { return 'SB1:ERR:' + (function(e){ var m; try { m = '' + (e && e.message !== undefined ? e.message : e); } catch(x) { try { m = '' + e.toString(); } catch(y) { m = 'unprintable exception'; } } return m; })(e); }"
     }
 
     /// Shared tail: return the result inline, or park it in a slot the slow path reads.
@@ -126,8 +139,8 @@ enum JSWrapper {
         // may stub or remove (fake timers, a privacy extension): they sit in a `try` and only add to the
         // name. Anything outside `[0-9a-z]` is dropped and a fixed tail keeps the name long enough, so
         // whatever the page does to its clock the name still passes the CLI's check.
-        // The naming runs in a function of its own: it is created after the user's code ran, but its `var`s
-        // are kept out of the function that encloses that code all the same.
+        // The naming runs in a function of its own, and the whole tail in a function that has the result as its
+        // parameter (#259): none of these `var`s is in a scope the user's code can see.
         "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { return (function(){ var n = (window.__sbn >>> 0) + 1, t = ''; window.__sbn = n; try { t = Date.now().toString(36) + Math.random().toString(36).slice(2, 10); } catch (x) {} var k = '\(ResultSlot.keyPrefix)' + (n.toString(36) + t).replace(/[^0-9a-z]/g, '').slice(0, 48) + 'sbslot00'; \(ResultSlot.sweepExpression); window[k] = { text: r, len: r.length, u: \(ResultSlot.stampExpression) }; return 'SB1:BIG:' + r.length + ':' + k; })(); } return 'SB1:OK:' + r.length + ':' + r + '\\u001e';"
     }
 
