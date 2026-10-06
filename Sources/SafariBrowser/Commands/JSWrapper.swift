@@ -141,7 +141,7 @@ enum JSWrapper {
         // whatever the page does to its clock the name still passes the CLI's check.
         // The naming runs in a function of its own, and the whole tail in a function that has the result as its
         // parameter (#259): none of these `var`s is in a scope the user's code can see.
-        "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { return (function(){ var n = (window.__sbn >>> 0) + 1, t = ''; window.__sbn = n; try { t = Date.now().toString(36) + Math.random().toString(36).slice(2, 10); } catch (x) {} var k = '\(ResultSlot.keyPrefix)' + (n.toString(36) + t).replace(/[^0-9a-z]/g, '').slice(0, 48) + 'sbslot00'; window[k] = { text: r, len: r.length }; return 'SB1:BIG:' + r.length + ':' + k; })(); } return 'SB1:OK:' + r.length + ':' + r + '\\u001e';"
+        "if (typeof r.toWellFormed === 'function') { r = r.toWellFormed(); } if (r.length > \(inlineResultLimit)) { return (function(){ var n = (window.__sbn >>> 0) + 1, t = ''; window.__sbn = n; try { t = Date.now().toString(36) + Math.random().toString(36).slice(2, 10); } catch (x) {} var k = '\(ResultSlot.keyPrefix)' + (n.toString(36) + t).replace(/[^0-9a-z]/g, '').slice(0, 48) + 'sbslot00'; \(ResultSlot.sweepExpression); window[k] = { text: r, len: r.length, u: \(ResultSlot.stampExpression) }; return 'SB1:BIG:' + r.length + ':' + k; })(); } return 'SB1:OK:' + r.length + ':' + r + '\\u001e';"
     }
 
     /// Closes an `OK` reply. It is not whitespace, so it keeps the end of the result away from
