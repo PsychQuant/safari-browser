@@ -6,10 +6,10 @@ import Foundation
 /// method dispatch serve Safari-bound work via pre-compiled script handles.
 ///
 /// Task 4.1 deliverable is limited to Safari-free demonstration handlers
-/// (`cache.arithmetic`). The Phase 1 Safari handlers (`safari.enumerateWindows`,
-/// `safari.activateWindow`, `safari.runJSInCurrentTab`, etc.) land in task 7.1
-/// where command routing switches to the daemon path. Registering them here
-/// is premature because the command-side wiring does not yet exist.
+/// (`cache.arithmetic`). Safari-bound work reaches the daemon as rendered AppleScript
+/// text through `applescript.execute`, which compiles it by source string (so window
+/// enumeration runs `SafariBridge.listAllWindowsScript`, the batched form, #180/#262).
+/// There are no per-operation `safari.*` handlers.
 ///
 /// All handlers route execution through `PreCompiledScripts.CompileCache`,
 /// which is an actor — that is how the `No Safari state cache` / Path A
