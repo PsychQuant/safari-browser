@@ -885,7 +885,7 @@ numbers.
 **Identity-anchored `--url` / `--document` resolution (#79)**: a `--url` or
 `--document` match resolves to the tab's *identity* (`tab T of window id W`,
 using Safari's stable window id), not its z-order position — so
-multi-round-trip commands (`js`, chunked reads) keep hitting the same tab
+multi-round-trip commands (`js --large`, a `js` whose result is over 131072 UTF-16 units, chunked reads) keep hitting the same tab
 even if you click other Safari windows mid-command. Every round-trip
 re-verifies the tab's URL (case-sensitively) in the same AppleScript; on a
 miss (window closed, tab moved, or navigated to a non-matching URL) the
