@@ -45,7 +45,7 @@
 - 孤兒槽的內容在被回收前，頁面上的任何指令碼都讀得到（槽名不是祕密，#190）；這個變更縮短它留存的時間，不改變誰讀得到。
 - 掃描也會跑在 `get text`／`get html`／`snapshot` 後備／`exec` 步驟（它們共用 `storeScript`），成本同上（真機約 0.095 ms @ 約 5,200 個 `window` 屬性，0.010 ms @ 215 個；JavaScriptCore 約 0.12 ms @ 5,000）。
 - 與 #259（PR #271）同動 `JSWrapper.inlineTail`：#259 改了該函式字串上方緊鄰的兩行說明文字，本變更改字串那一行，相鄰的修改在合併時會衝突；另外兩個 PR 都在 `CHANGELOG.md` 的開頭加條目、都改了 `CLAUDE.md` 的同一條。試合併實測 `JSWrapper.swift`、`CHANGELOG.md`、`CLAUDE.md` 三處衝突，內容都是機械性的：保留 #259 的說明文字與本變更的字串行。
-- 規格中「The wrappers do not hide page globals」情境提到內嵌包裝仍遮住 `r`、`m`（#259 之前的事實）；#259 合併後該句要改，本變更逐字保留它，不替 #259 作主。
+- 規格中「The wrappers do not hide page globals」情境原本提到內嵌包裝仍遮住 `r`、`m`（#259 之前的事實）；本變更合併時逐字保留它，不替 #259 作主。#259（PR #271）合併後，該情境在歸檔前依 #270 改寫：內嵌包裝不再遮住，唯一留下的例外是 `arguments`，括號不平衡輸入的行為明寫為不屬於這條需求。
 
 ## Migration Plan
 
