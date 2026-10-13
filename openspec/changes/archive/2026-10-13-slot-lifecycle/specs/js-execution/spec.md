@@ -74,10 +74,11 @@ A slot SHALL carry the time of its last use as a number of milliseconds in a pro
 - **AND** `get text`, `get html`, `snapshot` and `exec`, whose own slot is gone between the store and the length read, SHALL behave as when the page was replaced at that moment: an empty result and exit status 0
 
 #### Scenario: The wrappers do not hide page globals
-- **GIVEN** a page with globals named `s`, `r` and `k`
-- **WHEN** the code of `js --large`, of a `js` whose result is parked in a slot, or of the fallback of `get text` reads them
-- **THEN** it SHALL read the page's values, because the forms of this change declare no variable in the scope of the user's code
-- **AND** the inline wrappers of #255 declare `r` and `m` and still hide page globals of those names (not changed here)
+- **GIVEN** a page with globals named `s`, `r`, `m` and `k`
+- **WHEN** the code of `js` (the inline wrappers and `js --large`), of a `js` whose result is parked in a slot, or of the fallback of `get text` reads them
+- **THEN** it SHALL read the page's values, because no wrapper declares a variable in the scope of the user's code: the inline wrappers pass the code as the argument of a function that has the result as its parameter, and build the message of a thrown value in a function of its own (#259)
+- **AND** `arguments` is the one name that stays hidden: in the forms where the code is an expression it is the enclosing function's own, so a page global of that name is not what the code reads
+- **AND** the behaviour of code whose parentheses do not balance (an early `)` that turns the rest into more arguments) is deliberately not part of this requirement: such input is not a program the user meant, `js` and `js --large` shape the code differently and so differ for it, and writing it here would make an accident a commitment. What it does today is recorded in the `CHANGELOG.md` entry of #259 and pinned by `JSInlineProtocolTests.testWhatChangedWithTheCallArgumentShape`, which is where a change to it should be noticed
 
 #### Scenario: A page that stubs its clock or random source
 - **WHEN** the page's `Date.now` and `Math.random` are replaced by constants, or its counter `__sbn` is set to a negative or non-numeric value
