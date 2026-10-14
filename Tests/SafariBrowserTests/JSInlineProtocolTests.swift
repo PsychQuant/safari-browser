@@ -377,10 +377,11 @@ final class JSInlineProtocolTests: XCTestCase {
         }
     }
 
-    /// The behaviours that changed when the code became the argument of a call (#259), as a closed list, each pinned.
-    /// Checks 1 to 3 are inputs whose parentheses do not balance (an early `)`); check 4 is balanced code that
-    /// reads or assigns `r`, a name the wrappers used to declare. Only the inline wrappers are run here: the `--large`
-    /// wrappers are checked for what compiles by `testTheHintAgreesWithTheLargeWrappersOnWhatCompilesInEachForm`.
+    /// The behaviours that changed when the code became the argument of a call (#259). Checks 1 and 2 pin item (1) of the
+    /// list in the CHANGELOG entry of #259, check 3 pins item (2), and check 4 pins item (3) for `r` only (not `m`, not
+    /// `delete r`). Items (4) (`arguments`) and (5) (`js` and `js --large` differ) are not pinned (#285). Only the inline
+    /// wrappers are run here: the `--large` wrappers are checked for what compiles by
+    /// `testTheHintAgreesWithTheLargeWrappersOnWhatCompilesInEachForm`.
     func testWhatChangedWithTheCallArgumentShape() {
         let page = FakePage()
         // 1. an early `)` is one more argument: both parts run, the result is the text of the first
@@ -389,7 +390,8 @@ final class JSInlineProtocolTests: XCTestCase {
         XCTAssertEqual(page.evaluate("window.ran"), "1", "the second argument was evaluated")
         // 2. the statement form takes `}), (function(){` the same way, and answers with the text of a function
         XCTAssertEqual(execute(JSWrapper.inlineStatement("return 'A' }), (function(){ return 'B'")).reply?.hasPrefix("SB1:OK:"), true)
-        // 3. a `;` after an early `)` no longer parses (it was spliced into the wrapper's own statement before)
+        // 3. this `;` after an early `)` no longer parses (it was spliced into the wrapper's own statement before); an input
+        //    made to close the wrapper's call and reopen a `try` still parses, so this is not a barrier
         XCTAssertNil(execute(JSWrapper.inlineExpression("1); foo(2")).reply)
         // 4. `r`, when the page does not define it, is an error, no longer the wrapper's own hoisted `undefined`; and an
         //    assignment goes to the page, as it does in the console
