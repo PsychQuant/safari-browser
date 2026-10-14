@@ -90,12 +90,15 @@ enum JSWrapper {
     /// (#259, the way `ResultSlot.storeScript` does it). The function that encloses the code declares nothing:
     /// a `var r` or `var m` there would shadow a page global of that name and the code would read
     /// `undefined` with no error. A code with an unbalanced `)` is one more argument here, not a syntax
-    /// error as it was after `var r = '' + (`: `a), (b` now runs both and keeps the text of the first, and a
-    /// `;` after an early `)` no longer parses. A name that is not a page global is now an error where it read the
-    /// wrapper's own hoisted `undefined`, and an assignment writes to the page. `arguments` is still the enclosing
+    /// error as it was after `var r = '' + (`: `a), (b` now runs both and keeps the text of the first, and
+    /// `1); f(); (0` no longer parses (an input made to close the wrapper's call and reopen a `try` still parses, so that
+    /// is not a barrier). `r` or `m`, when the page does not define it, is now an error where it read the
+    /// wrapper's own hoisted `undefined`, and an assignment to one writes to the page. `arguments` is still the enclosing
     /// function's own (the page's global of that name is hidden, as before). The `--large` wrappers keep the code
-    /// in `return ('' + (code))`, so the two paths differ for such inputs. `JSSyntaxHint` compiles each path's shape
-    /// (`JSSyntaxHint.Shape`); `JSInlineProtocolTests.testWhatChangedWithTheCallArgumentShape` pins the list.
+    /// in `return ('' + (code))`, so the two paths can differ for an early `)` like `'A'), ('B'`. `JSSyntaxHint` compiles each path's shape
+    /// (`JSSyntaxHint.Shape`); `JSInlineProtocolTests.testWhatChangedWithTheCallArgumentShape` pins the inline side of the first
+    /// three items of the list in the CHANGELOG entry of #259 (the third only for reading `r` and assigning it); the `arguments` note and the
+    /// difference between the two paths are not pinned (#285).
     static func inlineExpression(_ code: String) -> String {
         """
         (function(){ try { return (function(r){ \(inlineTail) })('' + (
