@@ -9,7 +9,7 @@ BINARY_NAME = safari-browser
 SAFARI_BROWSER_BIN ?= .build/debug/$(BINARY_NAME)
 export SAFARI_BROWSER_BIN
 
-.PHONY: test-repository-tracking
+.PHONY: test-repository-tracking test-stamp-version
 .PHONY: test-data-interruption test-mutation-gate test-daemon-executor test-daemon-peer-disconnect test-dialog-harness test-install-atomic test-signature-entrypoint
 .PHONY: build build-debug install install-signed clean \
         verify-developer-id verify-install-signature \
@@ -17,8 +17,15 @@ export SAFARI_BROWSER_BIN
         test-install-signature-strict \
         test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-dialog test-exec-script test-mark-tab test-csp test-target-identity test-reference-edges
 
+# The release build is wrapped so the binary learns its own version (#278).
+# scripts/stamp-version.sh writes `git describe` into the tracked placeholder
+# for the duration of the compile and puts the placeholder back afterwards.
 build:
-	swift build -c release
+	scripts/stamp-version.sh Sources/SafariBrowser/BuildVersion.swift -- swift build -c release
+
+# Behavior tests for the stamping wrapper (no Safari, no real build).
+test-stamp-version:
+	bash scripts/stamp-version-test.sh
 
 # The signature guard. Swift, not shell: it reads the Security framework
 # directly, so the designated requirement is an OBJECT rather than text

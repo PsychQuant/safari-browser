@@ -158,6 +158,14 @@ Binary installs to `~/bin/safari-browser`. Ensure `~/bin` is in your `$PATH`.
 
 **Requirements:** macOS 15+, Safari, Swift 6.0+
 
+### Which build is this? (#278)
+
+```bash
+safari-browser --version    # v2.6.0-31-gd454d7c
+```
+
+The string is `git describe --tags --match 'v[0-9]*' --always --dirty` taken when the binary was built, so it maps back to a release tag or a commit; a `-dirty` suffix means tracked files had uncommitted changes. It is stamped by `make build` (and so by `make install` and `make install-signed`). A binary built with a bare `swift build`, or from a source archive without `.git`, prints `unknown`. `--version` reports the binary you ran; it does not ask the persistent daemon, which keeps running the older binary until it is restarted.
+
 ### Which install target? (#119)
 
 `sign-developer-id` has been removed (#123). It signed the build directory without
