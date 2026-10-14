@@ -379,7 +379,7 @@ final class JSInlineProtocolTests: XCTestCase {
 
     /// The behaviours that changed when the code became the argument of a call (#259), as a closed list, each pinned.
     /// Checks 1 to 3 are inputs whose parentheses do not balance (an early `)`); check 4 is balanced code that
-    /// reads a name the page does not define or assigns to one. Only the inline wrappers are run here: the `--large`
+    /// reads or assigns `r`, a name the wrappers used to declare. Only the inline wrappers are run here: the `--large`
     /// wrappers are checked for what compiles by `testTheHintAgreesWithTheLargeWrappersOnWhatCompilesInEachForm`.
     func testWhatChangedWithTheCallArgumentShape() {
         let page = FakePage()
@@ -391,7 +391,7 @@ final class JSInlineProtocolTests: XCTestCase {
         XCTAssertEqual(execute(JSWrapper.inlineStatement("return 'A' }), (function(){ return 'B'")).reply?.hasPrefix("SB1:OK:"), true)
         // 3. a `;` after an early `)` no longer parses (it was spliced into the wrapper's own statement before)
         XCTAssertNil(execute(JSWrapper.inlineExpression("1); foo(2")).reply)
-        // 4. a name that is not a page global is an error, no longer the wrapper's own hoisted `undefined`; and an
+        // 4. `r`, when the page does not define it, is an error, no longer the wrapper's own hoisted `undefined`; and an
         //    assignment goes to the page, as it does in the console
         XCTAssertEqual(execute(JSWrapper.inlineExpression("r")).reply, "SB1:ERR:Can't find variable: r")
         let assigned = FakePage()

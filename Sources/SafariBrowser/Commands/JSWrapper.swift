@@ -91,8 +91,8 @@ enum JSWrapper {
     /// a `var r` or `var m` there would shadow a page global of that name and the code would read
     /// `undefined` with no error. A code with an unbalanced `)` is one more argument here, not a syntax
     /// error as it was after `var r = '' + (`: `a), (b` now runs both and keeps the text of the first, and a
-    /// `;` after an early `)` no longer parses. A name that is not a page global is now an error where it read the
-    /// wrapper's own hoisted `undefined`, and an assignment writes to the page. `arguments` is still the enclosing
+    /// `;` after an early `)` no longer parses. `r` or `m`, when the page does not define it, is now an error where it read the
+    /// wrapper's own hoisted `undefined`, and an assignment to one writes to the page. `arguments` is still the enclosing
     /// function's own (the page's global of that name is hidden, as before). The `--large` wrappers keep the code
     /// in `return ('' + (code))`, so the two paths differ for such inputs. `JSSyntaxHint` compiles each path's shape
     /// (`JSSyntaxHint.Shape`); `JSInlineProtocolTests.testWhatChangedWithTheCallArgumentShape` pins the list.
