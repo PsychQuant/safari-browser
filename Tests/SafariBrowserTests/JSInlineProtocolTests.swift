@@ -378,8 +378,8 @@ final class JSInlineProtocolTests: XCTestCase {
     }
 
     /// The behaviours that changed when the code became the argument of a call (#259). Checks 1 and 2 pin item (1) of the
-    /// list in the CHANGELOG entry of #259, check 3 pins item (2), and check 4 pins item (3) for `r` only (not `m`, not
-    /// `delete r`). Items (4) (`arguments`) and (5) (`js` and `js --large` differ) are not pinned (#285). Only the inline
+    /// list in the CHANGELOG entry of #259 (check 2 only that the statement form is accepted, not what it answers), check 3
+    /// pins item (2), and check 4 pins item (3) for reading and assigning `r` only (not `m`, not `delete`). Items (4) (`arguments`) and (5) (`js` and `js --large` differ) are not pinned (#285). Only the inline
     /// wrappers are run here: the `--large` wrappers are checked for what compiles by
     /// `testTheHintAgreesWithTheLargeWrappersOnWhatCompilesInEachForm`.
     func testWhatChangedWithTheCallArgumentShape() {

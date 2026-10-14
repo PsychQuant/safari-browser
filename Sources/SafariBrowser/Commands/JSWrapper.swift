@@ -95,9 +95,9 @@ enum JSWrapper {
     /// is not a barrier). `r` or `m`, when the page does not define it, is now an error where it read the
     /// wrapper's own hoisted `undefined`, and an assignment to one writes to the page. `arguments` is still the enclosing
     /// function's own (the page's global of that name is hidden, as before). The `--large` wrappers keep the code
-    /// in `return ('' + (code))`, so the two paths differ for such inputs. `JSSyntaxHint` compiles each path's shape
+    /// in `return ('' + (code))`, so the two paths can differ for an early `)` like `'A'), ('B'`. `JSSyntaxHint` compiles each path's shape
     /// (`JSSyntaxHint.Shape`); `JSInlineProtocolTests.testWhatChangedWithTheCallArgumentShape` pins the inline side of the first
-    /// three items of the list in the CHANGELOG entry of #259 (the third for `r` only); the `arguments` note and the
+    /// three items of the list in the CHANGELOG entry of #259 (the third only for reading `r` and assigning it); the `arguments` note and the
     /// difference between the two paths are not pinned (#285).
     static func inlineExpression(_ code: String) -> String {
         """
