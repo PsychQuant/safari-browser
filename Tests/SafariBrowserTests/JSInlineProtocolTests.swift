@@ -378,8 +378,9 @@ final class JSInlineProtocolTests: XCTestCase {
     }
 
     /// The behaviours that changed when the code became the argument of a call (#259), as a closed list, each pinned.
-    /// All of them are inputs that are not what the user meant to write (an early `)`), and none changes a code
-    /// that is balanced.
+    /// Checks 1 to 3 are inputs whose parentheses do not balance (an early `)`); check 4 is balanced code that
+    /// reads a name the page does not define or assigns to one. Only the inline wrappers are run here: the `--large`
+    /// wrappers are checked for what compiles by `testTheHintAgreesWithTheLargeWrappersOnWhatCompilesInEachForm`.
     func testWhatChangedWithTheCallArgumentShape() {
         let page = FakePage()
         // 1. an early `)` is one more argument: both parts run, the result is the text of the first
