@@ -18,7 +18,7 @@
 #
 # The original file is restored from a backup copy rather than `git checkout`, so a
 # source archive without .git restores too. It is restored on every way out: the
-# command succeeding, failing, or the wrapper receiving INT/TERM/HUP. The command
+# command succeeding, failing, or the wrapper receiving INT/QUIT/TERM/HUP. The command
 # runs as a child we wait on, because bash defers a trap until a foreground child
 # exits, and a TERM during a 30 s release build should not wait 30 s to clean up.
 set -u
@@ -33,11 +33,19 @@ FILE="$1"
 shift 2
 [ -f "$FILE" ] || { echo "stamp-version: $FILE does not exist" >&2; exit 2; }
 
+# The tree must be the root of its own repository. `git describe` walks up the parent
+# directories, so a source archive unpacked inside some other repository would
+# otherwise be stamped with that repository's tag, a value that looks real.
 VERSION="unknown"
-if DESCRIBED="$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null)" && [ -n "$DESCRIBED" ]; then
-  case "$DESCRIBED" in
-    *[!A-Za-z0-9._+-]*) ;;            # unsafe for a Swift literal: keep "unknown"
-    *) VERSION="$DESCRIBED" ;;
+TOP="$(git rev-parse --show-toplevel 2>/dev/null)" && TOP="$(cd "$TOP" 2>/dev/null && pwd -P)"
+HERE="$(pwd -P)"
+if [ -n "${TOP:-}" ] && [ "$TOP" = "$HERE" ] \
+   && DESCRIBED="$(git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null)" && [ -n "$DESCRIBED" ]; then
+  # LC_ALL=C: bracket ranges follow the locale's collation order in bash 3.2, and
+  # under en_US.UTF-8 a range like A-Z lets non-ASCII letters through.
+  case "$(LC_ALL=C; printf '%s' "$DESCRIBED" | LC_ALL=C tr -d 'A-Za-z0-9._+-')" in
+    "") VERSION="$DESCRIBED" ;;       # nothing outside the whitelist
+    *) ;;                             # unsafe for a Swift literal: keep "unknown"
   esac
 fi
 
@@ -47,8 +55,12 @@ cp "$FILE" "$BACKUP" || { rm -f "$BACKUP"; exit 2; }
 CHILD=""
 restore() {
   if [ -n "$BACKUP" ] && [ -f "$BACKUP" ]; then
-    cp "$BACKUP" "$FILE"
-    rm -f "$BACKUP"
+    # Keep the backup when the copy back fails: it is the only copy of the original.
+    if cp "$BACKUP" "$FILE"; then
+      rm -f "$BACKUP"
+    else
+      echo "stamp-version: could not restore $FILE; the original is kept at $BACKUP" >&2
+    fi
   fi
   BACKUP=""
 }
@@ -61,6 +73,7 @@ trap restore EXIT
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
+trap 'on_signal 131' QUIT
 
 printf 'enum BuildVersion { static let value = "%s" }\n' "$VERSION" > "$FILE"
 

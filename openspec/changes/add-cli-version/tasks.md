@@ -11,7 +11,7 @@
 ## 3. Makefile 與 spec（對應 spec 需求「Build via Makefile」）
 
 - [x] 3.1 修改 `Makefile` 的 `build` 目標，用 `scripts/stamp-version.sh Sources/SafariBrowser/BuildVersion.swift -- swift build -c release` 取代單純的 `swift build -c release`，並把新的測試腳本接成 `make test-stamp-version`。驗證：`make build` 完成後 `git status --porcelain` 為空，且 `.build/release/safari-browser --version` 印出以 `v` 開頭或短 sha 的字串，不含 `idd-`。（實作 spec 需求 Build via Makefile）
-- [x] 3.2 把 `openspec/changes/add-cli-version/specs` 的 delta 合併進 `openspec/specs/build-and-install/spec.md`，並新增 `openspec/specs/cli-version/spec.md`；驗證：`spectra validate add-cli-version` 通過。
+- [x] 3.2 確認 `openspec/changes/add-cli-version/specs` 的 delta 通過驗證（`spectra validate add-cli-version`）。delta 不手動合併進 `openspec/specs`：封存（`/spectra-archive`）會套用 delta，手動合併會讓封存拒絕或重複。
 
 ## 4. 文件與整體驗證
 

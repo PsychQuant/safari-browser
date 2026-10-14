@@ -103,7 +103,7 @@ else
 fi
 wait "$PID" 2>/dev/null
 placeholder_back "$R" && ok "placeholder restored after TERM" || fail "placeholder restored after TERM"
-pkill -f "sleep 30" 2>/dev/null || true
+pkill -P "$PID" 2>/dev/null || true   # only this test's own child, never other users of `sleep 30`
 
 # 7. no .git directory -> unknown, and the command still runs
 R="$TMPROOT/nogit"; mkdir -p "$R/$(dirname "$FILE")"; printf '%s\n' "$PLACEHOLDER" > "$R/$FILE"
@@ -116,6 +116,46 @@ R="$TMPROOT/quote"; new_repo "$R"
 (cd "$R" && git tag -d v1.2.3 >/dev/null && git tag 'v1.0"x')
 OUT="$(cd "$R" && "$SCRIPT" "$FILE" -- cat "$FILE")"
 assert_eq "a double quote in the version is replaced by unknown" "$PLACEHOLDER" "$OUT"
+
+# 9. INT and QUIT behave like TERM: placeholder restored, wrapper ends, backup not leaked
+for SIG in INT QUIT; do
+  R="$TMPROOT/sig$SIG"; new_repo "$R"
+  # A job started with & in a non-interactive shell inherits "ignore INT/QUIT", and bash cannot
+  # trap a signal that was ignored on entry. A terminal's Ctrl-C does not have that problem, so
+  # reset both to their default before exec to model it.
+  ( cd "$R" && mkdir -p tmp && TMPDIR="$R/tmp" exec python3 -c 'import os,signal,sys
+signal.signal(signal.SIGINT,signal.SIG_DFL); signal.signal(signal.SIGQUIT,signal.SIG_DFL)
+os.execv(sys.argv[1],sys.argv[1:])' "$SCRIPT" "$FILE" -- sleep 30 ) &
+  PID=$!
+  N=0; while [ $N -lt 50 ] && placeholder_back "$R"; do sleep 0.1; N=$((N + 1)); done
+  kill -"$SIG" "$PID" 2>/dev/null
+  N=0; while [ $N -lt 50 ] && kill -0 "$PID" 2>/dev/null; do sleep 0.1; N=$((N + 1)); done
+  if kill -0 "$PID" 2>/dev/null; then kill -KILL "$PID" 2>/dev/null; fail "$SIG ends the wrapper within 5 s"; else ok "$SIG ends the wrapper within 5 s"; fi
+  wait "$PID" 2>/dev/null
+  placeholder_back "$R" && ok "placeholder restored after $SIG" || fail "placeholder restored after $SIG"
+  LEFT="$(ls "$R/tmp" 2>/dev/null | wc -l | tr -d ' ')"
+  assert_eq "no backup file leaked after $SIG" "0" "$LEFT"
+  pkill -P "$PID" 2>/dev/null || true
+done
+
+# 10. a source archive unpacked inside ANOTHER repository must not borrow that repository's tag
+R="$TMPROOT/outer"; new_repo "$R"
+mkdir -p "$R/vendor/pkg/$(dirname "$FILE")"; printf '%s\n' "$PLACEHOLDER" > "$R/vendor/pkg/$FILE"
+OUT="$(cd "$R/vendor/pkg" && "$SCRIPT" "$FILE" -- cat "$FILE")"
+assert_eq "a nested tree without its own .git stamps unknown" "$PLACEHOLDER" "$OUT"
+
+# 11. non-ASCII letters are rejected whatever the locale
+R="$TMPROOT/locale"; new_repo "$R"
+(cd "$R" && git tag -d v1.2.3 >/dev/null && git tag 'v1é')
+OUT="$(cd "$R" && LC_ALL=en_US.UTF-8 "$SCRIPT" "$FILE" -- cat "$FILE")"
+assert_eq "a non-ASCII letter in the version is replaced by unknown (en_US.UTF-8)" "$PLACEHOLDER" "$OUT"
+
+# 12. if the original cannot be copied back, the backup is kept and says where
+R="$TMPROOT/restorefail"; new_repo "$R"; mkdir -p "$R/tmp"
+ERR="$(cd "$R" && TMPDIR="$R/tmp" "$SCRIPT" "$FILE" -- sh -c "chmod 444 '$FILE'; chmod 555 '$(dirname "$FILE")'" 2>&1 >/dev/null)"
+chmod 755 "$R/$(dirname "$FILE")" 2>/dev/null; chmod 644 "$R/$FILE" 2>/dev/null
+case "$ERR" in *"original is kept at"*) ok "restore failure names the kept backup" ;; *) fail "restore failure names the kept backup" "$ERR" ;; esac
+[ "$(ls "$R/tmp" | wc -l | tr -d ' ')" = "1" ] && ok "the backup survives a failed restore" || fail "the backup survives a failed restore"
 
 echo
 echo "$PASS passed, $FAIL failed"
