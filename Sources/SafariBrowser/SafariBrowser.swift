@@ -6,6 +6,7 @@ struct SafariBrowser: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "safari-browser",
         abstract: "macOS native browser automation via Safari + AppleScript",
+        version: BuildVersion.value,
         subcommands: [
             OpenCommand.self,
             SnapshotCommand.self,
