@@ -18,7 +18,7 @@ The native file dialog path SHALL:
 
 The `--js` flag SHALL force JS DataTransfer regardless of permission state. The `--native` and `--allow-hid` flags SHALL be kept for backward compatibility.
 
-When using the `--js` path, the system SHALL check `window.location.href` every 10 chunks (not every chunk) to detect page navigation, comparing only the portion before the `#` fragment. On navigation detection, the system SHALL clean up `window.__sbUpload` before aborting.
+When using the `--js` path, the system SHALL check `window.location.href` every 10 chunks (not every chunk) to detect page navigation, comparing only the portion before the `#` fragment. On navigation detection, the system SHALL clean up the chunk buffer (`window.__sbUploadChunks`) before aborting. The error SHALL show the old and new URLs redacted as the requirement "URLs of tabs in targeting errors, warnings and navigation notes are shown without query or fragment" says, and SHALL say so when the two look the same once redacted.
 
 #### Scenario: Upload with Accessibility permission
 
@@ -38,7 +38,8 @@ When using the `--js` path, the system SHALL check `window.location.href` every 
 #### Scenario: JS upload detects navigation
 
 - **WHEN** user runs `safari-browser upload --js "input" "/path"` and navigates away during chunking
-- **THEN** the system cleans up `window.__sbUpload` and aborts with error message showing old and new URLs (ignoring fragment differences)
+- **THEN** the system cleans up `window.__sbUploadChunks` and aborts with an error message showing the old and new URLs without their query strings (ignoring fragment differences)
+- **AND** when the two URLs look the same once redacted, the message says that they differ in a part that is not shown
 
 ---
 ### Requirement: Upload command accepts full TargetOptions on all execution paths
