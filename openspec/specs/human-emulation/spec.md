@@ -47,16 +47,11 @@ In practice, this means target resolution SHALL be implemented against the `tabs
 #### Scenario: Cross-subcommand tab enumeration is consistent
 
 - **WHEN** Safari has N tabs total across all windows
-- **AND** user queries the same tab state via `safari-browser documents` and via any targeted subcommand's resolver error listing (e.g., the `availableDocuments` field of `documentNotFound`)
-- **THEN** both enumerations SHALL list the same N tabs
+- **AND** user queries the same tab state via `safari-browser documents` and via a targeted subcommand's resolver error listing that is not scoped and enumerates tabs (the URL-miss listing of `documentNotFound`, for example)
+- **THEN** both enumerations SHALL list the same N tabs, in the same order
 - **AND** no tab SHALL be present in one listing and absent in the other
-
-
-<!-- @trace
-source: tab-targeting-v2
-updated: 2026-04-18
-code:
--->
+- **AND** a listing that names fewer tabs — scoped by its cause (a miss on one window's tab lists that window's tabs; a window-level listing names each window's current tab) or narrowed by `--profile` — SHALL list only tabs that `safari-browser documents` lists, with the same window and tab numbers
+- **AND** the listings differ from `documents` in how a URL is shown (shortened in the error listing; see `document-targeting`) and in how an entry is labelled
 
 ---
 ### Requirement: Fail-closed on user-visible ambiguity
