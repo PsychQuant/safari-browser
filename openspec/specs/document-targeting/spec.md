@@ -608,7 +608,9 @@ code:
 
 All target-resolution paths in safari-browser SHALL apply fail-closed semantics when a URL-matching flag admits more than one tab, regardless of matcher kind (`contains`, `exact`, `endsWith`, `regex`). The implementation SHALL enumerate all tabs, apply `UrlMatcher.matches` to each URL, count matches, and throw `ambiguousWindowMatch` with the full match list when count > 1. The `.exact` matcher case SHALL hold the same fail-closed contract even though URL equality in practice yields at most one match — duplicate tabs with identical URLs are legal in Safari and MUST be handled uniformly.
 
-The policy SHALL hold regardless of which subcommand (`js`, `open`, `get`, `wait`, `storage`, `snapshot`, `upload`, `close`, etc.) invokes resolution. Exception: when `--first-match` is supplied, the command SHALL select the first match with a stderr warning.
+The policy SHALL hold regardless of which subcommand (`js`, `open`, `get`, `wait`, `storage`, `snapshot`, `upload`, `close`, etc.) invokes resolution. Exception: when `--first-match` is supplied, the command SHALL select the first match with a stderr warning; the steps of a daemon `exec.runScript` request select it without writing that warning (#220).
+
+The policy applies to every resolution. A step of one daemon `exec.runScript` request that reuses the position resolved earlier in that request, after a check that the position still shows a URL the matcher accepts, makes no resolution and so does not count matches again (Requirement: Shared target resolution in `script-exec`); the first resolution of the run, and every resolution after a failed check, applies the policy in full.
 
 #### Scenario: js command fails closed on multi-match --url
 
@@ -640,65 +642,11 @@ The policy SHALL hold regardless of which subcommand (`js`, `open`, `get`, `wait
 - **THEN** the command SHALL exit with `ambiguousWindowMatch`
 - **AND** stdout SHALL be empty
 
+#### Scenario: the first resolution of an exec run applies the policy
 
-<!-- @trace
-source: url-matching-pipeline
-updated: 2026-04-24
-code:
-  - Sources/SafariBrowser/Commands/HoverCommand.swift
-  - Sources/SafariBrowser/Daemon/DaemonDispatch.swift
-  - Sources/SafariBrowser/Commands/CookiesCommand.swift
-  - Tests/SafariBrowserTests/SafariBridgeTargetTests.swift
-  - Sources/SafariBrowser/Commands/MouseCommand.swift
-  - Sources/SafariBrowser/Commands/OpenCommand.swift
-  - Sources/SafariBrowser/Commands/JSCommand.swift
-  - Sources/SafariBrowser/Commands/GetCommand.swift
-  - Sources/SafariBrowser/Commands/PressCommand.swift
-  - Sources/SafariBrowser/Commands/WaitCommand.swift
-  - Sources/SafariBrowser/Commands/TypeCommand.swift
-  - Sources/SafariBrowser/Commands/SnapshotCommand.swift
-  - Sources/SafariBrowser/UrlMatcher.swift
-  - Tests/SafariBrowserTests/WindowIndexResolverTests.swift
-  - Sources/SafariBrowser/Commands/HighlightCommand.swift
-  - Sources/SafariBrowser/Commands/SaveImageCommand.swift
-  - Sources/SafariBrowser/Daemon/DaemonRouter.swift
-  - Tests/SafariBrowserTests/FirstMatchTests.swift
-  - Sources/SafariBrowser/Commands/PdfCommand.swift
-  - Sources/SafariBrowser/Commands/DblclickCommand.swift
-  - Sources/SafariBrowser/Commands/ConsoleCommand.swift
-  - Tests/SafariBrowserTests/ResolverConvergenceTests.swift
-  - Sources/SafariBrowser/Utilities/Errors.swift
-  - Sources/SafariBrowser/Commands/FindCommand.swift
-  - Sources/SafariBrowser/Commands/FocusCommand.swift
-  - Sources/SafariBrowser/Commands/UploadCommand.swift
-  - CHANGELOG.md
-  - Sources/SafariBrowser/Commands/CheckCommand.swift
-  - Sources/SafariBrowser/Commands/ReloadCommand.swift
-  - Sources/SafariBrowser/Commands/ScrollIntoViewCommand.swift
-  - Sources/SafariBrowser/Commands/TargetOptions.swift
-  - Sources/SafariBrowser/Commands/StorageCommand.swift
-  - Tests/SafariBrowserTests/CommandParsingTests.swift
-  - Sources/SafariBrowser/Commands/ScrollCommand.swift
-  - Tests/SafariBrowserTests/ResolveNativeTargetPlumbingTests.swift
-  - Sources/SafariBrowser/Commands/BackCommand.swift
-  - Sources/SafariBrowser/Commands/FillCommand.swift
-  - Sources/SafariBrowser/Commands/ForwardCommand.swift
-  - Sources/SafariBrowser/Commands/IsCommand.swift
-  - Sources/SafariBrowser/Commands/ScreenshotCommand.swift
-  - Sources/SafariBrowser/Commands/SetCommand.swift
-  - Sources/SafariBrowser/Commands/ErrorsCommand.swift
-  - Sources/SafariBrowser/Daemon/DaemonServeLoop.swift
-  - Sources/SafariBrowser/Commands/ClickCommand.swift
-  - Tests/SafariBrowserTests/DaemonAppleScriptHandlerTests.swift
-  - Tests/Fixtures/save-image-test.html
-  - Sources/SafariBrowser/Commands/CloseCommand.swift
-  - Tests/SafariBrowserTests/UrlMatcherTests.swift
-  - Sources/SafariBrowser/SafariBridge.swift
-  - Tests/SafariBrowserTests/Issue28RegressionTests.swift
-  - Tests/SafariBrowserTests/TargetOptionsTests.swift
-  - Sources/SafariBrowser/Commands/SelectCommand.swift
-  - Tests/e2e-test.sh
--->
+- **WHEN** Safari has two tabs matching `--url plaud` and a daemon exec run with `--url plaud` reaches its first step that needs the target
+- **THEN** that resolution SHALL fail with `ambiguousWindowMatch`
+- **AND** no step SHALL dispatch against either tab
 
 ---
 ### Requirement: UrlMatcher sum-type encapsulates URL matching modes
