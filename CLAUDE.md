@@ -513,6 +513,22 @@ used to read the target tab's URL when a tab flag is given).
   "Open with Preview" was pressed (one observation, no controlled experiment); the command never
   creates them or presses anything.
 
+## Release binary（`make release-signed`, #280）
+
+給**別人**用的 binary：Universal、Developer ID 簽章（hardened runtime ＋ **secure timestamp**）、
+`NOTARIZE=1` 時送 Apple 公證。邏輯在 `scripts/release.sh`，`make test-release` 用 shim 測（不需憑證、
+不連網）。步驟與「還沒量到的事」見 [`docs/release.md`](docs/release.md)。
+
+- **腳本從不 `git tag`、`git push`、呼叫 `gh`。** 發出 release 是維護者親手的事，腳本只印指令。
+  `test-release` 的第 18 組斷言守這條；改腳本時不要為了「方便」加進去。
+- `NOTARIZE` 預設 `0`：誤打 `make release-signed` 不會送任何東西，只產出 `dist/<tag>-DRYRUN/`。
+- 與 `install-signed` 的差別正是它刻意省略的那兩件事：`--timestamp` 與公證。`install-signed` 不要加這兩項。
+- 送審的 zip 用 `ditto -c -k --norsrc --noextattr`，**不要照 Apple 範例加 `--keepParent`**：對單一檔案它會把
+  隨機暫存目錄名壓進去（實測）。
+- 已量（2026-10-25 dry-run）：兩個切片都跑得動（x86_64 經 Rosetta）、DR 與 `install-signed` 的 binary 逐字相同。
+  **未量**：真實送審之後的任何事、裸 Mach-O 能否 staple、真 Intel Mac、Full Disk Access 授權實際延續。
+  寫文件時不要把未量的寫成已證實。建置會警告 x86_64 對 macOS 27.0 部署目標已 deprecated（仍可建）。
+
 ## Install-signature guard：suite 本身被 gate 管（#119, round 10）
 
 #122 後的 authoritative policy 位於 `Sources/SafariBrowser/Utilities/SignatureAssessment.swift`，
