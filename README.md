@@ -166,6 +166,21 @@ safari-browser --version    # v2.6.0-31-gd454d7c
 
 The string is `git describe --tags --match 'v[0-9]*' --always --dirty` taken when the binary was built, so it maps back to a release tag or a commit; a `-dirty` suffix means tracked files had uncommitted changes. It is stamped by `make build` (and so by `make install` and `make install-signed`). A binary built with a bare `swift build`, or from a source archive without `.git`, prints `unknown`. `--version` reports the binary you ran; it does not ask the persistent daemon, which keeps running the older binary until it is restarted.
 
+### Install a release binary (#280)
+
+A release binary is Universal (arm64 and x86_64), signed with a Developer ID and
+notarized by Apple, and prints its tag for `--version`. Releases up to and including
+v2.6.0 are older than that: ad-hoc signed, arm64 only, and they cannot say which build
+they are. Build from source for anything newer than the latest release.
+
+```bash
+# in the folder you downloaded safari-browser and safari-browser.sha256 to
+test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" && echo checksum ok
+chmod +x safari-browser && mv safari-browser ~/bin/
+```
+
+How a release is made, and what has not been measured about it: [`docs/release.md`](docs/release.md).
+
 ### Which install target? (#119)
 
 `sign-developer-id` has been removed (#123). It signed the build directory without
