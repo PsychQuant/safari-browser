@@ -1,5 +1,7 @@
 .build/
 .swiftpm/
+# Release output of scripts/release.sh (#280): signed binaries, never committed
+dist/
 Package.resolved
 .spectra/
 openspec/.vector-search.db*

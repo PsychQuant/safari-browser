@@ -9,9 +9,9 @@ BINARY_NAME = safari-browser
 SAFARI_BROWSER_BIN ?= .build/debug/$(BINARY_NAME)
 export SAFARI_BROWSER_BIN
 
-.PHONY: test-repository-tracking test-stamp-version
+.PHONY: test-repository-tracking test-stamp-version test-release
 .PHONY: test-data-interruption test-mutation-gate test-daemon-executor test-daemon-peer-disconnect test-dialog-harness test-install-atomic test-signature-entrypoint
-.PHONY: build build-debug install install-signed clean \
+.PHONY: build build-debug install install-signed release-signed clean \
         verify-developer-id verify-install-signature \
         test test-unit test-smoke test-all test-install-signature \
         test-install-signature-strict \
@@ -26,6 +26,11 @@ build:
 # Behavior tests for the stamping wrapper (no Safari, no real build).
 test-stamp-version:
 	bash scripts/stamp-version-test.sh
+
+# Behavior tests for the release script (#280). swift, codesign and notarytool are
+# replaced by shims: no certificate, no network, no real build.
+test-release:
+	bash scripts/release-test.sh
 
 # The signature guard. Swift, not shell: it reads the Security framework
 # directly, so the designated requirement is an OBJECT rather than text
@@ -113,7 +118,8 @@ install: build
 # and has already started by the time it fails — measured, not assumed. The
 # guard still aborts the target; it just no longer saves you the build.
 verify-developer-id:
-	@test -n "$(DEVELOPER_ID)" || { echo "DEVELOPER_ID is unset — see CLAUDE.md 'Apple Developer / Notarization Pipeline'"; exit 1; }
+	@test -n "$(DEVELOPER_ID)" || { echo "DEVELOPER_ID is unset — the SHA-1 of your Developer ID Application certificate"; \
+	  echo "  (security find-identity -v -p codesigning); see docs/release.md"; exit 1; }
 
 # Install with a Developer ID signature. This is the path to a Full Disk Access
 # grant that SURVIVES rebuilds: the designated requirement names an identity
@@ -175,6 +181,21 @@ install-signed: verify-developer-id build $(VERIFY_BIN)
 	@echo "  ℹ Grant Full Disk Access ONCE to $(INSTALL_DIR)/$(BINARY_NAME);"
 	@echo "    it persists while the signing identity and designated requirement stay the same."
 	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
+
+# A binary to give to OTHER people: Universal, Developer ID signed with a secure
+# timestamp, and with NOTARIZE=1 accepted by Apple's notary service (#280). The
+# difference from install-signed is exactly the part that one deliberately leaves
+# out: --timestamp, the notarization round-trip, and a build that is pinned to a tag.
+#
+# NOTARIZE defaults to 0 so that typing this target by accident sends nothing to
+# Apple: you get dist/<tag>-DRYRUN/, signed for real but marked as not notarized.
+# The logic is in scripts/release.sh (tested by `make test-release`); it never tags,
+# pushes or calls gh. One-time setup and the steps after it: docs/release.md.
+NOTARIZE ?= 0
+NOTARY_PROFILE ?= che-mcps-notary
+release-signed: verify-developer-id $(VERIFY_BIN)
+	DEVELOPER_ID="$(DEVELOPER_ID)" NOTARIZE="$(NOTARIZE)" NOTARY_PROFILE="$(NOTARY_PROFILE)" \
+	  VERIFY_BIN="$(VERIFY_BIN)" scripts/release.sh
 
 # Is the installed binary's grant rebuild-proof? Reads only — no certificate,
 # no Full Disk Access, no Safari.
@@ -265,7 +286,7 @@ test-mutation-gate:
 # test-install-signature-strict` refuses to pass on a partial run — that is
 # the target to use on a machine that has both identities, and the one this
 # repo's own verification uses.
-test-all: test-stamp-version test-performance-trace test-repository-tracking test-unit test-smoke test-daemon-executor test-daemon-peer-disconnect test-daemon-socket-dir test-dialog-harness test-signature-entrypoint test-data-interruption test-mcp test-mcp-termination test-command-pacing test-background-dialog-harness test-current-dialog-harness
+test-all: test-stamp-version test-release test-performance-trace test-repository-tracking test-unit test-smoke test-daemon-executor test-daemon-peer-disconnect test-daemon-socket-dir test-dialog-harness test-signature-entrypoint test-data-interruption test-mcp test-mcp-termination test-command-pacing test-background-dialog-harness test-current-dialog-harness
 	@ALLOW_INCOMPLETE=1 $(MAKE) --no-print-directory test-install-signature
 	@echo "✓ unit + smoke + install-signature green"
 
