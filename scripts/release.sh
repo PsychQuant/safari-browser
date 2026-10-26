@@ -6,18 +6,22 @@
 # Output is dist/<tag>/ : the signed binary, its sha256 (the hash alone, one line) and
 # NOTARIZATION.json (notarytool's JSON answer). Without NOTARIZE=1 nothing is submitted
 # for notarization and the output is dist/<tag>-DRYRUN/ with a DRYRUN-NOT-NOTARIZED
-# marker, so a rehearsal cannot be mistaken for, or block, the real thing. (A rehearsal
-# still signs with `--timestamp`, which sends the signature's hash to Apple's timestamp
-# server; RELEASE_TIMESTAMP=none avoids that for an offline run.)
+# marker, so a rehearsal never takes the release's directory and does not block it. Its
+# binary is still a valid Developer ID binary; the directory name and the marker are
+# what tell it apart, so do not upload it. (A rehearsal also signs with `--timestamp`,
+# which sends the signature's hash to Apple's timestamp server; RELEASE_TIMESTAMP=none
+# leaves that out. Whether macOS checks certificates online while signing or on the
+# binary's first run has not been measured either way.)
 #
 # This script never creates or pushes a tag and never calls gh. Publishing is the
 # maintainer's act; the commands are printed at the end. scripts/release-test.sh checks
-# every run for a git write or a gh call.
+# every run for a gh call and for any git call outside a short read-only list.
 #
 # Why the checks are shaped the way they are:
-#   - Every refusal happens before the build. A Universal build is minutes and a
-#     notarization is more, so a missing identity, a dirty tree or a dead notary
-#     profile must cost seconds.
+#   - Every check that does not need the build product runs before the build. A
+#     Universal build is minutes and a notarization is more, so a missing identity, a
+#     dirty tree or a dead notary profile must cost seconds. (Through `make`, the
+#     install-signature guard may be compiled first if it is out of date.)
 #   - The identity must be the 40-hex SHA-1 of a valid Developer ID Application
 #     certificate, matched on its own line of `security find-identity -v`. A substring
 #     match let `0` or `valid` through with an empty keychain.
@@ -67,9 +71,18 @@ ZIPDIR=""
 OUT=""
 OUT_RESERVED=0   # 1 only once THIS run created $OUT with mkdir: a directory we did not create is never removed
 cleanup() {
-  [ -n "$STAGE" ] && rm -rf "$STAGE"
-  [ -n "$ZIPDIR" ] && rm -rf "$ZIPDIR"
-  [ "$OUT_RESERVED" = 1 ] && [ -n "$OUT" ] && rm -rf "$OUT"
+  # A directory that cannot be removed is reported: the staging directory and the zip
+  # directory may hold a signed binary, and it must not be found later by accident.
+  local d
+  for d in "$STAGE" "$ZIPDIR"; do
+    [ -n "$d" ] && [ -e "$d" ] || continue
+    rm -rf "$d" 2>/dev/null \
+      || echo "release: could not remove $d (it may hold a signed binary); delete it by hand" >&2
+  done
+  if [ "$OUT_RESERVED" = 1 ] && [ -n "$OUT" ]; then
+    rm -rf "$OUT" 2>/dev/null \
+      || echo "release: could not remove $OUT; delete it by hand before the next run" >&2
+  fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -229,6 +242,9 @@ if [ "$NOTARIZE" = 1 ]; then
     fi
     exit 1
   fi
+  # Said at once: anything that fails after this point removes the output, and the
+  # submission id is then the only way back to what Apple accepted.
+  echo "→ notarization accepted (submission ${SUBMISSION_ID:-<no id in the answer>})"
   printf '%s\n' "$RESULT" > "$STAGE/NOTARIZATION.json" || die "could not record the notarization result"
 else
   printf 'This build was signed but never submitted for notarization. Do not upload it as a release.\n' \
@@ -242,28 +258,61 @@ HASH="${HASH_LINE%% *}"
 [[ "$HASH" =~ ^[0-9a-f]{64}$ ]] || die "shasum did not produce a SHA-256 (got '$HASH_LINE')"
 printf '%s\n' "$HASH" > "$STAGE/$BINARY_NAME.sha256" || die "could not write the checksum"
 
+# bash runs a trap only after the foreground command returns, so a signal that arrives
+# during the move used to reach the cleanup with $OUT still marked as reserved, and the
+# finished result was deleted. Until the reservation is cleared a signal is remembered
+# instead and honoured right after. (If the move itself is killed, `die` runs and the
+# partial output is removed as before.)
+PENDING_SIGNAL=""
+trap 'PENDING_SIGNAL=130' INT
+trap 'PENDING_SIGNAL=131' QUIT
+trap 'PENDING_SIGNAL=143' TERM
+trap 'PENDING_SIGNAL=129' HUP
 mv "$STAGE"/* "$OUT"/ || die "could not move the result into $OUT"
-OUT_RESERVED=0   # first: a signal from here on must not delete the finished result
+OUT_RESERVED=0
 rmdir "$STAGE" 2>/dev/null
 STAGE=""
+trap 'exit 130' INT
+trap 'exit 131' QUIT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+[ -z "$PENDING_SIGNAL" ] || exit "$PENDING_SIGNAL"
 chmod 755 "$OUT"
 
 echo "✓ $OUT"
 if [ "$NOTARIZE" = 1 ]; then
   PRERELEASE=""
   case "$TAG" in *-*) PRERELEASE=" --prerelease" ;; esac
+  # gh picks its own default repository; name the one `origin` points at, so the push and
+  # the release go to the same place. Only a github.com owner/name of plain characters
+  # is used; anything else is left out and said.
+  REPO_SLUG=""
+  ORIGIN_URL="$(git remote get-url origin 2>/dev/null)" || ORIGIN_URL=""
+  ORIGIN_URL="${ORIGIN_URL%/}"; ORIGIN_URL="${ORIGIN_URL%.git}"
+  ORIGIN_SHAPE='(^|[@/])github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$'
+  [[ "$ORIGIN_URL" =~ $ORIGIN_SHAPE ]] && REPO_SLUG="${BASH_REMATCH[2]}/${BASH_REMATCH[3]}"
+  REPO_FLAG=""
+  [ -n "$REPO_SLUG" ] && REPO_FLAG=" --repo $(printf '%q' "$REPO_SLUG")"
   echo
   echo "Next — you run these. This script never tags, pushes or calls gh."
+  echo "(No line below carries a trailing comment: zsh without interactivecomments would"
+  echo "pass it on as arguments. What a command must show is said on the line after it.)"
   echo "The tag $TAG is commit $COMMIT. Push it and check that the remote shows the same"
   echo "commit BEFORE creating the release (for an annotated tag the commit is on the line"
   echo "ending in ^{}; the other line is the tag object). --verify-tag makes gh refuse a tag"
   echo "that is not on the remote (otherwise it creates one at the tip of the default branch):"
   printf '  git push origin %q\n' "$TAG"
   # TAG passed TAG_SHAPE ([0-9A-Za-z.-] only), so plain single quotes are safe and readable here
-  printf "  git ls-remote origin 'refs/tags/%s' 'refs/tags/%s^{}'    # must show %s\n" "$TAG" "$TAG" "$COMMIT"
-  printf '  gh release create %q --verify-tag%s %q %q --title %q --notes %q\n' \
-    "$TAG" "$PRERELEASE" "$OUT/$BINARY_NAME" "$OUT/$BINARY_NAME.sha256" "$TAG" \
+  printf "  git ls-remote origin 'refs/tags/%s' 'refs/tags/%s^{}'\n" "$TAG" "$TAG"
+  echo "  (the commit it shows for the tag must be $COMMIT)"
+  echo "Just before uploading, check that the files are still the ones this run produced:"
+  printf '  shasum -a 256 %q\n' "$OUT/$BINARY_NAME"
+  echo "  (it must print $HASH)"
+  printf '  gh release create %q --verify-tag%s%s %q %q --title %q --notes %q\n' \
+    "$TAG" "$PRERELEASE" "$REPO_FLAG" "$OUT/$BINARY_NAME" "$OUT/$BINARY_NAME.sha256" "$TAG" \
     "Signed with a Developer ID, team $TEAM_ID. To check a download, see docs/release.md (Checking a downloaded copy)."
+  [ -n "$REPO_SLUG" ] \
+    || echo "  (origin is not a github.com remote, so the line names no repository: add --repo <owner>/<name> before running it)"
 else
   echo "  dry run: signed with a real identity, but nothing was submitted for notarization."
   if [ "$RELEASE_TIMESTAMP" != none ]; then

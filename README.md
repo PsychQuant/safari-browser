@@ -174,22 +174,28 @@ signed with a Developer ID, notarized by Apple, and to print their tag for `--ve
 ad-hoc signed, arm64 only, and it cannot say which build it is — so the steps below
 apply from the first release made this way. Until then, build from source.
 
+Run this in the folder you downloaded `safari-browser` and `safari-browser.sha256` to, with
+`<TEAM_ID>` replaced by the signing team ID:
+
 ```bash
-# in the folder you downloaded safari-browser and safari-browser.sha256 to; <TEAM_ID> is
-# the signing team ID stated in the release's notes
 test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" \
   && chmod +x safari-browser \
-  && codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "<TEAM_ID>"' safari-browser \
+  && codesign --verify --strict -R='anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "<TEAM_ID>"' safari-browser \
+  && spctl --assess --type execute -vv safari-browser \
   && mkdir -p ~/bin && mv safari-browser ~/bin/
 ```
 
-The checksum only catches a damaged download; the `codesign` line is what ties the file to
-the signing team (`docs/release.md` has the full set of checks, including `spctl`).
-A Full Disk Access grant is keyed to the signature's designated requirement, which a
-release binary shares with an `install-signed` build from the same identity, so the grant
-*should* carry over; that has not been observed yet (see `docs/release.md`). Replacing an
-ad-hoc `make install` build means granting Full Disk Access, Accessibility and Screen
-Recording again.
+The checksum only catches a damaged download. The `codesign` line pins the file to a
+Developer ID certificate of the team you name, and `spctl` shows whether Apple notarized
+it. Neither is stronger than the team ID you compare with: the release notes name it, but
+they travel with the file, so compare it with one you got some other way.
+`docs/release.md` explains each check and what has not been observed yet.
+A Full Disk Access grant is keyed to the binary's path and its signature's designated
+requirement; installed at the same path (`~/bin/safari-browser`), a release binary shares
+both with an `install-signed` build from the same identity, so the grant *should* carry
+over; that has not been observed yet (see `docs/release.md`). Replacing an ad-hoc
+`make install` build means granting Full Disk Access, Accessibility and Screen Recording
+again.
 
 How a release is made, and what has not been measured about it: [`docs/release.md`](docs/release.md).
 

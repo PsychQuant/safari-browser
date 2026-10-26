@@ -13,10 +13,14 @@
 # one-line mutants of release.sh survived the first version of this suite for exactly
 # that reason.
 #
-# git is real, behind a shim that logs every call and refuses the writing subcommands
-# a release could plausibly run by mistake (push, tag creation, commit, reset, ...),
-# wherever the subcommand sits among the options. It is a guard against regressions,
-# not a sandbox: an absolute-path git or an alias gets past it. Every run is checked for
+# git is real, behind a shim that logs every call and allows only the read-only
+# subcommands release.sh and stamp-version.sh use (rev-parse, status, ls-files,
+# describe, `tag` as a listing, `remote get-url`); anything else is refused and logged.
+# An allowlist rather than a list of writing subcommands: a new git call in the script
+# fails here until someone decides it is read-only, and an option the shim does not
+# know (one whose value is a separate word, like --config-env) makes its value look
+# like the subcommand, which is refused too. It is a guard against regressions, not a
+# sandbox: an absolute-path git or an alias gets past it. Every run is checked for
 # such a call, not just the notarizing one.
 #
 # What the shims cannot tell us is whether Apple accepts the binary or whether the
@@ -29,9 +33,16 @@
 set -u
 
 # A caller's git environment (a hook exports GIT_DIR / GIT_INDEX_FILE) would send this
-# suite's commits and tags into another repository, and global config (signing,
-# status.showUntrackedFiles, excludes) would change what the guards under test see.
+# suite's commits and tags into another repository, and the caller's config (signing,
+# status.showUntrackedFiles, a global ignore file) would change what the guards under
+# test see. Config reaches git three ways and each is closed separately: the config
+# FILES (GIT_CONFIG_GLOBAL / _SYSTEM), config passed through the ENVIRONMENT
+# (GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT and its KEY_n / VALUE_n), and the files git
+# reads by default without any config, $XDG_CONFIG_HOME/git/ignore and .../attributes
+# (or ~/.config/git/... when XDG_CONFIG_HOME is unset) — GIT_CONFIG_GLOBAL=/dev/null
+# does not turn those off, so XDG_CONFIG_HOME points at an empty directory below.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_NAMESPACE
+unset GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -53,6 +64,8 @@ FORBIDDEN_HITS=""
 LEAKED=""
 TMPROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPROOT"' EXIT
+export XDG_CONFIG_HOME="$TMPROOT/xdg-config"   # empty: no default global ignore / attributes file
+mkdir -p "$XDG_CONFIG_HOME"
 
 ok()   { PASS=$((PASS + 1)); echo "  ok   $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL $1"; [ -n "${2:-}" ] && echo "       $2"; }
@@ -89,13 +102,18 @@ line_of() { # file regex -> first matching line number, or 0
 make_shims() { # dir
   mkdir -p "$1"
 
-  # git: real, but it refuses every subcommand that writes, wherever the subcommand sits
-  # among the options (-C <dir>, -c k=v, ...). `tag` is allowed only as a listing.
+  # git: real, but only the read-only subcommands release.sh and stamp-version.sh use get
+  # through, wherever the subcommand sits among the options (-C <dir>, -c k=v, ...).
+  # Everything else is refused: an allowlist, so an option this loop does not know turns
+  # its value into the "subcommand", and that is refused too (fail closed).
   cat > "$1/git" <<'EOF'
 #!/bin/bash
 echo "git $*" >> "$FAKE_LOG"
-sub=""; skip=0
+ORIG=("$@")
+refuse() { echo "FORBIDDEN git $*" >> "$FAKE_LOG"; echo "fake git: '$*' is not allowed in a release run" >&2; exit 99; }
+sub=""; skip=0; n=0
 for a in "$@"; do
+  n=$((n + 1))
   if [ "$skip" = 1 ]; then skip=0; continue; fi
   case "$a" in
     -C|-c|--git-dir|--work-tree|--namespace) skip=1 ;;
@@ -103,20 +121,26 @@ for a in "$@"; do
     *) sub="$a"; break ;;
   esac
 done
+shift "$n"   # what follows the subcommand
 case "$sub" in
-  push|send-pack|commit|commit-tree|reset|checkout|switch|merge|rebase|fetch|pull|clone|remote|config|update-ref|stash|add|rm|mv|restore|worktree)
-    echo "FORBIDDEN git $sub" >> "$FAKE_LOG"
-    echo "fake git: '$sub' is not allowed in a release run" >&2
-    exit 99 ;;
+  rev-parse|status|ls-files|describe) ;;
   tag)
-    case " $* " in
-      *" --list "*|*" -l "*|*" --points-at "*|*" --points-at="*) ;;
-      *) echo "FORBIDDEN git tag (not a listing)" >> "$FAKE_LOG"
-         echo "fake git: tag is only allowed as a listing" >&2
-         exit 99 ;;
-    esac ;;
+    # a listing only: every argument must be a listing option or the value of one
+    listing=0; prev=""
+    for a in "$@"; do
+      case "$a" in
+        --list|-l|--points-at|--points-at=*) listing=1 ;;
+        -*) refuse "tag $*" ;;
+        *) case "$prev" in --points-at) ;; *) [ "$listing" = 1 ] || refuse "tag $*" ;; esac ;;
+      esac
+      prev="$a"
+    done
+    [ "$listing" = 1 ] || refuse "tag $*" ;;
+  remote)
+    [ "${1:-}" = get-url ] && [ $# -eq 2 ] || refuse "remote $*" ;;
+  *) refuse "${sub:-<none>} $*" ;;
 esac
-exec "$REAL_GIT" "$@"
+exec "$REAL_GIT" "${ORIG[@]}"
 EOF
 
   cat > "$1/gh" <<'EOF'
@@ -185,7 +209,10 @@ printf '%s\n' "$cfg" > "$FAKE_BIN_PATH/build-config"
 printf '%s\n' "${FAKE_BUILD_ARCHS:-$archs}" > "$FAKE_BIN_PATH/archs"
 V="$(sed -n 's/.*value = "\(.*\)".*/\1/p' Sources/SafariBrowser/BuildVersion.swift)"
 [ -n "${FAKE_BAKE_VERSION:-}" ] && V="$FAKE_BAKE_VERSION"
-printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "%s"; exit %s; fi\nexit 0\n' "$V" "${FAKE_VERSION_RC:-0}" > "$FAKE_BIN_PATH/safari-browser"
+# Only a SIGNED copy answers with the stamped version: the self-report check is the one
+# step that runs the binary before it ships, and pointing it at the unsigned build
+# product instead must not pass unnoticed (round-2 review of #308).
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then grep -q "^# SIGNED$" "$0" || { echo unsigned-build; exit 0; }; echo "%s"; exit %s; fi\nexit 0\n' "$V" "${FAKE_VERSION_RC:-0}" > "$FAKE_BIN_PATH/safari-browser"
 chmod +x "$FAKE_BIN_PATH/safari-browser"
 EOF
 
@@ -288,7 +315,24 @@ echo "shasum $*" >> "$FAKE_LOG"
 [ -n "${FAKE_SHASUM_FAIL:-}" ] && { echo "fake shasum: read error" >&2; exit 1; }
 [ -n "${FAKE_SHASUM_GARBAGE:-}" ] && { echo "not-a-hash  -"; exit 0; }
 if [ -n "${FAKE_SHASUM_LATE_FAIL:-}" ]; then /usr/bin/shasum "$@"; exit 1; fi
+# make the staging directory read-only after the hash is computed, so only the write of
+# the .sha256 file fails (release.sh runs from the repo root with DIST_DIR=dist here)
+if [ -n "${FAKE_SHASUM_LOCK_STAGE:-}" ]; then
+  /usr/bin/shasum "$@" || exit 1
+  for d in dist/.staging.*; do [ -d "$d" ] && chmod 555 "$d"; done
+  exit 0
+fi
 exec /usr/bin/shasum "$@"
+EOF
+
+  # mv: the final move into the reserved output directory. FAKE_MV_SIGNAL sends TERM to
+  # the script (its parent) while the move is in flight, the moment at which a deferred
+  # trap used to delete the finished result.
+  cat > "$1/mv" <<'EOF'
+#!/bin/bash
+echo "mv $*" >> "$FAKE_LOG"
+[ -n "${FAKE_MV_SIGNAL:-}" ] && kill -TERM "$PPID"
+exec /bin/mv "$@"
 EOF
 
   cat > "$1/ditto" <<'EOF'
@@ -697,6 +741,27 @@ for d in "$C"/repo/dist/.staging.*; do [ -d "$d" ] && chmod 755 "$d"; done
 assert_refused "9g a dry-run marker that cannot be written is refused" "$RC"
 assert_has "9g the refusal names the marker" "dry-run marker" "$C/stderr"
 assert_absent "9g no unmarked rehearsal binary was published" "$C/repo/dist/v1.2.3-DRYRUN/safari-browser"
+# the same lock keeps the cleanup from removing the staging directory, which still holds
+# a signed binary: that must be said, not left for the maintainer to stumble on
+assert_has "9g a staging directory that could not be removed is reported" "could not remove" "$C/stderr"
+
+# 9h. the notarization record cannot be written after an Accepted answer
+C="$(new_case record-fails)"
+run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID" NOTARIZE=1 FAKE_LOCK_STAGE=1
+for d in "$C"/repo/dist/.staging.*; do [ -d "$d" ] && chmod 755 "$d"; done
+assert_refused "9h a notarization record that cannot be written is refused" "$RC"
+assert_has "9h the refusal names the record" "notarization result" "$C/stderr"
+assert_absent "9h no release was published without its record" "$C/repo/dist/v1.2.3/safari-browser"
+# Apple accepted it, so where to find that submission must survive the failure
+assert_has "9h the accepted submission id is still on screen" "11111111-2222-3333-4444-555555555555" "$C/stdout"
+
+# 9i. the checksum file cannot be written (the hash itself was computed)
+C="$(new_case sha256-write-fails)"
+run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID" FAKE_SHASUM_LOCK_STAGE=1
+for d in "$C"/repo/dist/.staging.*; do [ -d "$d" ] && chmod 755 "$d"; done
+assert_refused "9i a checksum file that cannot be written is refused" "$RC"
+assert_has "9i the refusal names the checksum" "could not write the checksum" "$C/stderr"
+assert_absent "9i no release was published without its checksum" "$C/repo/dist/v1.2.3-DRYRUN/safari-browser"
 
 # 9c. a zip that could not be built is refused in a dry run too (it is rehearsed there)
 C="$(new_case ditto-fails)"
@@ -740,6 +805,18 @@ run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID"
 assert_refused "11c an existing empty output directory is refused" "$RC"
 nothing_built "11c" "$C"
 assert_exists "11c the directory that was already there is left alone" "$C/repo/dist/v1.2.3-DRYRUN"
+
+# 11d. a TERM that arrives while the result is being moved into place: bash runs the
+# trap only after `mv` returns, and the cleanup used to see the output directory as
+# still reserved and delete the finished result. The signal is honoured (the run ends
+# with 143), but what was moved stays.
+C="$(new_case move-signal)"
+run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID" FAKE_MV_SIGNAL=1
+assert_eq "11d a TERM during the final move still ends the run with 143" "143" "$RC"
+assert_exists "11d the moved binary is kept" "$C/repo/dist/v1.2.3-DRYRUN/safari-browser"
+assert_exists "11d the moved checksum is kept" "$C/repo/dist/v1.2.3-DRYRUN/safari-browser.sha256"
+assert_exists "11d the moved marker is kept" "$C/repo/dist/v1.2.3-DRYRUN/DRYRUN-NOT-NOTARIZED"
+assert_eq "11d no staging directory is left" "v1.2.3-DRYRUN" "$(ls -A "$C/repo/dist")"
 
 # 12. RELEASE_TIMESTAMP=none exists for an offline dry run and nothing else
 C="$(new_case offline)"
@@ -804,8 +881,10 @@ no_artifacts "$C" && ok "16 no artifacts were left" || fail "16 no artifacts wer
 # --- notarization (NOTARIZE=1) ---------------------------------------------------
 
 C="$(new_case notarized)"
+"$REAL_GIT" -C "$C/repo" remote add origin https://github.com/example-owner/example-repo.git
 run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID" NOTARIZE=1
 assert_ok "17 an accepted submission succeeds" "$RC"
+assert_has "17 the accepted submission id is printed" "11111111-2222-3333-4444-555555555555" "$C/stdout"
 D="$C/repo/dist/v1.2.3"
 assert_exists "17 the release directory has the binary" "$D/safari-browser"
 assert_exists "17 the release directory has the checksum" "$D/safari-browser.sha256"
@@ -863,11 +942,23 @@ grep -E '^  gh release create ' "$C/stdout" | grep -q -- '--notes' \
   && ok "18 the printed gh line carries release notes" || fail "18 the printed gh line carries release notes" "$(grep 'gh release create' "$C/stdout")"
 grep -E '^  gh release create ' "$C/stdout" | grep -q 'ABCDE12345' \
   && ok "18 the notes name the signing team ID" || fail "18 the notes name the signing team ID" "$(grep 'gh release create' "$C/stdout")"
+grep -E '^  gh release create ' "$C/stdout" | grep -q -- '--repo example-owner/example-repo' \
+  && ok "18 the gh line names the repository origin points at" || fail "18 the gh line names the repository origin points at" "$(grep 'gh release create' "$C/stdout")"
+# zsh without interactivecomments passes a trailing `# ...` as arguments, so no printed
+# command may carry one; what a command must show is said on its own line instead
+assert_eq "18 no printed command carries a trailing # comment" "0" "$(grep -E '^  (git|gh|shasum) ' "$C/stdout" | grep -c '#')"
+HASH_PRINTED="$(cat "$C/repo/dist/v1.2.3/safari-browser.sha256" 2>/dev/null)"
+grep -Eq '^  shasum -a 256 ' "$C/stdout" \
+  && ok "18 it prints a checksum command to run before uploading" || fail "18 it prints a checksum command to run before uploading" "$(cat "$C/stdout")"
+assert_has "18 it prints the hash that command must show" "$HASH_PRINTED" "$C/stdout"
 
 C="$(new_case annotated 'v3.0.0')"
 (cd "$C/repo" && "$REAL_GIT" tag -d v3.0.0 >/dev/null && "$REAL_GIT" tag -a v3.0.0 -m release)
+"$REAL_GIT" -C "$C/repo" remote add origin https://notgithub.com/x/y.git
 run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID" NOTARIZE=1
 assert_ok "18a a notarized run of an annotated tag succeeds" "$RC"
+grep -E '^  gh release create ' "$C/stdout" | grep -q -- '--repo' \
+  && fail "18a a host that only ends in github.com is not taken for GitHub" "$(grep 'gh release create' "$C/stdout")" || ok "18a a host that only ends in github.com is not taken for GitHub"
 TAG_COMMIT="$("$REAL_GIT" -C "$C/repo" rev-parse 'v3.0.0^{commit}')"
 TAG_OBJECT="$("$REAL_GIT" -C "$C/repo" rev-parse v3.0.0)"
 assert_has "18a the commit it prints is the tagged commit" "$TAG_COMMIT" "$C/stdout"
@@ -884,11 +975,16 @@ C="$(new_case rc-tag 'v2.0.0-rc.1')"
 run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID" NOTARIZE=1
 assert_ok "18b a notarized run of a prerelease tag succeeds" "$RC"
 assert_has "18b the printed gh line says --prerelease" "--prerelease" "$C/stdout"
+# this fixture has no origin: the gh line cannot name a repository and says so
+grep -E '^  gh release create ' "$C/stdout" | grep -q -- '--repo' \
+  && fail "18b without a GitHub origin the gh line has no --repo" "$(grep 'gh release create' "$C/stdout")" || ok "18b without a GitHub origin the gh line has no --repo"
+assert_has "18b without a GitHub origin it says to add --repo" "add --repo" "$C/stdout"
 
 # 18c. the printed gh line survives a hostile DIST_DIR: pasted into a shell it must not
 # run anything. Executed here with `gh` as a function that prints its arguments.
 C="$(new_case hostile-dist)"
 WEIRD="d'\$(touch PWNED)"
+"$REAL_GIT" -C "$C/repo" remote add origin git@github.com:owner2/repo2.git
 run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID" NOTARIZE=1 "DIST_DIR=$WEIRD"
 assert_ok "18c a notarized run with an odd DIST_DIR succeeds" "$RC"
 GH_LINE="$(grep '^  gh release create' "$C/stdout" | head -1)"
@@ -896,6 +992,10 @@ mkdir -p "$C/sandbox"
 PRINTED="$(cd "$C/sandbox" && bash -c 'gh() { for a in "$@"; do printf "ARG:%s\n" "$a"; done; }; '"$GH_LINE")"
 assert_absent "18c pasting the printed line ran nothing" "$C/sandbox/PWNED"
 assert_has "18c the printed path argument is the literal output path" "ARG:$WEIRD/v1.2.3/safari-browser" <(printf '%s\n' "$PRINTED")
+case "$PRINTED" in
+  *"ARG:--repo"$'\n'"ARG:owner2/repo2"*) ok "18c an ssh-style origin becomes --repo owner/name" ;;
+  *) fail "18c an ssh-style origin becomes --repo owner/name" "$PRINTED" ;;
+esac
 
 # 19. an Invalid verdict stops everything and shows why
 C="$(new_case invalid)"
@@ -932,7 +1032,10 @@ assert_eq "no run left anything in its private TMPDIR (zip directory, backups)" 
 
 # --- wiring in the repository itself ---------------------------------------------
 
-MAKE_OUT="$(cd "$REPO_ROOT" && env -u NOTARIZE -u ENTITLEMENTS -u DIST_DIR make -n release-signed DEVELOPER_ID=x 2>&1)"
+# MAKEFLAGS / MFLAGS / MAKELEVEL go too: run from `make test-all NOTARIZE=1`, the outer
+# make passes NOTARIZE=1 down through MAKEFLAGS, and `env -u NOTARIZE` does not touch it.
+MAKE_ENV=(env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL)
+MAKE_OUT="$(cd "$REPO_ROOT" && "${MAKE_ENV[@]}" -u NOTARIZE -u ENTITLEMENTS -u DIST_DIR make -n release-signed DEVELOPER_ID=x 2>&1)"
 case "$MAKE_OUT" in
   *scripts/release.sh*) ok "21 make release-signed runs scripts/release.sh" ;;
   *) fail "21 make release-signed runs scripts/release.sh" "$(printf '%s' "$MAKE_OUT" | head -c 400)" ;;
@@ -945,8 +1048,12 @@ case "$MAKE_OUT" in
   *"-u ENTITLEMENTS"*"-u DIST_DIR"*|*"-u DIST_DIR"*"-u ENTITLEMENTS"*) ok "21 the recipe strips ambient ENTITLEMENTS and DIST_DIR" ;;
   *) fail "21 the recipe strips ambient ENTITLEMENTS and DIST_DIR" "$(printf '%s' "$MAKE_OUT" | head -c 400)" ;;
 esac
+case "$MAKE_OUT" in
+  *"-u BINARY_NAME"*) ok "21 the recipe strips an ambient BINARY_NAME" ;;
+  *) fail "21 the recipe strips an ambient BINARY_NAME" "$(printf '%s' "$MAKE_OUT" | head -c 400)" ;;
+esac
 # the documented one-shot form must keep working: make sees NOTARIZE as an environment variable
-MAKE_ONE="$(cd "$REPO_ROOT" && NOTARIZE=1 make -n release-signed DEVELOPER_ID=x 2>&1)"
+MAKE_ONE="$(cd "$REPO_ROOT" && "${MAKE_ENV[@]}" NOTARIZE=1 make -n release-signed DEVELOPER_ID=x 2>&1)"
 case "$MAKE_ONE" in
   *'NOTARIZE="1"'*) ok "21 DEVELOPER_ID=<sha1> NOTARIZE=1 make release-signed reaches the script" ;;
   *) fail "21 NOTARIZE=1 in the environment reaches the script" "$(printf '%s' "$MAKE_ONE" | head -c 400)" ;;
@@ -972,6 +1079,36 @@ fi
 BAD_PHRASES='nothing leaves the Mac|nothing is sent to Apple|nothing was sent to Apple|不會送任何東西|refuses every write'
 HITS="$(cd "$REPO_ROOT" && grep -nEi "$BAD_PHRASES" README.md docs/release.md CHANGELOG.md CLAUDE.md Makefile scripts/release.sh 2>/dev/null | grep -v '^scripts/release-test.sh' | head -5)"
 assert_eq "24 no document claims that a dry run sends nothing to Apple" "" "$HITS"
+# ... and the round-2 siblings of that claim: an offline rehearsal still lets the system
+# check certificates (unmeasured, so not claimed either way), and a rehearsal binary IS a
+# valid Developer ID binary, distinguishable only by its directory name and marker
+BAD_PHRASES_2='never contacts Apple|完全離線|cannot be mistaken|ties the file to your Developer ID|ties the file to the signing team'
+HITS="$(cd "$REPO_ROOT" && grep -nEi "$BAD_PHRASES_2" README.md docs/release.md CHANGELOG.md CLAUDE.md Makefile scripts/release.sh 2>/dev/null | head -5)"
+assert_eq "24 no document overclaims what an offline rehearsal or the download check proves" "" "$HITS"
+
+# 25. the git shim itself: an allowlist, so a writing subcommand cannot hide behind an
+# option it does not know (round-2 review: `--config-env k=V push` used to get through)
+# Run inside a throwaway repository: if the shim ever let one of these through, real git
+# would act on whatever repository the calls run in. Only exit 99 counts as a refusal,
+# so a real git failure (no remote, no such branch) cannot pass for one.
+SHIMDIR="$TMPROOT/shim-direct"; make_shims "$SHIMDIR"
+SHIMREPO="$TMPROOT/shim-repo"; new_repo "$SHIMREPO"
+shim_refuses() { # name args...
+  local name="$1"; shift
+  (cd "$SHIMREPO" && FAKE_LOG=/dev/null REAL_GIT="$REAL_GIT" "$SHIMDIR/git" "$@" >/dev/null 2>&1)
+  local rc=$?
+  if [ "$rc" -eq 99 ]; then ok "25 the git shim refuses: $name"; else fail "25 the git shim refuses: $name" "exit $rc"; fi
+}
+shim_refuses "push hidden behind --config-env" --config-env core.pager=HOME push origin v1
+shim_refuses "branch deletion" branch -D main
+shim_refuses "update-index" update-index --assume-unchanged x
+shim_refuses "clean" clean -fdx
+shim_refuses "tag creation" tag v9.9.9
+shim_refuses "tag deletion" tag -d v9.9.9
+shim_refuses "remote add" remote add x y
+(cd "$SHIMREPO" && FAKE_LOG=/dev/null REAL_GIT="$REAL_GIT" "$SHIMDIR/git" tag --points-at HEAD --list 'v[0-9]*' >/dev/null 2>&1) \
+  && ok "25 the git shim lets the script's own tag listing through" || fail "25 the git shim lets the script's own tag listing through"
+assert_eq "25 no tag was created in the throwaway repository" "v1.2.3" "$("$REAL_GIT" -C "$SHIMREPO" tag --list)"
 
 echo
 echo "$PASS passed, $FAIL failed"

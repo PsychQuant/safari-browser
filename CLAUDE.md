@@ -520,19 +520,26 @@ used to read the target tab's URL when a tab flag is given).
 不連網）。步驟與「還沒量到的事」見 [`docs/release.md`](docs/release.md)。
 
 - **腳本從不 `git tag`、`git push`、呼叫 `gh`。** 發出 release 是維護者親手的事，腳本只印指令。
-  守住這條的是 `release-test.sh` 的 git shim（push、建 tag、commit 等 release 可能誤跑的寫入型 subcommand，
-  不論旗標順序一律拒絕並記錄）與「**每一次**執行都檢查 log」的結尾斷言，不是某一組斷言。它防的是回歸、不是
-  沙箱：絕對路徑的 git 或 alias 繞得過。改腳本時不要為了「方便」加進去。
+  守住這條的是 `release-test.sh` 的 git shim 與「**每一次**執行都檢查 log」的結尾斷言，不是某一組斷言。
+  shim 是 **allowlist**：只放行腳本實際用到的唯讀 subcommand（`rev-parse`、`status`、`ls-files`、`describe`、
+  只做列表的 `tag`、`remote get-url`），其他一律拒絕並記錄；它不認得的帶值選項（如 `--config-env`）會讓值被
+  當成 subcommand，同樣被拒（往安全的方向失敗）。腳本要多用一個 git subcommand，先確認它唯讀，再加進
+  allowlist。它防的是回歸、不是沙箱：絕對路徑的 git 或 alias 繞得過。改腳本時不要為了「方便」加進去。
   **腳本跑完不等於 release 已發出**：它印出的指令才會發出，所以不要把「`scripts/release.sh` 成功」當成
   `common-release-flow` 的 post-release 觸發條件。
 - `NOTARIZE` 預設 `0`：誤打 `make release-signed` 不會**送公證**，只產出 `dist/<tag>-DRYRUN/`。但預設的
   dry run 仍會用 `--timestamp` 向 Apple 的 timestamp 伺服器要時間戳（簽章雜湊會送出去），所以文件**不要**
-  寫「什麼都不會送出」；要完全離線用 `RELEASE_TIMESTAMP=none`。`release-test.sh` 第 24 組守這個字句。
+  寫「什麼都不會送出」。`RELEASE_TIMESTAMP=none` 只拿掉 timestamp 伺服器；簽章與第一次執行時 macOS 會不會
+  上網查憑證沒有量過，所以也**不要**把它寫成離線。`release-test.sh` 第 24 組守這兩類字句。
 - 與 `install-signed` 的差別：Universal 建置、`--timestamp`、公證來回、以及「乾淨樹且 HEAD 恰好一個 release
   tag」的前置檢查。`install-signed` 不要加前三項。（兩者都用 hardened runtime。）
 - 「乾淨樹」包含 `Sources/` 底下 git 忽略但 SwiftPM 仍會編譯的未追蹤檔；`status.showUntrackedFiles`、
-  `.git/info/exclude`、全域 excludes 都不得讓它漏掉。HEAD 上有多個 `v*` tag 時 `git describe` 會安靜地挑一個
-  （annotated 的 rc 贏過 lightweight 的正式版），所以腳本要求恰好一個。
+  `.git/info/exclude`、全域 excludes 都不得讓它漏掉。HEAD 上有多個 `v[0-9]*` tag 時 `git describe` 會安靜地挑
+  一個（annotated 的 rc 贏過 lightweight 的正式版），所以腳本要求恰好一個（浮動的 `v2` 也算，會被拒）。
+- 下載驗證的 `-R=` 要包含 Developer ID 的兩個 marker OID（`certificate 1[field.1.2.840.113635.100.6.2.6]`、
+  `certificate leaf[field.1.2.840.113635.100.6.1.13]`），否則同 team 的 Apple Development 簽章也會過；2026-10-27
+  對真的 Developer ID binary 實測過。team ID 取自 release notes 時，notes 與 binary 同一個通道，文件要照實寫，
+  不要寫成「把檔案綁到你的 Developer ID」。
 - **不要**把 Makefile 的 `NOTARIZE` 改成只收命令列（`$(origin NOTARIZE)`）：文件寫的
   `DEVELOPER_ID=<sha1> NOTARIZE=1 make release-signed` 就是環境變數形式，會壞掉。ENTITLEMENTS／DIST_DIR／
   BINARY_NAME 則由配方的 `env -u` 擋掉。
@@ -541,7 +548,9 @@ used to read the target tab's URL when a tab flag is given).
 - 已量（2026-10-25 dry-run）：兩個切片都跑得動（x86_64 經 Rosetta）、DR 與 `install-signed` 的 binary 逐字相同。
   **未量**：真實送審之後的任何事、裸 Mach-O 能否 staple、真 Intel Mac、Full Disk Access 授權實際延續。
   寫文件時不要把未量的寫成已證實。建置會警告 x86_64 對該 SDK 預設部署目標（macOS 27.0）已 deprecated（仍可建，
-  binary 本身是 `minos 15.0`）。
+  binary 本身是 `minos 15.0`）。`spctl` 對**已公證**的裸 Mach-O 怎麼回答也還沒觀察到，第一次真實送審時要看。
+- 印出的指令不帶行尾 `#` 註解（zsh 沒開 interactivecomments 時會當成參數）；該看到什麼另起一行寫。
+  `gh` 那行的 `--repo` 從 `origin` 推出，只認 github.com 的 owner/name。
 - 已知缺口（獨立審查 #308 找到，已開 issue）：建置在活的 checkout 裡跑、不釘也不記錄依賴版本（#309）；
   entitlements 只查一個 key、不釘 team（#310）。
 
