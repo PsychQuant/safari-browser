@@ -168,16 +168,27 @@ The string is `git describe --tags --match 'v[0-9]*' --always --dirty` taken whe
 
 ### Install a release binary (#280)
 
-A release binary is Universal (arm64 and x86_64), signed with a Developer ID and
-notarized by Apple, and prints its tag for `--version`. Releases up to and including
-v2.6.0 are older than that: ad-hoc signed, arm64 only, and they cannot say which build
-they are. Build from source for anything newer than the latest release.
+Releases made with `make release-signed` are meant to be Universal (arm64 and x86_64),
+signed with a Developer ID, notarized by Apple, and to print their tag for `--version`.
+**None has been published yet**: the latest release (v2.6.0) is older than that —
+ad-hoc signed, arm64 only, and it cannot say which build it is — so the steps below
+apply from the first release made this way. Until then, build from source.
 
 ```bash
-# in the folder you downloaded safari-browser and safari-browser.sha256 to
-test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" && echo checksum ok
-chmod +x safari-browser && mv safari-browser ~/bin/
+# in the folder you downloaded safari-browser and safari-browser.sha256 to; <TEAM_ID> is
+# the 10-character code in your Developer ID certificate's name
+test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" \
+  && chmod +x safari-browser \
+  && codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "<TEAM_ID>"' safari-browser \
+  && mkdir -p ~/bin && mv safari-browser ~/bin/
 ```
+
+The checksum only catches a damaged download; the `codesign` line is what ties the file to
+the signing team (`docs/release.md` has the full set of checks, including `spctl`).
+Installing a release binary over an `install-signed` build keeps an existing Full Disk
+Access grant *if* both are signed with the same identity (the grant follows the signing
+identity, see "Which install target?" below); replacing an ad-hoc `make install` build
+means granting Full Disk Access, Accessibility and Screen Recording again.
 
 How a release is made, and what has not been measured about it: [`docs/release.md`](docs/release.md).
 

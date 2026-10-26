@@ -4,31 +4,48 @@
 # usage: DEVELOPER_ID=<cert sha-1> [NOTARIZE=1] scripts/release.sh   (from the repo root)
 #
 # Output is dist/<tag>/ : the signed binary, its sha256 (the hash alone, one line) and
-# NOTARIZATION.json (Apple's answer, verbatim). Without NOTARIZE=1 nothing is sent to
-# Apple and the output is dist/<tag>-DRYRUN/ with a DRYRUN-NOT-NOTARIZED marker, so a
-# rehearsal cannot be mistaken for, or block, the real thing.
+# NOTARIZATION.json (notarytool's JSON answer). Without NOTARIZE=1 nothing is submitted
+# for notarization and the output is dist/<tag>-DRYRUN/ with a DRYRUN-NOT-NOTARIZED
+# marker, so a rehearsal cannot be mistaken for, or block, the real thing. (A rehearsal
+# still signs with `--timestamp`, which sends the signature's hash to Apple's timestamp
+# server; RELEASE_TIMESTAMP=none avoids that for an offline run.)
 #
 # This script never creates or pushes a tag and never calls gh. Publishing is the
-# maintainer's act; the commands are printed at the end.
+# maintainer's act; the commands are printed at the end. scripts/release-test.sh checks
+# every run for a git write or a gh call.
 #
 # Why the checks are shaped the way they are:
 #   - Every refusal happens before the build. A Universal build is minutes and a
 #     notarization is more, so a missing identity, a dirty tree or a dead notary
 #     profile must cost seconds.
-#   - HEAD must be exactly on a `v[0-9]*` tag (same selector as stamp-version.sh, so
-#     `idd-217-baseline` cannot stand in) and the tag must look like vX.Y.Z: the text
-#     becomes a directory name and is printed inside commands for the maintainer to run.
+#   - The identity must be the 40-hex SHA-1 of a valid Developer ID Application
+#     certificate, matched on its own line of `security find-identity -v`. A substring
+#     match let `0` or `valid` through with an empty keychain.
+#   - "Clean tree" means: nothing untracked anywhere (`--untracked-files=all`, so
+#     status.showUntrackedFiles cannot hide it) AND nothing untracked under Sources/ or
+#     Package.swift even if git ignores it: SwiftPM compiles every .swift file in the
+#     target, whatever git is told to show.
+#   - HEAD must carry exactly ONE `v[0-9]*` tag (the same selector as stamp-version.sh,
+#     so `idd-217-baseline` cannot stand in). With several, `git describe` picks one
+#     (an annotated rc beats a lightweight final; v1.2.10 beats v1.2.9) and so does the
+#     stamp, so the run would build and print publish commands for the wrong tag. The
+#     tag must look like vX.Y.Z: the text becomes a directory name and is printed in
+#     commands for the maintainer to run.
 #   - The binary must report the tag itself. A stamp that did not take reports
 #     `unknown`, and a release that cannot say what it is defeats #278.
 #   - `--timestamp` is what separates this from `make install-signed`: Apple refuses a
 #     binary without a secure timestamp. `RELEASE_TIMESTAMP=none` exists for offline
 #     rehearsals only and is refused together with NOTARIZE=1.
 #   - Only the status `Accepted` passes. notarytool's exit code is not trusted to mean
-#     "accepted" (an Invalid verdict is a completed submission), so the JSON is read.
-#   - Work happens in a staging directory next to the output and is renamed into place
-#     last, so a failure at any step leaves no half-built release behind.
-#   - The zip sent to Apple is a submission container, not a deliverable: a bare
-#     Mach-O cannot be stapled, so users receive the binary itself.
+#     "accepted" (an Invalid verdict is a completed submission), and a zero exit with an
+#     unreadable answer is not trusted either, so the JSON is read.
+#   - The output name is RESERVED with an atomic mkdir before the build, and the result
+#     is staged next to it and moved in at the end. Checking that the name is free and
+#     moving onto it minutes later left a window in which `mv` would nest the result
+#     inside a directory that had appeared meanwhile.
+#   - The zip sent to Apple is a submission container, not a deliverable (a bare Mach-O
+#     is not expected to take a stapled ticket; see docs/release.md). It is built in a
+#     rehearsal too, so a ditto or TMPDIR problem shows up before the real run.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -46,12 +63,16 @@ die() { echo "release: $*" >&2; exit 1; }
 
 STAGE=""
 ZIPDIR=""
+OUT=""
+OUT_RESERVED=0   # 1 only once THIS run created $OUT with mkdir: a directory we did not create is never removed
 cleanup() {
   [ -n "$STAGE" ] && rm -rf "$STAGE"
   [ -n "$ZIPDIR" ] && rm -rf "$ZIPDIR"
+  [ "$OUT_RESERVED" = 1 ] && [ -n "$OUT" ] && rm -rf "$OUT"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
+trap 'exit 131' QUIT   # bash 3.2 does not run the EXIT trap for a signal that has no trap of its own
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
@@ -59,6 +80,8 @@ trap 'exit 129' HUP
 
 [ -n "${DEVELOPER_ID:-}" ] \
   || die "DEVELOPER_ID is unset. Name the Developer ID Application certificate (its SHA-1)."
+[[ "$DEVELOPER_ID" =~ ^[0-9A-Fa-f]{40}$ ]] \
+  || die "DEVELOPER_ID must be the 40-hex SHA-1 of the certificate (security find-identity -v -p codesigning), got '$DEVELOPER_ID'."
 case "$NOTARIZE" in 0|1) ;; *) die "NOTARIZE must be 0 or 1 (got '$NOTARIZE')" ;; esac
 case "$RELEASE_TIMESTAMP" in
   ""|none) ;;
@@ -70,22 +93,41 @@ fi
 
 IDENTITIES="$(security find-identity -v -p codesigning 2>&1)" \
   || die "could not list code-signing identities: $IDENTITIES"
-printf '%s\n' "$IDENTITIES" | grep -Fq -- "$DEVELOPER_ID" \
+IDENTITY_LINE="$(printf '%s\n' "$IDENTITIES" | grep -Ei "^[[:space:]]*[0-9]+\)[[:space:]]+${DEVELOPER_ID}[[:space:]]" | head -1)"
+[ -n "$IDENTITY_LINE" ] \
   || die "DEVELOPER_ID '$DEVELOPER_ID' is not a valid identity in the keychain."
+case "$IDENTITY_LINE" in
+  *'"Developer ID Application:'*) ;;
+  *) die "identity $DEVELOPER_ID is not a \"Developer ID Application\" certificate: $IDENTITY_LINE" ;;
+esac
 
 # Same rule as stamp-version.sh: the repository root, or `git describe` may walk up
 # into some other repository and produce a tag that is not ours.
 TOP="$(git rev-parse --show-toplevel 2>/dev/null)" && TOP="$(cd "$TOP" 2>/dev/null && pwd -P)"
 [ -n "${TOP:-}" ] && [ "$TOP" = "$(pwd -P)" ] || die "run this from the repository root."
 
-DIRTY="$(git status --porcelain)" || die "git status failed"
+DIRTY="$(git status --porcelain --untracked-files=all)" || die "git status failed"
 [ -z "$DIRTY" ] || die "the working tree is not clean; a release is built from a commit, not from edits:
 $(printf '%s\n' "$DIRTY" | head -5)"
+# Untracked files under Sources/ are compiled whether or not git ignores them (an entry in
+# .git/info/exclude, a global excludes file, .gitignore). A Finder .DS_Store is not code.
+HIDDEN="$(git ls-files --others -- Sources Package.swift)" || die "git ls-files failed"
+HIDDEN="$(printf '%s\n' "$HIDDEN" | grep -v -e '^$' -e '/\.DS_Store$')"
+[ -z "$HIDDEN" ] || die "untracked files under Sources/ (git may be ignoring them, SwiftPM still compiles them) would ship under the tag's name:
+$(printf '%s\n' "$HIDDEN" | head -5)"
 
-TAG="$(git describe --exact-match --tags --match 'v[0-9]*' HEAD 2>/dev/null)" \
-  || die "HEAD is not exactly on a release tag (v[0-9]*). Tag the commit first, then build."
+TAGS="$(git tag --points-at HEAD --list 'v[0-9]*')" || die "git tag failed"
+TAG_COUNT="$(printf '%s\n' "$TAGS" | grep -c .)"
+[ "$TAG_COUNT" -ge 1 ] || die "HEAD is not on a release tag (v[0-9]*). Tag the commit first, then build."
+[ "$TAG_COUNT" -eq 1 ] || die "HEAD carries $TAG_COUNT release tags and git would pick one without telling you; keep exactly one:
+$TAGS"
+TAG="$TAGS"
 TAG_SHAPE='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 [[ "$TAG" =~ $TAG_SHAPE ]] || die "tag '$TAG' is not of the form vX.Y.Z (optionally -prerelease)."
+case "$TAG" in
+  *-DRYRUN) die "tag '$TAG' ends in -DRYRUN, the suffix of rehearsal output directories; pick another name." ;;
+esac
+COMMIT="$(git rev-parse "$TAG^{commit}")" || die "could not resolve $TAG to a commit"
 
 [ -f "$ENTITLEMENTS" ] || die "entitlements file not found: $ENTITLEMENTS"
 [ -x "$VERIFY_BIN" ] || die "install-signature guard not built: $VERIFY_BIN (make $VERIFY_BIN)"
@@ -99,9 +141,13 @@ $PROBE
 else
   OUT="$DIST_DIR/$TAG-DRYRUN"
 fi
-[ ! -e "$OUT" ] || die "$OUT already exists; remove it deliberately if you mean to rebuild."
 
+[ ! -L "$DIST_DIR" ] || die "$DIST_DIR is a symlink; the result would be written outside the repository."
 mkdir -p "$DIST_DIR" || die "cannot create $DIST_DIR"
+# Reserve the output name now. mkdir is atomic, so a second run of the same tag is refused
+# here, and the final move cannot land inside a directory that appeared during the build.
+mkdir "$OUT" 2>/dev/null || die "$OUT already exists (or cannot be created); remove it deliberately if you mean to rebuild."
+OUT_RESERVED=1
 STAGE="$(mktemp -d "$DIST_DIR/.staging.XXXXXX")" || die "cannot create a staging directory in $DIST_DIR"
 SHIPPED="$STAGE/$BINARY_NAME"
 
@@ -139,19 +185,22 @@ codesign --verify --strict --verbose=2 "$SHIPPED" \
   || die "codesign --verify rejected the signed binary"
 "$VERIFY_BIN" --require-shape "Developer ID" --require-entitlement "$ENTITLEMENT_KEY" "$SHIPPED" \
   || die "the signed binary does not meet the install-signature contract (see above)"
-REPORTED="$("$SHIPPED" --version 2>&1)"
+REPORTED="$("$SHIPPED" --version 2>&1)" \
+  || die "the signed binary could not report its version: $REPORTED"
 [ "$REPORTED" = "$TAG" ] || die "the binary reports '$REPORTED', expected '$TAG'"
+
+# --- the submission zip (built in a rehearsal too) --------------------------------
+
+ZIPDIR="$(mktemp -d "${TMPDIR:-/tmp}/release-submit.XXXXXX")" || die "cannot create a submission directory"
+ZIP="$ZIPDIR/$BINARY_NAME.zip"
+# Not --keepParent (Apple's example is for .app bundles): given a bare file it archives
+# the containing directory too, here a random temp name. Without --norsrc --noextattr
+# a ._<name> AppleDouble entry rides along. Measured with ditto on macOS 27.
+ditto -c -k --norsrc --noextattr "$SHIPPED" "$ZIP" || die "could not zip the binary for submission"
 
 # --- notarize ---------------------------------------------------------------------
 
 if [ "$NOTARIZE" = 1 ]; then
-  ZIPDIR="$(mktemp -d "${TMPDIR:-/tmp}/release-submit.XXXXXX")" || die "cannot create a submission directory"
-  ZIP="$ZIPDIR/$BINARY_NAME.zip"
-  # Not --keepParent (Apple's example is for .app bundles): given a bare file it archives
-  # the containing directory too, here a random temp name. Without --norsrc --noextattr
-  # a ._<name> AppleDouble entry rides along. Measured with ditto on macOS 27.
-  ditto -c -k --norsrc --noextattr "$SHIPPED" "$ZIP" || die "could not zip the binary for submission"
-
   echo "→ submitting to Apple (waiting for the verdict)"
   RESULT="$(xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json)"
   SUBMIT_RC=$?
@@ -164,32 +213,47 @@ if [ "$NOTARIZE" = 1 ]; then
     if [ -n "$SUBMISSION_ID" ]; then
       echo "--- notarytool log $SUBMISSION_ID ---" >&2
       xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+    else
+      echo "release: the answer carried no readable submission id, so no log was fetched;" >&2
+      echo "         find the submission with: xcrun notarytool history --keychain-profile $NOTARY_PROFILE" >&2
     fi
     exit 1
   fi
   printf '%s\n' "$RESULT" > "$STAGE/NOTARIZATION.json" || die "could not record the notarization result"
 else
-  cat > "$STAGE/DRYRUN-NOT-NOTARIZED" <<EOF
-This build was signed but never submitted to Apple. Do not upload it as a release.
-EOF
+  printf 'This build was signed but never submitted for notarization. Do not upload it as a release.\n' \
+    > "$STAGE/DRYRUN-NOT-NOTARIZED" || die "could not write the dry-run marker"
 fi
 
 # --- publish the directory --------------------------------------------------------
 
-shasum -a 256 < "$SHIPPED" | awk '{print $1}' > "$STAGE/$BINARY_NAME.sha256" \
-  || die "could not write the checksum"
+HASH_LINE="$(shasum -a 256 < "$SHIPPED")" || die "could not compute the checksum"
+HASH="${HASH_LINE%% *}"
+[[ "$HASH" =~ ^[0-9a-f]{64}$ ]] || die "shasum did not produce a SHA-256 (got '$HASH_LINE')"
+printf '%s\n' "$HASH" > "$STAGE/$BINARY_NAME.sha256" || die "could not write the checksum"
 
-chmod 755 "$STAGE" && mv "$STAGE" "$OUT" || die "could not move the result into $OUT"
+mv "$STAGE"/* "$OUT"/ || die "could not move the result into $OUT"
+rmdir "$STAGE" 2>/dev/null
 STAGE=""
+chmod 755 "$OUT"
+OUT_RESERVED=0
 
 echo "✓ $OUT"
 if [ "$NOTARIZE" = 1 ]; then
-  cat <<EOF
-
-Next — you run these; this script never tags, pushes or calls gh:
-  git push origin $TAG        # skip if the tag is already on the remote
-  gh release create $TAG '$OUT/$BINARY_NAME' '$OUT/$BINARY_NAME.sha256' --title '$TAG'
-EOF
+  PRERELEASE=""
+  case "$TAG" in *-*) PRERELEASE=" --prerelease" ;; esac
+  echo
+  echo "Next — you run these. This script never tags, pushes or calls gh."
+  echo "The tag $TAG is commit $COMMIT. Push it and check that the remote shows the same"
+  echo "commit BEFORE creating the release; --verify-tag makes gh refuse a tag that is not"
+  echo "on the remote (otherwise it creates one at the tip of the default branch):"
+  printf '  git push origin %q\n' "$TAG"
+  printf '  git ls-remote origin %q    # must show %s\n' "refs/tags/$TAG" "$COMMIT"
+  printf '  gh release create %q --verify-tag%s %q %q --title %q\n' \
+    "$TAG" "$PRERELEASE" "$OUT/$BINARY_NAME" "$OUT/$BINARY_NAME.sha256" "$TAG"
 else
-  echo "  dry run: signed with a real identity, nothing was sent to Apple."
+  echo "  dry run: signed with a real identity, but nothing was submitted for notarization."
+  if [ "$RELEASE_TIMESTAMP" != none ]; then
+    echo "  (the signature's hash did go to Apple's timestamp server; RELEASE_TIMESTAMP=none avoids that)"
+  fi
 fi

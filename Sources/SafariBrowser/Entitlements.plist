@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
     Used by the signed-build paths: `make install-signed` and `make release-signed`
-    (the old `make sign` no longer exists). Ad-hoc builds ignore this file and keep
-    working exactly as before.
+    (an older `sign-developer-id` target was removed in #123). Ad-hoc builds ignore
+    this file and keep working exactly as before.
 
     apple-events is required, not optional, once the binary is signed with the
     hardened runtime: every command in this tool reaches Safari through an Apple

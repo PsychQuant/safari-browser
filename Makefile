@@ -30,7 +30,7 @@ test-stamp-version:
 # Behavior tests for the release script (#280). swift, codesign and notarytool are
 # replaced by shims: no certificate, no network, no real build.
 test-release:
-	bash scripts/release-test.sh
+	/bin/bash scripts/release-test.sh
 
 # The signature guard. Swift, not shell: it reads the Security framework
 # directly, so the designated requirement is an OBJECT rather than text
@@ -183,18 +183,28 @@ install-signed: verify-developer-id build $(VERIFY_BIN)
 	@echo "  Next: $(BINARY_NAME) setup   # grant Accessibility / Screen Recording"
 
 # A binary to give to OTHER people: Universal, Developer ID signed with a secure
-# timestamp, and with NOTARIZE=1 accepted by Apple's notary service (#280). The
-# difference from install-signed is exactly the part that one deliberately leaves
-# out: --timestamp, the notarization round-trip, and a build that is pinned to a tag.
+# timestamp, and with NOTARIZE=1 accepted by Apple's notary service (#280). What it
+# does that install-signed deliberately does not: build both architectures, sign with
+# --timestamp, run the notarization round-trip, and refuse to build from anything but
+# a clean tree whose HEAD carries exactly one release tag.
 #
-# NOTARIZE defaults to 0 so that typing this target by accident sends nothing to
-# Apple: you get dist/<tag>-DRYRUN/, signed for real but marked as not notarized.
+# NOTARIZE defaults to 0 so that typing this target by accident submits nothing for
+# notarization: you get dist/<tag>-DRYRUN/, signed for real but marked as not notarized.
+# (Signing still asks Apple's timestamp server for a timestamp; RELEASE_TIMESTAMP=none
+# avoids that for an offline run.) `DEVELOPER_ID=<sha1> NOTARIZE=1 make release-signed`
+# is the documented one-shot form, so NOTARIZE is deliberately accepted from the
+# environment as well as the command line.
 # The logic is in scripts/release.sh (tested by `make test-release`); it never tags,
 # pushes or calls gh. One-time setup and the steps after it: docs/release.md.
+#
+# `env -u` drops variables the script reads as private knobs (the tests use them) so an
+# ENTITLEMENTS or DIST_DIR exported for some other project cannot change what is signed
+# or where it lands. make itself passes command-line variables through to recipes.
 NOTARIZE ?= 0
 NOTARY_PROFILE ?= che-mcps-notary
 release-signed: verify-developer-id $(VERIFY_BIN)
-	DEVELOPER_ID="$(DEVELOPER_ID)" NOTARIZE="$(NOTARIZE)" NOTARY_PROFILE="$(NOTARY_PROFILE)" \
+	env -u ENTITLEMENTS -u DIST_DIR -u BINARY_NAME \
+	  DEVELOPER_ID="$(DEVELOPER_ID)" NOTARIZE="$(NOTARIZE)" NOTARY_PROFILE="$(NOTARY_PROFILE)" \
 	  VERIFY_BIN="$(VERIFY_BIN)" scripts/release.sh
 
 # Is the installed binary's grant rebuild-proof? Reads only — no certificate,

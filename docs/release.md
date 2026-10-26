@@ -12,11 +12,14 @@ by Apple's notary service. `--version` on it prints the tag it was built from (#
 
 | Does | Never does |
 |---|---|
-| Refuses early: no identity, tree not clean, `HEAD` not exactly on a `vX.Y.Z` tag, notary profile not answering | Create or push a tag |
+| Refuses early: `DEVELOPER_ID` not the 40-hex SHA-1 of a valid *Developer ID Application* certificate in the keychain, tree not clean (untracked files count, and so do untracked files under `Sources/` that git ignores, because SwiftPM compiles them), `HEAD` without exactly one `vX.Y.Z` tag, notary profile not answering | Create or push a tag |
 | Builds both architectures from that commit, stamping the tag into the binary | Call `gh`, or publish anything |
-| Signs, then verifies: `codesign --verify`, the install-signature guard (`#119`), and that the binary reports the tag | Send anything to Apple unless `NOTARIZE=1` |
-| With `NOTARIZE=1`: submits and waits; only `Accepted` passes, anything else prints Apple's log and fails | Leave a half-built `dist/` behind: the result is moved into place last |
+| Signs, then verifies: `codesign --verify`, the install-signature guard (`#119`), and that the binary reports the tag | Submit anything for notarization unless `NOTARIZE=1` (signing still asks Apple's *timestamp* server for a timestamp, see below) |
+| With `NOTARIZE=1`: submits and waits; only `Accepted` passes, anything else prints the failure (and Apple's log when the answer carried a submission id) and fails | Leave a half-built `dist/` behind: the output name is reserved first and the result is staged and moved in last |
 | Writes `dist/<tag>/` and prints the commands for you to run | |
+
+`release.sh` runs from the commit being released, so review what it will run before you
+tag: `git diff <previous-tag>..<tag> -- scripts Makefile Package.swift 'Sources/SafariBrowser/*.plist'`.
 
 ## One-time setup
 
@@ -39,20 +42,31 @@ by Apple's notary service. `--version` on it prints the tag it was built from (#
 ## Making a release
 
 Build from a clean checkout of the commit you mean to release: the script refuses a
-tree with any uncommitted or untracked file.
+tree with any uncommitted or untracked file. Do not edit, commit or switch branches in
+that checkout while it runs (the build takes minutes; #309 tracks making that safe).
 
 ```bash
-git tag v2.7.0 <commit>                       # your decision: the version and the commit
+git tag v2.7.0 <commit>          # your decision: the version and the commit. Exactly ONE v* tag on it:
+                                 # with several, git would pick one for you, so the script refuses.
 
-DEVELOPER_ID=<sha1> make release-signed                 # rehearsal, nothing leaves the Mac
+DEVELOPER_ID=<sha1> make release-signed                 # rehearsal: nothing is submitted for notarization
 DEVELOPER_ID=<sha1> NOTARIZE=1 make release-signed      # the real one: goes to Apple
 ```
 
-The rehearsal signs for real (with a real timestamp from Apple's timestamp server, which
-receives only the signature's hash) but writes `dist/<tag>-DRYRUN/` with a
-`DRYRUN-NOT-NOTARIZED` marker, so it cannot be uploaded by mistake or stop the real run
-from using `dist/<tag>/`. For a rehearsal with no network at all, add
-`RELEASE_TIMESTAMP=none`; it is refused together with `NOTARIZE=1`.
+Tags may carry a prerelease part (`v2.7.0-rc.1`); the printed `gh` line then adds
+`--prerelease`. A tag ending in `-DRYRUN` is refused (it would collide with the
+rehearsal's directory name).
+
+The rehearsal signs for real. Signing with `--timestamp` asks Apple's timestamp server
+for a timestamp, which sends it the signature's hash, so a rehearsal is not fully
+offline, but nothing is submitted for notarization and the binary never goes to Apple's
+notary service. It writes `dist/<tag>-DRYRUN/` with a `DRYRUN-NOT-NOTARIZED` marker file
+next to the binary: that marks it for you, but the binary itself is a valid Developer ID
+binary that reports the release tag, so do not upload it. For a rehearsal that never
+contacts Apple, add `RELEASE_TIMESTAMP=none`; it is refused together with `NOTARIZE=1`.
+(A fresh clone still needs the network once for SwiftPM to resolve packages.) The
+rehearsal also builds the submission zip, so a `ditto` or `TMPDIR` problem shows up
+before the real run.
 
 `dist/<tag>/` holds:
 
@@ -60,26 +74,55 @@ from using `dist/<tag>/`. For a rehearsal with no network at all, add
 |---|---|
 | `safari-browser` | the signed Universal binary |
 | `safari-browser.sha256` | the SHA-256 and nothing else (one line) |
-| `NOTARIZATION.json` | Apple's answer, verbatim: submission id and status |
+| `NOTARIZATION.json` | notarytool's JSON answer: submission id, message and status (no date) |
 
-On success the script prints the two commands that publish it (`git push origin <tag>`,
-`gh release create <tag> …`). Running them is yours: they are visible to everyone and
-cannot be taken back.
+On success the script prints three commands. Running them is yours: they are visible to
+everyone and cannot be taken back.
+
+```bash
+git push origin v2.7.0
+git ls-remote origin refs/tags/v2.7.0            # must show the commit the script printed
+gh release create v2.7.0 --verify-tag [--prerelease] dist/v2.7.0/safari-browser dist/v2.7.0/safari-browser.sha256 --title v2.7.0
+```
+
+The `ls-remote` check and `--verify-tag` are there because `gh release create` creates a
+tag that is missing from the remote *at the tip of the default branch*, not at the
+commit that was built. If the push was skipped or rejected, the public tag would name a
+different commit than the one the binary reports.
 
 ## When Apple says no
 
-The script prints the status, then the output of `xcrun notarytool log <id>`, and exits
-non-zero with nothing left in `dist/`. Typical causes: a signature without a secure
-timestamp, no hardened runtime, or a certificate that is not a Developer ID one. The
-first two are what distinguishes this target from `install-signed`.
+The script prints the status and notarytool's answer, then, when the answer carried a
+submission id, the output of `xcrun notarytool log <id>`; it exits non-zero with nothing
+left in `dist/`. If no id could be read it says so and tells you to find the submission
+with `notarytool history`. Typical causes: a signature without a secure timestamp (this
+target always asks for one, unless `RELEASE_TIMESTAMP=none`, which is refused with
+`NOTARIZE=1`), a certificate that is not a Developer ID Application one, or an
+entitlement problem. The difference from `install-signed` is the timestamp: both sign
+with the hardened runtime.
 
 ## Checking a downloaded copy
 
+The checksum travels through the same channel as the binary, so it catches a damaged
+download, not a swapped one. What ties the file to your Developer ID is the signature
+requirement; run the checks before you run the file:
+
 ```bash
-test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" && echo ok
-codesign --verify --strict --verbose=2 safari-browser
-safari-browser --version          # the tag
+# in the folder you downloaded to; <TEAM_ID> is the 10-character code in parentheses in
+# your certificate's name (security find-identity -v -p codesigning)
+test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" \
+  && chmod +x safari-browser \
+  && codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "<TEAM_ID>"' safari-browser \
+  && spctl --assess --type execute -vv safari-browser \
+  && ./safari-browser --version
 ```
+
+`codesign --verify` on its own accepts any valid signature (an ad-hoc local build
+included); the `-R=` requirement is what pins the team. `spctl` should report
+`source=Notarized Developer ID` for a notarized release (it reports `Unnotarized
+Developer ID` for a rehearsal binary, which is how you tell them apart; the notarized
+answer has not been observed yet, see below). Running `safari-browser --version`
+without `./` would run whatever is first on your `PATH`, not the download.
 
 ## Measured, and not measured
 
@@ -91,12 +134,15 @@ tag natively and under Rosetta (`arch -x86_64`). `spctl --assess` said
 `rejected, source=Unnotarized Developer ID`, which is the gap notarization closes. The
 designated requirement was byte-for-byte the same as that of a binary installed with
 `install-signed` on the same Mac. The build printed a warning that the x86_64
-architecture is deprecated for a macOS 27.0 deployment target; it still built.
+architecture is deprecated for the SDK's default deployment target (macOS 27.0); it still
+built, and the binary itself records `minos 15.0` on both slices (it records `sdk 15.0`,
+where a `make build` binary records the installed SDK's version; whether that makes any
+behavioural difference has not been measured).
 
 Not measured, so not claimed:
 
 - **Anything after a real submission.** Whether Apple accepts it, what the notarytool log
-  says, and what `spctl` says afterwards. The rehearsal sends nothing to Apple.
+  says, and what `spctl` says afterwards. The rehearsal sends nothing to the notary service.
 - **Whether the bare binary can be stapled.** `stapler` works on app bundles, disk
   images and installer packages; a plain Mach-O is expected not to take a ticket. If so,
   Gatekeeper checks with Apple online the first time a downloaded (quarantined) copy runs,
@@ -105,6 +151,10 @@ Not measured, so not claimed:
 - **Whether an existing Full Disk Access grant carries over.** The designated requirement
   matches (above), which is what the grant is keyed to, but swapping a release binary in
   and watching the grant keep working has not been done.
+
+Known gaps, tracked: the build runs in the live checkout and does not pin or record the
+dependency versions (#309); entitlements are checked for one key rather than for their
+content, and the team is not pinned (#310).
 
 ## Why a zip is built and then thrown away
 
