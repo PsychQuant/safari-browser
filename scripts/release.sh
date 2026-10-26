@@ -54,6 +54,7 @@ NOTARIZE="${NOTARIZE:-0}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-che-mcps-notary}"
 RELEASE_TIMESTAMP="${RELEASE_TIMESTAMP:-}"
 DIST_DIR="${DIST_DIR:-dist}"
+while [ "${#DIST_DIR}" -gt 1 ] && [ "${DIST_DIR%/}" != "$DIST_DIR" ]; do DIST_DIR="${DIST_DIR%/}"; done
 ENTITLEMENTS="${ENTITLEMENTS:-Sources/SafariBrowser/Entitlements.plist}"
 VERIFY_BIN="${VERIFY_BIN:-.build/verify-install-signature}"
 VERSION_FILE="Sources/SafariBrowser/BuildVersion.swift"
@@ -100,6 +101,9 @@ case "$IDENTITY_LINE" in
   *'"Developer ID Application:'*) ;;
   *) die "identity $DEVELOPER_ID is not a \"Developer ID Application\" certificate: $IDENTITY_LINE" ;;
 esac
+TEAM_SHAPE='\(([A-Z0-9]{10})\)"[[:space:]]*$'
+[[ "$IDENTITY_LINE" =~ $TEAM_SHAPE ]] || die "could not read the team ID from the identity: $IDENTITY_LINE"
+TEAM_ID="${BASH_REMATCH[1]}"
 
 # Same rule as stamp-version.sh: the repository root, or `git describe` may walk up
 # into some other repository and produce a tag that is not ours.
@@ -116,6 +120,12 @@ HIDDEN="$(printf '%s\n' "$HIDDEN" | grep -v -e '^$' -e '/\.DS_Store$')"
 [ -z "$HIDDEN" ] || die "untracked files under Sources/ (git may be ignoring them, SwiftPM still compiles them) would ship under the tag's name:
 $(printf '%s\n' "$HIDDEN" | head -5)"
 
+FLAGGED="$(git ls-files -v -- Sources Package.swift)" || die "git ls-files failed"
+FLAGGED="$(printf '%s\n' "$FLAGGED" | grep -v -e '^$' -e '^H ')"
+[ -z "$FLAGGED" ] || die "tracked files under Sources/ are marked skip-worktree or assume-unchanged, so git status cannot see edits to them:
+$(printf '%s\n' "$FLAGGED" | head -5)
+(git update-index --no-skip-worktree / --no-assume-unchanged <path> to clear the flag)"
+
 TAGS="$(git tag --points-at HEAD --list 'v[0-9]*')" || die "git tag failed"
 TAG_COUNT="$(printf '%s\n' "$TAGS" | grep -c .)"
 [ "$TAG_COUNT" -ge 1 ] || die "HEAD is not on a release tag (v[0-9]*). Tag the commit first, then build."
@@ -124,8 +134,8 @@ $TAGS"
 TAG="$TAGS"
 TAG_SHAPE='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 [[ "$TAG" =~ $TAG_SHAPE ]] || die "tag '$TAG' is not of the form vX.Y.Z (optionally -prerelease)."
-case "$TAG" in
-  *-DRYRUN) die "tag '$TAG' ends in -DRYRUN, the suffix of rehearsal output directories; pick another name." ;;
+case "$(printf '%s' "$TAG" | tr 'A-Z' 'a-z')" in
+  *-dryrun) die "tag '$TAG' ends in -DRYRUN (in some case), the suffix of rehearsal output directories; pick another name." ;;
 esac
 COMMIT="$(git rev-parse "$TAG^{commit}")" || die "could not resolve $TAG to a commit"
 
@@ -233,10 +243,10 @@ HASH="${HASH_LINE%% *}"
 printf '%s\n' "$HASH" > "$STAGE/$BINARY_NAME.sha256" || die "could not write the checksum"
 
 mv "$STAGE"/* "$OUT"/ || die "could not move the result into $OUT"
+OUT_RESERVED=0   # first: a signal from here on must not delete the finished result
 rmdir "$STAGE" 2>/dev/null
 STAGE=""
 chmod 755 "$OUT"
-OUT_RESERVED=0
 
 echo "✓ $OUT"
 if [ "$NOTARIZE" = 1 ]; then
@@ -245,12 +255,15 @@ if [ "$NOTARIZE" = 1 ]; then
   echo
   echo "Next — you run these. This script never tags, pushes or calls gh."
   echo "The tag $TAG is commit $COMMIT. Push it and check that the remote shows the same"
-  echo "commit BEFORE creating the release; --verify-tag makes gh refuse a tag that is not"
-  echo "on the remote (otherwise it creates one at the tip of the default branch):"
+  echo "commit BEFORE creating the release (for an annotated tag the commit is on the line"
+  echo "ending in ^{}; the other line is the tag object). --verify-tag makes gh refuse a tag"
+  echo "that is not on the remote (otherwise it creates one at the tip of the default branch):"
   printf '  git push origin %q\n' "$TAG"
-  printf '  git ls-remote origin %q    # must show %s\n' "refs/tags/$TAG" "$COMMIT"
-  printf '  gh release create %q --verify-tag%s %q %q --title %q\n' \
-    "$TAG" "$PRERELEASE" "$OUT/$BINARY_NAME" "$OUT/$BINARY_NAME.sha256" "$TAG"
+  # TAG passed TAG_SHAPE ([0-9A-Za-z.-] only), so plain single quotes are safe and readable here
+  printf "  git ls-remote origin 'refs/tags/%s' 'refs/tags/%s^{}'    # must show %s\n" "$TAG" "$TAG" "$COMMIT"
+  printf '  gh release create %q --verify-tag%s %q %q --title %q --notes %q\n' \
+    "$TAG" "$PRERELEASE" "$OUT/$BINARY_NAME" "$OUT/$BINARY_NAME.sha256" "$TAG" \
+    "Signed with a Developer ID, team $TEAM_ID. To check a download, see docs/release.md (Checking a downloaded copy)."
 else
   echo "  dry run: signed with a real identity, but nothing was submitted for notarization."
   if [ "$RELEASE_TIMESTAMP" != none ]; then

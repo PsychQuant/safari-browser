@@ -176,7 +176,7 @@ apply from the first release made this way. Until then, build from source.
 
 ```bash
 # in the folder you downloaded safari-browser and safari-browser.sha256 to; <TEAM_ID> is
-# the 10-character code in your Developer ID certificate's name
+# the signing team ID stated in the release's notes
 test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" \
   && chmod +x safari-browser \
   && codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "<TEAM_ID>"' safari-browser \
@@ -185,10 +185,11 @@ test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-brow
 
 The checksum only catches a damaged download; the `codesign` line is what ties the file to
 the signing team (`docs/release.md` has the full set of checks, including `spctl`).
-Installing a release binary over an `install-signed` build keeps an existing Full Disk
-Access grant *if* both are signed with the same identity (the grant follows the signing
-identity, see "Which install target?" below); replacing an ad-hoc `make install` build
-means granting Full Disk Access, Accessibility and Screen Recording again.
+A Full Disk Access grant is keyed to the signature's designated requirement, which a
+release binary shares with an `install-signed` build from the same identity, so the grant
+*should* carry over; that has not been observed yet (see `docs/release.md`). Replacing an
+ad-hoc `make install` build means granting Full Disk Access, Accessibility and Screen
+Recording again.
 
 How a release is made, and what has not been measured about it: [`docs/release.md`](docs/release.md).
 

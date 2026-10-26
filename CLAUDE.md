@@ -520,8 +520,9 @@ used to read the target tab's URL when a tab flag is given).
 不連網）。步驟與「還沒量到的事」見 [`docs/release.md`](docs/release.md)。
 
 - **腳本從不 `git tag`、`git push`、呼叫 `gh`。** 發出 release 是維護者親手的事，腳本只印指令。
-  守住這條的是 `release-test.sh` 的 git shim（任何寫入型 subcommand，不論旗標順序，一律拒絕並記錄）與
-  「**每一次**執行都檢查 log」的結尾斷言，不是某一組斷言；改腳本時不要為了「方便」加進去。
+  守住這條的是 `release-test.sh` 的 git shim（push、建 tag、commit 等 release 可能誤跑的寫入型 subcommand，
+  不論旗標順序一律拒絕並記錄）與「**每一次**執行都檢查 log」的結尾斷言，不是某一組斷言。它防的是回歸、不是
+  沙箱：絕對路徑的 git 或 alias 繞得過。改腳本時不要為了「方便」加進去。
   **腳本跑完不等於 release 已發出**：它印出的指令才會發出，所以不要把「`scripts/release.sh` 成功」當成
   `common-release-flow` 的 post-release 觸發條件。
 - `NOTARIZE` 預設 `0`：誤打 `make release-signed` 不會**送公證**，只產出 `dist/<tag>-DRYRUN/`。但預設的

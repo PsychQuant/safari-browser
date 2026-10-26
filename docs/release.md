@@ -42,7 +42,8 @@ tag: `git diff <previous-tag>..<tag> -- scripts Makefile Package.swift 'Sources/
 ## Making a release
 
 Build from a clean checkout of the commit you mean to release: the script refuses a
-tree with any uncommitted or untracked file. Do not edit, commit or switch branches in
+tree with any uncommitted or untracked file, and one whose tracked files under `Sources/`
+are marked skip-worktree or assume-unchanged (git status cannot see edits to those). Do not edit, commit or switch branches in
 that checkout while it runs (the build takes minutes; #309 tracks making that safe).
 
 ```bash
@@ -81,9 +82,14 @@ everyone and cannot be taken back.
 
 ```bash
 git push origin v2.7.0
-git ls-remote origin refs/tags/v2.7.0            # must show the commit the script printed
-gh release create v2.7.0 --verify-tag [--prerelease] dist/v2.7.0/safari-browser dist/v2.7.0/safari-browser.sha256 --title v2.7.0
+git ls-remote origin 'refs/tags/v2.7.0' 'refs/tags/v2.7.0^{}'   # must show the commit the script printed
+gh release create v2.7.0 --verify-tag [--prerelease] dist/v2.7.0/safari-browser dist/v2.7.0/safari-browser.sha256 --title v2.7.0 --notes '…team <TEAM_ID>…'
 ```
+
+For an annotated tag, `ls-remote` shows the tag object on the `refs/tags/<tag>` line and the
+commit on the `refs/tags/<tag>^{}` line; for a lightweight tag there is only the first line.
+The release notes the script prints name the signing team ID, which is what a downloader
+checks the signature against (below).
 
 The `ls-remote` check and `--verify-tag` are there because `gh release create` creates a
 tag that is missing from the remote *at the tip of the default branch*, not at the
@@ -108,8 +114,8 @@ download, not a swapped one. What ties the file to your Developer ID is the sign
 requirement; run the checks before you run the file:
 
 ```bash
-# in the folder you downloaded to; <TEAM_ID> is the 10-character code in parentheses in
-# your certificate's name (security find-identity -v -p codesigning)
+# in the folder you downloaded to; <TEAM_ID> is the signing team ID stated in the release
+# notes (for the maintainer: the 10-character code in parentheses in the certificate's name)
 test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" \
   && chmod +x safari-browser \
   && codesign --verify --strict -R='anchor apple generic and certificate leaf[subject.OU] = "<TEAM_ID>"' safari-browser \

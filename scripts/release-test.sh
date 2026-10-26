@@ -13,9 +13,11 @@
 # one-line mutants of release.sh survived the first version of this suite for exactly
 # that reason.
 #
-# git is real, behind a shim that logs every call and REFUSES anything that writes
-# (push, tag creation, commit, ...), however its arguments are ordered. Every run is
-# checked for such a call, not just the notarizing one.
+# git is real, behind a shim that logs every call and refuses the writing subcommands
+# a release could plausibly run by mistake (push, tag creation, commit, reset, ...),
+# wherever the subcommand sits among the options. It is a guard against regressions,
+# not a sandbox: an absolute-path git or an alias gets past it. Every run is checked for
+# such a call, not just the notarizing one.
 #
 # What the shims cannot tell us is whether Apple accepts the binary or whether the
 # Universal build runs on an Intel Mac. Those are measured by hand and recorded in the
@@ -487,6 +489,20 @@ assert_refused "3d an ignored but compiled source file is refused" "$RC"
 assert_has "3d the refusal names Sources" "Sources" "$C/stderr"
 nothing_built "3d" "$C"
 
+# 3f. a tracked source file git has been told not to look at (skip-worktree,
+# assume-unchanged): `git status` stays clean, the edit still compiles
+for FLAG in --skip-worktree --assume-unchanged; do
+  C="$(new_case "hidden-edit$FLAG")"
+  printf 'let a = 1\n' > "$C/repo/Sources/SafariBrowser/Tracked.swift"
+  (cd "$C/repo" && "$REAL_GIT" add Sources && "$REAL_GIT" commit -q -m tracked && "$REAL_GIT" tag -d v1.2.3 >/dev/null && "$REAL_GIT" tag v1.2.3 \
+     && "$REAL_GIT" update-index "$FLAG" Sources/SafariBrowser/Tracked.swift)
+  printf 'let a = 2\n' > "$C/repo/Sources/SafariBrowser/Tracked.swift"
+  run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID"
+  assert_refused "3f a $FLAG source file is refused" "$RC"
+  assert_has "3f the refusal names the file" "Tracked.swift" "$C/stderr"
+  nothing_built "3f $FLAG" "$C"
+done
+
 # 3e. ignored files that are NOT compiled must not block a release: build products,
 # and the Finder's .DS_Store inside Sources when the repo ignores it
 C="$(new_case ignored-ok)"
@@ -529,6 +545,11 @@ C="$(new_case dryrun-tag 'v1.2.3-DRYRUN')"
 run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID"
 assert_refused "4d a tag ending in -DRYRUN is refused" "$RC"
 nothing_built "4d" "$C"
+
+C="$(new_case dryrun-tag-lower 'v1.2.3-dryrun')"
+run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID"
+assert_refused "4d a tag ending in -dryrun (any case) is refused" "$RC"
+nothing_built "4d lower-case" "$C"
 
 # 5. the tag is an ancestor but HEAD has moved on
 C="$(new_case after-tag)"
@@ -601,6 +622,13 @@ assert_has "7g the refusal says symlink" "symlink" "$C/stderr"
 nothing_built "7g" "$C"
 assert_eq "7g nothing was written through the symlink" "" "$(ls -A "$C/elsewhere")"
 
+C="$(new_case dist-symlink-slash)"
+mkdir -p "$C/elsewhere" && ln -s "$C/elsewhere" "$C/repo/dist"
+(cd "$C/repo" && "$REAL_GIT" add dist && "$REAL_GIT" commit -q -m link && "$REAL_GIT" tag -d v1.2.3 >/dev/null && "$REAL_GIT" tag v1.2.3)
+run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID" DIST_DIR=dist/
+assert_refused "7g a symlinked dist directory written as dist/ is refused" "$RC"
+assert_eq "7g nothing was written through the symlink (dist/)" "" "$(ls -A "$C/elsewhere")"
+
 # --- the dry run (NOTARIZE defaults to 0) ----------------------------------------
 
 C="$(new_case dry)"
@@ -627,6 +655,7 @@ assert_eq "8 the shipped binary reports the tag" "v1.2.3" "$("$D/safari-browser"
 # the final message must not claim that nothing reaches Apple: --timestamp contacts its server
 assert_lacks "8 the dry run does not say nothing was sent to Apple" "nothing was sent to Apple" "$C/stdout"
 assert_has "8 the dry run says nothing was submitted for notarization" "submitted for notarization" "$C/stdout"
+assert_eq "8 dist/ holds only the output directory" "v1.2.3-DRYRUN" "$(ls -A "$C/repo/dist")"
 
 # 9. the checksum file holds the hash and nothing else
 # (an absent file would make both sides empty and "equal", so it has to exist first)
@@ -802,6 +831,7 @@ if [ "$SIGN_AT" -gt 0 ] && [ "$VERIFY_AT" -gt "$SIGN_AT" ] && [ "$SUBMIT_AT" -gt
 else
   fail "17 order is sign, then verify, then submit" "sign=$SIGN_AT verify=$VERIFY_AT submit=$SUBMIT_AT"
 fi
+assert_eq "17 dist/ holds only the output directory" "v1.2.3" "$(ls -A "$C/repo/dist")"
 NOTARIZED_CASE="$C"
 
 # 17b. an accepted-looking JSON with a failing exit code is not an acceptance
@@ -822,13 +852,32 @@ no_artifacts "$C" && ok "17c no artifacts were left" || fail "17c no artifacts w
 C="$NOTARIZED_CASE"
 COMMIT="$("$REAL_GIT" -C "$C/repo" rev-parse 'v1.2.3^{commit}')"
 assert_has "18 it tells the user how to push the tag" "git push origin v1.2.3" "$C/stdout"
-assert_has "18 it tells the user how to see what the remote has" "git ls-remote origin refs/tags/v1.2.3" "$C/stdout"
+assert_has "18 it tells the user how to see what the remote has" "git ls-remote origin 'refs/tags/v1.2.3' 'refs/tags/v1.2.3^{}'" "$C/stdout"
 assert_has "18 it prints the commit the tag must show" "$COMMIT" "$C/stdout"
 assert_has "18 it tells the user how to create the release" "gh release create v1.2.3" "$C/stdout"
 grep -E '^  gh release create ' "$C/stdout" | grep -q -- '--verify-tag' \
   && ok "18 the printed gh line has --verify-tag" || fail "18 the printed gh line has --verify-tag" "$(grep 'gh release create' "$C/stdout")"
 assert_lacks "18 it does not invite skipping the push" "skip if" "$C/stdout"
 assert_lacks "18 a final release is not marked prerelease" "--prerelease" "$C/stdout"
+grep -E '^  gh release create ' "$C/stdout" | grep -q -- '--notes' \
+  && ok "18 the printed gh line carries release notes" || fail "18 the printed gh line carries release notes" "$(grep 'gh release create' "$C/stdout")"
+grep -E '^  gh release create ' "$C/stdout" | grep -q 'ABCDE12345' \
+  && ok "18 the notes name the signing team ID" || fail "18 the notes name the signing team ID" "$(grep 'gh release create' "$C/stdout")"
+
+C="$(new_case annotated 'v3.0.0')"
+(cd "$C/repo" && "$REAL_GIT" tag -d v3.0.0 >/dev/null && "$REAL_GIT" tag -a v3.0.0 -m release)
+run_release "$C" DEVELOPER_ID="$FAKE_ID" FAKE_IDENTITIES="$FAKE_ID" NOTARIZE=1
+assert_ok "18a a notarized run of an annotated tag succeeds" "$RC"
+TAG_COMMIT="$("$REAL_GIT" -C "$C/repo" rev-parse 'v3.0.0^{commit}')"
+TAG_OBJECT="$("$REAL_GIT" -C "$C/repo" rev-parse v3.0.0)"
+assert_has "18a the commit it prints is the tagged commit" "$TAG_COMMIT" "$C/stdout"
+assert_lacks "18a it does not print the tag object as the commit" "$TAG_OBJECT" "$C/stdout"
+LS_LINE="$(grep -E '^  git ls-remote ' "$C/stdout" | head -1 | sed 's/#.*$//')"
+LS_ARGS="$(bash -c 'git() { for a in "$@"; do printf "ARG:%s\n" "$a"; done; }; '"$LS_LINE")"
+case "$LS_ARGS" in
+  *"ARG:refs/tags/v3.0.0^{}"*) ok "18a the ls-remote line asks for the peeled ref" ;;
+  *) fail "18a the ls-remote line asks for the peeled ref" "$LS_LINE -> $LS_ARGS" ;;
+esac
 
 # 18b. a prerelease tag is published as a prerelease
 C="$(new_case rc-tag 'v2.0.0-rc.1')"
@@ -920,7 +969,7 @@ fi
 
 # 24. wording that was wrong and must not come back: the default dry run DOES contact
 # Apple's timestamp server (codesign --timestamp), so it must not be said to send nothing
-BAD_PHRASES='nothing leaves the Mac|nothing is sent to Apple|nothing was sent to Apple|不會送任何東西'
+BAD_PHRASES='nothing leaves the Mac|nothing is sent to Apple|nothing was sent to Apple|不會送任何東西|refuses every write'
 HITS="$(cd "$REPO_ROOT" && grep -nEi "$BAD_PHRASES" README.md docs/release.md CHANGELOG.md CLAUDE.md Makefile scripts/release.sh 2>/dev/null | grep -v '^scripts/release-test.sh' | head -5)"
 assert_eq "24 no document claims that a dry run sends nothing to Apple" "" "$HITS"
 
