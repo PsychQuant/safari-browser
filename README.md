@@ -180,15 +180,15 @@ Run this in the folder you downloaded `safari-browser` and `safari-browser.sha25
 test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" \
   && chmod +x safari-browser \
   && codesign --verify --strict -R='anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "<TEAM_ID>"' safari-browser \
-  && spctl --assess --type execute -vv safari-browser \
   && mkdir -p ~/bin && mv safari-browser ~/bin/
 ```
 
 The checksum only catches a damaged download. The `codesign` line pins the file to a
-Developer ID certificate of the team you name, and `spctl` shows whether Apple notarized
-it. Neither is stronger than the team ID you compare with: the release notes name it, but
-they travel with the file, so compare it with one you got some other way.
-`docs/release.md` explains each check and what has not been observed yet.
+Developer ID certificate of the team you name; it is no stronger than the team ID you
+compare with: the release notes name it, but they travel with the file, so compare it with
+one you got some other way. Whether Apple notarized it cannot be confirmed from the command
+line for a bare binary (`spctl` says "Unnotarized" even for a notarized release, measured
+on v2.7.0); `docs/release.md` explains each check and what has not been observed yet.
 A Full Disk Access grant is keyed to the binary's path and its signature's designated
 requirement; installed at the same path (`~/bin/safari-browser`), a release binary shares
 both with an `install-signed` build from the same identity, so the grant *should* carry

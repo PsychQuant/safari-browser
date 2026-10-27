@@ -129,9 +129,8 @@ with the hardened runtime.
 
 The checksum travels through the same channel as the binary, so it catches a damaged
 download, not a swapped one. The signature requirement below pins the file to a
-*Developer ID Application* certificate of one team, and `spctl` shows whether Apple
-notarized it. Both are only as good as the team ID you compare against: the release
-notes name it, but the notes travel with the binary too, so whoever could swap the file
+*Developer ID Application* certificate of one team. It is only as good as the team ID
+you compare against: the release notes name it, but the notes travel with the binary too, so whoever could swap the file
 could change them as well. Compare the team ID with one you got some other way (an
 earlier release you checked, or the maintainer). Run the checks before you run the file:
 
@@ -139,7 +138,6 @@ earlier release you checked, or the maintainer). Run the checks before you run t
 test "$(shasum -a 256 < safari-browser | awk '{print $1}')" = "$(cat safari-browser.sha256)" \
   && chmod +x safari-browser \
   && codesign --verify --strict -R='anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "<TEAM_ID>"' safari-browser \
-  && spctl --assess --type execute -vv safari-browser \
   && ./safari-browser --version
 ```
 
@@ -150,12 +148,21 @@ what pins it. Its two `certificate … exists` parts are the markers of a Develo
 certificate: without them, an *Apple Development* certificate of the same team would pass
 too. (Measured 2026-10-27: the requirement parses, passes on a Developer ID binary signed
 by the team it names, and fails with another team or on an Apple-signed system binary.)
-`spctl` should report `source=Notarized Developer ID` for a notarized release (it reports
-`Unnotarized Developer ID` for a rehearsal binary, which is how you tell them apart). The
-notarized answer for a bare Mach-O has not been observed yet: check it on the first real
-release, and if `spctl` refuses a notarized download as not an app, the `&&` chain above
-needs changing. Running `safari-browser --version` without `./` would run whatever is
-first on your `PATH`, not the download.
+Running `safari-browser --version` without `./` would run whatever is first on your
+`PATH`, not the download.
+
+**Notarization cannot be confirmed from the command line for this binary.** A release is a
+bare Mach-O, and Apple's ticket cannot be stapled to one (`stapler staple` fails with
+error 73). Without a stapled ticket the local tools answer "not notarized" even for a
+notarized release. Measured 2026-10-28 on v2.7.0, whose notarization was `Accepted` with a
+ticket listing both slices' cdhashes: `spctl --assess --type execute` said
+`rejected, source=Unnotarized Developer ID`, also with `--ignore-cache` and after asking
+Apple (`assessment:remote` true); `syspolicy_check distribution` reported the ticket
+missing; `codesign --check-notarization -R=notarized` failed. That is why `spctl` is not
+in the check above. When a copy downloaded through a browser (and so quarantined) first
+runs, Gatekeeper is expected to look the ticket up online; that has not been observed. A
+copy fetched with `curl` or `gh` carries no quarantine flag, and Gatekeeper does not check
+it at all.
 
 ## Stopping a run
 
@@ -173,7 +180,8 @@ A rehearsal (`NOTARIZE=0`, a real Developer ID, a clean clone on a throwaway tag
 `codesign -dvvv` shows `flags=0x10000(runtime)`, a timestamp from Apple, the
 `apple-events` entitlement and the team's Developer ID authority. `--version` printed the
 tag natively and under Rosetta (`arch -x86_64`). `spctl --assess` said
-`rejected, source=Unnotarized Developer ID`, which is the gap notarization closes. The
+`rejected, source=Unnotarized Developer ID` (a notarized release gets the same answer, see
+above). The
 designated requirement was byte-for-byte the same as that of a binary installed with
 `install-signed` on the same Mac. The build printed a warning that the x86_64
 architecture is deprecated for the SDK's default deployment target (macOS 27.0); it still
@@ -181,14 +189,19 @@ built, and the binary itself records `minos 15.0` on both slices (it records `sd
 where a `make build` binary records the installed SDK's version; whether that makes any
 behavioural difference has not been measured).
 
+The first real submission (v2.7.0, 2026-10-28) was accepted within minutes: notarytool's
+log says `Ready for distribution`, no issues, and its ticket lists the arm64 and x86_64
+cdhashes of the shipped binary. The ticket cannot be stapled to it (`stapler staple`:
+error 73, a plain Mach-O has nowhere to hold one). The build is reproducible: that release
+and its rehearsal, built from the same commit, have byte-identical code and the same
+cdhashes and differ only in the signature's timestamp. Apple's ticket is keyed by cdhash,
+so it covers the rehearsal binary too; the `-DRYRUN` directory and the marker are what
+tell the two files apart.
+
 Not measured, so not claimed:
 
-- **Anything after a real submission.** Whether Apple accepts it, what the notarytool log
-  says, and what `spctl` says afterwards. The rehearsal sends nothing to the notary service.
-- **Whether the bare binary can be stapled.** `stapler` works on app bundles, disk
-  images and installer packages; a plain Mach-O is expected not to take a ticket. If so,
-  Gatekeeper checks with Apple online the first time a downloaded (quarantined) copy runs,
-  so a first run offline may be refused.
+- **How Gatekeeper treats a downloaded release on its first run.** A quarantined copy is
+  expected to be checked online (so a first run offline may be refused); not observed.
 - **The x86_64 slice on an Intel Mac.** Only `--version` and `--help` under Rosetta.
 - **Whether an existing Full Disk Access grant carries over.** The designated requirement
   matches (above), which is what the grant is keyed to, but swapping a release binary in
