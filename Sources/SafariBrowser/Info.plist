@@ -20,7 +20,7 @@
 	<key>CFBundleName</key>
 	<string>safari-browser</string>
 	<key>CFBundleVersion</key>
-	<string>2.6.0</string>
+	<string>2.7.0</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>safari-browser drives Safari — opening pages, reading them, and clicking elements — on your behalf.</string>
 </dict>

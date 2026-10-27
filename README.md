@@ -168,11 +168,10 @@ The string is `git describe --tags --match 'v[0-9]*' --always --dirty` taken whe
 
 ### Install a release binary (#280)
 
-Releases made with `make release-signed` are meant to be Universal (arm64 and x86_64),
-signed with a Developer ID, notarized by Apple, and to print their tag for `--version`.
-**None has been published yet**: the latest release (v2.6.0) is older than that —
-ad-hoc signed, arm64 only, and it cannot say which build it is — so the steps below
-apply from the first release made this way. Until then, build from source.
+Releases made with `make release-signed` are Universal (arm64 and x86_64), signed with a
+Developer ID, notarized by Apple, and print their tag for `--version`. **v2.7.0 is the
+first release made this way**; v2.6.0 and older are ad-hoc signed, arm64 only, and cannot
+say which build they are, so the steps below apply from v2.7.0 on.
 
 Run this in the folder you downloaded `safari-browser` and `safari-browser.sha256` to, with
 `<TEAM_ID>` replaced by the signing team ID:
