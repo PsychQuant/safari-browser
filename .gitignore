@@ -1,5 +1,8 @@
 .build/
 .swiftpm/
+# Release output of scripts/release.sh (#280): signed binaries, never committed.
+# Anchored: release.sh writes only ./dist, and a nested dist/ must stay visible.
+/dist/
 Package.resolved
 .spectra/
 openspec/.vector-search.db*
