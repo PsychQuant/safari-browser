@@ -546,9 +546,13 @@ used to read the target tab's URL when a tab flag is given).
 - 送審的 zip 用 `ditto -c -k --norsrc --noextattr`，**不要照 Apple 範例加 `--keepParent`**：對單一檔案它會把
   隨機暫存目錄名壓進去（實測）。
 - 已量（2026-10-25 dry-run）：兩個切片都跑得動（x86_64 經 Rosetta）、DR 與 `install-signed` 的 binary 逐字相同。
-  **未量**：真實送審之後的任何事、裸 Mach-O 能否 staple、真 Intel Mac、Full Disk Access 授權實際延續。
+  第一次真實送審（v2.7.0，2026-10-28）：`Accepted`，ticket 列出兩個切片的 cdhash；裸 Mach-O **不能** staple
+  （`stapler` error 73）；`spctl`（連 `--ignore-cache`、`assessment:remote` 為 true）、`syspolicy_check`、
+  `codesign --check-notarization` 對**已公證**的它都回答「未公證」，所以下載檢查不放 `spctl`。建置可重現：
+  同一個 commit 的預演與正式 binary 程式碼逐位元組相同、cdhash 相同，ticket 也涵蓋預演 binary。
+  **未量**：Gatekeeper 第一次執行下載（quarantine）檔時的行為、真 Intel Mac、Full Disk Access 授權實際延續。
   寫文件時不要把未量的寫成已證實。建置會警告 x86_64 對該 SDK 預設部署目標（macOS 27.0）已 deprecated（仍可建，
-  binary 本身是 `minos 15.0`）。`spctl` 對**已公證**的裸 Mach-O 怎麼回答也還沒觀察到，第一次真實送審時要看。
+  binary 本身是 `minos 15.0`）。
 - 印出的指令不帶行尾 `#` 註解（zsh 沒開 interactivecomments 時會當成參數）；該看到什麼另起一行寫。
   `gh` 那行的 `--repo` 從 `origin` 推出，只認 github.com 的 owner/name。
 - 已知缺口（獨立審查 #308 找到，已開 issue）：建置在活的 checkout 裡跑、不釘也不記錄依賴版本（#309）；

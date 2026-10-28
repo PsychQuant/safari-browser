@@ -48,7 +48,7 @@
 #     moving onto it minutes later left a window in which `mv` would nest the result
 #     inside a directory that had appeared meanwhile.
 #   - The zip sent to Apple is a submission container, not a deliverable (a bare Mach-O
-#     is not expected to take a stapled ticket; see docs/release.md). It is built in a
+#     cannot take a stapled ticket, measured on v2.7.0; see docs/release.md). It is built in a
 #     rehearsal too, so a ditto or TMPDIR problem shows up before the real run.
 set -u
 

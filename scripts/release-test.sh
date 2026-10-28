@@ -1085,6 +1085,11 @@ assert_eq "24 no document claims that a dry run sends nothing to Apple" "" "$HIT
 BAD_PHRASES_2='never contacts Apple|完全離線|cannot be mistaken|ties the file to your Developer ID|ties the file to the signing team'
 HITS="$(cd "$REPO_ROOT" && grep -nEi "$BAD_PHRASES_2" README.md docs/release.md CHANGELOG.md CLAUDE.md Makefile scripts/release.sh 2>/dev/null | head -5)"
 assert_eq "24 no document overclaims what an offline rehearsal or the download check proves" "" "$HITS"
+# ... and the download check does not end in spctl: for a notarized bare Mach-O (no stapled
+# ticket) it answers "Unnotarized Developer ID", so every downloader's check would fail
+# (measured on v2.7.0, 2026-10-28)
+HITS="$(cd "$REPO_ROOT" && grep -nE '&& spctl' README.md docs/release.md 2>/dev/null | head -3)"
+assert_eq "24 the documented download check does not rely on spctl" "" "$HITS"
 
 # 25. the git shim itself: an allowlist, so a writing subcommand cannot hide behind an
 # option it does not know (round-2 review: `--config-env k=V push` used to get through)
