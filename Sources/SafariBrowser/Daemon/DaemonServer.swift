@@ -1249,7 +1249,7 @@ enum DaemonServer {
 
         // MARK: - Lifecycle bypass and response selection
 
-        enum LifecycleMethod: String, Sendable { case status = "daemon.status", shutdown = "daemon.shutdown" }
+        enum LifecycleMethod: String, Sendable, CaseIterable { case status = "daemon.status", shutdown = "daemon.shutdown" }
 
         static func peekLifecycleMethod(line: Data) -> LifecycleMethod? {
             guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],

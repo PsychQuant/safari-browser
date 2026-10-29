@@ -42,12 +42,14 @@ URL_A="${FIXTURE}?${MARK}=A"
 URL_B="${FIXTURE}?${MARK}=B"
 PASS=0
 FAIL=0
+DAEMON_ERR=$(mktemp "${TMPDIR:-/tmp}/parity-daemon-err.XXXXXX")
 
 pass() { PASS=$((PASS + 1)); echo "  ✓ $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  ✗ $1"; [[ -n "${2:-}" ]] && echo "      $2"; }
 
 cleanup() {
     SAFARI_BROWSER_NAME="$NAME" "$SB" daemon stop 2>/dev/null || true
+    rm -f "$DAEMON_ERR"
     # Close exactly this run's tabs, matched by the run nonce. (The old
     # --url-endswith "test-page.html" never matched the ?<nonce>=A query suffix,
     # so it leaked a fixture tab every run — the accumulation that eventually
@@ -112,8 +114,15 @@ compare_parity() {
         # Daemon mode opts in via the SAFARI_BROWSER_DAEMON=1 env var (the
         # supported signal — `--daemon` was never declared as an
         # ArgumentParser flag and would error at parse time).
-        daemon_out=$(SAFARI_BROWSER_DAEMON=1 SAFARI_BROWSER_NAME="$NAME" "$SB" "$@" 2>/dev/null)
+        daemon_out=$(SAFARI_BROWSER_DAEMON=1 SAFARI_BROWSER_NAME="$NAME" "$SB" "$@" 2>"$DAEMON_ERR")
         daemon_exit=$?
+
+        # #304: a dirty or mismatched build runs stateless even with the daemon
+        # on, and both sides would then agree without the daemon being used.
+        if grep -q '\[daemon fallback' "$DAEMON_ERR"; then
+            fail "$name" "the daemon side did not use the daemon: $(grep -m1 '\[daemon fallback' "$DAEMON_ERR")"
+            return 1
+        fi
 
         if [[ "$stateless_exit" == "$daemon_exit" && "$stateless_out" == "$daemon_out" ]]; then
             pass "$name  (exit=$stateless_exit, ${#stateless_out} bytes)"

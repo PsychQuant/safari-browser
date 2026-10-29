@@ -45,38 +45,35 @@ enum DaemonProtocol {
         /// fallback warnings. Format mirrors `git describe --dirty`
         /// output: `1.0.0+abcdef12-dirty(homebrew)`.
         var description: String {
-            // Shorten hashes only; a tag used as the commit stays whole.
+            // Shorten hashes only; a tag used as the commit stays whole. The
+            // fields come from the peer's handshake and reach the terminal, so
+            // control characters are dropped (verify round 2).
+            func printable(_ text: String) -> String {
+                String(String.UnicodeScalarView(text.unicodeScalars.filter { $0.properties.generalCategory != .control }))
+            }
             let isHash = !commit.isEmpty && commit.allSatisfy(\.isHexDigit)
-            let shortCommit = isHash ? String(commit.prefix(8)) : commit
+            let shortCommit = printable(isHash ? String(commit.prefix(8)) : commit)
             let dirtyTag = dirty ? "-dirty" : ""
-            return "\(semver)+\(shortCommit)\(dirtyTag)(\(vendor.rawValue))"
+            return "\(printable(semver))+\(shortCommit)\(dirtyTag)(\(vendor.rawValue))"
         }
     }
 
-    /// Resolve the current build's `Version` from an environment dict.
-    /// Tests inject specific combinations; production callers use the
-    /// process environment via the `currentVersion` static below.
+    /// Resolve the current build's `Version`: the stamped `BuildVersion` is the
+    /// base (#304), and environment variables override single fields. Tests
+    /// inject both; production uses the process environment via `currentVersion`.
     ///
-    /// Build-time metadata SHOULD be injected at link time (e.g. via
-    /// a generated `BuildInfo.swift` from the build script), but for
-    /// v1 we read from environment variables so the build system
-    /// stays untouched. The defaults make every locally-run binary
-    /// identify as `vendor=source, dirty=false` — packaging scripts
-    /// can override per-distribution.
-    ///
-    /// Recognized env keys:
-    /// - `SAFARI_BROWSER_BUILD_SEMVER`  — defaults to `"1.0.0"`
-    /// - `SAFARI_BROWSER_BUILD_COMMIT`  — defaults to `"unknown"`
-    /// - `SAFARI_BROWSER_BUILD_DIRTY`   — `"1"` enables; everything else is false
+    /// Recognized env keys, each overriding only its own field when non-empty:
+    /// - `SAFARI_BROWSER_BUILD_SEMVER`
+    /// - `SAFARI_BROWSER_BUILD_COMMIT`
+    /// - `SAFARI_BROWSER_BUILD_DIRTY`   — `"1"` sets, `"0"` clears, anything else
+    ///   keeps the stamp's flag
     /// - `SAFARI_BROWSER_BUILD_VENDOR`  — must be one of the `Vendor` cases;
-    ///   any other value (including misspellings) falls back to `.source`
+    ///   any other value (including misspellings) means `.source`
     ///
-    /// When none of them is set (the normal case: nothing in the build sets
-    /// them), the identity comes from the stamped `BuildVersion` (#304), so two
-    /// different builds no longer shake hands as equal. Before #304 every
+    /// Before #304 the variables were the only source; nothing set them, every
     /// process reported `1.0.0+unknown(source)` and an old daemon silently
-    /// served a new CLI. `unknown` (an unstamped `swift build` / `swift test`)
-    /// keeps that old default identity.
+    /// served a new CLI. An unstamped build (`unknown`) still starts from that
+    /// default, so unstamped builds cannot be told apart (#320).
     static func resolveCurrentVersion(env: [String: String], buildVersion: String = BuildVersion.value) -> Version {
         // The stamp is the base; each non-empty variable overrides its own field
         // only (verify round 1: an all-or-nothing override discarded the stamp).
@@ -84,7 +81,14 @@ enum DaemonProtocol {
             ?? Version(semver: "1.0.0", commit: "unknown", dirty: false, vendor: .source)
         let semver = env["SAFARI_BROWSER_BUILD_SEMVER"]?.nonEmpty ?? base.semver
         let commit = env["SAFARI_BROWSER_BUILD_COMMIT"]?.nonEmpty ?? base.commit
-        let dirty = env["SAFARI_BROWSER_BUILD_DIRTY"]?.nonEmpty.map { $0 == "1" } ?? base.dirty
+        // `1` sets and `0` clears; any other value leaves the stamp's flag, so
+        // `true` cannot silently clear a dirty stamp (verify round 2).
+        let dirty: Bool
+        switch env["SAFARI_BROWSER_BUILD_DIRTY"] {
+        case "1": dirty = true
+        case "0": dirty = false
+        default: dirty = base.dirty
+        }
         let vendor: Vendor
         if let raw = env["SAFARI_BROWSER_BUILD_VENDOR"]?.nonEmpty {
             vendor = Vendor(rawValue: raw) ?? .source
@@ -126,12 +130,32 @@ enum DaemonProtocol {
         return Version(semver: semver(of: rest), commit: String(rest), dirty: dirty, vendor: .git)
     }
 
-    /// `daemon.shutdown` and `daemon.status` do not depend on the build, so the
+    /// `daemon.shutdown` and `daemon.status` do not depend on the build, so a
     /// client sends them to a daemon of any build (verify round 1: otherwise
-    /// `daemon stop` could not stop the old daemon after an upgrade). The list
-    /// is the server's own closed lifecycle list; every other method keeps the gate.
+    /// `daemon stop` could not stop the old daemon after an upgrade). A closed
+    /// list of two; every other method keeps the gate. A lifecycle method added
+    /// to the server later is not exempt until it is added here
+    /// (`DaemonLifecycleAcrossBuildsTests` fails until then). Clients from before
+    /// #304 do not have this exemption.
+    static let buildIndependentMethods: Set<String> = ["daemon.shutdown", "daemon.status"]
+
     static func isBuildIndependent(method: String) -> Bool {
-        DaemonServer.Instance.LifecycleMethod(rawValue: method) != nil
+        buildIndependentMethods.contains(method)
+    }
+
+    /// The stderr note `daemon status` prints when the daemon's identity does
+    /// not match this CLI's, or nil when they match. A dirty CLI never uses a
+    /// daemon, so restarting cannot help it; say so instead (verify round 2).
+    static func mismatchNote(daemon: Version, client: Version) -> String? {
+        guard !versionsMatch(server: daemon, client: client) else { return nil }
+        let both = "daemon \(daemon.description), this CLI \(client.description)"
+        if client.dirty {
+            return "note: this CLI is a dirty build (\(both)); a dirty build never uses a daemon and runs every command stateless"
+        }
+        if daemon.dirty {
+            return "note: this daemon was started by a dirty build (\(both)); commands fall back to stateless until it is restarted with daemon stop and daemon start"
+        }
+        return "note: this daemon runs another build (\(both)); commands fall back to stateless until it is restarted with daemon stop and daemon start"
     }
 
     /// Cached current version captured at process start from the real

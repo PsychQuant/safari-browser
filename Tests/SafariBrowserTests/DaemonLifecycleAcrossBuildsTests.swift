@@ -74,7 +74,11 @@ final class DaemonLifecycleAcrossBuildsTests: XCTestCase {
         deinit { try? FileManager.default.removeItem(at: directory) }
     }
 
-    private let otherBuild = DaemonProtocol.Version(semver: "2.7.0", commit: "v2.7.0", dirty: false, vendor: .git)
+    /// Another build by construction: this test binary's own identity with a
+    /// different commit (verify round 2: a fixed value could equal the stamp).
+    private let otherBuild = DaemonProtocol.Version(
+        semver: DaemonProtocol.currentVersion.semver, commit: DaemonProtocol.currentVersion.commit + "-other",
+        dirty: false, vendor: DaemonProtocol.currentVersion.vendor)
 
     func testShutdownReachesADaemonOfAnotherBuild() async throws {
         XCTAssertFalse(DaemonProtocol.versionsMatch(server: otherBuild, client: DaemonProtocol.currentVersion))
@@ -108,8 +112,12 @@ final class DaemonLifecycleAcrossBuildsTests: XCTestCase {
         }
     }
 
-    /// The exemption is the server's own closed list of lifecycle methods.
+    /// The exemption is a closed list of two; a lifecycle method added to the
+    /// server later fails here until someone decides whether it may cross builds.
     func testTheExemptMethodsAreExactlyTheServersLifecycleMethods() {
+        XCTAssertEqual(DaemonProtocol.buildIndependentMethods, ["daemon.shutdown", "daemon.status"])
+        XCTAssertEqual(Set(DaemonServer.Instance.LifecycleMethod.allCases.map(\.rawValue)),
+                       DaemonProtocol.buildIndependentMethods)
         XCTAssertTrue(DaemonProtocol.isBuildIndependent(method: "daemon.shutdown"))
         XCTAssertTrue(DaemonProtocol.isBuildIndependent(method: "daemon.status"))
         for other in ["js", "daemon.start", "daemon.logs", "", "daemon.status "] {

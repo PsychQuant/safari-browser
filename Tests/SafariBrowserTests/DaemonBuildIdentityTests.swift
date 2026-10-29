@@ -95,9 +95,16 @@ final class DaemonBuildIdentityTests: XCTestCase {
                        .init(semver: "2.7.0", commit: "abc1234", dirty: false, vendor: .homebrew))
         XCTAssertEqual(resolve(["SAFARI_BROWSER_BUILD_DIRTY": "1"]),
                        .init(semver: "2.7.0", commit: "abc1234", dirty: true, vendor: .git))
-        // A set DIRTY other than "1" means not dirty, also over a dirty stamp.
+        // verify round 2: only "1" sets and only "0" clears; any other value
+        // (`true`, `yes`) leaves the stamp's flag alone instead of clearing it.
         XCTAssertFalse(DaemonProtocol.resolveCurrentVersion(env: ["SAFARI_BROWSER_BUILD_DIRTY": "0"],
                                                             buildVersion: "v2.7.0-dirty").dirty)
+        for ignored in ["true", "yes", "on", "false", "2"] {
+            XCTAssertTrue(DaemonProtocol.resolveCurrentVersion(env: ["SAFARI_BROWSER_BUILD_DIRTY": ignored],
+                                                               buildVersion: "v2.7.0-dirty").dirty, ignored)
+            XCTAssertFalse(DaemonProtocol.resolveCurrentVersion(env: ["SAFARI_BROWSER_BUILD_DIRTY": ignored],
+                                                                buildVersion: "v2.7.0").dirty, ignored)
+        }
         // An empty variable does not count as set.
         XCTAssertEqual(resolve(["SAFARI_BROWSER_BUILD_COMMIT": ""]), identity("v2.7.0-5-gabc1234"))
         // A misspelled vendor still falls back to `source`, as before #304.
@@ -107,16 +114,42 @@ final class DaemonBuildIdentityTests: XCTestCase {
                        .init(semver: "1.0.0", commit: "feedface", dirty: false, vendor: .source))
     }
 
-    /// Wiring only: `currentVersion` uses `BuildVersion.value` by default. Under
-    /// `swift test` that is `unknown` on both sides, so the stamped path itself
-    /// is measured by hand on a stamped binary (#304 comment).
-    func testCurrentVersionDefaultsToTheStampedBuildVersion() {
-        XCTAssertEqual(DaemonProtocol.resolveCurrentVersion(env: [:]), identity(BuildVersion.value))
+    /// Wiring only: `currentVersion` is the process environment over
+    /// `BuildVersion.value`. Under `swift test` the stamp is normally `unknown`,
+    /// so the stamped path itself is measured by hand on a stamped binary (#304 comment).
+    func testCurrentVersionIsTheEnvironmentOverTheStampedBuildVersion() {
+        XCTAssertEqual(DaemonProtocol.currentVersion,
+                       DaemonProtocol.resolveCurrentVersion(env: ProcessInfo.processInfo.environment,
+                                                            buildVersion: BuildVersion.value))
     }
 
     /// verify round 1: the mismatch message must not cut a tag in half.
     func testDescriptionShortensOnlyHashes() {
         XCTAssertEqual(identity("v2.8.0-rc1").description, "2.8.0-rc1+v2.8.0-rc1(git)")
         XCTAssertEqual(identity("v2.7.0-5-gabc1234def").description, "2.7.0+abc1234d(git)")
+    }
+
+    /// verify round 2: a daemon's handshake reaches the terminal through these
+    /// messages, so control characters in it are not printed.
+    func testDescriptionDropsControlCharacters() {
+        let v = DaemonProtocol.Version(semver: "1.0\u{1B}[2J", commit: "v1\nx\u{7}", dirty: false, vendor: .git)
+        XCTAssertEqual(v.description, "1.0[2J+v1x(git)")
+    }
+
+    /// verify round 2: the `daemon status` note says what is actually wrong.
+    func testMismatchNoteNamesTheRealCause() {
+        let clean = identity("v2.7.0"), other = identity("v2.7.0-1-gdef5678")
+        let dirtyCLI = identity("v2.7.0-dirty"), dirtyDaemon = identity("v2.7.0-dirty")
+        XCTAssertNil(DaemonProtocol.mismatchNote(daemon: clean, client: clean))
+        let anotherBuild = DaemonProtocol.mismatchNote(daemon: other, client: clean) ?? ""
+        XCTAssertTrue(anotherBuild.contains("another build"), anotherBuild)
+        XCTAssertTrue(anotherBuild.contains("daemon stop"), anotherBuild)
+        let fromDirtyCLI = DaemonProtocol.mismatchNote(daemon: dirtyDaemon, client: dirtyCLI) ?? ""
+        XCTAssertTrue(fromDirtyCLI.contains("dirty build"), fromDirtyCLI)
+        XCTAssertFalse(fromDirtyCLI.contains("another build"), fromDirtyCLI)
+        XCTAssertFalse(fromDirtyCLI.contains("daemon start"), fromDirtyCLI)
+        let dirtyOnlyDaemon = DaemonProtocol.mismatchNote(daemon: dirtyDaemon, client: clean) ?? ""
+        XCTAssertTrue(dirtyOnlyDaemon.contains("dirty build"), dirtyOnlyDaemon)
+        XCTAssertTrue(dirtyOnlyDaemon.contains("daemon start"), dirtyOnlyDaemon)
     }
 }
