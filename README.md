@@ -1318,6 +1318,11 @@ Ordinary daemon requests share one 15-second deadline across connection, handsha
 transmission, and the complete response; `exec` has an explicit 60-second deadline.
 Partial bytes do not restart the clock. A connection failure, incompatible handshake,
 or unknown method before execution falls back with `[daemon fallback: <reason>]`.
+A daemon of another build is an incompatible handshake (#304): the CLI sends nothing and
+runs stateless. Restart the daemon with `daemon stop` and `daemon start`; these two reach a
+daemon of any build from a CLI that includes #304 (an older CLI cannot stop a newer daemon:
+use the newer binary, or wait for the idle timeout). A build installed with `make install`
+from a working tree with changes to tracked files is dirty and never uses a daemon.
 Once any request bytes have been sent, a timeout, lost response, or invalid reply
 reports an **unknown execution outcome** and does not rerun the operation. The original
 operation can still finish in Safari; inspect its result before retrying. Handler
