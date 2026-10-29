@@ -305,6 +305,8 @@ Client 每讀一行都有上限：握手 64 KiB、回覆 128 MiB（`DaemonClient
 
 Daemon 連線時送 `{"protocol":"safari-browser-daemon","version":"<semver>+<git-commit>"}` handshake。Dirty build（`git status` 非空）的 version 會帶 `+dirty-<hash>` 尾巴，**永遠 mismatch** — 避免 WIP daemon 吃到下一版 CLI 的 request。
 
+**身分來源（#304）**：沒有設 `SAFARI_BROWSER_BUILD_*` 時，取自蓋章的 `BuildVersion`（`git describe`）：`vX.Y.Z` → (`X.Y.Z`, `vX.Y.Z`)、`vX.Y.Z-N-g<hash>` → (`X.Y.Z`, `<hash>`)、裸 hash → (`0.0.0`, `<hash>`)，`-dirty` 設 dirty，vendor 皆為 `git`；`unknown`（未蓋章的 `swift build`／`swift test`）維持舊的 `1.0.0+unknown(source)`。#304 之前沒有任何流程設那四個變數，所有建置都握手成 `1.0.0+unknown(source)`，舊 daemon 會安靜地服務新 CLI。實測（`v2.7.0-2-gbfc830c` 的 daemon 對已安裝的 v2.7.0）：`[daemon fallback: remote versionMismatch: daemon 2.7.0+bfc830c(git), client 1.0.0+unknown(source)]`。注意與 #281 第 1 項的交互：被中斷的 `make build` 留下的戳記會讓建置帶 `-dirty`，那種建置永遠退回 stateless。
+
 ### 相關 specs
 
 - `openspec/specs/persistent-daemon/spec.md`（archive 後生成）

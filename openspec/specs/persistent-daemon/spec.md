@@ -186,6 +186,13 @@ code:
 
 Upon each new client connection, the daemon SHALL send a handshake message containing its build identifier (git commit hash plus semantic version) and SHALL await a matching identifier from the client. If the client's identifier does not match, the daemon SHALL close the connection and the client SHALL invoke the stateless fallback path with a `[daemon fallback: version mismatch]` stderr warning.
 
+The build identifier SHALL come from the build version stamped into the binary (`git describe --tags --match 'v[0-9]*' --always --dirty`, see `cli-version`) unless one of `SAFARI_BROWSER_BUILD_SEMVER`, `SAFARI_BROWSER_BUILD_COMMIT`, `SAFARI_BROWSER_BUILD_DIRTY`, `SAFARI_BROWSER_BUILD_VENDOR` is set to a non-empty value, in which case those variables SHALL define it as before. A stamped `vX.Y.Z` SHALL map to semver `X.Y.Z` and commit `vX.Y.Z`; `vX.Y.Z-N-g<hash>` to semver `X.Y.Z` and commit `<hash>`; a bare hash to semver `0.0.0` and that hash; a trailing `-dirty` SHALL set the dirty flag; all of these SHALL carry vendor `git`. An unstamped build (`unknown`) SHALL keep the identifier `1.0.0`, `unknown`, not dirty, vendor `source`. (#304: before this, nothing set the variables, every build identified as `1.0.0+unknown(source)`, and an old daemon silently served a new CLI.)
+
+#### Scenario: Two different builds mismatch
+
+- **WHEN** a daemon stamped `v2.7.0-2-gbfc830c` receives a connection from a client stamped `v2.7.0` (or from a client of any other commit)
+- **THEN** the identifiers differ, the client prints `[daemon fallback: version mismatch]` and runs the command stateless
+
 #### Scenario: Upgrading CLI while old daemon runs
 
 - **WHEN** the user upgrades the `safari-browser` binary while a daemon from the prior version is still running
