@@ -68,7 +68,19 @@ enum DaemonProtocol {
     /// - `SAFARI_BROWSER_BUILD_DIRTY`   — `"1"` enables; everything else is false
     /// - `SAFARI_BROWSER_BUILD_VENDOR`  — must be one of the `Vendor` cases;
     ///   any other value (including misspellings) falls back to `.source`
-    static func resolveCurrentVersion(env: [String: String]) -> Version {
+    ///
+    /// When none of them is set (the normal case: nothing in the build sets
+    /// them), the identity comes from the stamped `BuildVersion` (#304), so two
+    /// different builds no longer shake hands as equal. Before #304 every
+    /// process reported `1.0.0+unknown(source)` and an old daemon silently
+    /// served a new CLI. `unknown` (an unstamped `swift build` / `swift test`)
+    /// keeps that old default identity.
+    static func resolveCurrentVersion(env: [String: String], buildVersion: String = BuildVersion.value) -> Version {
+        let keys = ["SAFARI_BROWSER_BUILD_SEMVER", "SAFARI_BROWSER_BUILD_COMMIT",
+                    "SAFARI_BROWSER_BUILD_DIRTY", "SAFARI_BROWSER_BUILD_VENDOR"]
+        if !keys.contains(where: { env[$0]?.nonEmpty != nil }), let stamped = identity(fromBuildVersion: buildVersion) {
+            return stamped
+        }
         let semver = env["SAFARI_BROWSER_BUILD_SEMVER"]?.nonEmpty ?? "1.0.0"
         let commit = env["SAFARI_BROWSER_BUILD_COMMIT"]?.nonEmpty ?? "unknown"
         let dirty = env["SAFARI_BROWSER_BUILD_DIRTY"] == "1"
@@ -80,6 +92,28 @@ enum DaemonProtocol {
         }
         return Version(semver: semver, commit: commit, dirty: dirty, vendor: vendor)
     }
+
+    /// `git describe --tags --match 'v[0-9]*' --always --dirty` output → identity:
+    /// `vX.Y.Z` → (X.Y.Z, vX.Y.Z); `vX.Y.Z-N-g<hash>` → (X.Y.Z, hash);
+    /// a bare hash → (0.0.0, hash); a trailing `-dirty` sets `dirty`. Anything
+    /// else, `unknown` included, is nil (the caller keeps the old default).
+    static func identity(fromBuildVersion text: String) -> Version? {
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = buildVersionPattern.firstMatch(in: text, range: range) else { return nil }
+        func group(_ i: Int) -> String? {
+            Range(match.range(at: i), in: text).map { String(text[$0]) }
+        }
+        let dirty = group(4) != nil
+        if let tag = group(1) {
+            return Version(semver: String(tag.dropFirst()), commit: group(2) ?? tag, dirty: dirty, vendor: .git)
+        }
+        guard let hash = group(3) else { return nil }
+        return Version(semver: "0.0.0", commit: hash, dirty: dirty, vendor: .git)
+    }
+
+    /// Groups: 1 tag `vX.Y.Z`, 2 hash after a tag, 3 bare hash, 4 `-dirty`.
+    private static let buildVersionPattern = try! NSRegularExpression(
+        pattern: #"^(?:(v[0-9]+\.[0-9]+\.[0-9]+)(?:-[0-9]+-g([0-9a-f]{7,40}))?|([0-9a-f]{7,40}))(-dirty)?$"#)
 
     /// Cached current version captured at process start from the real
     /// environment. The struct is value-semantics so callers comparing
