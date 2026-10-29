@@ -184,18 +184,30 @@ code:
 ---
 ### Requirement: Version handshake refuses mismatched client
 
-Upon each new client connection, the daemon SHALL send a handshake message containing its build identifier (git commit hash plus semantic version) and SHALL await a matching identifier from the client. If the client's identifier does not match, the daemon SHALL close the connection and the client SHALL invoke the stateless fallback path with a `[daemon fallback: version mismatch]` stderr warning.
+Upon each new client connection, the daemon SHALL send a handshake message containing its build identifier (git commit hash plus semantic version). The client SHALL compare it with its own identifier. When they do not match, the client SHALL NOT send the request and SHALL invoke the stateless fallback path with a `[daemon fallback: remote versionMismatch: daemon <identifier>, client <identifier>]` stderr warning. The comparison happens in the client only; the daemon is not told the client's identifier. Exactly two methods are exempt, because they do not depend on the build: `daemon.shutdown` and `daemon.status` (the daemon's own lifecycle list) SHALL be sent whatever the identifiers, so `daemon stop` and `daemon status` reach a daemon of any build; `daemon status` SHALL then add a stderr note naming both identifiers and keep its stdout unchanged.
 
-The build identifier SHALL come from the build version stamped into the binary (`git describe --tags --match 'v[0-9]*' --always --dirty`, see `cli-version`) unless one of `SAFARI_BROWSER_BUILD_SEMVER`, `SAFARI_BROWSER_BUILD_COMMIT`, `SAFARI_BROWSER_BUILD_DIRTY`, `SAFARI_BROWSER_BUILD_VENDOR` is set to a non-empty value, in which case those variables SHALL define it as before. A stamped `vX.Y.Z` SHALL map to semver `X.Y.Z` and commit `vX.Y.Z`; `vX.Y.Z-N-g<hash>` to semver `X.Y.Z` and commit `<hash>`; a bare hash to semver `0.0.0` and that hash; a trailing `-dirty` SHALL set the dirty flag; all of these SHALL carry vendor `git`. An unstamped build (`unknown`) SHALL keep the identifier `1.0.0`, `unknown`, not dirty, vendor `source`. (#304: before this, nothing set the variables, every build identified as `1.0.0+unknown(source)`, and an old daemon silently served a new CLI.)
+The build identifier SHALL come from the build version stamped into the binary (`git describe --tags --match 'v[0-9]*' --always --dirty`, see `cli-version`), read from the right: a trailing `-dirty` SHALL set the dirty flag; then `<tag>-N-g<hash>` (hash of 4 to 64 lowercase hex digits) SHALL map to semver `<tag>` without its leading `v` and commit `<hash>`; a bare hash SHALL map to semver `0.0.0` and that hash; any other stamp is the tag itself and SHALL map to semver `<tag>` without its leading `v` and commit `<tag>` (so `v2.7.0` → `2.7.0`, `v2.7.0`; `v2.8.0-rc1` → `2.8.0-rc1`, `v2.8.0-rc1`). All of these SHALL carry vendor `git`. Only an unstamped build (`unknown`) SHALL keep the identifier `1.0.0`, `unknown`, not dirty, vendor `source`; no other stamp SHALL fall back to it. Each of `SAFARI_BROWSER_BUILD_SEMVER`, `SAFARI_BROWSER_BUILD_COMMIT`, `SAFARI_BROWSER_BUILD_DIRTY` (dirty only when `1`) and `SAFARI_BROWSER_BUILD_VENDOR` (an unknown value means `source`) that is set to a non-empty value SHALL override its own field only. (#304: before this, nothing set the variables, every build identified as `1.0.0+unknown(source)`, and an old daemon silently served a new CLI.)
+
+Limits: all unstamped builds (a plain `swift build`, a source tree without `.git`) share one identifier, so the scenarios below do not detect a change between two of them. The dirty flag is that of `git describe --dirty`: it is set by any change to a tracked file anywhere in the working tree, including files that are not compiled, and it is not set by untracked source files.
 
 #### Scenario: Two different builds mismatch
 
 - **WHEN** a daemon stamped `v2.7.0-2-gbfc830c` receives a connection from a client stamped `v2.7.0` (or from a client of any other commit)
-- **THEN** the identifiers differ, the client prints `[daemon fallback: version mismatch]` and runs the command stateless
+- **THEN** the identifiers differ, the client sends nothing, prints `[daemon fallback: remote versionMismatch: daemon 2.7.0+bfc830c(git), client 2.7.0+v2.7.0(git)]` and runs the command stateless
+
+#### Scenario: Two prerelease builds mismatch
+
+- **WHEN** a daemon stamped `v2.8.0-rc1` receives a connection from a client stamped `v2.8.0-rc2`, or from a client stamped `v2.8.0-rc1-3-gabc1234`
+- **THEN** the identifiers differ and the client falls back to stateless
+
+#### Scenario: Lifecycle requests cross a build mismatch
+
+- **WHEN** a client of one build runs `safari-browser daemon stop` or `safari-browser daemon status` against a daemon of another build
+- **THEN** the client sends `daemon.shutdown` or `daemon.status` anyway, the daemon stops or reports its status, and `daemon status` also prints a stderr note naming both identifiers
 
 #### Scenario: Upgrading CLI while old daemon runs
 
-- **WHEN** the user upgrades the `safari-browser` binary while a daemon from the prior version is still running
+- **WHEN** the user upgrades the `safari-browser` binary, to a stamped build, while a daemon from the prior version is still running
 - **THEN** the first command from the new binary gets a version mismatch, falls back to stateless, and the user can run `safari-browser daemon stop` followed by `safari-browser daemon start` to bring the daemon up to date
 
 
@@ -395,14 +407,14 @@ code:
 ---
 ### Requirement: Version handshake treats dirty builds as always-mismatched
 
-The build identifier compared during client/daemon handshake (see Requirement: Version handshake refuses mismatched client) SHALL include a `dirty` boolean flag that is `true` when the binary was built from a git working tree with uncommitted changes and `false` otherwise. The handshake SHALL compare as **mismatched** whenever either side has `dirty=true`, even if the commit hashes are byte-identical, so developer-local rebuilds always trigger a restart rather than reusing a potentially-stale pre-compiled script cache.
+The build identifier compared during client/daemon handshake (see Requirement: Version handshake refuses mismatched client) SHALL include a `dirty` boolean flag that is `true` when the stamped build version ends in `-dirty` (that is, `git describe --dirty` saw a change to a tracked file in the working tree) and `false` otherwise. The handshake SHALL compare as **mismatched** whenever either side has `dirty=true`, even if the commit hashes are byte-identical, so developer-local rebuilds always trigger a restart rather than reusing a potentially-stale pre-compiled script cache.
 
 When a binary is built without git metadata (tarball install, Homebrew bottle, `swift build` from an untracked source tree, Nix build), the identifier SHALL include a `vendor:<vendor-id>` tag (e.g., `vendor:homebrew`, `vendor:tarball`, `vendor:unknown`). Vendor-built binaries with identical `(version, vendor, commit_or_nil)` SHALL compare as matched. Client and daemon with differing vendor tags SHALL compare as mismatched.
 
 #### Scenario: Dirty client always mismatches clean daemon
 
 - **WHEN** the daemon was built from a clean git tree at commit `abc1234` and the client was just rebuilt with uncommitted changes (same commit `abc1234`, dirty flag true)
-- **THEN** the handshake reports mismatch; the client triggers `[daemon fallback: version mismatch]`; the user can `daemon stop` + restart to pick up the rebuilt pre-compiled cache
+- **THEN** the handshake reports mismatch and the client falls back to stateless with the `remote versionMismatch` warning; `daemon stop` still stops the daemon. A daemon started by a dirty build also mismatches that same dirty build, so a dirty build always runs stateless
 
 #### Scenario: Homebrew bottle and source build mismatch
 

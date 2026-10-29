@@ -303,9 +303,9 @@ Client 每讀一行都有上限：握手 64 KiB、回覆 128 MiB（`DaemonClient
 
 ### Version handshake
 
-Daemon 連線時送 `{"protocol":"safari-browser-daemon","version":"<semver>+<git-commit>"}` handshake。Dirty build（`git status` 非空）的 version 會帶 `+dirty-<hash>` 尾巴，**永遠 mismatch** — 避免 WIP daemon 吃到下一版 CLI 的 request。
+Daemon 連線時送 handshake，身分是 `(semver, commit, dirty, vendor)` 四元組，顯示成 `<semver>+<commit>[-dirty](<vendor>)`。比對只在 client 做：不符時不送 request、退回 stateless 並印 `[daemon fallback: remote versionMismatch: daemon …, client …]`。Dirty build（`git describe --dirty` 的 `-dirty`：工作樹裡任何已追蹤檔案有修改，包括不編譯的檔案；未追蹤的原始碼不算）**永遠 mismatch**，連自己啟動的 daemon 也一樣，所以 dirty build 永遠走 stateless。**例外**：`daemon.shutdown` 與 `daemon.status`（server 的 `LifecycleMethod` 封閉列舉，`DaemonProtocol.isBuildIndependent`）不受身分閘門限制，`daemon stop`／`daemon status` 碰得到任何建置的 daemon；`status` 遇到不符時在 stderr 多印一行，stdout 不變（`scripts/benchmark-performance.py` 以 fullmatch 比對）。
 
-**身分來源（#304）**：沒有設 `SAFARI_BROWSER_BUILD_*` 時，取自蓋章的 `BuildVersion`（`git describe`）：`vX.Y.Z` → (`X.Y.Z`, `vX.Y.Z`)、`vX.Y.Z-N-g<hash>` → (`X.Y.Z`, `<hash>`)、裸 hash → (`0.0.0`, `<hash>`)，`-dirty` 設 dirty，vendor 皆為 `git`；`unknown`（未蓋章的 `swift build`／`swift test`）維持舊的 `1.0.0+unknown(source)`。#304 之前沒有任何流程設那四個變數，所有建置都握手成 `1.0.0+unknown(source)`，舊 daemon 會安靜地服務新 CLI。實測（`v2.7.0-2-gbfc830c` 的 daemon 對已安裝的 v2.7.0）：`[daemon fallback: remote versionMismatch: daemon 2.7.0+bfc830c(git), client 1.0.0+unknown(source)]`。注意與 #281 第 1 項的交互：被中斷的 `make build` 留下的戳記會讓建置帶 `-dirty`，那種建置永遠退回 stateless。
+**身分來源（#304）**：取自蓋章的 `BuildVersion`（`git describe`），從右邊拆：結尾 `-dirty` 設 dirty；`<tag>-N-g<hash>`（4–64 位小寫 hex）→ (`<tag>` 去掉 `v`, `<hash>`)；裸 hash → (`0.0.0`, `<hash>`)；其餘整段當 tag → (`<tag>` 去掉 `v`, `<tag>`)，prerelease 如 `v2.8.0-rc1` 也是；vendor 皆為 `git`。只有 `unknown`（未蓋章的 `swift build`／`swift test`）維持舊的 `1.0.0+unknown(source)`，所有未蓋章的建置彼此仍判為相同。`SAFARI_BROWSER_BUILD_*` 每個非空的變數只覆寫自己那一欄。#304 之前沒有任何流程設那四個變數，所有建置都握手成 `1.0.0+unknown(source)`，舊 daemon 會安靜地服務新 CLI。實測（`v2.7.0-2-gbfc830c` 的 daemon 對已安裝的 v2.7.0）：`[daemon fallback: remote versionMismatch: daemon 2.7.0+bfc830c(git), client 1.0.0+unknown(source)]`。注意與 #281 第 1 項的交互：被中斷的 `make build` 會把戳記留在 `BuildVersion.swift`，之後的 `swift build`／`swift test` 都帶著那個身分；戳記是 dirty 時 daemon 相關測試會大量失敗（同一支 binary 的 server 與 client 也判為不符），是乾淨的舊身分時則可能跟那個建置的 daemon 相符。
 
 ### 相關 specs
 
