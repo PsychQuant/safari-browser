@@ -218,7 +218,13 @@ struct DaemonStatusCommand: AsyncParsableCommand {
             params: Data("{}".utf8),
             requestId: 1,
             timeout: 2.0,
-            socketDir: socketDirFlags.socketDir
+            socketDir: socketDirFlags.socketDir,
+            handshakeObserver: { daemonVersion in
+                // stdout keeps its fixed shape; say a build mismatch on stderr (#304).
+                let client = DaemonProtocol.currentVersion
+                guard !DaemonProtocol.versionsMatch(server: daemonVersion, client: client) else { return }
+                FileHandle.standardError.write(Data("note: this daemon runs another build (daemon \(daemonVersion.description), this CLI \(client.description)); commands fall back to stateless until it is restarted with daemon stop and daemon start\n".utf8))
+            }
         )
         let obj = (try? JSONSerialization.jsonObject(with: resultData, options: [])) as? [String: Any] ?? [:]
         let pid = (obj["pid"] as? Int) ?? -1
