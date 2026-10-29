@@ -124,3 +124,12 @@ After a successful replacement, the command SHALL enumerate `safari-browser-<nam
 
 - **WHEN** the installed version equals the latest release tag with no suffix and the user runs `safari-browser self-update`
 - **THEN** the command SHALL print that it is up to date, SHALL NOT download the binary asset, and SHALL exit 0
+
+### Requirement: Self-update is not an MCP tool
+
+`self-update` SHALL NOT appear in the MCP tool catalog that `safari-browser mcp` serves. It replaces the binary an MCP server runs from and is meant for the person at the terminal, not for an MCP client; the catalog SHALL exclude the `self-update` command the same way it excludes `mcp`.
+
+#### Scenario: MCP catalog lists no self-update tool
+
+- **WHEN** the MCP tool catalog is built from the CLI's command metadata
+- **THEN** no tool's path SHALL begin with `self-update`

@@ -15,10 +15,12 @@
 
 ## 3. 指令與輸出
 
-- [ ] 3.1 先寫失敗測試，再實作 Check output contract（Check reports without writing、Check JSON status is a closed enumeration）：`self-update --check` 只查詢與比較、不下載 binary、不寫檔；`--json` 輸出 `installed`／`latest`／`status`，status 只有五個值，`lookup-failed` 時 `latest` 為 null、帶單行 `error`、結束碼 1；`--json` 不帶 `--check` 是 usage error。驗證：`SelfUpdateCommandTests` 涵蓋五種 status 的輸出與結束碼，並斷言 `--check` 前後目標檔 inode 相同、下載介面沒被呼叫。
-- [ ] 3.2 先寫失敗測試，再實作 No prompt before replacing：`self-update` 不詢問；`up-to-date`／`ahead` 印原因、不下載、結束碼 0；`not-comparable` 結束碼 1 並指向 README 手動步驟。驗證：`SelfUpdateCommandTests` 斷言沒有讀 stdin、三種狀態的輸出與結束碼。
-- [ ] 3.3 先寫失敗測試，再實作 Daemon shutdown after replacement（Running daemons are stopped after replacement）：替換成功後列出預設 socket 目錄的 `safari-browser-<name>.sock`，對活著的送 `daemon.shutdown` 並等最多 5 秒，印 `daemon <name>: stopped` 與 `safari-browser daemon start`（非 default 附 `--name`）；停不掉只警告、結束碼仍 0。驗證：`SelfUpdateDaemonTests` 以暫存 socket 目錄與假 stopper 涵蓋 default、具名、停不掉三種情況。
-- [ ] 3.4 在 `Sources/SafariBrowser/SafariBrowser.swift` 註冊 `SelfUpdateCommand`，使 `safari-browser self-update --help` 列出 `--check`、`--json`。驗證：`swift run safari-browser self-update --help` 的輸出含兩個旗標；既有 `CLIVersion` 相關測試不變。
+- [x] 3.1 先寫失敗測試，再實作 Check output contract（Check reports without writing、Check JSON status is a closed enumeration）：`self-update --check` 只查詢與比較、不下載 binary、不寫檔；`--json` 輸出 `installed`／`latest`／`status`，status 只有五個值，`lookup-failed` 時 `latest` 為 null、帶單行 `error`、結束碼 1；`--json` 不帶 `--check` 是 usage error。驗證：`SelfUpdateCommandTests` 涵蓋五種 status 的輸出與結束碼，並斷言 `--check` 前後目標檔 inode 相同、下載介面沒被呼叫。
+- [x] 3.2 先寫失敗測試，再實作 No prompt before replacing：`self-update` 不詢問；`up-to-date`／`ahead` 印原因、不下載、結束碼 0；`not-comparable` 結束碼 1 並指向 README 手動步驟。驗證：`SelfUpdateCommandTests` 斷言沒有讀 stdin、三種狀態的輸出與結束碼。
+- [x] 3.3 先寫失敗測試，再實作 Daemon shutdown after replacement（Running daemons are stopped after replacement）：替換成功後列出預設 socket 目錄的 `safari-browser-<name>.sock`，對活著的送 `daemon.shutdown` 並等最多 5 秒，印 `daemon <name>: stopped` 與 `safari-browser daemon start`（非 default 附 `--name`）；停不掉只警告、結束碼仍 0。驗證：`SelfUpdateDaemonTests` 以暫存 socket 目錄與假 stopper 涵蓋 default、具名、停不掉三種情況。
+- [x] 3.4 在 `Sources/SafariBrowser/SafariBrowser.swift` 註冊 `SelfUpdateCommand`，使 `safari-browser self-update --help` 列出 `--check`、`--json`。驗證：`swift run safari-browser self-update --help` 的輸出含兩個旗標；既有 `CLIVersion` 相關測試不變。
+
+- [x] 3.5 ASSUMPTION: Self-update is not an MCP tool。規格原本沒寫，實作時發現 `MCPToolCatalog` 會把每個公開子指令自動變成 MCP tool；`safari.self-update` 會讓 MCP client 在 session 中途替換 server 自己的 binary，違背「由使用者明確執行」的決定，所以照保守做法排除（與 `mcp` 相同），並補進 spec。驗證：`MCPToolCatalogTests` 斷言沒有 path 以 `self-update` 開頭，比對用的公開子指令清單同步排除。
 
 ## 4. 規格、文件與整體驗證
 
