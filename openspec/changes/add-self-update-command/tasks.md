@@ -27,3 +27,12 @@
 - [x] 4.1 文件記錄 Self-update is non-interfering and contacts only GitHub：`CLAUDE.md` 新增一節說明 `self-update` 的干擾等級、只連 GitHub、信任錨點與替換方式；`README.md` 與 `docs/release.md` 的安裝段落加入 `self-update` 與 `--check`，寫明 v2.7.0 需先手動安裝一次、`.previous` 回滾方式、Full Disk Access 延續「預期、尚未量到」。驗證：內容審閱；`grep -n 'self-update' README.md docs/release.md CLAUDE.md` 各有命中。
 - [x] 4.2 `CHANGELOG.md` 的 `## Unreleased` 加入 `self-update` 條目。驗證：內容審閱。
 - [x] 4.3 全部測試與規格驗證通過：`make test` 全綠（失敗的既有測試要在報告中具名列出），`spectra validate add-self-update-command` 與 `spectra analyze add-self-update-command` 沒有 Critical／Warning。驗證：貼出兩個指令的輸出摘要。
+
+## 5. verify round 1 修正
+
+- [x] 5.1 One update at a time from the installed binary：`acquireLock` 以 `flock` 互斥，持鎖後 `checkRunningIsInstalled` 比對執行中行程與目標檔的 code hash。驗證：`SelfUpdateConcurrencyTests`（持鎖時第二次拒絕且不下載、被換掉的 binary 拒絕且 `.previous` 不動、跑完會放鎖）。
+- [x] 5.2 Interrupted runs leave nothing behind for long：持鎖後清掉 staging 形狀的殘檔；checksum 在記憶體裡先比對，staging 檔先 0600、簽章過才 0755；備份就位後才替換。驗證：`SelfUpdateInterruptionTests`（殘檔清除且其他檔保留、替換 200 次期間目標路徑從未消失、備份放不上時舊 `.previous` 保留、權限順序 600→755）。
+- [x] 5.3 簽章兩段改成可直接測試的函式並補 strict 旗標。驗證：`SelfUpdateTrustGateTests` 以 `cc`＋ad-hoc 簽章的真 Mach-O 測 runtime 旗標與「以已安裝那支的 DR 驗證」；兩個 mutant（改用候選者自己的 DR、拿掉 runtime 檢查）各被具名測試抓到。
+- [x] 5.4 網路與 probe 的期限：lookup 15 秒總期限、回應上限 1 MiB；下載邊收邊算，超過上限即取消，宣告長度超過就不讀 body；probe 一個期限涵蓋執行與讀輸出、輸出上限 4096、孫行程持有 pipe 不卡。驗證：`SelfUpdateNetworkBoundTests`（`URLProtocol` stub 逐 chunk 送）、`SelfUpdateProbeBoundTests`。
+- [x] 5.5 daemon 與 MCP 的提示（Running daemons are stopped after replacement 的修訂）：寫出掃描過的目錄、目錄解析失敗時警告、停不掉時說明舊程式碼會繼續回應、提示重開 MCP server；daemon 名稱以 shell 引號印出。驗證：`SelfUpdateDaemonTests`、`SelfUpdateStrictnessTests.testShellWordQuotesAnythingUnsafe`。
+- [x] 5.6 其他：`draft`／`prerelease`／`size` 要求嚴格型別；`oneLine` 去掉 U+2028／U+2029；`--check` 不再因執行檔路徑失敗；拒絕訊息指向存在的 README 段落。驗證：`SelfUpdateStrictnessTests`。

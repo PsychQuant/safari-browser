@@ -105,9 +105,24 @@ designated requirement 涵蓋 identifier、Developer ID 憑證鏈與 team OU，T
 
 替代方案：先 `rename(target → previous)` 再 `rename(staging → target)`。兩步之間 `target` 不存在，所以不採用。
 
+### One update at a time from the installed binary
+
+（verify round 1 加入）目標目錄裡的 `.safari-browser.self-update-lock` 以 `flock(LOCK_EX|LOCK_NB)` 互斥，持有到結束；持有中再跑一次會直接失敗。持鎖後比對執行中行程的 code hash 與目標檔：不同代表另一次更新已經換掉它，這次若繼續，會把 `.previous` 變成新版的副本，所以拒絕。替代方案：在 commit 前重新比對 inode。但沒有鎖時兩次執行仍會交錯，所以不採用。
+
+### Interrupted runs leave nothing behind for long
+
+（verify round 1 加入）`defer` 在 signal、crash、斷電時不會執行，staging 檔會留下。每次執行在持鎖後先清掉 `.safari-browser.self-update.`／`.safari-browser.self-update-prev.` 加六個英數字、屬於使用者的一般檔案。下載先在記憶體裡比對 checksum，再以 0600 寫入，簽章通過才改成 0755，所以殘檔至少不是未驗證的可執行檔。替代方案：安裝 SIGINT／SIGTERM handler。但它擋不住 SIGKILL 與斷電，下一次執行時清理才能涵蓋所有情況。
+
 ### Version probe after signature check
 
-候選 binary 的 `--version` 在簽章檢查**之後**才執行（逾時 10 秒，stdout 去掉結尾換行後必須逐字等於 tag）。這樣被執行的只會是與已安裝那支同一身分簽出的程式碼。
+候選 binary 的 `--version` 在簽章檢查**之後**才執行。這樣被執行的只會是與已安裝那支同一身分簽出的程式碼。
+
+- 10 秒的期限同時涵蓋執行與讀取輸出（round 1）。
+- 輸出在執行中就讀，上限 4096 bytes。
+- 程式結束後，pipe 關閉或等 0.5 秒就用已讀到的內容，持有 pipe 的孫行程卡不住更新。
+- 不使用 `waitUntilExit()`：它會跑 run loop，在 cooperative thread 上會一直卡住（測試實際卡住過）。
+
+stdout 去掉一個結尾換行後必須逐字等於 tag。
 
 ### Daemon shutdown after replacement
 
@@ -178,6 +193,10 @@ designated requirement 涵蓋 identifier、Developer ID 憑證鏈與 team OU，T
 - [轉址到其他主機下載] → 只接受 API 回報、且網址前綴屬於本 repo 這個 tag 的 asset；URLSession 跟隨 GitHub 自己的 CDN 轉址，最後的位元組由 checksum 與簽章把關。
 - [checksum 與 binary 走同一條通道] → checksum 只防傳輸損壞，真正的信任來自 designated requirement 檢查。
 - [替換正在執行的 binary] → rename 不影響舊行程；測試在暫存目錄驗證新 inode 與舊行程都正常。
+- [daemon 版本握手分不出新舊版] → 握手版本來自 `SAFARI_BROWSER_BUILD_*`（預設 `1.0.0+unknown`），不是 `BuildVersion`（#281），所以沒停到的 daemon 會用舊程式碼回應新 CLI。輸出會寫出掃描過的目錄、停不掉的 daemon，以及目錄解析失敗的情況；根本修正屬 #281。
+- [執行中的 `safari-browser mcp`] → 替換後它的 MCP image guard 會拒絕每一個 tool call（fail-closed），輸出提示要重開。
+- [撤銷與公證] → 都沒有檢查，與 README 的手動步驟相同；候選者的驗證另加 `kSecCSStrictValidate`，對應 `--strict`。
+- [hardened runtime 只讀預設架構的 slice] → designated requirement 已逐 slice 檢查並釘住 team 與 identifier，風險小；逐 slice 檢查 runtime 另案追蹤。
 
 ## Migration Plan
 

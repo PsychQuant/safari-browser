@@ -562,8 +562,11 @@ used to read the target tab's URL when a tab flag is given).
 
 `self-update` replaces the running binary with the latest release of
 `PsychQuant/safari-browser`; `--check` (with `--json`) only reports. **Non-interfering**: it
-never drives Safari or the UI, contacts only `api.github.com` and the release download URLs,
-and writes only its own binary and `<binary>.previous`.
+never drives Safari or the UI. It requests `api.github.com` and the release download URLs
+(GitHub redirects downloads to its asset storage; the redirect target is GitHub's choice, and
+the bytes are held to the checksum and the designated requirement). In the install directory
+it writes its binary, `<binary>.previous`, a lock file, and transient `.safari-browser.self-update*`
+files (removed on exit, or by the next run after a kill).
 
 - **Trust anchor = the installed binary's designated requirement.** Both binaries go through
   the shared `SignatureAssessment` (Developer ID durable shape, Apple Events entitlement);
@@ -571,11 +574,18 @@ and writes only its own binary and `<binary>.previous`.
   `SecStaticCodeCheckValidity(new, all architectures, installedDR)`. Not "same team": the DR
   also pins the identifier, and it is what TCC compares for a Full Disk Access grant. An
   ad-hoc or Apple Development install is refused (no identity to compare).
-- **Order matters**: lookup → classify → installed identity → directory writable → checksum
-  asset → binary → stage (`mkstemp` in the target directory) → sha256 → candidate identity →
-  `--version` probe (the staged binary runs only after its signature passed) →
-  `link(target, target.previous)` → `rename(staged, target)` → stop live daemons.
+- **Order matters**: lookup → classify → installed identity → directory writable → `flock`
+  the lock file → running binary is the installed one → sweep leftovers → checksum asset →
+  binary (cancelled past its limit) → sha256 in memory → stage at 0600 → candidate identity
+  (strict) → mode 0755 → `--version` probe (one deadline for run and output) →
+  `link(target, tmp)` → `rename(tmp, target.previous)` → `rename(staged, target)` → stop daemons.
   Any failure removes the staging file and leaves the target's bytes and inode unchanged.
+- **Daemons are not told apart by version**: the handshake version is `SAFARI_BROWSER_BUILD_*`,
+  not `BuildVersion` (#281), so a daemon `self-update` did not stop keeps serving the new CLI
+  with old code. The output names the searched directory and warns; do not claim a stateless
+  fallback. A running `mcp` server fails closed (`imageChangedError`) until restarted.
+- **Never call `Process.waitUntilExit()` in async code here**: it spins a run loop and hung
+  the probe on a cooperative thread. Poll `isRunning` with a bound.
 - **Asset names are a contract with `scripts/release.sh`** (`SelfUpdateReleaseContractTests`).
 - **Versions**: `vX.Y.Z[-N-g<hash>][-dirty]` is comparable; a build with a suffix on the
   latest tag is `ahead` and is never "updated" to it. A bare hash and `unknown` are

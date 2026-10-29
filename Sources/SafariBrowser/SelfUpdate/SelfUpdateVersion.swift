@@ -13,10 +13,16 @@ enum SelfUpdateConstants {
     }
     static let maxBinaryBytes = 64 * 1024 * 1024
     static let maxChecksumBytes = 1024
+    /// Total time for the release lookup (not only an idle gap).
     static let lookupTimeout: TimeInterval = 15
+    /// Total time for one asset download.
+    static let downloadTimeout: TimeInterval = 300
+    static let maxReleaseAnswerBytes = 1024 * 1024
     static let probeTimeout: TimeInterval = 10
     static let requiredEntitlement = "com.apple.security.automation.apple-events"
     static let stagingPrefix = ".safari-browser.self-update."
+    static let backupStagingPrefix = ".safari-browser.self-update-prev."
+    static let lockName = ".safari-browser.self-update-lock"
 }
 
 /// The closed set of answers `self-update --check --json` can give. The raw

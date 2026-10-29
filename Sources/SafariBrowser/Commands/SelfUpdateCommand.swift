@@ -34,7 +34,9 @@ struct SelfUpdateCommand: AsyncParsableCommand {
     func run() async throws {
         let updater = SelfUpdater(
             installedVersion: BuildVersion.value,
-            executable: try MCPWorkerContext.executableURL(),
+            // Resolved without failing here: `--check` never needs it, and
+            // `update()` reports an unresolvable path as its own error.
+            executable: Self.runningExecutable(),
             source: GitHubReleaseSource(userAgent: "safari-browser/\(BuildVersion.value)"),
             verifier: .live,
             probe: { try await SelfUpdateVersionProbeLive.run($0, timeout: SelfUpdateConstants.probeTimeout) },
@@ -45,6 +47,20 @@ struct SelfUpdateCommand: AsyncParsableCommand {
             ? await SelfUpdateRunner.check(updater, json: json, out: out, err: err)
             : await SelfUpdateRunner.update(updater, out: out, err: err)
         if code != 0 { throw ExitCode(code) }
+    }
+
+    /// The path the kernel started this process from, as given (no lexical `..`
+    /// folding before `realpath`); `argv[0]` if that cannot be read.
+    static func runningExecutable() -> URL {
+        var size: UInt32 = 0
+        _ = _NSGetExecutablePath(nil, &size)
+        if size > 0, size < 1024 * 1024 {
+            var buffer = [CChar](repeating: 0, count: Int(size))
+            if _NSGetExecutablePath(&buffer, &size) == 0 {
+                return URL(fileURLWithPath: String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self))
+            }
+        }
+        return URL(fileURLWithPath: CommandLine.arguments.first ?? "safari-browser")
     }
 }
 
@@ -71,15 +87,25 @@ enum SelfUpdateRunner {
                 out("safari-browser \(tag) is up to date; nothing to do")
             case .ahead(let installed, let latest):
                 out("installed \(installed) is newer than the latest release \(latest); not replacing it")
-            case .replaced(let from, let to, let target, let daemons):
+            case .replaced(let from, let to, let target, let report):
                 out("updated safari-browser \(from) → \(to) at \(target) (previous kept as \(target).previous)")
-                for daemon in daemons where daemon.stopped { out("daemon \(daemon.name): stopped") }
+                // The daemon handshake does not tell builds apart (#281), so a daemon
+                // left running keeps answering this CLI with the old code. Say so.
+                let stale = "keeps answering this CLI with the old code"
+                let daemons = report.results
+                for daemon in daemons where daemon.stopped { out("daemon \(SelfUpdater.oneLine(daemon.name)): stopped") }
                 for daemon in daemons where !daemon.stopped {
-                    err("warning: daemon \(daemon.name) did not stop within 5 s; it still runs the old binary — stop it with: safari-browser daemon stop\(nameFlag(daemon.name))")
+                    err("warning: daemon \(SelfUpdater.oneLine(daemon.name)) did not stop within 5 s; it still runs the old binary and \(stale) — stop it with: safari-browser daemon stop\(nameFlag(daemon.name))")
                 }
                 for daemon in daemons where daemon.stopped {
                     out("restart it with: safari-browser daemon start\(nameFlag(daemon.name))")
                 }
+                if let directory = report.directory {
+                    out("note: daemons were looked for in \(SelfUpdater.oneLine(directory)) only; one started with --socket-dir elsewhere \(stale) until you stop it")
+                } else {
+                    err("warning: the daemon socket directory could not be resolved, so no daemon was stopped; a daemon still running the old binary \(stale) — stop it with: safari-browser daemon stop")
+                }
+                out("note: a running `safari-browser mcp` server refuses tool calls until it is restarted")
             }
             return 0
         } catch {
@@ -89,7 +115,17 @@ enum SelfUpdateRunner {
     }
 
     private static func nameFlag(_ name: String) -> String {
-        name == DaemonClient.defaultName ? "" : " --name \(name)"
+        name == DaemonClient.defaultName ? "" : " --name \(shellWord(name))"
+    }
+
+    /// `word` as one shell word: bare when it is plainly safe, otherwise single-
+    /// quoted, with line breaks flattened first so a printed command stays one line.
+    static func shellWord(_ word: String) -> String {
+        let flat = SelfUpdater.oneLine(word)
+        let safe = !flat.isEmpty && flat.unicodeScalars.allSatisfy {
+            $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "._-/".unicodeScalars.contains($0))
+        }
+        return safe ? flat : "'" + flat.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     static func humanLine(_ r: SelfUpdateCheckResult) -> String? {

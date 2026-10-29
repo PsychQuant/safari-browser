@@ -77,21 +77,27 @@ func makeUpdater(installed: String = "v2.7.0", executable: URL, source: FakeRele
                  recorder: Recorder = Recorder(),
                  installedCheck: @escaping @Sendable (URL) throws -> Void = { _ in },
                  candidateCheck: @escaping @Sendable (URL, URL) throws -> Void = { _, _ in },
+                 runningCheck: @escaping @Sendable (URL) throws -> Void = { _ in },
                  probe: (@Sendable (URL) async throws -> String)? = nil,
-                 daemons: [SelfUpdateDaemonResult] = []) -> SelfUpdater {
+                 daemons: [SelfUpdateDaemonResult] = [],
+                 daemonDirectory: String? = "/tmp/daemon-dir") -> SelfUpdater {
     SelfUpdater(
         installedVersion: installed,
         executable: executable,
         source: source,
         verifier: SelfUpdateSignatureVerifier(
             checkInstalled: { url in recorder.events.append("installed"); try installedCheck(url) },
-            checkCandidate: { c, i in recorder.events.append("candidate"); try candidateCheck(c, i) }),
+            checkCandidate: { c, i in recorder.events.append("candidate"); try candidateCheck(c, i) },
+            checkRunningIsInstalled: { url in recorder.events.append("running"); try runningCheck(url) }),
         probe: { url in
             recorder.events.append("probe")
             if let probe { return try await probe(url) }
             return "v2.8.0"
         },
-        daemons: SelfUpdateDaemonStopper(stopAll: { recorder.events.append("daemons"); return daemons }))
+        daemons: SelfUpdateDaemonStopper(stopAll: {
+            recorder.events.append("daemons")
+            return SelfUpdateDaemonReport(directory: daemonDirectory, results: daemons)
+        }))
 }
 
 // MARK: - Checksum
@@ -192,7 +198,7 @@ final class SelfUpdateSignatureTests: XCTestCase {
         let recorder = Recorder()
         let updater = makeUpdater(executable: fixture.target, source: FakeReleaseSource(), recorder: recorder)
         _ = try await updater.update()
-        XCTAssertEqual(recorder.events, ["installed", "candidate", "probe", "daemons"])
+        XCTAssertEqual(recorder.events, ["installed", "running", "candidate", "probe", "daemons"])
     }
 
     func testVersionMismatchAndProbeFailureLeaveTheInstallAlone() async throws {
@@ -244,7 +250,8 @@ final class SelfUpdateReplaceTests: XCTestCase {
         let oldInode = fixture.inode
         let updater = makeUpdater(executable: fixture.target, source: FakeReleaseSource(binary: Data("new-binary\n".utf8)))
         let outcome = try await updater.update()
-        XCTAssertEqual(outcome, .replaced(from: "v2.7.0", to: "v2.8.0", target: fixture.target.path, daemons: []))
+        XCTAssertEqual(outcome, .replaced(from: "v2.7.0", to: "v2.8.0", target: fixture.target.path,
+                                          daemons: SelfUpdateDaemonReport(directory: "/tmp/daemon-dir", results: [])))
         XCTAssertEqual(fixture.bytes, Data("new-binary\n".utf8))
         XCTAssertNotEqual(fixture.inode, oldInode)
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.target.path + ".previous")), Data("old-binary\n".utf8))

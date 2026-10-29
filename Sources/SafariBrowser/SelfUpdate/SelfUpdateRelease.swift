@@ -26,8 +26,12 @@ enum SelfUpdateError: Error, Equatable, CustomStringConvertible {
     case staging(String)
     case backup(String)
     case install(String)
+    case busy(String)
+    case installedChanged(String)
 
-    static let manualSteps = "install it by hand as README.md describes (Download a release)"
+    /// The README section with the manual steps; a test checks that it exists.
+    static let manualStepsSection = "Install a release binary"
+    static let manualSteps = "install it by hand as README.md describes under \"\(manualStepsSection)\""
 
     var description: String {
         switch self {
@@ -57,6 +61,9 @@ enum SelfUpdateError: Error, Equatable, CustomStringConvertible {
         case .staging(let m): return "could not stage the download: \(m)"
         case .backup(let m): return "could not keep a backup of the installed binary: \(m)"
         case .install(let m): return "could not replace the installed binary: \(m)"
+        case .busy(let m): return "\(m); wait for it to finish"
+        case .installedChanged(let p):
+            return "\(p) is no longer the binary this process was started from (another update replaced it); run self-update again"
         }
     }
 }
@@ -80,8 +87,12 @@ struct SelfUpdateRelease: Equatable {
         guard SelfUpdateVersion.components(tag, pattern: SelfUpdateVersion.tagPattern) != nil else {
             throw SelfUpdateError.tagShape(String(tag.prefix(64)))
         }
-        if (object["draft"] as? Bool) != false { throw SelfUpdateError.notPublished("a draft") }
-        if (object["prerelease"] as? Bool) != false { throw SelfUpdateError.notPublished("a prerelease") }
+        for (key, kind) in [("draft", "a draft"), ("prerelease", "a prerelease")] {
+            guard let flag = strictBool(object[key]) else {
+                throw SelfUpdateError.malformedRelease("\(key) is missing or not a JSON boolean")
+            }
+            if flag { throw SelfUpdateError.notPublished(kind) }
+        }
         guard let assets = object["assets"] as? [[String: Any]] else {
             throw SelfUpdateError.malformedRelease("no assets list")
         }
@@ -90,7 +101,7 @@ struct SelfUpdateRelease: Equatable {
             let matches = assets.filter { ($0["name"] as? String) == name }
             guard !matches.isEmpty else { throw SelfUpdateError.assetMissing(name) }
             guard matches.count == 1 else { throw SelfUpdateError.assetDuplicated(name) }
-            guard let text = matches[0]["browser_download_url"] as? String, let size = matches[0]["size"] as? Int else {
+            guard let text = matches[0]["browser_download_url"] as? String, let size = strictInt(matches[0]["size"]) else {
                 throw SelfUpdateError.malformedRelease("asset \(name) has no download URL or size")
             }
             guard text == prefix + name, let url = URL(string: text) else {
@@ -105,5 +116,18 @@ struct SelfUpdateRelease: Equatable {
         let checksum = try pick(SelfUpdateConstants.checksumAssetName, limit: SelfUpdateConstants.maxChecksumBytes)
         return SelfUpdateRelease(tag: tag, binaryURL: binary.0, binarySize: binary.1,
                                  checksumURL: checksum.0, checksumSize: checksum.1)
+    }
+
+    /// A JSON `true`/`false` only — NSNumber bridging would also let `0`/`1` through.
+    static func strictBool(_ value: Any?) -> Bool? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return nil }
+        return number.boolValue
+    }
+
+    /// A JSON integer only — not a boolean, not a fraction.
+    static func strictInt(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              !CFNumberIsFloatType(number) else { return nil }
+        return number.intValue
     }
 }

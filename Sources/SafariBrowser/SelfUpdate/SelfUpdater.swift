@@ -7,15 +7,18 @@ import Foundation
 /// Where releases come from. The live implementation talks to GitHub; tests use a fake.
 protocol SelfUpdateReleaseSource: Sendable {
     func latest() async throws -> SelfUpdateRelease
-    /// Fetch `url`, failing when the answer is larger than `limit` bytes.
+    /// Fetch `url`, failing as soon as more than `limit` bytes have arrived.
     func download(_ url: URL, limit: Int) async throws -> Data
 }
 
 /// Identity checks. `checkInstalled` runs before anything is downloaded;
+/// `checkRunningIsInstalled` confirms this process is the installed binary (so a
+/// run started before another update finished cannot overwrite it);
 /// `checkCandidate(candidate, installed)` runs before the candidate is executed.
 struct SelfUpdateSignatureVerifier: Sendable {
     var checkInstalled: @Sendable (URL) throws -> Void
     var checkCandidate: @Sendable (_ candidate: URL, _ installed: URL) throws -> Void
+    var checkRunningIsInstalled: @Sendable (URL) throws -> Void = { _ in }
 }
 
 struct SelfUpdateDaemonResult: Equatable, Sendable {
@@ -23,8 +26,15 @@ struct SelfUpdateDaemonResult: Equatable, Sendable {
     let stopped: Bool
 }
 
+/// What the daemon step did: the directory it looked in (nil when it could not be
+/// resolved, so nothing was looked for) and what it found there.
+struct SelfUpdateDaemonReport: Equatable, Sendable {
+    let directory: String?
+    let results: [SelfUpdateDaemonResult]
+}
+
 struct SelfUpdateDaemonStopper: Sendable {
-    var stopAll: @Sendable () async -> [SelfUpdateDaemonResult]
+    var stopAll: @Sendable () async -> SelfUpdateDaemonReport
 }
 
 typealias SelfUpdateVersionProbe = @Sendable (URL) async throws -> String
@@ -58,7 +68,7 @@ struct SelfUpdateCheckResult: Equatable {
 }
 
 enum SelfUpdateOutcome: Equatable {
-    case replaced(from: String, to: String, target: String, daemons: [SelfUpdateDaemonResult])
+    case replaced(from: String, to: String, target: String, daemons: SelfUpdateDaemonReport)
     case upToDate(String)
     case ahead(installed: String, latest: String)
 }
@@ -100,17 +110,32 @@ struct SelfUpdater: Sendable {
         let directory = target.deletingLastPathComponent()
         guard access(directory.path, W_OK) == 0 else { throw SelfUpdateError.notWritable(directory.path) }
 
+        // One update at a time per install directory, held until this function returns.
+        let lock = try Self.acquireLock(in: directory)
+        defer { close(lock) }
+        // Under the lock: the installed binary must still be the one running, or a
+        // run that finished meanwhile already replaced it (and this run would turn
+        // the rollback point into a copy of the new version).
+        try verifier.checkRunningIsInstalled(target)
+        // Files an interrupted run (signal, crash, power loss) could not remove.
+        Self.sweepLeftovers(in: directory)
+
         let expected = try SelfUpdateChecksum.parse(
             try await source.download(release.checksumURL, limit: SelfUpdateConstants.maxChecksumBytes))
         let binary = try await source.download(release.binaryURL, limit: SelfUpdateConstants.maxBinaryBytes)
+        // Checked in memory: unverified bytes never reach the install directory.
+        let actual = SelfUpdateChecksum.sha256Hex(binary)
+        guard actual == expected else { throw SelfUpdateError.checksumMismatch(expected: expected, actual: actual) }
 
         let staged = try Self.stage(binary, in: directory)
         var installed = false
         defer { if !installed { unlink(staged.path) } }
 
-        let actual = SelfUpdateChecksum.sha256Hex(binary)
-        guard actual == expected else { throw SelfUpdateError.checksumMismatch(expected: expected, actual: actual) }
         try verifier.checkCandidate(staged, target)
+        // Executable only once its signature has passed.
+        guard chmod(staged.path, 0o755) == 0 else {
+            throw SelfUpdateError.staging(String(cString: strerror(errno)))
+        }
         let reported = try await probe(staged)
         guard reported == release.tag else {
             throw SelfUpdateError.versionMismatch(expected: release.tag, actual: Self.oneLine(reported))
@@ -118,8 +143,8 @@ struct SelfUpdater: Sendable {
         try Self.install(staged: staged, over: target)
         installed = true
 
-        let stopped = await daemons.stopAll()
-        return .replaced(from: installedVersion, to: release.tag, target: target.path, daemons: stopped)
+        let report = await daemons.stopAll()
+        return .replaced(from: installedVersion, to: release.tag, target: target.path, daemons: report)
     }
 
     // MARK: Filesystem steps
@@ -132,13 +157,43 @@ struct SelfUpdater: Sendable {
         return URL(fileURLWithPath: String(cString: resolved))
     }
 
-    /// Write `data` to a fresh `mkstemp` file next to the target (same filesystem,
-    /// so the final `rename` is atomic), flushed and made executable.
+    /// An exclusive, non-blocking `flock` on a lock file next to the target.
+    /// Returns the descriptor; closing it releases the lock.
+    static func acquireLock(in directory: URL) throws -> Int32 {
+        let path = directory.appendingPathComponent(SelfUpdateConstants.lockName).path
+        let fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else { throw SelfUpdateError.staging("\(path): \(String(cString: strerror(errno)))") }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            let reason = errno == EWOULDBLOCK ? "another self-update is running in \(directory.path)"
+                                              : String(cString: strerror(errno))
+            close(fd)
+            throw SelfUpdateError.busy(reason)
+        }
+        return fd
+    }
+
+    /// Remove regular files this tool names `<prefix>XXXXXX` (the `mkstemp`
+    /// shape) — staged downloads and backup links an interrupted run left behind.
+    /// Called with the lock held, so no other run's files can match.
+    static func sweepLeftovers(in directory: URL) {
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in entries {
+            guard let prefix = [SelfUpdateConstants.stagingPrefix, SelfUpdateConstants.backupStagingPrefix]
+                .first(where: { name.hasPrefix($0) }) else { continue }
+            let suffix = name.dropFirst(prefix.count)
+            guard suffix.count == 6, suffix.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII })
+            else { continue }
+            let path = directory.appendingPathComponent(name).path
+            var st = stat()
+            guard lstat(path, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG, st.st_uid == getuid() else { continue }
+            unlink(path)
+        }
+    }
+
+    /// Write `data` to a fresh `mkstemp` file (mode 0600) next to the target —
+    /// same filesystem, so the final `rename` is atomic — and flush it.
     static func stage(_ data: Data, in directory: URL) throws -> URL {
-        var template = Array((directory.path + "/" + SelfUpdateConstants.stagingPrefix + "XXXXXX").utf8CString)
-        let fd = mkstemp(&template)
-        guard fd >= 0 else { throw SelfUpdateError.staging(String(cString: strerror(errno))) }
-        let path = String(cString: template)
+        let (fd, path) = try temporaryFile(in: directory, prefix: SelfUpdateConstants.stagingPrefix)
         var ok = false
         defer {
             close(fd)
@@ -153,33 +208,49 @@ struct SelfUpdater: Sendable {
             }
             return true
         }
-        guard written else { throw SelfUpdateError.staging(String(cString: strerror(errno))) }
-        guard fsync(fd) == 0, fchmod(fd, 0o755) == 0 else {
-            throw SelfUpdateError.staging(String(cString: strerror(errno)))
-        }
+        guard written, fsync(fd) == 0 else { throw SelfUpdateError.staging(String(cString: strerror(errno))) }
         ok = true
         return URL(fileURLWithPath: path)
     }
 
-    /// Keep the current binary as `<target>.previous` (a hard link, so the target
-    /// path never stops existing), then rename the staged file over the target.
+    private static func temporaryFile(in directory: URL, prefix: String) throws -> (Int32, String) {
+        var template = Array((directory.path + "/" + prefix + "XXXXXX").utf8CString)
+        let fd = mkstemp(&template)
+        guard fd >= 0 else { throw SelfUpdateError.staging(String(cString: strerror(errno))) }
+        return (fd, String(cString: template))
+    }
+
+    /// Put the backup in place first, then the new binary:
+    /// 1. hard-link the current target to a fresh temporary name;
+    /// 2. rename that over `<target>.previous` (the old rollback point is replaced
+    ///    only once the new one exists);
+    /// 3. rename the staged file over the target.
+    /// The target path exists at every moment, and a failure before step 3 leaves it
+    /// untouched.
     static func install(staged: URL, over target: URL) throws {
+        let directory = target.deletingLastPathComponent()
         let previous = target.path + ".previous"
-        if unlink(previous) != 0 && errno != ENOENT {
+        let (fd, link) = try temporaryFile(in: directory, prefix: SelfUpdateConstants.backupStagingPrefix)
+        close(fd)
+        unlink(link)
+        guard Darwin.link(target.path, link) == 0 else {
             throw SelfUpdateError.backup("\(previous): \(String(cString: strerror(errno)))")
         }
-        guard link(target.path, previous) == 0 else {
-            throw SelfUpdateError.backup("\(previous): \(String(cString: strerror(errno)))")
+        guard rename(link, previous) == 0 else {
+            let reason = String(cString: strerror(errno))
+            unlink(link)
+            throw SelfUpdateError.backup("\(previous): \(reason)")
         }
         guard rename(staged.path, target.path) == 0 else {
             throw SelfUpdateError.install("\(target.path): \(String(cString: strerror(errno)))")
         }
     }
 
-    /// One printable line: control characters (including newlines) become spaces.
+    /// One printable line: control characters and every Unicode line or paragraph
+    /// separator become spaces.
     static func oneLine(_ text: String) -> String {
-        String(String.UnicodeScalarView(text.unicodeScalars.map {
-            CharacterSet.controlCharacters.contains($0) ? " " : $0
-        })).prefix(500).description
+        let breaking = CharacterSet.controlCharacters.union(.newlines).union(.illegalCharacters)
+        let flattened = String(String.UnicodeScalarView(text.unicodeScalars.map { breaking.contains($0) ? " " : $0 }))
+        return String(flattened.prefix(500))
     }
 }
