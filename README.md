@@ -198,6 +198,30 @@ again.
 
 How a release is made, and what has not been measured about it: [`docs/release.md`](docs/release.md).
 
+### Update an installed release (#314)
+
+```bash
+safari-browser self-update --check          # reports; downloads and writes nothing
+safari-browser self-update --check --json   # {"installed":…,"latest":…,"status":…}
+safari-browser self-update                  # replaces this binary, no prompt
+```
+
+`self-update` downloads the latest release's `safari-browser` and `safari-browser.sha256`,
+checks the sha256, and requires the new binary to be a Developer ID build with the hardened
+runtime that **satisfies the installed binary's designated requirement**: the binary you
+already run is the trust anchor, not the release page. It then checks that the new binary
+prints the release tag, keeps the old one as `<binary>.previous` (a hard link), and renames
+the new one into place. Any failure leaves the installed binary as it was. Daemons still
+running the old binary are stopped; restart them with `safari-browser daemon start`.
+
+It refuses when the installed binary is not a Developer ID build (`make install` is
+ad-hoc signed), and it does not replace a development build at or past the latest tag
+(`--check` says `ahead`). **v2.7.0 has no `self-update`**: install a later release once by
+hand as above. To roll back: `mv ~/bin/safari-browser.previous ~/bin/safari-browser`. The
+designated requirement is what a Full Disk Access grant is keyed to, so the grant is
+expected to carry over; that has not been observed yet. `self-update` is not offered as an
+MCP tool.
+
 ### Which install target? (#119)
 
 `sign-developer-id` has been removed (#123). It signed the build directory without

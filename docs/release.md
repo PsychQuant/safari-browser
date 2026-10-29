@@ -164,6 +164,18 @@ runs, Gatekeeper is expected to look the ticket up online; that has not been obs
 copy fetched with `curl` or `gh` carries no quarantine flag, and Gatekeeper does not check
 it at all.
 
+## Updating with `self-update` (#314)
+
+From the first release that contains it, an installed release updates itself with
+`safari-browser self-update` (`--check` only reports). It performs the checks above
+without a team ID typed by hand: the new binary must satisfy the **installed binary's
+designated requirement** (identifier, Developer ID certificate chain and team), carry the
+hardened runtime and the Apple Events entitlement, match `safari-browser.sha256`, and print
+the release tag; only then is it renamed over the installed one, with the old kept as
+`<binary>.previous`. So the asset names and the `.sha256` format this script writes are a
+contract: `SelfUpdateReleaseContractTests` reads `BINARY_NAME` from `scripts/release.sh`
+and fails when the two drift apart. Notarization is not checked, for the reason above.
+
 ## Stopping a run
 
 Ctrl-C at the terminal stops the build or the notarization wait too, because it reaches

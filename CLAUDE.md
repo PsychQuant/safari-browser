@@ -558,6 +558,35 @@ used to read the target tab's URL when a tab flag is given).
 - 已知缺口（獨立審查 #308 找到，已開 issue）：建置在活的 checkout 裡跑、不釘也不記錄依賴版本（#309）；
   entitlements 只查一個 key、不釘 team（#310）。
 
+## Self-update (`self-update`, #314)
+
+`self-update` replaces the running binary with the latest release of
+`PsychQuant/safari-browser`; `--check` (with `--json`) only reports. **Non-interfering**: it
+never drives Safari or the UI, contacts only `api.github.com` and the release download URLs,
+and writes only its own binary and `<binary>.previous`.
+
+- **Trust anchor = the installed binary's designated requirement.** Both binaries go through
+  the shared `SignatureAssessment` (Developer ID durable shape, Apple Events entitlement);
+  the new one also needs the hardened runtime flag and must pass
+  `SecStaticCodeCheckValidity(new, all architectures, installedDR)`. Not "same team": the DR
+  also pins the identifier, and it is what TCC compares for a Full Disk Access grant. An
+  ad-hoc or Apple Development install is refused (no identity to compare).
+- **Order matters**: lookup → classify → installed identity → directory writable → checksum
+  asset → binary → stage (`mkstemp` in the target directory) → sha256 → candidate identity →
+  `--version` probe (the staged binary runs only after its signature passed) →
+  `link(target, target.previous)` → `rename(staged, target)` → stop live daemons.
+  Any failure removes the staging file and leaves the target's bytes and inode unchanged.
+- **Asset names are a contract with `scripts/release.sh`** (`SelfUpdateReleaseContractTests`).
+- **Versions**: `vX.Y.Z[-N-g<hash>][-dirty]` is comparable; a build with a suffix on the
+  latest tag is `ahead` and is never "updated" to it. A bare hash and `unknown` are
+  `not-comparable`.
+- **Kept out of the MCP catalog**, like `mcp`: it replaces the binary the MCP server runs
+  from. `MCPToolCatalogTests` mirrors the exclusion.
+- Logic lives in `Sources/SafariBrowser/SelfUpdate/` behind injected `SelfUpdateReleaseSource`,
+  `SelfUpdateSignatureVerifier`, probe and daemon stopper; tests never use the network.
+  A running-binary test compiles a tiny C program with `cc` (a copy of an arm64e Apple binary
+  such as `/bin/sleep` is killed at launch off the system volume) and skips without a compiler.
+
 ## Install-signature guard：suite 本身被 gate 管（#119, round 10）
 
 #122 後的 authoritative policy 位於 `Sources/SafariBrowser/Utilities/SignatureAssessment.swift`，

@@ -24,6 +24,6 @@
 
 ## 4. 規格、文件與整體驗證
 
-- [ ] 4.1 文件記錄 Self-update is non-interfering and contacts only GitHub：`CLAUDE.md` 新增一節說明 `self-update` 的干擾等級、只連 GitHub、信任錨點與替換方式；`README.md` 與 `docs/release.md` 的安裝段落加入 `self-update` 與 `--check`，寫明 v2.7.0 需先手動安裝一次、`.previous` 回滾方式、Full Disk Access 延續「預期、尚未量到」。驗證：內容審閱；`grep -n 'self-update' README.md docs/release.md CLAUDE.md` 各有命中。
-- [ ] 4.2 `CHANGELOG.md` 的 `## Unreleased` 加入 `self-update` 條目。驗證：內容審閱。
-- [ ] 4.3 全部測試與規格驗證通過：`make test` 全綠（失敗的既有測試要在報告中具名列出），`spectra validate add-self-update-command` 與 `spectra analyze add-self-update-command` 沒有 Critical／Warning。驗證：貼出兩個指令的輸出摘要。
+- [x] 4.1 文件記錄 Self-update is non-interfering and contacts only GitHub：`CLAUDE.md` 新增一節說明 `self-update` 的干擾等級、只連 GitHub、信任錨點與替換方式；`README.md` 與 `docs/release.md` 的安裝段落加入 `self-update` 與 `--check`，寫明 v2.7.0 需先手動安裝一次、`.previous` 回滾方式、Full Disk Access 延續「預期、尚未量到」。驗證：內容審閱；`grep -n 'self-update' README.md docs/release.md CLAUDE.md` 各有命中。
+- [x] 4.2 `CHANGELOG.md` 的 `## Unreleased` 加入 `self-update` 條目。驗證：內容審閱。
+- [x] 4.3 全部測試與規格驗證通過：`make test` 全綠（失敗的既有測試要在報告中具名列出），`spectra validate add-self-update-command` 與 `spectra analyze add-self-update-command` 沒有 Critical／Warning。驗證：貼出兩個指令的輸出摘要。
