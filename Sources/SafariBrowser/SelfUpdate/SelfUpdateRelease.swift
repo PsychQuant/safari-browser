@@ -27,6 +27,7 @@ enum SelfUpdateError: Error, Equatable, CustomStringConvertible {
     case backup(String)
     case install(String)
     case busy(String)
+    case lock(String)
     case installedChanged(String)
 
     /// The README section with the manual steps; a test checks that it exists.
@@ -62,6 +63,7 @@ enum SelfUpdateError: Error, Equatable, CustomStringConvertible {
         case .backup(let m): return "could not keep a backup of the installed binary: \(m)"
         case .install(let m): return "could not replace the installed binary: \(m)"
         case .busy(let m): return "\(m); wait for it to finish"
+        case .lock(let m): return "could not take the update lock: \(m)"
         case .installedChanged(let p):
             return "\(p) is no longer the binary this process was started from (another update replaced it); run self-update again"
         }

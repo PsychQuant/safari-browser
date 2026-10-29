@@ -9,24 +9,35 @@ extension SelfUpdateSignatureVerifier {
     /// release must be a Developer ID build with the hardened runtime that
     /// satisfies it. That requirement is also what TCC compares when deciding
     /// whether a Full Disk Access grant still applies.
-    static let live = SelfUpdateSignatureVerifier(
-        checkInstalled: { url in
-            let verdict = SignatureAssessment.evaluate(at: url, requiredEntitlement: SelfUpdateConstants.requiredEntitlement)
-            guard case .durable(shape: "Developer ID", _) = verdict else {
-                throw SelfUpdateError.installedNotDeveloperID(describe(verdict))
-            }
-        },
-        checkCandidate: { candidate, installed in
-            let verdict = SignatureAssessment.evaluate(at: candidate, requiredEntitlement: SelfUpdateConstants.requiredEntitlement)
-            guard case .durable(shape: "Developer ID", _) = verdict else {
-                throw SelfUpdateError.candidateNotDeveloperID(describe(verdict))
-            }
-            try requireHardenedRuntime(candidate)
-            try requireSatisfiesRequirement(of: installed, candidate: candidate)
-        },
-        checkRunningIsInstalled: { installed in
-            try requireRunningCodeIs(installed)
-        })
+    static let live = make(assessDeveloperID: requireCandidateDeveloperID)
+
+    /// The production verifier with the candidate's Developer ID assessment
+    /// injectable, so tests can drive the real runtime and requirement gates with
+    /// ad-hoc-signed fixtures (which cannot pass that assessment).
+    static func make(assessDeveloperID: @escaping @Sendable (URL) throws -> Void) -> SelfUpdateSignatureVerifier {
+        SelfUpdateSignatureVerifier(
+            checkInstalled: { url in
+                let verdict = SignatureAssessment.evaluate(at: url, requiredEntitlement: SelfUpdateConstants.requiredEntitlement)
+                guard case .durable(shape: "Developer ID", _) = verdict else {
+                    throw SelfUpdateError.installedNotDeveloperID(describe(verdict))
+                }
+            },
+            checkCandidate: { candidate, installed in
+                try assessDeveloperID(candidate)
+                try requireHardenedRuntime(candidate)
+                try requireSatisfiesRequirement(of: installed, candidate: candidate)
+            },
+            checkRunningIsInstalled: { installed in
+                try requireRunningCodeIs(installed)
+            })
+    }
+
+    static func requireCandidateDeveloperID(_ candidate: URL) throws {
+        let verdict = SignatureAssessment.evaluate(at: candidate, requiredEntitlement: SelfUpdateConstants.requiredEntitlement)
+        guard case .durable(shape: "Developer ID", _) = verdict else {
+            throw SelfUpdateError.candidateNotDeveloperID(describe(verdict))
+        }
+    }
 
     /// Strict validation (what `codesign --verify --strict` adds) on every slice.
     static let candidateCheckFlags = SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate)
@@ -55,12 +66,19 @@ extension SelfUpdateSignatureVerifier {
         }
     }
 
-    /// This process's code hash equals the installed file's: the binary at the
-    /// install path is still the one that is running.
+    /// The binary at the install path is still the one that is running.
+    ///
+    /// The static code of `self` is read from the path the process was started
+    /// from, so a plain `mv` over that path (a manual install) makes it read the
+    /// new file and compare it with itself. `SecCodeCheckValidity` on the running
+    /// code catches that case (measured: -67034, errSecCSStaticCodeChanged); the
+    /// hash comparison catches a replacement that kept the old inode reachable
+    /// (another self-update's hard-link backup).
     static func requireRunningCodeIs(_ installed: URL) throws {
         var running: SecCode?
         var runningStatic: SecStaticCode?
         guard SecCodeCopySelf([], &running) == errSecSuccess, let running,
+              SecCodeCheckValidity(running, [], nil) == errSecSuccess,
               SecCodeCopyStaticCode(running, [], &runningStatic) == errSecSuccess, let runningStatic,
               let mine = uniqueHash(runningStatic), let theirs = uniqueHash(try? staticCode(installed)),
               mine == theirs else {

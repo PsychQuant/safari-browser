@@ -32,7 +32,15 @@
 
 - [x] 5.1 One update at a time from the installed binary：`acquireLock` 以 `flock` 互斥，持鎖後 `checkRunningIsInstalled` 比對執行中行程與目標檔的 code hash。驗證：`SelfUpdateConcurrencyTests`（持鎖時第二次拒絕且不下載、被換掉的 binary 拒絕且 `.previous` 不動、跑完會放鎖）。
 - [x] 5.2 Interrupted runs leave nothing behind for long：持鎖後清掉 staging 形狀的殘檔；checksum 在記憶體裡先比對，staging 檔先 0600、簽章過才 0755；備份就位後才替換。驗證：`SelfUpdateInterruptionTests`（殘檔清除且其他檔保留、替換 200 次期間目標路徑從未消失、備份放不上時舊 `.previous` 保留、權限順序 600→755）。
-- [x] 5.3 簽章兩段改成可直接測試的函式並補 strict 旗標。驗證：`SelfUpdateTrustGateTests` 以 `cc`＋ad-hoc 簽章的真 Mach-O 測 runtime 旗標與「以已安裝那支的 DR 驗證」；兩個 mutant（改用候選者自己的 DR、拿掉 runtime 檢查）各被具名測試抓到。
+- [x] 5.3 簽章兩段改成可直接測試的函式並補 strict 旗標。驗證：`SelfUpdateTrustGateTests` 以 `cc`＋ad-hoc 簽章的真 Mach-O 測 runtime 旗標與「以已安裝那支的 DR 驗證」；這只涵蓋 helper 本身，接線點的覆蓋見 6.1（round 2 更正）。
 - [x] 5.4 網路與 probe 的期限：lookup 15 秒總期限、回應上限 1 MiB；下載邊收邊算，超過上限即取消，宣告長度超過就不讀 body；probe 一個期限涵蓋執行與讀輸出、輸出上限 4096、孫行程持有 pipe 不卡。驗證：`SelfUpdateNetworkBoundTests`（`URLProtocol` stub 逐 chunk 送）、`SelfUpdateProbeBoundTests`。
 - [x] 5.5 daemon 與 MCP 的提示（Running daemons are stopped after replacement 的修訂）：寫出掃描過的目錄、目錄解析失敗時警告、停不掉時說明舊程式碼會繼續回應、提示重開 MCP server；daemon 名稱以 shell 引號印出。驗證：`SelfUpdateDaemonTests`、`SelfUpdateStrictnessTests.testShellWordQuotesAnythingUnsafe`。
 - [x] 5.6 其他：`draft`／`prerelease`／`size` 要求嚴格型別；`oneLine` 去掉 U+2028／U+2029；`--check` 不再因執行檔路徑失敗；拒絕訊息指向存在的 README 段落。驗證：`SelfUpdateStrictnessTests`。
+
+## 6. verify round 2 修正
+
+- [x] 6.1 信任檢查的接線點有真測試：`SelfUpdateSignatureVerifier.make(assessDeveloperID:)` 讓測試只替換 Developer ID 判斷、照常跑 runtime 與 DR 兩段。驗證：`SelfUpdateLiveWiringTests`；mutant「接線點拿掉 runtime 檢查」「改用候選者自己的 DR」「跳過 Developer ID 判斷」各被具名測試抓到。
+- [x] 6.2 running-binary 檢查加上 `SecCodeCheckValidity(running)`，並補正向測試（測試行程自己的執行檔通過）。驗證：`SelfUpdateRunningBinaryTests`；mutant「一律 throw」被抓到。一般 `mv` 蓋過執行中 binary 的情況沒有自動測試，列入 follow-up。
+- [x] 6.3 `.previous` 已是目標的 link 時，不再留下暫存備份 link；鎖的錯誤分成 `busy`（另一個執行持有）與 `lock`（其他原因）。驗證：`SelfUpdateRound2FilesystemTests`；兩個 mutant 各被抓到。
+- [x] 6.4 strict 驗證的行為測試：簽章後附加資料的檔案，非 strict 為 0、strict 為 -67010（實測），檢查會拒絕。驗證：`testStrictValidationRefusesDataAppendedAfterTheSignature`；mutant「拿掉 strict 旗標」被抓到。
+- [x] 6.5 文字更正：probe 測試的牆鐘上限改為期限本身（偶發失敗）；daemon 提示改為兩種情況下都成立的說法，根因指向 #304；`--help`、doc comment、design.md 的替換步驟、README 的鎖檔與清理時機。驗證：內容審閱，`SelfUpdate` 測試全綠。

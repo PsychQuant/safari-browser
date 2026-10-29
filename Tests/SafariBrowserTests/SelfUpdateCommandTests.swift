@@ -122,7 +122,7 @@ final class SelfUpdateDaemonTests: XCTestCase {
         let (code, c) = try await runUpdate(daemons: [SelfUpdateDaemonResult(name: "default", stopped: true)])
         XCTAssertEqual(code, 0)
         XCTAssertEqual(Array(c.out.dropFirst()), ["daemon default: stopped", "restart it with: safari-browser daemon start",
-                                                  "note: daemons were looked for in /tmp/daemon-dir only; one started with --socket-dir elsewhere keeps answering this CLI with the old code until you stop it", "note: a running `safari-browser mcp` server refuses tool calls until it is restarted"])
+                                                  "note: daemons were looked for in /tmp/daemon-dir only; one started with --socket-dir elsewhere or from another TMPDIR keeps running the old binary until you stop it", "note: a running `safari-browser mcp` server refuses tool calls until it is restarted"])
     }
 
     func testNamedDaemonRestartNamesIt() async throws {
@@ -132,19 +132,19 @@ final class SelfUpdateDaemonTests: XCTestCase {
             "daemon default: stopped", "daemon work: stopped",
             "restart it with: safari-browser daemon start",
             "restart it with: safari-browser daemon start --name work",
-            "note: daemons were looked for in /tmp/daemon-dir only; one started with --socket-dir elsewhere keeps answering this CLI with the old code until you stop it", "note: a running `safari-browser mcp` server refuses tool calls until it is restarted",
+            "note: daemons were looked for in /tmp/daemon-dir only; one started with --socket-dir elsewhere or from another TMPDIR keeps running the old binary until you stop it", "note: a running `safari-browser mcp` server refuses tool calls until it is restarted",
         ])
     }
 
     func testDaemonThatDoesNotStopWarnsButStillExitsZero() async throws {
         let (code, c) = try await runUpdate(daemons: [SelfUpdateDaemonResult(name: "work", stopped: false)])
         XCTAssertEqual(code, 0)
-        XCTAssertEqual(c.err, ["warning: daemon work did not stop within 5 s; it still runs the old binary and keeps answering this CLI with the old code — stop it with: safari-browser daemon stop --name work"])
+        XCTAssertEqual(c.err, ["warning: daemon work did not stop within 5 s and keeps running the old binary — stop it with: safari-browser daemon stop --name work"])
     }
 
     func testNoDaemonsPrintsOnlyTheScanAndMCPNotes() async throws {
         let (_, c) = try await runUpdate(daemons: [])
-        XCTAssertEqual(Array(c.out.dropFirst()), ["note: daemons were looked for in /tmp/daemon-dir only; one started with --socket-dir elsewhere keeps answering this CLI with the old code until you stop it", "note: a running `safari-browser mcp` server refuses tool calls until it is restarted"])
+        XCTAssertEqual(Array(c.out.dropFirst()), ["note: daemons were looked for in /tmp/daemon-dir only; one started with --socket-dir elsewhere or from another TMPDIR keeps running the old binary until you stop it", "note: a running `safari-browser mcp` server refuses tool calls until it is restarted"])
         XCTAssertEqual(c.err, [])
     }
 
@@ -155,7 +155,7 @@ final class SelfUpdateDaemonTests: XCTestCase {
             makeUpdater(executable: fixture.target, source: FakeReleaseSource(), daemonDirectory: nil),
             out: { c.out.append($0) }, err: { c.err.append($0) })
         XCTAssertEqual(code, 0)
-        XCTAssertEqual(c.err, ["warning: the daemon socket directory could not be resolved, so no daemon was stopped; a daemon still running the old binary keeps answering this CLI with the old code — stop it with: safari-browser daemon stop"])
+        XCTAssertEqual(c.err, ["warning: the daemon socket directory could not be resolved, so no daemon was stopped; a running daemon keeps running the old binary — stop it with: safari-browser daemon stop"])
     }
 
     func testOddDaemonNamesAreShellQuotedInPrintedCommands() async throws {

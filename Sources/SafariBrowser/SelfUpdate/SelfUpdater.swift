@@ -162,12 +162,12 @@ struct SelfUpdater: Sendable {
     static func acquireLock(in directory: URL) throws -> Int32 {
         let path = directory.appendingPathComponent(SelfUpdateConstants.lockName).path
         let fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard fd >= 0 else { throw SelfUpdateError.staging("\(path): \(String(cString: strerror(errno)))") }
+        guard fd >= 0 else { throw SelfUpdateError.lock("\(path): \(String(cString: strerror(errno)))") }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-            let reason = errno == EWOULDBLOCK ? "another self-update is running in \(directory.path)"
-                                              : String(cString: strerror(errno))
+            let code = errno
             close(fd)
-            throw SelfUpdateError.busy(reason)
+            if code == EWOULDBLOCK { throw SelfUpdateError.busy("another self-update is running in \(directory.path)") }
+            throw SelfUpdateError.lock("\(path): \(String(cString: strerror(code)))")
         }
         return fd
     }
@@ -241,6 +241,9 @@ struct SelfUpdater: Sendable {
             unlink(link)
             throw SelfUpdateError.backup("\(previous): \(reason)")
         }
+        // When `previous` already was a link to the target, `rename` succeeds and
+        // does nothing, leaving `link`; remove it either way (ENOENT is fine).
+        unlink(link)
         guard rename(staged.path, target.path) == 0 else {
             throw SelfUpdateError.install("\(target.path): \(String(cString: strerror(errno)))")
         }

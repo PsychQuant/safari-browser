@@ -215,12 +215,14 @@ before the new binary), and renames the new one into place. Any failure leaves t
 binary as it was. Only one `self-update` runs at a time per install directory, and a run
 started from a binary that another update has since replaced refuses. A run killed midway
 can leave a `.safari-browser.self-update.XXXXXX` file in the install directory; the next run
-removes it.
+that replaces the binary removes it. A `.safari-browser.self-update-lock` file stays in the
+install directory; it is how runs exclude each other.
 
 Afterwards it stops every daemon in the default socket directory (restart with
 `safari-browser daemon start`). A daemon it does not see (started with `--socket-dir`
-elsewhere, or from another `TMPDIR`) keeps answering this CLI with the **old** code until you
-stop it: the daemon handshake does not tell the two builds apart yet (#281). A running
+elsewhere, or from another `TMPDIR`) keeps running the **old** binary until you stop it
+(before #304 it also kept answering this CLI, because the handshake could not tell the builds
+apart). A running
 `safari-browser mcp` server refuses tool calls until it is restarted.
 
 It refuses when the installed binary is not a Developer ID build (`make install` is

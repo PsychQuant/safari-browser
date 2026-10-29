@@ -3,9 +3,12 @@ import Foundation
 
 /// `safari-browser self-update [--check [--json]]` (#314).
 ///
-/// Interference: Non-interfering. It never drives Safari or the UI; it talks
-/// only to GitHub and writes only its own binary (and `<binary>.previous`).
-/// The trust anchor is the installed binary's designated requirement — see
+/// Interference: Non-interfering. It never drives Safari or the UI. It requests
+/// the GitHub API and the release download URLs (GitHub chooses where downloads
+/// redirect; the bytes are held to the checksum and the designated requirement).
+/// In the install directory it writes its binary, `<binary>.previous`, a lock
+/// file, and transient `.safari-browser.self-update*` files. The trust anchor is
+/// the installed binary's designated requirement — see
 /// `SelfUpdateSignatureVerifier.live`.
 struct SelfUpdateCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -16,7 +19,10 @@ struct SelfUpdateCommand: AsyncParsableCommand {
             sha256, requires a Developer ID signature with the hardened runtime that
             satisfies this binary's designated requirement, checks that it reports the
             release tag, then replaces this binary atomically and keeps the old one as
-            <binary>.previous. Daemons still running the old binary are stopped.
+            <binary>.previous. One run at a time per install directory. Afterwards it
+            stops every daemon in the default socket directory; one started with
+            --socket-dir elsewhere or from another TMPDIR keeps running the old binary
+            until you stop it, and a running `safari-browser mcp` server needs a restart.
             It does not ask before replacing; use --check to see what it would do.
             """
     )
@@ -89,21 +95,22 @@ enum SelfUpdateRunner {
                 out("installed \(installed) is newer than the latest release \(latest); not replacing it")
             case .replaced(let from, let to, let target, let report):
                 out("updated safari-browser \(from) → \(to) at \(target) (previous kept as \(target).previous)")
-                // The daemon handshake does not tell builds apart (#281), so a daemon
-                // left running keeps answering this CLI with the old code. Say so.
-                let stale = "keeps answering this CLI with the old code"
+                // A daemon left running still runs the old binary. Before #304 the
+                // handshake could not tell builds apart, so it also kept answering
+                // this CLI; say what is true either way.
+                let stale = "keeps running the old binary"
                 let daemons = report.results
                 for daemon in daemons where daemon.stopped { out("daemon \(SelfUpdater.oneLine(daemon.name)): stopped") }
                 for daemon in daemons where !daemon.stopped {
-                    err("warning: daemon \(SelfUpdater.oneLine(daemon.name)) did not stop within 5 s; it still runs the old binary and \(stale) — stop it with: safari-browser daemon stop\(nameFlag(daemon.name))")
+                    err("warning: daemon \(SelfUpdater.oneLine(daemon.name)) did not stop within 5 s and \(stale) — stop it with: safari-browser daemon stop\(nameFlag(daemon.name))")
                 }
                 for daemon in daemons where daemon.stopped {
                     out("restart it with: safari-browser daemon start\(nameFlag(daemon.name))")
                 }
                 if let directory = report.directory {
-                    out("note: daemons were looked for in \(SelfUpdater.oneLine(directory)) only; one started with --socket-dir elsewhere \(stale) until you stop it")
+                    out("note: daemons were looked for in \(SelfUpdater.oneLine(directory)) only; one started with --socket-dir elsewhere or from another TMPDIR \(stale) until you stop it")
                 } else {
-                    err("warning: the daemon socket directory could not be resolved, so no daemon was stopped; a daemon still running the old binary \(stale) — stop it with: safari-browser daemon stop")
+                    err("warning: the daemon socket directory could not be resolved, so no daemon was stopped; a running daemon \(stale) — stop it with: safari-browser daemon stop")
                 }
                 out("note: a running `safari-browser mcp` server refuses tool calls until it is restarted")
             }

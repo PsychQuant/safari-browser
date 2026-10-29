@@ -565,8 +565,9 @@ used to read the target tab's URL when a tab flag is given).
 never drives Safari or the UI. It requests `api.github.com` and the release download URLs
 (GitHub redirects downloads to its asset storage; the redirect target is GitHub's choice, and
 the bytes are held to the checksum and the designated requirement). In the install directory
-it writes its binary, `<binary>.previous`, a lock file, and transient `.safari-browser.self-update*`
-files (removed on exit, or by the next run after a kill).
+it writes its binary, `<binary>.previous`, a lock file that stays, and transient
+`.safari-browser.self-update.*` / `-prev.*` files (removed on exit, or by the next run that
+replaces the binary after a kill).
 
 - **Trust anchor = the installed binary's designated requirement.** Both binaries go through
   the shared `SignatureAssessment` (Developer ID durable shape, Apple Events entitlement);
@@ -580,10 +581,14 @@ files (removed on exit, or by the next run after a kill).
   (strict) → mode 0755 → `--version` probe (one deadline for run and output) →
   `link(target, tmp)` → `rename(tmp, target.previous)` → `rename(staged, target)` → stop daemons.
   Any failure removes the staging file and leaves the target's bytes and inode unchanged.
-- **Daemons are not told apart by version**: the handshake version is `SAFARI_BROWSER_BUILD_*`,
-  not `BuildVersion` (#281), so a daemon `self-update` did not stop keeps serving the new CLI
-  with old code. The output names the searched directory and warns; do not claim a stateless
-  fallback. A running `mcp` server fails closed (`imageChangedError`) until restarted.
+- **A daemon it did not stop keeps running the old binary.** Before #304 the handshake
+  version was `SAFARI_BROWSER_BUILD_*`, not `BuildVersion`, so such a daemon also kept serving
+  the new CLI with old code; after #304 the CLI sees a mismatch and runs stateless. The output
+  says only what holds either way (searched directory, daemons not stopped). A running `mcp`
+  server fails closed (`imageChangedError`) until restarted.
+- **The running-binary check reads the file at the launch path**: a plain `mv` over it makes
+  the hash comparison compare the new file with itself, so `SecCodeCheckValidity(running)` is
+  required too (errSecCSStaticCodeChanged, -67034). Not covered by an automated test.
 - **Never call `Process.waitUntilExit()` in async code here**: it spins a run loop and hung
   the probe on a cooperative thread. Poll `isRunning` with a bound.
 - **Asset names are a contract with `scripts/release.sh`** (`SelfUpdateReleaseContractTests`).

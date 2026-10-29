@@ -97,8 +97,8 @@ designated requirement 涵蓋 identifier、Developer ID 憑證鏈與 team OU，T
 步驟：
 
 1. 被替換的是執行檔路徑解析 symlink 後的真實檔案，symlink 本身不動。
-2. staging 檔用 `mkstemp` 在目標檔的同一個目錄建立，名稱是 `.safari-browser.self-update.XXXXXX`。寫入、`fsync`、`fchmod 0755` 後才驗證。
-3. 驗證全部通過後，備份 `<target>.previous`：先 `unlink`，再 `link(target, previous)`。備份失敗就中止，不替換。
+2. checksum 在記憶體裡比對通過後，staging 檔才以 `mkstemp` 在目標檔的同一個目錄建立（名稱 `.safari-browser.self-update.XXXXXX`，0600），寫入並 `fsync`；簽章驗證通過後才改成 0755（verify round 1）。
+3. 驗證全部通過後，把目標 hard link 到一個新的暫存名稱，再 `rename` 蓋過 `<target>.previous`，最後刪掉暫存名稱（`.previous` 原本就是目標的 link 時 `rename` 不做事，暫存名稱會留下，round 2）。舊的 `.previous` 只在新備份存在後才被換掉；備份失敗就中止，不替換（round 1）。
 4. 最後 `rename(staging, target)`。
 
 這樣任何時刻 `target` 都存在。正在執行的舊行程保有舊 inode，新路徑是新 inode（`install-signature-contract` 的 *Atomic installation evidence*）。任何一步失敗都刪除 staging 檔。
@@ -111,7 +111,7 @@ designated requirement 涵蓋 identifier、Developer ID 憑證鏈與 team OU，T
 
 ### Interrupted runs leave nothing behind for long
 
-（verify round 1 加入）`defer` 在 signal、crash、斷電時不會執行，staging 檔會留下。每次執行在持鎖後先清掉 `.safari-browser.self-update.`／`.safari-browser.self-update-prev.` 加六個英數字、屬於使用者的一般檔案。下載先在記憶體裡比對 checksum，再以 0600 寫入，簽章通過才改成 0755，所以殘檔至少不是未驗證的可執行檔。替代方案：安裝 SIGINT／SIGTERM handler。但它擋不住 SIGKILL 與斷電，下一次執行時清理才能涵蓋所有情況。
+（verify round 1 加入）`defer` 在 signal、crash、斷電時不會執行，staging 檔會留下。每次執行在持鎖後先清掉 `.safari-browser.self-update.`／`.safari-browser.self-update-prev.` 加六個英數字、屬於使用者的一般檔案。下載先在記憶體裡比對 checksum，再以 0600 寫入，簽章通過才改成 0755，所以殘檔至少不是未驗證的可執行檔。清理在下一次「會替換」的執行裡做（`--check`、已是最新、`ahead` 都不會走到持鎖那一步）。替代方案：安裝 SIGINT／SIGTERM handler。但它擋不住 SIGKILL 與斷電，下一次執行時清理才能涵蓋所有情況。
 
 ### Version probe after signature check
 
@@ -193,8 +193,9 @@ stdout 去掉一個結尾換行後必須逐字等於 tag。
 - [轉址到其他主機下載] → 只接受 API 回報、且網址前綴屬於本 repo 這個 tag 的 asset；URLSession 跟隨 GitHub 自己的 CDN 轉址，最後的位元組由 checksum 與簽章把關。
 - [checksum 與 binary 走同一條通道] → checksum 只防傳輸損壞，真正的信任來自 designated requirement 檢查。
 - [替換正在執行的 binary] → rename 不影響舊行程；測試在暫存目錄驗證新 inode 與舊行程都正常。
-- [daemon 版本握手分不出新舊版] → 握手版本來自 `SAFARI_BROWSER_BUILD_*`（預設 `1.0.0+unknown`），不是 `BuildVersion`（#281），所以沒停到的 daemon 會用舊程式碼回應新 CLI。輸出會寫出掃描過的目錄、停不掉的 daemon，以及目錄解析失敗的情況；根本修正屬 #281。
+- [daemon 版本握手分不出新舊版] → #304 之前握手版本來自 `SAFARI_BROWSER_BUILD_*`（預設 `1.0.0+unknown`），不是 `BuildVersion`，所以沒停到的 daemon 會用舊程式碼回應新 CLI；#304 讓握手帶蓋章的建置身分之後，新 CLI 會判為 mismatch 而退回 stateless。輸出只說兩種情況下都成立的事：寫出掃描過的目錄、停不掉的 daemon、目錄解析失敗的情況，以及「沒停到的 daemon 仍在跑舊 binary」。
 - [執行中的 `safari-browser mcp`] → 替換後它的 MCP image guard 會拒絕每一個 tool call（fail-closed），輸出提示要重開。
+- [running-binary 檢查讀的是路徑上的檔案] → `SecCodeCopySelf` 的 static code 從啟動路徑讀；一般的 `mv` 蓋過那個路徑時，hash 比對會拿新檔跟自己比。另以 `SecCodeCheckValidity(running)` 擋下這種情況（round 2；DA 實測回 -67034）；它沒有自動測試（要用子行程替換執行中的 binary），列在 follow-up。
 - [撤銷與公證] → 都沒有檢查，與 README 的手動步驟相同；候選者的驗證另加 `kSecCSStrictValidate`，對應 `--strict`。
 - [hardened runtime 只讀預設架構的 slice] → designated requirement 已逐 slice 檢查並釘住 team 與 identifier，風險小；逐 slice 檢查 runtime 另案追蹤。
 

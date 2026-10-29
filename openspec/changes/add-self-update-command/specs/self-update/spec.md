@@ -105,7 +105,7 @@ The file replaced SHALL be the installed executable path with symbolic links res
 
 ### Requirement: One update at a time from the installed binary
 
-Before downloading the binary, the command SHALL take an exclusive, non-blocking `flock` on `.safari-browser.self-update-lock` in the target directory and SHALL hold it until it finishes; when another run holds it, the command SHALL exit 1 saying so. With the lock held, it SHALL confirm that the running process's code hash equals the target file's, and SHALL refuse when they differ, because a run started from a binary that another update has since replaced would otherwise turn `<target>.previous` into a copy of the new version.
+Before downloading the binary, the command SHALL take an exclusive, non-blocking `flock` on `.safari-browser.self-update-lock` in the target directory and SHALL hold it until it finishes; when another run holds it, the command SHALL exit 1 saying so. With the lock held, it SHALL confirm that the running code is still valid against its file (`SecCodeCheckValidity`) and that its code hash equals the target file's, and SHALL refuse when either fails, because a run started from a binary that another update has since replaced would otherwise turn `<target>.previous` into a copy of the new version.
 
 #### Scenario: A second run while one is in progress
 
@@ -119,7 +119,7 @@ Before downloading the binary, the command SHALL take an exclusive, non-blocking
 
 ### Requirement: Interrupted runs leave nothing behind for long
 
-A run that is killed (signal, crash, power loss) cannot remove its own staging file. With the lock held, every run SHALL first remove the regular files owned by the user in the target directory whose names are `.safari-browser.self-update.` or `.safari-browser.self-update-prev.` followed by exactly six ASCII letters or digits, and SHALL leave every other entry alone. The target path SHALL exist at every moment of a replacement.
+A run that is killed (signal, crash, power loss) cannot remove its own staging file. With the lock held, every run that goes on to replace the binary SHALL first remove the regular files owned by the user in the target directory whose names are `.safari-browser.self-update.` or `.safari-browser.self-update-prev.` followed by exactly six ASCII letters or digits, and SHALL leave every other entry alone. The target path SHALL exist at every moment of a replacement.
 
 #### Scenario: Leftover from an interrupted run
 
@@ -137,7 +137,7 @@ On any failure — network, response shape, size limit, checksum, signature, ver
 
 ### Requirement: Running daemons are stopped after replacement
 
-After a successful replacement, the command SHALL enumerate `safari-browser-<name>.sock` entries in the default daemon socket directory and, for each daemon that is alive, SHALL send `daemon.shutdown` and wait up to 5 seconds as `daemon stop` does. It SHALL print `daemon <name>: stopped` for each stopped daemon and then print `safari-browser daemon start`, with `--name <name>` (shell-quoted unless it consists only of ASCII letters, digits and `._-/`) for namespaces other than `default`. Because the daemon version handshake does not tell builds apart (it is not `BuildVersion`; #281), a daemon left running keeps answering the new CLI with the old code: a daemon that does not stop SHALL produce a warning saying so, the output SHALL name the directory that was searched and say that a daemon started elsewhere is not found, and when the socket directory cannot be resolved the command SHALL warn that no daemon was stopped. None of these SHALL change the exit code from 0. The output SHALL also say that a running `safari-browser mcp` server refuses tool calls until it is restarted.
+After a successful replacement, the command SHALL enumerate `safari-browser-<name>.sock` entries in the default daemon socket directory and, for each daemon that is alive, SHALL send `daemon.shutdown` and wait up to 5 seconds as `daemon stop` does. It SHALL print `daemon <name>: stopped` for each stopped daemon and then print `safari-browser daemon start`, with `--name <name>` (shell-quoted unless it consists only of ASCII letters, digits and `._-/`) for namespaces other than `default`. A daemon left running keeps running the old binary (and, before #304 made the handshake carry the build identity, also kept answering the new CLI with the old code): a daemon that does not stop SHALL produce a warning saying so, the output SHALL name the directory that was searched and say that a daemon started elsewhere is not found, and when the socket directory cannot be resolved the command SHALL warn that no daemon was stopped. None of these SHALL change the exit code from 0. The output SHALL also say that a running `safari-browser mcp` server refuses tool calls until it is restarted.
 
 #### Scenario: Default daemon running during update
 
