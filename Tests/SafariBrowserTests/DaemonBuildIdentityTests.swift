@@ -136,6 +136,15 @@ final class DaemonBuildIdentityTests: XCTestCase {
         XCTAssertEqual(v.description, "1.0[2J+v1x(git)")
     }
 
+    /// verify round 3: invisible formatting (zero-width, bidi override, line and
+    /// paragraph separators, private use) could make two different identities
+    /// print the same, so it is dropped too.
+    func testDescriptionDropsInvisibleFormatting() {
+        let v = DaemonProtocol.Version(semver: "2.7.0\u{200B}", commit: "v\u{202E}x\u{2028}y\u{2029}\u{FEFF}\u{E000}z\u{2066}",
+                                       dirty: false, vendor: .git)
+        XCTAssertEqual(v.description, "2.7.0+vxyz(git)")
+    }
+
     /// verify round 2: the `daemon status` note says what is actually wrong.
     func testMismatchNoteNamesTheRealCause() {
         let clean = identity("v2.7.0"), other = identity("v2.7.0-1-gdef5678")
@@ -151,5 +160,33 @@ final class DaemonBuildIdentityTests: XCTestCase {
         let dirtyOnlyDaemon = DaemonProtocol.mismatchNote(daemon: dirtyDaemon, client: clean) ?? ""
         XCTAssertTrue(dirtyOnlyDaemon.contains("dirty build"), dirtyOnlyDaemon)
         XCTAssertTrue(dirtyOnlyDaemon.contains("daemon start"), dirtyOnlyDaemon)
+        // verify round 3: a dirty CLI against a clean daemon is still the CLI's
+        // problem; restarting the daemon cannot help it.
+        let dirtyAgainstClean = DaemonProtocol.mismatchNote(daemon: clean, client: dirtyCLI) ?? ""
+        XCTAssertTrue(dirtyAgainstClean.contains("this CLI is a dirty build"), dirtyAgainstClean)
+        XCTAssertFalse(dirtyAgainstClean.contains("daemon start"), dirtyAgainstClean)
+        // `daemon status` itself just used the daemon, so the note must not say "never".
+        XCTAssertFalse(fromDirtyCLI.contains("never uses a daemon"), fromDirtyCLI)
+        XCTAssertTrue(fromDirtyCLI.contains("daemon stop and daemon status"), fromDirtyCLI)
     }
+
+    /// verify round 3: the wiring `daemon status` uses (observer → note → stderr)
+    /// writes the note with a newline on a mismatch and nothing on a match.
+    func testStatusObserverWritesTheNoteOnlyOnAMismatch() {
+        let written = LockedLines()
+        let observe = DaemonStatusCommand.mismatchObserver(client: identity("v2.7.0"), write: { written.append($0) })
+        observe(identity("v2.7.0"))
+        XCTAssertEqual(written.all, [])
+        observe(identity("v2.7.0-1-gdef5678"))
+        guard written.all.count == 1 else { return XCTFail("\(written.all)") }
+        XCTAssertTrue(written.all[0].hasPrefix("note: this daemon runs another build"), written.all[0])
+        XCTAssertTrue(written.all[0].hasSuffix("\n"), written.all[0])
+    }
+}
+
+private final class LockedLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func append(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
 }

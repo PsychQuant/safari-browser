@@ -173,11 +173,17 @@ done
 # a non-zero exit with a multi-match stderr. A real divergence persists; a
 # transient (tab still settling) resolves on retry.
 amb_ok=""
+amb_fallback=""
 for attempt in 1 2 3 4 5; do
     ambiguous_stateless_err=$(SAFARI_BROWSER_NAME="no-such-$$" "$SB" get url --url "$MARK" 2>&1 >/dev/null)
     ambiguous_stateless_exit=$?
     ambiguous_daemon_err=$(SAFARI_BROWSER_DAEMON=1 SAFARI_BROWSER_NAME="$NAME" "$SB" get url --url "$MARK" 2>&1 >/dev/null)
     ambiguous_daemon_exit=$?
+    # #304: a fallback produces the same ambiguous error without the daemon.
+    if [[ "$ambiguous_daemon_err" == *"[daemon fallback"* ]]; then
+        amb_fallback=1
+        break
+    fi
     if [[ "$ambiguous_stateless_exit" != "0" && "$ambiguous_daemon_exit" != "0" \
           && "$ambiguous_stateless_exit" == "$ambiguous_daemon_exit" ]] \
        && echo "$ambiguous_stateless_err" | grep -qiE "ambiguous|multiple.*match" \
@@ -188,7 +194,9 @@ for attempt in 1 2 3 4 5; do
     sleep 0.4
 done
 
-if [[ -n "$amb_ok" ]]; then
+if [[ -n "$amb_fallback" ]]; then
+    fail "ambiguousWindowMatch" "the daemon side did not use the daemon: $(grep -m1 '\[daemon fallback' <<<"$ambiguous_daemon_err")"
+elif [[ -n "$amb_ok" ]]; then
     pass "ambiguousWindowMatch  (both modes fail-closed with multi-match stderr)"
 else
     fail "ambiguousWindowMatch" "stateless_exit=$ambiguous_stateless_exit daemon_exit=$ambiguous_daemon_exit (after retries)"

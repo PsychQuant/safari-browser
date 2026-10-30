@@ -47,9 +47,13 @@ enum DaemonProtocol {
         var description: String {
             // Shorten hashes only; a tag used as the commit stays whole. The
             // fields come from the peer's handshake and reach the terminal, so
-            // control characters are dropped (verify round 2).
+            // control characters (verify round 2) and invisible formatting such
+            // as zero-width and bidi-override characters, which could make two
+            // different identities print the same (round 3), are dropped.
             func printable(_ text: String) -> String {
-                String(String.UnicodeScalarView(text.unicodeScalars.filter { $0.properties.generalCategory != .control }))
+                let hidden: Set<Unicode.GeneralCategory> = [.control, .format, .lineSeparator, .paragraphSeparator,
+                                                            .privateUse, .surrogate, .unassigned]
+                return String(String.UnicodeScalarView(text.unicodeScalars.filter { !hidden.contains($0.properties.generalCategory) }))
             }
             let isHash = !commit.isEmpty && commit.allSatisfy(\.isHexDigit)
             let shortCommit = printable(isHash ? String(commit.prefix(8)) : commit)
@@ -144,13 +148,14 @@ enum DaemonProtocol {
     }
 
     /// The stderr note `daemon status` prints when the daemon's identity does
-    /// not match this CLI's, or nil when they match. A dirty CLI never uses a
-    /// daemon, so restarting cannot help it; say so instead (verify round 2).
+    /// not match this CLI's, or nil when they match. A dirty CLI runs every
+    /// command except `daemon stop` and `daemon status` stateless, so
+    /// restarting the daemon cannot help it; say so instead (verify round 2).
     static func mismatchNote(daemon: Version, client: Version) -> String? {
         guard !versionsMatch(server: daemon, client: client) else { return nil }
         let both = "daemon \(daemon.description), this CLI \(client.description)"
         if client.dirty {
-            return "note: this CLI is a dirty build (\(both)); a dirty build never uses a daemon and runs every command stateless"
+            return "note: this CLI is a dirty build (\(both)); a dirty build runs every command stateless except daemon stop and daemon status, so restarting the daemon does not help"
         }
         if daemon.dirty {
             return "note: this daemon was started by a dirty build (\(both)); commands fall back to stateless until it is restarted with daemon stop and daemon start"
