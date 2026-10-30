@@ -94,7 +94,8 @@ enum SelfUpdateRunner {
             case .ahead(let installed, let latest):
                 out("installed \(installed) is newer than the latest release \(latest); not replacing it")
             case .replaced(let from, let to, let target, let report):
-                out("updated safari-browser \(from) → \(to) at \(target) (previous kept as \(target).previous)")
+                let shown = SelfUpdater.oneLine(target)
+                out("updated safari-browser \(from) → \(to) at \(shown) (previous kept as \(shown).previous)")
                 // A daemon left running still runs the old binary. Before #304 the
                 // handshake could not tell builds apart, so it also kept answering
                 // this CLI; say what is true either way.

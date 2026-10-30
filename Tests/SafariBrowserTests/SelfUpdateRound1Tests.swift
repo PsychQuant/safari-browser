@@ -282,12 +282,15 @@ final class SelfUpdateProbeBoundTests: XCTestCase {
         try Data("#!/bin/sh\nsleep 30 &\nprintf 'v9.9.9\\n'\n".utf8).write(to: script)
         chmod(script.path, 0o755)
         // The grandchild holds the pipe for 30 s. Getting the version back before
-        // the 5 s deadline (not a timeout error) is the property; a tighter
+        // the deadline (not a timeout error) is the property; a tighter
         // wall-clock bound flaked under load (3.57 s, verify round 2).
         let start = Date()
-        let version = try await SelfUpdateVersionProbeLive.run(script, timeout: 5)
+        // verify round 3: deadline and bound at 15 s, both far below the
+        // grandchild's 30 s, so a probe that waits for EOF still fails here
+        // while a slow launch under load does not.
+        let version = try await SelfUpdateVersionProbeLive.run(script, timeout: 15)
         XCTAssertEqual(version, "v9.9.9")
-        XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 15)
     }
 
     func testOverlongOutputIsRefused() async throws {

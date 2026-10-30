@@ -65,7 +65,7 @@ enum SelfUpdateError: Error, Equatable, CustomStringConvertible {
         case .busy(let m): return "\(m); wait for it to finish"
         case .lock(let m): return "could not take the update lock: \(m)"
         case .installedChanged(let p):
-            return "\(p) is no longer the binary this process was started from (another update replaced it); run self-update again"
+            return "\(p) is no longer the binary this process was started from (it was replaced after this process started); run self-update again"
         }
     }
 }
