@@ -106,10 +106,15 @@ if "$SB" daemon start --name "$NAMESPACE" > /dev/null 2>&1; then
     cat > "$SCRIPT_FILE" <<EOF
 [{"cmd":"get url"},{"cmd":"get title"}]
 EOF
-    SAFARI_BROWSER_DAEMON=1 SAFARI_BROWSER_NAME="$NAMESPACE" \
-        "$SB" exec --script "$SCRIPT_FILE" --url "test-page.html" --mark-tab > /dev/null 2>&1
+    EXEC_ERR=$(SAFARI_BROWSER_DAEMON=1 SAFARI_BROWSER_NAME="$NAMESPACE" \
+        "$SB" exec --script "$SCRIPT_FILE" --url "test-page.html" --mark-tab 2>&1 >/dev/null)
     RESTORED_AFTER_EXEC=$("$SB" get title --url "test-page.html" 2>/dev/null)
-    if [[ "$RESTORED_AFTER_EXEC" == "$ORIG_TITLE" ]]; then
+    # #304: a dirty or mismatched build runs the exec stateless; the title is
+    # then restored without the daemon having been used.
+    if [[ "$EXEC_ERR" == *"[daemon fallback"* ]]; then
+        fail "daemon-routed exec --mark-tab did not use the daemon" \
+             "$(grep -m1 '\[daemon fallback' <<<"$EXEC_ERR")"
+    elif [[ "$RESTORED_AFTER_EXEC" == "$ORIG_TITLE" ]]; then
         pass "daemon-routed exec --mark-tab restores title"
     else
         fail "daemon-routed exec --mark-tab restore failed" \

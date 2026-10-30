@@ -92,9 +92,11 @@ final class DaemonHandshakeEdgeCaseTests: XCTestCase {
     }
 
     // MARK: - resolveCurrentVersion env-driven (5.1)
+    // Pinned to an unstamped build (#304): with a stamp left in BuildVersion.swift
+    // the defaults below would come from the stamp instead.
 
     func testResolveCurrentVersion_defaultsWhenEnvUnset() {
-        let v = DaemonProtocol.resolveCurrentVersion(env: [:])
+        let v = DaemonProtocol.resolveCurrentVersion(env: [:], buildVersion: "unknown")
         // Defaults: vendor = source (locally-built), dirty = false.
         // Semver / commit fall to known defaults so handshake still
         // produces a parseable struct in CI / dev shells.
@@ -111,7 +113,7 @@ final class DaemonHandshakeEdgeCaseTests: XCTestCase {
             "SAFARI_BROWSER_BUILD_DIRTY": "1",
             "SAFARI_BROWSER_BUILD_VENDOR": "homebrew",
         ]
-        let v = DaemonProtocol.resolveCurrentVersion(env: env)
+        let v = DaemonProtocol.resolveCurrentVersion(env: env, buildVersion: "unknown")
         XCTAssertEqual(v.semver, "9.9.9")
         XCTAssertEqual(v.commit, "feedface")
         XCTAssertTrue(v.dirty)
@@ -122,14 +124,14 @@ final class DaemonHandshakeEdgeCaseTests: XCTestCase {
         // Strict match — `"true"` / `"yes"` / `"on"` do NOT trigger.
         for nonEnabling in ["true", "yes", "on", "0", ""] {
             let env = ["SAFARI_BROWSER_BUILD_DIRTY": nonEnabling]
-            let v = DaemonProtocol.resolveCurrentVersion(env: env)
+            let v = DaemonProtocol.resolveCurrentVersion(env: env, buildVersion: "unknown")
             XCTAssertFalse(v.dirty, "value '\(nonEnabling)' must NOT enable dirty flag")
         }
     }
 
     func testResolveCurrentVersion_unknownVendorFallsToSource() {
         let env = ["SAFARI_BROWSER_BUILD_VENDOR": "homebrewx"]
-        let v = DaemonProtocol.resolveCurrentVersion(env: env)
+        let v = DaemonProtocol.resolveCurrentVersion(env: env, buildVersion: "unknown")
         XCTAssertEqual(v.vendor, .source, "unknown vendor must fall back to source")
     }
 }

@@ -218,7 +218,9 @@ struct DaemonStatusCommand: AsyncParsableCommand {
             params: Data("{}".utf8),
             requestId: 1,
             timeout: 2.0,
-            socketDir: socketDirFlags.socketDir
+            socketDir: socketDirFlags.socketDir,
+            handshakeObserver: Self.mismatchObserver(client: DaemonProtocol.currentVersion,
+                                                      write: { FileHandle.standardError.write(Data($0.utf8)) })
         )
         let obj = (try? JSONSerialization.jsonObject(with: resultData, options: [])) as? [String: Any] ?? [:]
         let pid = (obj["pid"] as? Int) ?? -1
@@ -230,6 +232,19 @@ struct DaemonStatusCommand: AsyncParsableCommand {
         print("  uptime:             \(Int(uptime))s")
         print("  requests served:    \(requestCount)")
         print("  pre-compiled scripts: \(preCompiledCount)")
+    }
+}
+
+extension DaemonStatusCommand {
+    /// stdout keeps its fixed shape (the benchmark matches it whole); a build
+    /// mismatch is said on stderr (#304). Separate from `run()` so the wiring
+    /// is testable without a live daemon.
+    static func mismatchObserver(client: DaemonProtocol.Version,
+                                 write: @escaping @Sendable (String) -> Void) -> @Sendable (DaemonProtocol.Version) -> Void {
+        { daemon in
+            guard let note = DaemonProtocol.mismatchNote(daemon: daemon, client: client) else { return }
+            write(note + "\n")
+        }
     }
 }
 
