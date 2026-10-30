@@ -215,7 +215,7 @@ before the new binary), and renames the new one into place. Any failure leaves t
 binary as it was. Only one `self-update` runs at a time per install directory, and a run
 started from a binary that another update has since replaced refuses. A run killed midway
 can leave a `.safari-browser.self-update.XXXXXX` file in the install directory; the next run
-that replaces the binary removes it. A `.safari-browser.self-update-lock` file stays in the
+that takes the update lock (one that finds an update to install) removes it. A `.safari-browser.self-update-lock` file stays in the
 install directory; it is how runs exclude each other.
 
 Afterwards it stops every daemon in the default socket directory (restart with

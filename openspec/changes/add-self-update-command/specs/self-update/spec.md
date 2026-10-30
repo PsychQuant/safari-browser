@@ -119,12 +119,12 @@ Before downloading the binary, the command SHALL take an exclusive, non-blocking
 
 ### Requirement: Interrupted runs leave nothing behind for long
 
-A run that is killed (signal, crash, power loss) cannot remove its own staging file. With the lock held, every run that goes on to replace the binary SHALL first remove the regular files owned by the user in the target directory whose names are `.safari-browser.self-update.` or `.safari-browser.self-update-prev.` followed by exactly six ASCII letters or digits, and SHALL leave every other entry alone. The target path SHALL exist at every moment of a replacement.
+A run that is killed (signal, crash, power loss) cannot remove its own staging file. Every run that takes the lock SHALL, after the running-binary check and before any download, remove the regular files owned by the user in the target directory whose names are `.safari-browser.self-update.` or `.safari-browser.self-update-prev.` followed by exactly six ASCII letters or digits, and SHALL leave every other entry alone. The target path SHALL exist at every moment of a replacement.
 
 #### Scenario: Leftover from an interrupted run
 
 - **WHEN** `.safari-browser.self-update.AbC123` remains in `~/bin` from a run killed during its version probe
-- **THEN** the next `self-update` SHALL remove it and SHALL keep `notes.txt`, `.safari-browser.self-update-lock`, and any directory with a staging-shaped name
+- **THEN** the next `self-update` that takes the lock SHALL remove it and SHALL keep `notes.txt`, `.safari-browser.self-update-lock`, and any directory with a staging-shaped name
 
 ### Requirement: Failure leaves the installed binary unchanged
 

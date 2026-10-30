@@ -111,7 +111,7 @@ designated requirement 涵蓋 identifier、Developer ID 憑證鏈與 team OU，T
 
 ### Interrupted runs leave nothing behind for long
 
-（verify round 1 加入）`defer` 在 signal、crash、斷電時不會執行，staging 檔會留下。每次執行在持鎖後先清掉 `.safari-browser.self-update.`／`.safari-browser.self-update-prev.` 加六個英數字、屬於使用者的一般檔案。下載先在記憶體裡比對 checksum，再以 0600 寫入，簽章通過才改成 0755，所以殘檔至少不是未驗證的可執行檔。清理在下一次「會替換」的執行裡做（`--check`、已是最新、`ahead` 都不會走到持鎖那一步）。替代方案：安裝 SIGINT／SIGTERM handler。但它擋不住 SIGKILL 與斷電，下一次執行時清理才能涵蓋所有情況。
+（verify round 1 加入）`defer` 在 signal、crash、斷電時不會執行，staging 檔會留下。每次執行在持鎖後先清掉 `.safari-browser.self-update.`／`.safari-browser.self-update-prev.` 加六個英數字、屬於使用者的一般檔案。下載先在記憶體裡比對 checksum，再以 0600 寫入，簽章通過才改成 0755，所以殘檔至少不是未驗證的可執行檔。清理在下一次拿到 update lock 的執行裡做：找到更新、已安裝的是 Developer ID、目錄可寫、通過 running-binary 檢查之後，下載之前（`--check`、已是最新、`ahead` 都不會走到持鎖那一步；拿到鎖之後才在下載或驗證失敗的執行也會清，round 3 更正）。替代方案：安裝 SIGINT／SIGTERM handler。但它擋不住 SIGKILL 與斷電，下一次執行時清理才能涵蓋所有情況。
 
 ### Version probe after signature check
 

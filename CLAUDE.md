@@ -567,7 +567,7 @@ never drives Safari or the UI. It requests `api.github.com` and the release down
 the bytes are held to the checksum and the designated requirement). In the install directory
 it writes its binary, `<binary>.previous`, a lock file that stays, and transient
 `.safari-browser.self-update.*` / `-prev.*` files (removed on exit, or by the next run that
-replaces the binary after a kill).
+takes the update lock after a kill).
 
 - **Trust anchor = the installed binary's designated requirement.** Both binaries go through
   the shared `SignatureAssessment` (Developer ID durable shape, Apple Events entitlement);
@@ -579,7 +579,7 @@ replaces the binary after a kill).
   the lock file → running binary is the installed one → sweep leftovers → checksum asset →
   binary (cancelled past its limit) → sha256 in memory → stage at 0600 → candidate identity
   (strict) → mode 0755 → `--version` probe (one deadline for run and output) →
-  `link(target, tmp)` → `rename(tmp, target.previous)` → `rename(staged, target)` → stop daemons.
+  `link(target, tmp)` → `rename(tmp, target.previous)` → `unlink(tmp)` → `rename(staged, target)` → stop daemons.
   Any failure removes the staging file and leaves the target's bytes and inode unchanged.
 - **A daemon it did not stop keeps running the old binary.** Before #304 the handshake
   version was `SAFARI_BROWSER_BUILD_*`, not `BuildVersion`, so such a daemon also kept serving
