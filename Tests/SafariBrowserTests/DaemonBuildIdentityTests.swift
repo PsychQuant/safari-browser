@@ -1,0 +1,192 @@
+import XCTest
+
+@testable import SafariBrowser
+
+/// #304: the daemon handshake carries the stamped build version, so a CLI and a
+/// daemon built from different commits no longer shake hands as equal.
+final class DaemonBuildIdentityTests: XCTestCase {
+
+    private func identity(_ build: String) -> DaemonProtocol.Version {
+        DaemonProtocol.resolveCurrentVersion(env: [:], buildVersion: build)
+    }
+
+    func testStampedBuildVersionsMapToIdentities() {
+        let rows: [(String, DaemonProtocol.Version)] = [
+            ("v2.7.0", .init(semver: "2.7.0", commit: "v2.7.0", dirty: false, vendor: .git)),
+            ("v2.7.0-5-gabc1234", .init(semver: "2.7.0", commit: "abc1234", dirty: false, vendor: .git)),
+            ("abc1234", .init(semver: "0.0.0", commit: "abc1234", dirty: false, vendor: .git)),
+            ("v2.7.0-dirty", .init(semver: "2.7.0", commit: "v2.7.0", dirty: true, vendor: .git)),
+            ("v2.7.0-5-gabc1234-dirty", .init(semver: "2.7.0", commit: "abc1234", dirty: true, vendor: .git)),
+            ("abc1234-dirty", .init(semver: "0.0.0", commit: "abc1234", dirty: true, vendor: .git)),
+            // verify round 1: shapes `git describe` also prints, which used to
+            // fall back to the shared default identity.
+            ("v2.8.0-rc1", .init(semver: "2.8.0-rc1", commit: "v2.8.0-rc1", dirty: false, vendor: .git)),
+            ("v2.8.0-rc1-3-gabc1234", .init(semver: "2.8.0-rc1", commit: "abc1234", dirty: false, vendor: .git)),
+            ("v2.8.0-beta.2-1-gabc1234-dirty", .init(semver: "2.8.0-beta.2", commit: "abc1234", dirty: true, vendor: .git)),
+            ("v2.7", .init(semver: "2.7", commit: "v2.7", dirty: false, vendor: .git)),
+            ("v2.7.0-3-g1a2b", .init(semver: "2.7.0", commit: "1a2b", dirty: false, vendor: .git)),
+            (String(repeating: "a", count: 64), .init(semver: "0.0.0", commit: String(repeating: "a", count: 64), dirty: false, vendor: .git)),
+        ]
+        for (build, expected) in rows {
+            XCTAssertEqual(identity(build), expected, build)
+        }
+    }
+
+    /// Unstamped builds (`swift build`, `swift test`) keep the old default
+    /// identity field for field.
+    func testUnknownKeepsTheOldDefaults() {
+        XCTAssertEqual(identity("unknown"), .init(semver: "1.0.0", commit: "unknown", dirty: false, vendor: .source))
+        XCTAssertEqual(identity(""), identity("unknown"))
+    }
+
+    /// verify round 1: any stamp other than `unknown` gets an identity of its
+    /// own, never the shared default, and `-dirty` is read whatever the tag looks like.
+    func testEveryStampOtherThanUnknownGetsItsOwnIdentity() {
+        let stamps = ["v2.7.0", "v2.7.0-5-gabc1234", "abc1234", "v2.8.0-rc1", "v2.8.0-rc2",
+                      "v2.8.0-rc1-3-gabc1234", "v2.8.0-rc1-dirty", "v2.8.0+build1", "v2.7", "v2.7-3-gabc1234",
+                      "v2.7.0-3-g1a2b", String(repeating: "b", count: 64), "v2.7.0-dirty-dirty", "ABC1234"]
+        let unknown = identity("unknown")
+        var seen: [(DaemonProtocol.Version, String)] = []
+        for stamp in stamps {
+            let v = identity(stamp)
+            XCTAssertNotEqual(v, unknown, stamp)
+            XCTAssertEqual(v.vendor, .git, stamp)
+            XCTAssertEqual(v.dirty, stamp.hasSuffix("-dirty"), stamp)
+            if let earlier = seen.first(where: { $0.0 == v }) { XCTFail("'\(stamp)' and '\(earlier.1)' share an identity") }
+            seen.append((v, stamp))
+        }
+    }
+
+    /// #304 Expected: two builds with different identifiers mismatch.
+    func testDifferentBuildsMismatchAndTheSameBuildMatches() {
+        let pairs: [(String, String, Bool)] = [
+            ("v2.7.0", "v2.7.0", true),
+            ("v2.7.0-5-gabc1234", "v2.7.0-5-gabc1234", true),
+            ("v2.8.0-rc1", "v2.8.0-rc1", true),
+            ("v2.7.0", "v2.8.0", false),
+            ("v2.7.0", "v2.7.0-1-gdef5678", false),
+            ("v2.7.0-5-gabc1234", "v2.7.0-6-gdef5678", false),
+            ("v2.8.0-rc1", "v2.8.0-rc2", false),
+            ("v2.8.0-rc1-3-gabc1234", "v2.8.0-rc1-4-gdef5678", false),
+            ("v2.7.0", "v2.7.0-dirty", false),
+            ("v2.7.0-dirty", "v2.7.0-dirty", false),     // spec: dirty always mismatches
+            ("v2.8.0-rc1-dirty", "v2.8.0-rc1-dirty", false),
+            ("v2.7.0", "unknown", false),                  // a stamped daemon against an unstamped client
+            ("unknown", "v2.8.0-rc1", false),              // an unstamped daemon against a stamped client
+            ("unknown", "unknown", true),                  // unstamped builds still cannot be told apart
+        ]
+        for (server, client, match) in pairs {
+            XCTAssertEqual(DaemonProtocol.versionsMatch(server: identity(server), client: identity(client)), match,
+                           "\(server) vs \(client)")
+        }
+    }
+
+    /// verify round 1: each non-empty variable overrides its own field only; the
+    /// other fields still come from the stamp.
+    func testEachVariableOverridesOnlyItsOwnField() {
+        func resolve(_ env: [String: String]) -> DaemonProtocol.Version {
+            DaemonProtocol.resolveCurrentVersion(env: env, buildVersion: "v2.7.0-5-gabc1234")
+        }
+        XCTAssertEqual(resolve(["SAFARI_BROWSER_BUILD_COMMIT": "feedface"]),
+                       .init(semver: "2.7.0", commit: "feedface", dirty: false, vendor: .git))
+        XCTAssertEqual(resolve(["SAFARI_BROWSER_BUILD_SEMVER": "9.9.9"]),
+                       .init(semver: "9.9.9", commit: "abc1234", dirty: false, vendor: .git))
+        XCTAssertEqual(resolve(["SAFARI_BROWSER_BUILD_VENDOR": "homebrew"]),
+                       .init(semver: "2.7.0", commit: "abc1234", dirty: false, vendor: .homebrew))
+        XCTAssertEqual(resolve(["SAFARI_BROWSER_BUILD_DIRTY": "1"]),
+                       .init(semver: "2.7.0", commit: "abc1234", dirty: true, vendor: .git))
+        // verify round 2: only "1" sets and only "0" clears; any other value
+        // (`true`, `yes`) leaves the stamp's flag alone instead of clearing it.
+        XCTAssertFalse(DaemonProtocol.resolveCurrentVersion(env: ["SAFARI_BROWSER_BUILD_DIRTY": "0"],
+                                                            buildVersion: "v2.7.0-dirty").dirty)
+        for ignored in ["true", "yes", "on", "false", "2"] {
+            XCTAssertTrue(DaemonProtocol.resolveCurrentVersion(env: ["SAFARI_BROWSER_BUILD_DIRTY": ignored],
+                                                               buildVersion: "v2.7.0-dirty").dirty, ignored)
+            XCTAssertFalse(DaemonProtocol.resolveCurrentVersion(env: ["SAFARI_BROWSER_BUILD_DIRTY": ignored],
+                                                                buildVersion: "v2.7.0").dirty, ignored)
+        }
+        // An empty variable does not count as set.
+        XCTAssertEqual(resolve(["SAFARI_BROWSER_BUILD_COMMIT": ""]), identity("v2.7.0-5-gabc1234"))
+        // A misspelled vendor still falls back to `source`, as before #304.
+        XCTAssertEqual(resolve(["SAFARI_BROWSER_BUILD_VENDOR": "Git"]).vendor, .source)
+        // Over an unstamped build the variables give exactly what they gave before #304.
+        XCTAssertEqual(DaemonProtocol.resolveCurrentVersion(env: ["SAFARI_BROWSER_BUILD_COMMIT": "feedface"], buildVersion: "unknown"),
+                       .init(semver: "1.0.0", commit: "feedface", dirty: false, vendor: .source))
+    }
+
+    /// Wiring only: `currentVersion` is the process environment over
+    /// `BuildVersion.value`. Under `swift test` the stamp is normally `unknown`,
+    /// so the stamped path itself is measured by hand on a stamped binary (#304 comment).
+    func testCurrentVersionIsTheEnvironmentOverTheStampedBuildVersion() {
+        XCTAssertEqual(DaemonProtocol.currentVersion,
+                       DaemonProtocol.resolveCurrentVersion(env: ProcessInfo.processInfo.environment,
+                                                            buildVersion: BuildVersion.value))
+    }
+
+    /// verify round 1: the mismatch message must not cut a tag in half.
+    func testDescriptionShortensOnlyHashes() {
+        XCTAssertEqual(identity("v2.8.0-rc1").description, "2.8.0-rc1+v2.8.0-rc1(git)")
+        XCTAssertEqual(identity("v2.7.0-5-gabc1234def").description, "2.7.0+abc1234d(git)")
+    }
+
+    /// verify round 2: a daemon's handshake reaches the terminal through these
+    /// messages, so control characters in it are not printed.
+    func testDescriptionDropsControlCharacters() {
+        let v = DaemonProtocol.Version(semver: "1.0\u{1B}[2J", commit: "v1\nx\u{7}", dirty: false, vendor: .git)
+        XCTAssertEqual(v.description, "1.0[2J+v1x(git)")
+    }
+
+    /// verify round 3: invisible formatting (zero-width, bidi override, line and
+    /// paragraph separators, private use) could make two different identities
+    /// print the same, so it is dropped too.
+    func testDescriptionDropsInvisibleFormatting() {
+        let v = DaemonProtocol.Version(semver: "2.7.0\u{200B}", commit: "v\u{202E}x\u{2028}y\u{2029}\u{FEFF}\u{E000}z\u{2066}",
+                                       dirty: false, vendor: .git)
+        XCTAssertEqual(v.description, "2.7.0+vxyz(git)")
+    }
+
+    /// verify round 2: the `daemon status` note says what is actually wrong.
+    func testMismatchNoteNamesTheRealCause() {
+        let clean = identity("v2.7.0"), other = identity("v2.7.0-1-gdef5678")
+        let dirtyCLI = identity("v2.7.0-dirty"), dirtyDaemon = identity("v2.7.0-dirty")
+        XCTAssertNil(DaemonProtocol.mismatchNote(daemon: clean, client: clean))
+        let anotherBuild = DaemonProtocol.mismatchNote(daemon: other, client: clean) ?? ""
+        XCTAssertTrue(anotherBuild.contains("another build"), anotherBuild)
+        XCTAssertTrue(anotherBuild.contains("daemon stop"), anotherBuild)
+        let fromDirtyCLI = DaemonProtocol.mismatchNote(daemon: dirtyDaemon, client: dirtyCLI) ?? ""
+        XCTAssertTrue(fromDirtyCLI.contains("dirty build"), fromDirtyCLI)
+        XCTAssertFalse(fromDirtyCLI.contains("another build"), fromDirtyCLI)
+        XCTAssertFalse(fromDirtyCLI.contains("daemon start"), fromDirtyCLI)
+        let dirtyOnlyDaemon = DaemonProtocol.mismatchNote(daemon: dirtyDaemon, client: clean) ?? ""
+        XCTAssertTrue(dirtyOnlyDaemon.contains("dirty build"), dirtyOnlyDaemon)
+        XCTAssertTrue(dirtyOnlyDaemon.contains("daemon start"), dirtyOnlyDaemon)
+        // verify round 3: a dirty CLI against a clean daemon is still the CLI's
+        // problem; restarting the daemon cannot help it.
+        let dirtyAgainstClean = DaemonProtocol.mismatchNote(daemon: clean, client: dirtyCLI) ?? ""
+        XCTAssertTrue(dirtyAgainstClean.contains("this CLI is a dirty build"), dirtyAgainstClean)
+        XCTAssertFalse(dirtyAgainstClean.contains("daemon start"), dirtyAgainstClean)
+        // `daemon status` itself just used the daemon, so the note must not say "never".
+        XCTAssertFalse(fromDirtyCLI.contains("never uses a daemon"), fromDirtyCLI)
+        XCTAssertTrue(fromDirtyCLI.contains("daemon stop and daemon status"), fromDirtyCLI)
+    }
+
+    /// verify round 3: the wiring `daemon status` uses (observer → note → stderr)
+    /// writes the note with a newline on a mismatch and nothing on a match.
+    func testStatusObserverWritesTheNoteOnlyOnAMismatch() {
+        let written = LockedLines()
+        let observe = DaemonStatusCommand.mismatchObserver(client: identity("v2.7.0"), write: { written.append($0) })
+        observe(identity("v2.7.0"))
+        XCTAssertEqual(written.all, [])
+        observe(identity("v2.7.0-1-gdef5678"))
+        guard written.all.count == 1 else { return XCTFail("\(written.all)") }
+        XCTAssertTrue(written.all[0].hasPrefix("note: this daemon runs another build"), written.all[0])
+        XCTAssertTrue(written.all[0].hasSuffix("\n"), written.all[0])
+    }
+}
+
+private final class LockedLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    func append(_ line: String) { lock.withLock { lines.append(line) } }
+    var all: [String] { lock.withLock { lines } }
+}

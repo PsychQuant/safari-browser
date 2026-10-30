@@ -27,6 +27,11 @@ class DaemonPeerDisconnectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='sb-size-', dir='/tmp') as directory:
             env = owned.isolated_environment(directory, False)
             env['SAFARI_BROWSER_DAEMON'] = '1'
+            # The fake daemon announces 1.0.0+unknown(source). Since #304 a stamped CLI
+            # has another identity and would send nothing and run stateless, touching
+            # real Safari, so pin this CLI's identity to the fake one, field by field.
+            env.update(SAFARI_BROWSER_BUILD_SEMVER='1.0.0', SAFARI_BROWSER_BUILD_COMMIT='unknown',
+                       SAFARI_BROWSER_BUILD_DIRTY='0', SAFARI_BROWSER_BUILD_VENDOR='source')
             script = Path(directory, 'empty.json')
             script.write_text('[]')
             path = str(Path(directory, 'safari-browser-' + env['SAFARI_BROWSER_NAME'] + '.sock'))

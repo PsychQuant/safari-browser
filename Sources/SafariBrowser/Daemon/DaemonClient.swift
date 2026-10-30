@@ -167,7 +167,8 @@ enum DaemonClient {
         timeout: TimeInterval = defaultTimeoutSeconds,
         socketDir: String? = nil,
         diagnosticsWriter: (@Sendable (String) -> Void)? = nil,
-        responseLineLimit: Int = maxResponseLineBytes
+        responseLineLimit: Int = maxResponseLineBytes,
+        handshakeObserver: (@Sendable (DaemonProtocol.Version) -> Void)? = nil
     ) async throws -> Data {
         return try await PerformanceTrace.spanAsync(.daemonRequest) {
             guard timeout.isFinite, (0.001...86400).contains(timeout) else {
@@ -186,7 +187,8 @@ enum DaemonClient {
                             try exchange(path: path, method: method, params: params,
                                          requestId: requestId, deadline: deadline,
                                          diagnosticsWriter: diagnosticsWriter,
-                                         responseLineLimit: responseLineLimit)
+                                         responseLineLimit: responseLineLimit,
+                                         handshakeObserver: handshakeObserver)
                         }
                         continuation.resume(returning: reply)
                     } catch {
@@ -201,7 +203,8 @@ enum DaemonClient {
     private static func exchange(
         path: String, method: String, params: Data, requestId: Int,
         deadline: Deadline, diagnosticsWriter: (@Sendable (String) -> Void)?,
-        responseLineLimit: Int
+        responseLineLimit: Int,
+        handshakeObserver: (@Sendable (DaemonProtocol.Version) -> Void)? = nil
     ) throws -> Data {
         let fd = try connectUnixSocket(path: path, deadline: deadline)
         defer { close(fd) }
@@ -211,7 +214,9 @@ enum DaemonClient {
             throw Error.protocolError("invalid handshake")
         }
         let version = metadata.version
-        guard DaemonProtocol.versionsMatch(server: version, client: DaemonProtocol.currentVersion) else {
+        handshakeObserver?(version)
+        guard DaemonProtocol.isBuildIndependent(method: method)
+                || DaemonProtocol.versionsMatch(server: version, client: DaemonProtocol.currentVersion) else {
             throw Error.remoteError(code: "versionMismatch", message: "daemon \(version.description), client \(DaemonProtocol.currentVersion.description)")
         }
         let paramsValue = try JSONSerialization.jsonObject(with: params, options: [.fragmentsAllowed])

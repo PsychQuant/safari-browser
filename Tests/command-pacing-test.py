@@ -25,6 +25,11 @@ def environment(directory, mode='cauchy'):
     env.update(TMPDIR=str(directory) + '/', SAFARI_BROWSER_NAME='pace', SAFARI_BROWSER_PACING=mode,
                SAFARI_BROWSER_PACING_MIN_MS='80', SAFARI_BROWSER_PACING_MEDIAN_MS='100',
                SAFARI_BROWSER_PACING_MAX_MS='120')
+    # The fake daemon announces 1.0.0+unknown(source). Since #304 a stamped CLI
+    # has another identity and would send nothing and run stateless, touching
+    # real Safari, so pin this CLI's identity to the fake one, field by field.
+    env.update(SAFARI_BROWSER_BUILD_SEMVER='1.0.0', SAFARI_BROWSER_BUILD_COMMIT='unknown',
+               SAFARI_BROWSER_BUILD_DIRTY='0', SAFARI_BROWSER_BUILD_VENDOR='source')
     return env
 
 
