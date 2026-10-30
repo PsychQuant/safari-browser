@@ -156,7 +156,7 @@ class Harness(common.Harness):
         self.require_owned()
         query, _ = self.query()
         require(query.returncode == 0, 'cannot inspect owned pending dialog')
-        listing = self.cli('dialog', 'list')
+        listing = self.cli('dialog', 'list', '--window-id', str(self.window_id))
         require(listing.returncode == 0, 'dialog list is incomplete')
         message, button = expected_cancel(json.loads(query.stdout), listing.stdout, self.window_id, self.nonce, self.url)
         self.require_owned()

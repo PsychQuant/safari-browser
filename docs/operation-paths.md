@@ -102,7 +102,7 @@ rule in §3 is correctly vacuous over them.
 | Switch tab / close window | AppleScript command | same | — | already non-HID |
 | Upload a file, no flags, AX **not** granted | `doJavaScript` DataTransfer, capped at 10 MB | same | JS-from-Apple-Events | already non-HID |
 | Upload a file, no flags, AX granted | the native dialog — see the *Open a native file dialog* and *Choose a file* rows | — | Accessibility | *(pointer row — status lives on the two rows it names)* |
-| Dismiss a JavaScript dialog | `dialog dismiss --button` — `AXPress` (#103) | same | Accessibility | already non-HID |
+| Dismiss a JavaScript dialog | `dialog dismiss --button` — `AXPress` (#103); optional stable `--window-id` scopes native inspection (#326) | same | Accessibility | already non-HID; Safari 27.2 unexposed-card detection remains unverified ([acceptance notes](dialog-inspection-326.md)) |
 | Cancel a native file dialog | `dialog dismiss --button` — same command | same | Accessibility | already non-HID |
 | Probe a resolved target window before a document/native operation (#133–#138) | Stable window ID → bounded native AX walk; 200 ms total per logical command, no queued work while busy; default screenshot uses its resolved capture ID | same | Accessibility — denied, failed or incomplete reads remain unknown; WebArea contents are outside native-dialog scope | already non-HID — read-only, no `AXPress` |
 | Open a native file dialog | `upload --native` opens it with `doJavaScript` `el.click()` | same | JS-from-Apple-Events for this step; `upload --native` as a whole needs Accessibility for the steps after it | already non-HID |

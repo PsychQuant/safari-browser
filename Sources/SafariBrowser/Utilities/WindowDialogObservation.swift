@@ -34,12 +34,17 @@ struct WindowDialogStatus: Sendable {
 struct WindowDialogObservation: Sendable {
     @TaskLocal static var provider: (@Sendable () -> WindowDialogObservation)?
     let scanResult: SafariBridge.DialogScan
+    /// Stable identity of the complete unique candidate, including a global
+    /// observation. Carries no AX nodes across the worker boundary.
+    let singleDialogWindowID: Int?
     private let observedWindowIDs: Set<Int>
     private let dialogsByWindowID: [Int: [SafariBridge.BlockingDialog]]
     private let reason: String?
 
     init<Node>(snapshot: DialogTreeSnapshot<Node>) {
         scanResult = snapshot.scanResult
+        singleDialogWindowID = snapshot.isComplete && !snapshot.accessibilityDenied && snapshot.candidates.count == 1
+            ? snapshot.candidates[0].windowID : nil
         observedWindowIDs = snapshot.observedWindowIDs
         reason = snapshot.accessibilityDenied ? "denied" : (snapshot.isComplete ? nil : "incomplete")
         var dialogs: [Int: [SafariBridge.BlockingDialog]] = [:]
@@ -54,6 +59,7 @@ struct WindowDialogObservation: Sendable {
     private init(reason: String, scanResult: SafariBridge.DialogScan) {
         self.reason = reason
         self.scanResult = scanResult
+        singleDialogWindowID = nil
         observedWindowIDs = []
         dialogsByWindowID = [:]
     }

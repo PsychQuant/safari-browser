@@ -18,11 +18,45 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
     var maxDepth = 8
     var maxDetailNodes = 256
     var maxDetailDepth = 6
-    func scan(provider: P, deadline: DispatchTime, roots: [P.Node]? = nil) -> DialogTreeSnapshot<P.Node> {
+    func scan(provider: P, deadline: DispatchTime, roots: [P.Node]? = nil, targetWindowID: Int? = nil) -> DialogTreeSnapshot<P.Node> {
         var snapshot = DialogTreeSnapshot<P.Node>()
         do {
             let windows = try roots ?? provider.windows(timeout: remaining(deadline))
             let limit = max(0, maxWindows)
+            // A scope narrows tree traversal, never identity validation. Do not
+            // silently select the first matching ID from a truncated inventory.
+            if let targetWindowID {
+                guard targetWindowID > 0, windows.count <= limit else {
+                    snapshot.isComplete = false
+                    return snapshot
+                }
+                var identifiers = Set<Int>()
+                var target: P.Node?
+                for window in windows {
+                    let id = try provider.windowID(window, timeout: remaining(deadline))
+                    guard id > 0, identifiers.insert(id).inserted else {
+                        snapshot.isComplete = false
+                        return snapshot
+                    }
+                    if id == targetWindowID { target = window }
+                }
+                guard let target else {
+                    snapshot.isComplete = false
+                    return snapshot
+                }
+                snapshot.observedWindowIDs.insert(targetWindowID)
+                var visited = Set<P.Node>()
+                inspectWindow(target, id: targetWindowID, provider: provider,
+                              deadline: deadline, snapshot: &snapshot, visited: &visited)
+                guard try provider.windowID(target, timeout: remaining(deadline)) == targetWindowID else {
+                    snapshot.isComplete = false
+                    return snapshot
+                }
+                if DispatchTime.now().uptimeNanoseconds >= deadline.uptimeNanoseconds {
+                    snapshot.isComplete = false
+                }
+                return snapshot
+            }
             if windows.count > limit { snapshot.isComplete = false }
             var identifiers = Set<Int>()
             var visited = Set<P.Node>()

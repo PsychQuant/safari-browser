@@ -82,6 +82,26 @@ class FixtureTests(unittest.TestCase):
                 h.dismiss_owned()
             cli.assert_not_called()
 
+    def testOwnedConfirmListingUsesStableScopeBeforeGuardedDismissal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            h = fixture.Harness(Path('/missing'), Path('/missing'), 'a' * 32, Path(directory))
+            h.window_id = 42
+            h.nonce = self.nonce
+            h.url = 'http://127.0.0.1:43123/' + self.nonce
+            ok = subprocess.CompletedProcess([], 0, '', '')
+            query = subprocess.CompletedProcess([], 0, json.dumps(self.status()), '')
+            listing = subprocess.CompletedProcess([], 0, self.listing() + '\n  window: Safari window id 42', '')
+            recovered = subprocess.CompletedProcess([], 0, '{"count":1,"answer":false}', '')
+            with patch.object(h, 'require_owned'), patch.object(h, 'persist'), \
+                 patch.object(h, 'query', return_value=(query, 0.1)), \
+                 patch.object(h, 'target', return_value=recovered), \
+                 patch.object(h, 'cli', side_effect=[listing, ok]) as cli:
+                h.dismiss_owned()
+                self.assertEqual(cli.call_args_list[0].args, ('dialog', 'list', '--window-id', '42'))
+                self.assertEqual(cli.call_args_list[1].args,
+                    ('dialog', 'dismiss', '--button', '取消', '--expect-window-id', '42', '--expect-message', self.nonce))
+                self.assertFalse(h.armed)
+
 
 if __name__ == '__main__':
     unittest.main()

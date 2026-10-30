@@ -29,6 +29,15 @@ struct DialogListCommand: AsyncParsableCommand {
         abstract: "Show the blocking dialog's text and buttons, if one is present"
     )
 
+    @Option(name: .customLong("window-id"), help: "Inspect only this stable Safari window ID (not a window index)")
+    var windowID: Int?
+
+    func validate() throws {
+        if let windowID, windowID <= 0 {
+            throw ValidationError("--window-id must be a positive stable window ID, not a window index")
+        }
+    }
+
     /// Rendered separately from the printing so the wording is testable.
     ///
     /// Message and buttons go through the same helpers as the #126 entry-point
@@ -36,24 +45,36 @@ struct DialogListCommand: AsyncParsableCommand {
     /// agent that saw the one-line warning recognises the same dialog here. A
     /// dialog with no readable text still blocks; the helper's stand-in says
     /// so rather than reading as "no dialog".
-    static func describe(_ dialog: SafariBridge.BlockingDialog) -> String {
-        """
+    static func describe(_ dialog: SafariBridge.BlockingDialog, windowID: Int? = nil) -> String {
+        let target = windowID.map { " --window-id \($0)" } ?? ""
+        let identity = windowID.map { "\n  window: Safari window id \($0)" } ?? ""
+        return """
         blocking dialog present
           message: \(BlockingDialogWarning.messageText(dialog))
-          buttons: \(BlockingDialogWarning.buttonsText(dialog))
+          buttons: \(BlockingDialogWarning.buttonsText(dialog))\(identity)
 
         To dismiss it, name the button:
-          safari-browser dialog dismiss --button "<title>"
+          safari-browser dialog dismiss\(target) --button "<title>"
         """
     }
 
     static let noDialogMessage = "no blocking dialog found"
+    static let undetectedDialogGuidance = "The inspection covers the supported native Accessibility tree only. "
+        + "If a dialog is visible, stop automation and handle it manually; Safari may not expose it through this tree. "
+        + "Do not repeat the page action."
 
-    func run() async throws {
-        print(try Self.output(for: SafariBridge.scanBlockingDialogs()))
+    static func reportVisibilityLimit() {
+        FileHandle.standardError.write(Data((undetectedDialogGuidance + "\n").utf8))
     }
 
-    static func output(for scan: SafariBridge.DialogScan) throws -> String {
+    func run() async throws {
+        let observation = SafariBridge.observeBlockingDialogs(windowID: windowID)
+        print(try Self.output(for: observation.scanResult, windowID: windowID ?? observation.singleDialogWindowID))
+        if observation.scanResult == .none { Self.reportVisibilityLimit() }
+    }
+
+    static func output(for scan: SafariBridge.DialogScan, windowID: Int? = nil) throws -> String {
+        let scope = windowID.map { "Safari window id \($0)\n" } ?? ""
         switch scan {
         case .inspectionIncomplete:
             throw SafariBrowserError.dialogInspectionIncomplete
@@ -64,9 +85,9 @@ struct DialogListCommand: AsyncParsableCommand {
         case .accessibilityDenied:
             throw SafariBrowserError.accessibilityRequired(flag: "dialog list")
         case .none:
-            return DialogListCommand.noDialogMessage
+            return scope + DialogListCommand.noDialogMessage
         case .one(let dialog):
-            return DialogListCommand.describe(dialog)
+            return DialogListCommand.describe(dialog, windowID: windowID)
         case .many(let messages):
             // Fail-closed rather than showing one of several: the next step is
             // `dismiss`, and a listing that silently picked one would send the
@@ -94,6 +115,11 @@ struct DialogDismissCommand: AsyncParsableCommand {
 
     @Option(name: .long, help: "Exact title of the button to press, as shown by `dialog list`")
     var button: String
+
+    @Option(name: .customLong("window-id"), help: "Inspect and dismiss only within this stable Safari window ID (not a window index)")
+    var windowID: Int?
+
+    var inspectionWindowID: Int? { windowID ?? expectWindowID }
 
     @Option(name: .customLong("expect-window-id"), help: "Expected stable Safari window ID; requires --expect-message")
     var expectWindowID: Int?
@@ -183,6 +209,12 @@ struct DialogDismissCommand: AsyncParsableCommand {
     /// shows such a button as `""`, so the user cannot even see what they would
     /// be pressing. Rejected at parse time rather than handled later.
     func validate() throws {
+        if let windowID, windowID <= 0 {
+            throw ValidationError("--window-id must be a positive stable window ID, not a window index")
+        }
+        if let windowID, let expectWindowID, windowID != expectWindowID {
+            throw ValidationError("--window-id and --expect-window-id must identify the same window")
+        }
         guard (expectWindowID == nil) == (expectMessage == nil) else {
             throw ValidationError("--expect-window-id and --expect-message must be supplied together")
         }
@@ -197,8 +229,22 @@ struct DialogDismissCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        try execute(
+            inspect: { SafariBridge.observeBlockingDialogs(windowID: $0) },
+            press: { expectedID, scope, decide in
+                SafariBridge.pressDialogButton(expectedWindowID: expectedID, windowID: scope, deciding: decide)
+            })
+    }
+
+    /// The same scope is used for observation, synchronous re-read/press and
+    /// post-action reporting. Dependencies keep AX operations at the boundary.
+    func execute(
+        inspect: (Int?) -> WindowDialogObservation,
+        press: (Int, Int?, (SafariBridge.BlockingDialog) -> Int?) -> SafariBridge.DialogPressOutcome
+    ) throws {
+        let observation = inspect(inspectionWindowID)
         let dialog: SafariBridge.BlockingDialog
-        switch SafariBridge.scanBlockingDialogs() {
+        switch observation.scanResult {
         case .inspectionIncomplete:
             throw SafariBrowserError.dialogInspectionIncomplete
         case .sessionLocked:
@@ -215,6 +261,13 @@ struct DialogDismissCommand: AsyncParsableCommand {
             dialog = d
         }
 
+        guard let observedWindowID = observation.singleDialogWindowID, observedWindowID > 0 else {
+            throw SafariBrowserError.dialogInspectionIncomplete
+        }
+        if let inspectionWindowID, observedWindowID != inspectionWindowID {
+            throw ValidationError(Self.expectationMismatch)
+        }
+
         try Self.validateExpectedMessage(expectMessage, actual: dialog)
         switch DialogDismissCommand.selectButton(titled: button, from: dialog.buttons) {
         case .notFound(let available):
@@ -222,6 +275,7 @@ struct DialogDismissCommand: AsyncParsableCommand {
         case .ambiguous(let title, let count):
             throw SafariBrowserError.dialogButtonAmbiguous(titled: title, count: count)
         case .found:
+            print("Safari window id \(observedWindowID)")
             print(DialogDismissCommand.preamble(for: dialog, pressing: button))
 
             // The press re-reads the dialog and asks `decidePress` to rule on
@@ -229,7 +283,7 @@ struct DialogDismissCommand: AsyncParsableCommand {
             // pressed — deciding by position here is what would let a
             // replacement dialog absorb the click (#89's hazard).
             var refusal: DialogDismissCommand.PressDecision?
-            let outcome = SafariBridge.pressDialogButton(expectedWindowID: expectWindowID) { current in
+            let outcome = press(observedWindowID, inspectionWindowID) { current in
                 let decision = DialogDismissCommand.decidePress(
                     title: button, expected: dialog, current: current)
                 if case .press(let index) = decision { return index }
@@ -245,16 +299,18 @@ struct DialogDismissCommand: AsyncParsableCommand {
                 // dialog closed — a page that queues several alerts puts the
                 // next one up immediately. Say which happened rather than
                 // letting "pressed" imply "gone".
-                switch SafariBridge.scanBlockingDialogs() {
+                switch inspect(inspectionWindowID).scanResult {
                 case .inspectionIncomplete:
-                    print("pressed; could not re-check every Safari window — run `dialog list`")
+                    print("pressed; could not re-check the inspection scope. Inspect Safari manually; do not repeat the press.")
                 case .none:
+                    if let inspectionWindowID { print("inspection scope: Safari window id \(inspectionWindowID)") }
                     print("pressed; no dialog remains")
+                    DialogListCommand.reportVisibilityLimit()
                 case .one(let still):
                     print("pressed; a dialog is still present: "
                           + BlockingDialogWarning.messageText(still))
                 case .many:
-                    print("pressed; more than one dialog is now present — run `dialog list`")
+                    print("pressed; more than one dialog is now present in the inspection scope; inspect Safari before another action")
                 case .sessionLocked:
                     print("pressed; could not re-check: " + SafariBrowserError.guiSessionLocked.localizedDescription)
                 case .sessionUnavailable:

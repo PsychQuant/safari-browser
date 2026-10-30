@@ -12,24 +12,27 @@ extension DialogTreeSnapshot {
 final class GlobalDialogProbe: @unchecked Sendable {
     static let shared = GlobalDialogProbe(worker: .shared) { AXDialogProbeProvider() }
     private let worker: BoundedAXWorker
-    private let inspect: @Sendable (DispatchTime) -> WindowDialogObservation
+    private let inspect: @Sendable (DispatchTime, Int?) -> WindowDialogObservation
 
     init<P: DialogProbeProvider>(
         worker: BoundedAXWorker = BoundedAXWorker(),
         provider: @escaping @Sendable () -> P
     ) {
         self.worker = worker
-        inspect = { deadline in
-            WindowDialogObservation(snapshot: DialogTreeScanner<P>().scan(provider: provider(), deadline: deadline))
+        inspect = { deadline, windowID in
+            WindowDialogObservation(snapshot: DialogTreeScanner<P>().scan(
+                provider: provider(), deadline: deadline, targetWindowID: windowID))
         }
     }
 
-    func observe(budget: TimeInterval = 0.8) -> WindowDialogObservation {
-        worker.run(budget: budget, fallback: .unavailable(reason: "incomplete"), operation: inspect)
+    func observe(budget: TimeInterval = 0.8, windowID: Int? = nil) -> WindowDialogObservation {
+        worker.run(budget: budget, fallback: .unavailable(reason: "incomplete")) { [inspect] deadline in
+            inspect(deadline, windowID)
+        }
     }
 
-    func scan(budget: TimeInterval = 0.8) -> SafariBridge.DialogScan {
-        observe(budget: budget).scanResult
+    func scan(budget: TimeInterval = 0.8, windowID: Int? = nil) -> SafariBridge.DialogScan {
+        observe(budget: budget, windowID: windowID).scanResult
     }
 }
 
