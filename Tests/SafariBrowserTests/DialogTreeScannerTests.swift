@@ -21,6 +21,8 @@ final class DialogTreeScannerTests: XCTestCase {
         var delayedOperation: String?
         var delay: TimeInterval = 0
         var minimumRoleTimeout: Float = 0
+        var unreadableNodes: Set<Int> = []
+        var slowNodes: Set<Int> = []
         func check(_ op: String) throws {
             if delayedOperation == op { Thread.sleep(forTimeInterval: delay) }
             if fail == op { throw DialogProbeReadError.unavailable }
@@ -35,6 +37,8 @@ final class DialogTreeScannerTests: XCTestCase {
             return nodes[node]!.id
         }
         func role(_ node: Int, timeout: Float) throws -> String {
+            if slowNodes.contains(node) { Thread.sleep(forTimeInterval: 0.05) }
+            if unreadableNodes.contains(node) { throw DialogProbeReadError.unavailable }
             guard timeout >= minimumRoleTimeout else { throw DialogProbeReadError.unavailable }
             try check("role")
             return nodes[node]!.role

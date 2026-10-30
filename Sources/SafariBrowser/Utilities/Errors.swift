@@ -275,9 +275,14 @@ enum SafariBrowserError: LocalizedError {
         // MARK: Dialog (#103)
 
         case .dialogInspectionIncomplete:
-            return "Dialog inspection could not inspect every Safari window completely within its budget. A blocking dialog may be present; run safari-browser dialog list again before choosing a button."
+            return "Dialog inspection could not inspect its scope completely or establish a unique stable window identity within its budget. "
+                + "No button was authorized by this inspection. For an all-window failure, use `safari-browser dialog list --window-id <stable-id>` "
+                + "with the intended blocking_dialog.window_id from `safari-browser documents --json` (not a window index; null is not a usable ID). "
+                + "If targeted inspection also fails, stop retrying and inspect Safari manually. "
+                + "A visible dialog may not be exposed through the supported native Accessibility tree; record the Safari/macOS versions and AX structure. "
+                + "Do not repeat the page action or guess a button."
         case .noBlockingDialog:
-            return "no blocking dialog found"
+            return DialogListCommand.noDialogMessage + ". " + DialogListCommand.undetectedDialogGuidance
 
         case .ambiguousBlockingDialog(let messages):
             return """

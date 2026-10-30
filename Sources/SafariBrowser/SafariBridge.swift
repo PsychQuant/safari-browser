@@ -3631,6 +3631,15 @@ enum SafariBridge {
         return GlobalDialogProbe.shared.scan()
     }
 
+    static func observeBlockingDialogs(windowID: Int? = nil, session: GUISession = .live) -> WindowDialogObservation {
+        switch session.state {
+        case .locked: return .unavailable(reason: "locked")
+        case .unavailable: return .unavailable(reason: "unavailable")
+        case .available: break
+        }
+        return GlobalDialogProbe.shared.observe(windowID: windowID)
+    }
+
     /// Press a dialog button via `AXPress`, but only after re-reading the dialog
     /// and letting `decide` rule on what it now says.
     ///
@@ -3648,6 +3657,7 @@ enum SafariBridge {
     /// caller saw; every other answer presses nothing.
     static func pressDialogButton(
         expectedWindowID: Int? = nil,
+        windowID: Int? = nil,
         session: GUISession = .live,
         press: (((BlockingDialog) -> Int?) -> DialogPressOutcome)? = nil,
         deciding decide: (BlockingDialog) -> Int?
@@ -3661,7 +3671,7 @@ enum SafariBridge {
         return BoundedAXWorker.shared.withExclusive(fallback: .inspectionIncomplete) {
             let deadline = DispatchTime.now() + 0.8
             let snapshot = DialogTreeScanner<AXDialogProbeProvider>().scan(
-                provider: AXDialogProbeProvider(session: session), deadline: deadline)
+                provider: AXDialogProbeProvider(session: session), deadline: deadline, targetWindowID: windowID)
             return DialogPressExecutor.perform(snapshot: snapshot, deadline: deadline, session: session,
                 expectedWindowID: expectedWindowID, decide: decide) { element, timeout in
                 guard AXUIElementSetMessagingTimeout(element, timeout) == .success,
