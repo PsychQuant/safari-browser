@@ -560,6 +560,50 @@ used to read the target tab's URL when a tab flag is given).
 - 已知缺口（獨立審查 #308 找到，已開 issue）：建置在活的 checkout 裡跑、不釘也不記錄依賴版本（#309）；
   entitlements 只查一個 key、不釘 team（#310）。
 
+## Self-update (`self-update`, #314)
+
+`self-update` replaces the running binary with the latest release of
+`PsychQuant/safari-browser`; `--check` (with `--json`) only reports. **Non-interfering**: it
+never drives Safari or the UI. It requests `api.github.com` and the release download URLs
+(GitHub redirects downloads to its asset storage; the redirect target is GitHub's choice, and
+the bytes are held to the checksum and the designated requirement). In the install directory
+it writes its binary, `<binary>.previous`, a lock file that stays, and transient
+`.safari-browser.self-update.*` / `-prev.*` files (removed on exit, or by the next run that
+takes the update lock after a kill).
+
+- **Trust anchor = the installed binary's designated requirement.** Both binaries go through
+  the shared `SignatureAssessment` (Developer ID durable shape, Apple Events entitlement);
+  the new one also needs the hardened runtime flag and must pass
+  `SecStaticCodeCheckValidity(new, all architectures, installedDR)`. Not "same team": the DR
+  also pins the identifier, and it is what TCC compares for a Full Disk Access grant. An
+  ad-hoc or Apple Development install is refused (no identity to compare).
+- **Order matters**: lookup → classify → installed identity → directory writable → `flock`
+  the lock file → running binary is the installed one → sweep leftovers → checksum asset →
+  binary (cancelled past its limit) → sha256 in memory → stage at 0600 → candidate identity
+  (strict) → mode 0755 → `--version` probe (one deadline for run and output) →
+  `link(target, tmp)` → `rename(tmp, target.previous)` → `unlink(tmp)` → `rename(staged, target)` → stop daemons.
+  Any failure removes the staging file and leaves the target's bytes and inode unchanged.
+- **A daemon it did not stop keeps running the old binary.** Before #304 the handshake
+  version was `SAFARI_BROWSER_BUILD_*`, not `BuildVersion`, so such a daemon also kept serving
+  the new CLI with old code; after #304 the CLI sees a mismatch and runs stateless. The output
+  says only what holds either way (searched directory, daemons not stopped). A running `mcp`
+  server fails closed (`imageChangedError`) until restarted.
+- **The running-binary check reads the file at the launch path**: a plain `mv` over it makes
+  the hash comparison compare the new file with itself, so `SecCodeCheckValidity(running)` is
+  required too (errSecCSStaticCodeChanged, -67034). Not covered by an automated test.
+- **Never call `Process.waitUntilExit()` in async code here**: it spins a run loop and hung
+  the probe on a cooperative thread. Poll `isRunning` with a bound.
+- **Asset names are a contract with `scripts/release.sh`** (`SelfUpdateReleaseContractTests`).
+- **Versions**: `vX.Y.Z[-N-g<hash>][-dirty]` is comparable; a build with a suffix on the
+  latest tag is `ahead` and is never "updated" to it. A bare hash and `unknown` are
+  `not-comparable`.
+- **Kept out of the MCP catalog**, like `mcp`: it replaces the binary the MCP server runs
+  from. `MCPToolCatalogTests` mirrors the exclusion.
+- Logic lives in `Sources/SafariBrowser/SelfUpdate/` behind injected `SelfUpdateReleaseSource`,
+  `SelfUpdateSignatureVerifier`, probe and daemon stopper; tests never use the network.
+  A running-binary test compiles a tiny C program with `cc` (a copy of an arm64e Apple binary
+  such as `/bin/sleep` is killed at launch off the system volume) and skips without a compiler.
+
 ## Install-signature guard：suite 本身被 gate 管（#119, round 10）
 
 #122 後的 authoritative policy 位於 `Sources/SafariBrowser/Utilities/SignatureAssessment.swift`，

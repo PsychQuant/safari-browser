@@ -198,6 +198,41 @@ again.
 
 How a release is made, and what has not been measured about it: [`docs/release.md`](docs/release.md).
 
+### Update an installed release (#314)
+
+```bash
+safari-browser self-update --check          # reports; downloads and writes nothing
+safari-browser self-update --check --json   # {"installed":…,"latest":…,"status":…}
+safari-browser self-update                  # replaces this binary, no prompt
+```
+
+`self-update` downloads the latest release's `safari-browser` and `safari-browser.sha256`,
+checks the sha256, and requires the new binary to be a Developer ID build with the hardened
+runtime that **satisfies the installed binary's designated requirement**: the binary you
+already run is the trust anchor, not the release page. It then checks that the new binary
+prints the release tag, keeps the old one as `<binary>.previous` (a hard link, put in place
+before the new binary), and renames the new one into place. Any failure leaves the installed
+binary as it was. Only one `self-update` runs at a time per install directory, and a run
+started from a binary that another update has since replaced refuses. A run killed midway
+can leave a `.safari-browser.self-update.XXXXXX` file in the install directory; the next run
+that takes the update lock (one that finds an update to install) removes it. A `.safari-browser.self-update-lock` file stays in the
+install directory; it is how runs exclude each other.
+
+Afterwards it stops every daemon in the default socket directory (restart with
+`safari-browser daemon start`). A daemon it does not see (started with `--socket-dir`
+elsewhere, or from another `TMPDIR`) keeps running the **old** binary until you stop it
+(before #304 it also kept answering this CLI, because the handshake could not tell the builds
+apart). A running
+`safari-browser mcp` server refuses tool calls until it is restarted.
+
+It refuses when the installed binary is not a Developer ID build (`make install` is
+ad-hoc signed), and it does not replace a development build at or past the latest tag
+(`--check` says `ahead`). **v2.7.0 has no `self-update`**: install a later release once by
+hand as above. To roll back: `mv ~/bin/safari-browser.previous ~/bin/safari-browser`. The
+designated requirement is what a Full Disk Access grant is keyed to, so the grant is
+expected to carry over; that has not been observed yet. `self-update` is not offered as an
+MCP tool.
+
 ### Which install target? (#119)
 
 `sign-developer-id` has been removed (#123). It signed the build directory without

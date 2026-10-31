@@ -35,7 +35,9 @@ struct MCPToolCatalog: Sendable {
             guard Self.validName(node.commandName), !node.commandName.hasPrefix("-") else {
                 throw MCPToolCatalogError(message: "Unsupported command name: \(node.commandName)")
             }
-            if path.isEmpty && node.commandName == "mcp" { return }
+            // `mcp` serves the catalog; `self-update` replaces the binary the server
+            // runs from and is for the person at the terminal, not an MCP client (#314).
+            if path.isEmpty && (node.commandName == "mcp" || node.commandName == "self-update") { return }
             let currentPath = path + [node.commandName]
             if let children = node.subcommands, !children.isEmpty {
                 for child in children { try visit(child, path: currentPath) }

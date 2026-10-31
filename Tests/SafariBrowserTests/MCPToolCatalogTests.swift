@@ -19,6 +19,8 @@ final class MCPToolCatalogTests: XCTestCase {
         XCTAssertTrue(catalog.tools.contains { $0.path == ["pdf-cache", "list"] })
         XCTAssertTrue(catalog.tools.contains { $0.path == ["pdf-cache", "get"] })
         XCTAssertFalse(catalog.tools.contains { $0.path.contains("__serve") || $0.path.contains("__mcp-exec") || $0.path.first == "mcp" || $0.path == ["tab", "switch"] })
+        // #314: self-update replaces the binary an MCP server runs from; it is not a tool.
+        XCTAssertFalse(catalog.tools.contains { $0.path.first == "self-update" })
         let open = try XCTUnwrap(catalog.tools.first { $0.name == "safari.open" })
         let schema = try XCTUnwrap(open.descriptor["inputSchema"])
         XCTAssertEqual(schema["additionalProperties"], .bool(false))
@@ -169,7 +171,7 @@ extension MCPToolCatalogTests {
         var expectedPaths = Set<[String]>()
         func collect(_ node: [String: Any], _ path: [String]) {
             guard node["shouldDisplay"] as? Bool == true, let name = node["commandName"] as? String else { return }
-            if path.isEmpty && name == "mcp" { return }
+            if path.isEmpty && (name == "mcp" || name == "self-update") { return }
             let current = path + [name]
             if let children = node["subcommands"] as? [[String: Any]], !children.isEmpty {
                 for child in children { collect(child, current) }
