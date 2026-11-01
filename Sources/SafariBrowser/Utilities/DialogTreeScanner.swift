@@ -75,10 +75,7 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
                     continue
                 }
                 if role == "AXWebArea" { continue }
-                // Checked before the dialog test: chrome is never a dialog (#328).
-                if DialogCandidate.isChromeRole(role) { continue }
                 let subrole = try provider.subrole(node, timeout: remaining(deadline))
-                if DialogCandidate.isWindowChrome(role: role, subrole: subrole) { continue }
                 if DialogCandidate.isDialog(role: role, subrole: subrole) {
                     let detail = details(node, id: id, provider: provider, deadline: deadline, visited: &visited)
                     for candidate in [detail.candidate] + detail.nested {
@@ -126,11 +123,7 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
             do {
                 let role = try provider.role(node, timeout: remaining(deadline))
                 if role == "AXWebArea" { continue }
-                // Chrome inside a candidate is neither part of it nor a nested
-                // candidate (#328).
-                if depth > 0 && DialogCandidate.isChromeRole(role) { continue }
                 let subrole = try provider.subrole(node, timeout: remaining(deadline))
-                if depth > 0 && DialogCandidate.isWindowChrome(role: role, subrole: subrole) { continue }
                 // A second native dialog inside the candidate is a separate
                 // decision. Do not mix its controls into an outer sheet.
                 if depth > 0 && DialogCandidate.isDialog(role: role, subrole: subrole) {

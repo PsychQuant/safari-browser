@@ -266,7 +266,7 @@ final class BoundedDialogProbeTests: XCTestCase {
         XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .clear)
     }
 
-    /// #326 saw a normal web window report subrole AXDialog. The target of the
+    /// #326 saw an unrelated web page window report subrole AXDialog. The target of the
     /// entry probe is a browser window; a JavaScript dialog is never the window
     /// itself, and reading the whole window would collect the address field's
     /// controls — the shape #328 reported.
@@ -319,6 +319,24 @@ final class BoundedDialogProbeTests: XCTestCase {
             ]
             XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
                            .present(.init(message: "Save changes?", buttons: ["Save"])), chrome.role)
+        }
+    }
+
+    /// A tab bar or tab whose subrole cannot be read is left out of the
+    /// dialog's text and buttons rather than read as part of it.
+    func testDialogDetailsLeaveOutATabBarWhoseSubroleCannotBeRead() {
+        for role in ["AXOpaqueProviderGroup", "AXRadioButton"] {
+            let nodes: [Int: Node] = [
+                1: Node(role: "AXWindow", children: [30], windowID: 42),
+                30: Node(role: "AXSheet", children: [31, 32, 33]),
+                31: Node(role: "AXStaticText", text: "Save changes?"),
+                32: Node(role: "AXButton", title: "Save"),
+                33: Node(role: role, children: [34, 35], subroleFails: true),
+                34: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+                35: Node(role: "AXButton", title: "重新載入此網頁"),
+            ]
+            XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                           .present(.init(message: "Save changes?", buttons: ["Save"])), role)
         }
     }
 

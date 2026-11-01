@@ -109,7 +109,7 @@ final class BoundedDialogProbe: @unchecked Sendable {
                     if DialogCandidate.isWindowChrome(role: role, subrole: subrole) { continue }
                     let path = ancestors + [DialogCandidate.pathLabel(role: role, subrole: subrole)]
                     // The target is a browser window. A JavaScript dialog is never
-                    // the window itself; #326 saw a normal web window report
+                    // the window itself; #326 saw an unrelated web page window report
                     // subrole AXDialog, and reading the whole window collects the
                     // address field's controls (#328).
                     if depth > 0 && DialogCandidate.isDialog(role: role, subrole: subrole) {
@@ -150,10 +150,14 @@ final class BoundedDialogProbe: @unchecked Sendable {
             // A confirmed dialog remains present if optional details fail.
             if let role = try? provider.role(node, timeout: budget.remaining()) {
                 if role == "AXWebArea" { continue }
-                // Chrome below the match is not part of the dialog (#328).
+                // Chrome below the match is not part of the dialog (#328). A tab
+                // bar or tab whose subrole cannot be read is left out too: its
+                // titles would otherwise be reported as the dialog's text.
                 if depth > 0 && DialogCandidate.isChromeRole(role) { continue }
-                if depth > 0, let subrole = try? provider.subrole(node, timeout: budget.remaining()),
-                   DialogCandidate.isWindowChrome(role: role, subrole: subrole) { continue }
+                if depth > 0 && DialogCandidate.needsSubroleForChrome(role) {
+                    guard let subrole = try? provider.subrole(node, timeout: budget.remaining()),
+                          !DialogCandidate.isWindowChrome(role: role, subrole: subrole) else { continue }
+                }
                 if let text = try? DialogMessageText.read(
                     node, role: role, provider: provider, remainingTimeout: budget.remaining), !text.isEmpty {
                     messages.append(text)

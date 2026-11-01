@@ -3551,12 +3551,13 @@ enum SafariBridge {
         /// #328: where the entry probe found the node — one role (with its
         /// subrole) per level, from the window down. Roles only, never text.
         /// Printed by the debug line; empty when the finder does not record
-        /// it. Not part of equality: two sightings of the same dialog are
-        /// the same dialog however they were reached. Equality therefore says
-        /// nothing about where a dialog is: callers keep observations apart by
-        /// their own key (the gate by window, `dialog dismiss` by window ID and
-        /// AX element), never by comparing two of these. A `Hashable`
-        /// conformance would have to hash the same two fields.
+        /// it (the scanner never does). Not part of equality: two sightings of
+        /// the same dialog are the same dialog however they were reached.
+        ///
+        /// Equality is a safety check: `dialog dismiss` refuses to press unless
+        /// the dialog it re-reads equals the one it listed (`decidePress`, #89).
+        /// A field added later belongs in `==` unless, like `path`, it is
+        /// diagnostic only; a `Hashable` conformance must hash the same fields.
         let path: [String]
 
         init(message: String, buttons: [String], path: [String] = []) {
