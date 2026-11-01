@@ -38,6 +38,30 @@ The entry probe SHALL bound each caller wait below 100 ms and SHALL share a tota
 - **THEN** the probe returns present.
 
 ---
+### Requirement: Window chrome exclusion
+The entry probe and the `dialog list` / `dismiss` scanner SHALL decide dialog candidates with one shared predicate and SHALL NOT enter window chrome. Window chrome is a closed list of three, matched exactly: role `AXToolbar`; role `AXOpaqueProviderGroup` with subrole `AXOpaqueProviderList` (the tab bar); role `AXRadioButton` with subrole `AXTabButton` (a tab). The chrome test SHALL come before the dialog test, so a chrome node is never a candidate whatever subrole it reports. A skipped chrome subtree is an exclusion, not truncation: it SHALL NOT make a walk incomplete, and it MUST NOT turn an otherwise incomplete walk into clear. Dialogs in the tab content and sheets that are children of the window SHALL still be found. The list was measured on Safari 27.2 (2026-11-01, #328); the node behind the reported false positive was not reproduced, so the exclusion covers the chrome rather than naming one node.
+
+#### Scenario: Dialog-like node in the chrome
+- **WHEN** a node with a dialog role or subrole is inside the toolbar, the tab bar or a tab button, and nothing else in the window is a dialog
+- **THEN** the entry probe returns clear and `dialog list` has no candidate.
+
+#### Scenario: Content dialog after chrome
+- **WHEN** the tab bar and the toolbar precede the content path, each holding a dialog-like node, and the content holds a dialog at depth 3
+- **THEN** the probe returns present with the content dialog's own message and buttons.
+
+#### Scenario: Window with many tabs
+- **WHEN** the tab bar holds more tab buttons than the node budget and the rest of the window is read completely
+- **THEN** the probe returns clear rather than unprobed.
+
+---
+### Requirement: Debug match path
+A present verdict from the entry probe SHALL carry the path to the matched node: one element per level from the window down, each the role followed by `/` and the subrole when there is one. The path SHALL contain roles only, never titles, values or page text, and SHALL NOT take part in dialog equality. With `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1` the debug line SHALL print `present at <path>`, elements joined by ` > `, escaped as one line.
+
+#### Scenario: Naming a false positive
+- **WHEN** debug is on and the probe matches a group with subrole `AXDialog` under the window's split group and tab group
+- **THEN** the debug line ends with `→ present at AXWindow/AXStandardWindow > AXSplitGroup > AXTabGroup > AXGroup/AXDialog` and contains none of the dialog's text.
+
+---
 ### Requirement: Native command warnings
 Targeted native operations SHALL invoke the gate after target resolution and before acting. This includes close, pdf, tab focus, upload, save-image, ordinary screenshot, and tabs with an explicit window. Warnings SHALL remain on stderr and MUST NOT by themselves fail a read-only operation.
 
