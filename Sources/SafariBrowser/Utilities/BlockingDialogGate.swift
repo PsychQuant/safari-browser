@@ -313,6 +313,10 @@ private extension BlockingDialogState {
         case .unprobed: return "unprobed"
         case .accessibilityDenied: return "accessibility denied"
         case .clear: return "clear"
+        case .present(let dialog) where !dialog.path.isEmpty:
+            // #328: where the node was, so a false positive can be named.
+            return "present at " + TerminalText.escaped(
+                dialog.path.joined(separator: " > "), limit: TerminalText.dialogFieldLimit)
         case .present: return "present"
         }
     }

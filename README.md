@@ -697,6 +697,16 @@ native dialog that suspends JavaScript. Failed reads, missing identity,
 truncated native UI branches, or a busy/timed-out worker produce `unprobed`
 and a warning, not a claim that no dialog exists.
 
+The entry probe (the check each command makes) never takes its target window
+itself for the dialog, and it does not look inside the toolbar, the tab bar or
+a tab (#328): on Safari 27.2 a JavaScript dialog appears in the tab content and
+a sheet on the window, so a Safari control there is not reported as a blocking
+dialog. `dialog list`, `dialog dismiss`, `is dialog` and the dialog state in
+`documents` / `tabs` still inspect the whole window, window root included
+(#326). With `SAFARI_BROWSER_DIALOG_PROBE_DEBUG=1` the debug line also names
+where a found dialog sits, as a role path (`present at AXWindow/… > …`, roles
+only, never text).
+
 When the GUI session is locked or unavailable, `dialog list`, `dialog dismiss`,
 and screenshots report that session problem before attempting AX operations.
 Unlock the Mac or run from an active logged-in GUI session, then retry; a locked

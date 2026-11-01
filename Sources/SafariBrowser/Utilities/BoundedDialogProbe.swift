@@ -88,24 +88,35 @@ final class BoundedDialogProbe: @unchecked Sendable {
             }
             guard let target else { return .unprobed }
 
-            var pending: [(P.Node, Int)] = [(target, 0)]
+            // Each entry carries the role path above it, for the debug line only.
+            var pending: [(P.Node, Int, [String])] = [(target, 0, [])]
             var inspected = 0
             var incomplete = false
             // Follow the first window-content path before sibling tab strips.
             // Breadth first visits every tab button before a depth-3 dialog in
             // Safari's content group, exhausting the budget on busy windows.
             while !pending.isEmpty && inspected < maxNodes {
-                let (node, depth) = pending.removeLast()
+                let (node, depth, ancestors) = pending.removeLast()
                 inspected += 1
                 do {
                     let role = try provider.role(node, timeout: budget.remaining())
                     // Page ARIA dialogs are web content, not native UI that
                     // suspends JavaScript. Do not traverse into the WebArea.
                     if role == "AXWebArea" { continue }
+                    // Checked before the dialog test: chrome is never a dialog (#328).
+                    if DialogCandidate.isChromeRole(role) { continue }
                     let subrole = try provider.subrole(node, timeout: budget.remaining())
-                    if role == "AXSheet" || role == "AXDialog" || subrole == "AXDialog" || subrole == "AXSystemDialog" {
-                        return .present(details(of: node, provider: provider, budget: budget,
-                                                maxDepth: maxDepth, maxNodes: maxNodes))
+                    if DialogCandidate.isWindowChrome(role: role, subrole: subrole) { continue }
+                    let path = ancestors + [DialogCandidate.pathLabel(role: role, subrole: subrole)]
+                    // The target is a browser window; on Safari 27.2 a JavaScript
+                    // dialog appears below it, never as the window itself. #326 saw
+                    // an unrelated web page window report subrole AXDialog; reading
+                    // a whole window as a dialog collects chrome text and buttons —
+                    // one possible shape of #328, not a confirmed cause.
+                    if depth > 0 && DialogCandidate.isDialog(role: role, subrole: subrole) {
+                        let found = details(of: node, provider: provider, budget: budget,
+                                            maxDepth: maxDepth, maxNodes: maxNodes)
+                        return .present(.init(message: found.message, buttons: found.buttons, path: path))
                     }
                     let children = try provider.children(node, timeout: budget.remaining())
                     if depth >= maxDepth {
@@ -113,7 +124,7 @@ final class BoundedDialogProbe: @unchecked Sendable {
                     } else {
                         let room = max(0, maxNodes - inspected - pending.count)
                         if children.count > room { incomplete = true }
-                        pending.append(contentsOf: children.prefix(room).reversed().map { ($0, depth + 1) })
+                        pending.append(contentsOf: children.prefix(room).reversed().map { ($0, depth + 1, path) })
                     }
                 } catch {
                     incomplete = true
@@ -140,6 +151,16 @@ final class BoundedDialogProbe: @unchecked Sendable {
             // A confirmed dialog remains present if optional details fail.
             if let role = try? provider.role(node, timeout: budget.remaining()) {
                 if role == "AXWebArea" { continue }
+                // Chrome below the match is not part of the dialog (#328). A tab
+                // bar or tab whose subrole cannot be read is left out too: its
+                // titles would otherwise be reported as the dialog's text. One
+                // with no subrole at all is not chrome and is read as usual.
+                if depth > 0 && DialogCandidate.isChromeRole(role) { continue }
+                if depth > 0 && DialogCandidate.needsSubroleForChrome(role) {
+                    let subrole: String?
+                    do { subrole = try provider.subrole(node, timeout: budget.remaining()) } catch { continue }
+                    if DialogCandidate.isWindowChrome(role: role, subrole: subrole) { continue }
+                }
                 if let text = try? DialogMessageText.read(
                     node, role: role, provider: provider, remainingTimeout: budget.remaining), !text.isEmpty {
                     messages.append(text)

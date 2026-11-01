@@ -12,6 +12,7 @@ final class BoundedDialogProbeTests: XCTestCase {
         var title: String?
         var roleDelay: TimeInterval = 0
         var valueSettable: Bool? = false
+        var subroleFails = false
     }
 
     private enum Operation: String, CaseIterable, Sendable {
@@ -71,7 +72,9 @@ final class BoundedDialogProbeTests: XCTestCase {
             return nodes[node]!.role
         }
         func subrole(_ node: Int, timeout: Float) throws -> String? {
-            try calls.touch(.subrole, timeout: timeout); return nodes[node]!.subrole
+            try calls.touch(.subrole, timeout: timeout)
+            if nodes[node]!.subroleFails { throw DialogProbeReadError.unavailable }
+            return nodes[node]!.subrole
         }
         func children(_ node: Int, timeout: Float) throws -> [Int] {
             try calls.touch(.children, timeout: timeout); return nodes[node]!.children
@@ -168,6 +171,252 @@ final class BoundedDialogProbeTests: XCTestCase {
         guard case .present = probe.check(windowKey: .id(42)) else {
             return XCTFail("the modal path precedes a 50-tab strip and must be inspected before it")
         }
+    }
+
+    // MARK: #328 — window chrome is never a JavaScript dialog
+
+    private static let chromeContainers: [(name: String, node: Node)] = [
+        ("toolbar", Node(role: "AXToolbar")),
+        // Pins the order: chrome is decided before the dialog test.
+        ("toolbar reporting a dialog subrole", Node(role: "AXToolbar", subrole: "AXDialog")),
+        ("tab bar", Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList")),
+        ("tab button", Node(role: "AXRadioButton", subrole: "AXTabButton")),
+    ]
+    private static let dialogLikeNodes: [Node] = [
+        Node(subrole: "AXDialog"), Node(role: "AXSheet"), Node(role: "AXDialog"), Node(subrole: "AXSystemDialog"),
+    ]
+
+    /// One shape that would give the reported false positive (the address
+    /// field's controls and the page title, read as a dialog): a node with a
+    /// dialog role inside window chrome. Safari puts JavaScript dialogs in the
+    /// tab content. Another shape, the window itself, is tested below; the
+    /// actual node was not reproduced.
+    func testDialogLikeNodesInsideToolbarOrTabBarAreNotBlockingDialogs() {
+        for (name, container) in Self.chromeContainers {
+            for candidate in Self.dialogLikeNodes {
+                var chrome = container
+                chrome.children = [3]
+                var dialogLike = candidate
+                dialogLike.children = [4, 5]
+                let nodes = [1: Node(role: "AXWindow", children: [2], windowID: 42),
+                             2: chrome, 3: dialogLike,
+                             4: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+                             5: Node(role: "AXButton", title: "重新載入此網頁")]
+                XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .clear,
+                               "\(candidate.role)/\(candidate.subrole ?? "-") inside the \(name)")
+            }
+        }
+    }
+
+    func testContentDialogAfterChromeIsFoundWithItsOwnText() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [10, 20, 2], windowID: 42),
+            10: Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList", children: [11]),
+            11: Node(role: "AXRadioButton", subrole: "AXTabButton", children: [12]),
+            12: Node(subrole: "AXDialog", children: [13]),
+            13: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+            20: Node(role: "AXToolbar", children: [21]),
+            21: Node(subrole: "AXDialog", children: [22]),
+            22: Node(role: "AXButton", title: "重新載入此網頁"),
+            2: Node(role: "AXSplitGroup", children: [3]),
+            3: Node(role: "AXTabGroup", children: [4]),
+            4: Node(subrole: "AXDialog", children: [5, 6]),
+            5: Node(role: "AXStaticText", text: "這是訊息"),
+            6: Node(role: "AXButton", title: "確定"),
+        ]
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "這是訊息", buttons: ["確定"])))
+    }
+
+    func testWindowLevelSheetBesideChromeIsStillFound() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [20, 30], windowID: 42),
+            20: Node(role: "AXToolbar", children: [21]),
+            21: Node(role: "AXButton", title: "重新載入此網頁"),
+            30: Node(role: "AXSheet", children: [31, 32]),
+            31: Node(role: "AXStaticText", text: "Save changes?"),
+            32: Node(role: "AXButton", title: "Don't Save"),
+        ]
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "Save changes?", buttons: ["Don't Save"])))
+    }
+
+    /// Both orders: with the truncated branch first, a skip that reset the
+    /// incomplete flag would turn the walk into clear.
+    func testSkippedChromeDoesNotTurnATruncatedWalkIntoClear() {
+        for order in [[20, 2], [2, 20]] {
+            let nodes: [Int: Node] = [
+                1: Node(role: "AXWindow", children: order, windowID: 42),
+                20: Node(role: "AXToolbar", children: [21]),
+                21: Node(role: "AXButton"),
+                2: Node(children: [3]), 3: Node(children: [4]), 4: Node(children: [5]), 5: Node(),
+            ]
+            XCTAssertEqual(makeProbe(nodes: nodes, maxDepth: 2).check(windowKey: .id(42)), .unprobed, "\(order)")
+        }
+    }
+
+    /// The toolbar is decided on its role alone, so a subrole that cannot be
+    /// read on it does not make the walk incomplete.
+    func testToolbarIsSkippedBeforeItsSubroleIsRead() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [20, 2], windowID: 42),
+            20: Node(role: "AXToolbar", children: [21], subroleFails: true),
+            21: Node(role: "AXButton"),
+            2: Node(),
+        ]
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .clear)
+    }
+
+    /// #326 saw an unrelated web page window report subrole AXDialog. The target of the
+    /// entry probe is a browser window; a JavaScript dialog is never the window
+    /// itself, and reading the whole window would collect the address field's
+    /// controls — the shape #328 reported.
+    func testTargetWindowReportingADialogSubroleIsNotItselfADialog() {
+        for subrole in ["AXDialog", "AXSystemDialog"] {
+            let nodes: [Int: Node] = [
+                1: Node(role: "AXWindow", subrole: subrole, children: [20, 2], windowID: 42),
+                20: Node(role: "AXToolbar", children: [21]),
+                21: Node(children: [22, 23, 24]),
+                22: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+                23: Node(role: "AXButton", title: "頁面選單"),
+                24: Node(role: "AXButton", title: "重新載入此網頁"),
+                2: Node(role: "AXSplitGroup", children: [3]),
+                3: Node(role: "AXTabGroup"),
+            ]
+            XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .clear, subrole)
+        }
+    }
+
+    func testTargetWindowWithADialogSubroleStillReportsItsContentDialog() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", subrole: "AXDialog", children: [20, 2], windowID: 42),
+            20: Node(role: "AXToolbar", children: [21]),
+            21: Node(role: "AXButton", title: "重新載入此網頁"),
+            2: Node(role: "AXSplitGroup", children: [3]),
+            3: Node(role: "AXTabGroup", children: [4]),
+            4: Node(subrole: "AXDialog", children: [5, 6]),
+            5: Node(role: "AXStaticText", text: "這是訊息"),
+            6: Node(role: "AXButton", title: "確定"),
+        ]
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "這是訊息", buttons: ["確定"])))
+    }
+
+    /// Reading a found dialog's text and buttons skips chrome as well.
+    func testDialogDetailsLeaveOutChromeBelowTheMatch() {
+        for chrome in [Node(role: "AXToolbar"),
+                       Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList"),
+                       Node(role: "AXRadioButton", subrole: "AXTabButton")] {
+            var container = chrome
+            container.children = [34, 35]
+            let nodes: [Int: Node] = [
+                1: Node(role: "AXWindow", children: [30], windowID: 42),
+                30: Node(role: "AXSheet", children: [31, 32, 33]),
+                31: Node(role: "AXStaticText", text: "Save changes?"),
+                32: Node(role: "AXButton", title: "Save"),
+                33: container,
+                34: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+                35: Node(role: "AXButton", title: "重新載入此網頁"),
+            ]
+            XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                           .present(.init(message: "Save changes?", buttons: ["Save"])), chrome.role)
+        }
+    }
+
+    /// A tab bar or tab whose subrole cannot be read is left out of the
+    /// dialog's text and buttons rather than read as part of it.
+    func testDialogDetailsLeaveOutATabBarWhoseSubroleCannotBeRead() {
+        for role in ["AXOpaqueProviderGroup", "AXRadioButton"] {
+            let nodes: [Int: Node] = [
+                1: Node(role: "AXWindow", children: [30], windowID: 42),
+                30: Node(role: "AXSheet", children: [31, 32, 33]),
+                31: Node(role: "AXStaticText", text: "Save changes?"),
+                32: Node(role: "AXButton", title: "Save"),
+                33: Node(role: role, children: [34, 35], subroleFails: true),
+                34: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+                35: Node(role: "AXButton", title: "重新載入此網頁"),
+            ]
+            XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                           .present(.init(message: "Save changes?", buttons: ["Save"])), role)
+        }
+    }
+
+    /// A radio button or group that simply has no subrole is not chrome: its
+    /// text stays part of the dialog. Only an unreadable subrole is left out.
+    func testDialogDetailsKeepARadioButtonWithoutSubrole() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [30], windowID: 42),
+            30: Node(role: "AXSheet", children: [31, 33, 32]),
+            31: Node(role: "AXStaticText", text: "Choose one"),
+            33: Node(role: "AXRadioButton", children: [34]),
+            34: Node(role: "AXStaticText", text: "Keep both"),
+            32: Node(role: "AXButton", title: "OK"),
+        ]
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "Choose one Keep both", buttons: ["OK"])))
+    }
+
+    /// Known limit (spec: Container spanning the chrome): a dialog-like node
+    /// that contains the tab bar and the toolbar is still reported, with no
+    /// text; the path is what lets a recurrence be named.
+    func testContainerSpanningTheChromeIsAKnownLimitWithAPath() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [2], windowID: 42),
+            2: Node(subrole: "AXDialog", children: [10, 20]),
+            10: Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList", children: [11]),
+            11: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+            20: Node(role: "AXToolbar", children: [21]),
+            21: Node(role: "AXButton", title: "重新載入此網頁"),
+        ]
+        guard case .present(let dialog) = makeProbe(nodes: nodes).check(windowKey: .id(42)) else {
+            return XCTFail("the spanning container is reported (known limit)")
+        }
+        XCTAssertEqual(dialog, .init(message: "", buttons: []))
+        XCTAssertEqual(dialog.path, ["AXWindow", "AXGroup/AXDialog"])
+    }
+
+    func testEmptySubroleIsNotWrittenIntoThePath() {
+        var nodes = Self.dialogTree
+        nodes[2] = Node(subrole: "", children: [3])
+        guard case .present(let dialog) = makeProbe(nodes: nodes).check(windowKey: .id(42)) else {
+            return XCTFail("the dialog must be found")
+        }
+        XCTAssertEqual(dialog.path, ["AXWindow", "AXGroup", "AXGroup", "AXGroup/AXDialog"])
+    }
+
+    /// A window with many tabs used to exhaust the node budget in the tab bar
+    /// and report "could not inspect completely". The tab bar is not inspected,
+    /// so the parts that can hold a dialog are read in full. The fixture's
+    /// content path is shallow on purpose: on a real window the page's scroll
+    /// area at depth 5 still makes the walk incomplete (#187).
+    func testLargeTabBarNoLongerExhaustsTheNodeBudget() {
+        var nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [2, 8, 9], windowID: 42),
+            2: Node(role: "AXSplitGroup", children: [3]),
+            3: Node(role: "AXTabGroup", children: [4]),
+            4: Node(),
+            8: Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList", children: Array(100..<240)),
+            9: Node(role: "AXToolbar", children: [10]),
+            10: Node(role: "AXButton"),
+        ]
+        for id in 100..<240 { nodes[id] = Node(role: "AXRadioButton", subrole: "AXTabButton") }
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .clear)
+    }
+
+    func testPresentDialogCarriesARoleOnlyPathForDebugging() {
+        guard case .present(let dialog) = makeProbe().check(windowKey: .id(42)) else {
+            return XCTFail("the depth-three dialog must be found")
+        }
+        XCTAssertEqual(dialog.path, ["AXWindow", "AXGroup", "AXGroup", "AXGroup/AXDialog"])
+        XCTAssertFalse(dialog.path.joined().contains("這是訊息"), "the path holds roles, never text")
+    }
+
+    func testPathIsDiagnosticAndNotPartOfDialogIdentity() {
+        typealias Dialog = SafariBridge.BlockingDialog
+        XCTAssertEqual(Dialog(message: "m", buttons: ["OK"], path: ["AXWindow", "AXSheet"]),
+                       Dialog(message: "m", buttons: ["OK"]))
+        XCTAssertNotEqual(Dialog(message: "m", buttons: ["OK"]), Dialog(message: "n", buttons: ["OK"]))
+        XCTAssertNotEqual(Dialog(message: "m", buttons: ["OK"]), Dialog(message: "m", buttons: ["Cancel"]))
     }
 
     func testWebContentDialogDoesNotCountAsNativeBlockingDialog() {
