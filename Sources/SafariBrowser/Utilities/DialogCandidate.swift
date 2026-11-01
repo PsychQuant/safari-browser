@@ -17,23 +17,36 @@ enum DialogCandidate {
     /// excluded on purpose, not a truncated branch, so it does not make the
     /// walk incomplete.
     ///
+    /// The toolbar is chrome whatever subrole it reports; the tab bar and a tab
+    /// are chrome only with exactly these subroles, so one that reported a
+    /// dialog subrole would still be tested as a dialog.
+    ///
     /// A closed list of three, matched exactly. Measured on Safari 27.2
     /// (2026-11-01): `AXToolbar` holds the address field and its buttons, the
     /// tab bar is `AXOpaqueProviderGroup` / `AXOpaqueProviderList`, each tab is
-    /// `AXRadioButton` / `AXTabButton`. A false positive came from somewhere in
-    /// that chrome on a zh-Hant interface; the exact node was not reproduced.
+    /// `AXRadioButton` / `AXTabButton`. A false positive on a zh-Hant interface
+    /// may have come from a node in that chrome, or from the window itself
+    /// (see `BoundedDialogProbe`); the node was not reproduced.
     static func isWindowChrome(role: String, subrole: String?) -> Bool {
+        if isChromeRole(role) { return true }
         switch (role, subrole) {
-        case ("AXToolbar", _): return true
         case ("AXOpaqueProviderGroup", "AXOpaqueProviderList"): return true
         case ("AXRadioButton", "AXTabButton"): return true
         default: return false
         }
     }
 
+    /// The part of the chrome test that needs no subrole: the toolbar. The
+    /// walkers ask this right after reading the role, so a subrole read that
+    /// fails on a toolbar cannot make the walk incomplete.
+    static func isChromeRole(_ role: String) -> Bool {
+        role == "AXToolbar"
+    }
+
     /// One path element for debug output: the role, and the subrole when
     /// there is one. Never a title or a value.
     static func pathLabel(role: String, subrole: String?) -> String {
-        subrole.map { "\(role)/\($0)" } ?? role
+        guard let subrole, !subrole.isEmpty else { return role }
+        return "\(role)/\(subrole)"
     }
 }

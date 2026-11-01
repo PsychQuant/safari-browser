@@ -3555,7 +3555,8 @@ enum SafariBridge {
         /// the same dialog however they were reached. Equality therefore says
         /// nothing about where a dialog is: callers keep observations apart by
         /// their own key (the gate by window, `dialog dismiss` by window ID and
-        /// AX element), never by comparing two of these.
+        /// AX element), never by comparing two of these. A `Hashable`
+        /// conformance would have to hash the same two fields.
         let path: [String]
 
         init(message: String, buttons: [String], path: [String] = []) {

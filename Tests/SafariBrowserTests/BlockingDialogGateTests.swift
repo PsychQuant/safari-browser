@@ -473,12 +473,12 @@ final class BlockingDialogGateTests: XCTestCase {
     /// where in the window the probe found the node, never what it said.
     func testDebugLineNamesTheRolePathOfAPresentDialog() {
         let dialog = Dialog(message: "page title text", buttons: ["OK"],
-                            path: ["AXWindow/AXStandardWindow", "AXToolbar", "AXGroup/AXDialog"])
+                            path: ["AXWindow/AXStandardWindow", "AXSplitGroup", "AXTabGroup", "AXGroup/AXDialog"])
         let (gate, stderr) = makeGate(probe: { _ in .present(dialog) },
             environment: [BlockingDialogGate.debugVariable: "1"])
         gate.check(.id(42))
         let line = stderr.lines.first { $0.hasPrefix("dialog probe:") } ?? ""
-        XCTAssertTrue(line.contains("→ present at AXWindow/AXStandardWindow > AXToolbar > AXGroup/AXDialog"), line)
+        XCTAssertTrue(line.hasSuffix("→ present at AXWindow/AXStandardWindow > AXSplitGroup > AXTabGroup > AXGroup/AXDialog"), line)
         XCTAssertFalse(line.contains("page title text"), line)
     }
 

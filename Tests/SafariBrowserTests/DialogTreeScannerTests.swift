@@ -193,19 +193,57 @@ final class DialogTreeScannerTests: XCTestCase {
         let chrome = [Node(role: "AXToolbar"), Node(role: "AXToolbar", subrole: "AXDialog"),
                       Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList"),
                       Node(role: "AXRadioButton", subrole: "AXTabButton")]
+        let dialogLike = [Node(subrole: "AXDialog"), Node(role: "AXSheet"), Node(role: "AXDialog"),
+                          Node(subrole: "AXSystemDialog")]
         for var container in chrome {
-            container.children = [3]
-            let p = Provider(nodes: [
-                1: Node(role: "AXWindow", children: [2], id: 42),
-                2: container,
-                3: Node(subrole: "AXDialog", children: [4, 5]),
-                4: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
-                5: Node(role: "AXButton", title: "重新載入此網頁"),
-            ])
-            let snapshot = scan(p)
-            XCTAssertTrue(snapshot.candidates.isEmpty, container.role)
-            XCTAssertTrue(snapshot.isComplete, container.role)
+            for var candidate in dialogLike {
+                container.children = [3]
+                candidate.children = [4, 5]
+                let p = Provider(nodes: [
+                    1: Node(role: "AXWindow", children: [2], id: 42),
+                    2: container,
+                    3: candidate,
+                    4: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+                    5: Node(role: "AXButton", title: "重新載入此網頁"),
+                ])
+                let snapshot = scan(p)
+                XCTAssertTrue(snapshot.candidates.isEmpty, "\(container.role) > \(candidate.role)")
+                XCTAssertTrue(snapshot.isComplete, "\(container.role) > \(candidate.role)")
+            }
         }
+    }
+
+    func testSkippedChromeDoesNotMakeATruncatedScanComplete() {
+        for order in [[10, 2], [2, 10]] {
+            let p = Provider(nodes: [
+                1: Node(role: "AXWindow", children: order, id: 42),
+                10: Node(role: "AXToolbar", children: [11]),
+                11: Node(role: "AXButton"),
+                2: Node(children: [3]), 3: Node(children: [4]), 4: Node(),
+            ])
+            var scanner = DialogTreeScanner<Provider>()
+            scanner.maxDepth = 2
+            let snapshot = scan(p, scanner)
+            XCTAssertTrue(snapshot.candidates.isEmpty)
+            XCTAssertFalse(snapshot.isComplete, "\(order)")
+        }
+    }
+
+    /// A root modal keeps its own text and buttons, without the toolbar's
+    /// controls and without a nested candidate made from chrome.
+    func testRootModalDetailsLeaveOutChrome() {
+        let p = Provider(nodes: [
+            1: Node(role: "AXWindow", subrole: "AXDialog", children: [3, 6, 10], id: 42),
+            3: Node(role: "AXStaticText", text: "App modal"),
+            6: Node(role: "AXButton", title: "OK"),
+            10: Node(role: "AXToolbar", children: [11, 12]),
+            11: Node(subrole: "AXDialog", children: [13]),
+            12: Node(role: "AXButton", title: "重新載入此網頁"),
+            13: Node(role: "AXButton", title: "頁面選單"),
+        ])
+        let snapshot = scan(p)
+        XCTAssertEqual(snapshot.scanResult, .one(.init(message: "App modal", buttons: ["OK"])))
+        XCTAssertTrue(snapshot.isComplete)
     }
 
     func testContentDialogBesideChromeIsTheOnlyCandidate() {
