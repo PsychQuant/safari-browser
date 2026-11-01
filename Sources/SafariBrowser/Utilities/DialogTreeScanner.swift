@@ -55,6 +55,10 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
         return Float(Double(deadline.uptimeNanoseconds - now) / 1_000_000_000)
     }
 
+    private func isDialog(role: String, subrole: String?) -> Bool {
+        role == "AXSheet" || role == "AXDialog" || subrole == "AXDialog" || subrole == "AXSystemDialog"
+    }
+
     private func inspectWindow(
         _ window: P.Node, id: Int, provider: P, deadline: DispatchTime,
         snapshot: inout DialogTreeSnapshot<P.Node>, visited: inout Set<P.Node>
@@ -76,7 +80,7 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
                 }
                 if role == "AXWebArea" { continue }
                 let subrole = try provider.subrole(node, timeout: remaining(deadline))
-                if DialogCandidate.isDialog(role: role, subrole: subrole) {
+                if isDialog(role: role, subrole: subrole) {
                     let detail = details(node, id: id, provider: provider, deadline: deadline, visited: &visited)
                     for candidate in [detail.candidate] + detail.nested {
                         if snapshot.candidates.contains(where: { $0.element == candidate.element }) {
@@ -126,7 +130,7 @@ struct DialogTreeScanner<P: DialogProbeProvider> {
                 let subrole = try provider.subrole(node, timeout: remaining(deadline))
                 // A second native dialog inside the candidate is a separate
                 // decision. Do not mix its controls into an outer sheet.
-                if depth > 0 && DialogCandidate.isDialog(role: role, subrole: subrole) {
+                if depth > 0 && isDialog(role: role, subrole: subrole) {
                     complete = false
                     // Preserve the positively identified candidate. Its details
                     // are intentionally unread: ambiguity already forbids any

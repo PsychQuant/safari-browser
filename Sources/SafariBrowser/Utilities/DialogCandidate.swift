@@ -1,16 +1,15 @@
 import Foundation
 
-/// #328: what counts as a dialog, and what counts as window chrome.
-///
-/// `isDialog` is shared by both dialog walkers (`BoundedDialogProbe` for the
-/// entry gate, `DialogTreeScanner` for `dialog list`, `dismiss`, `is dialog`
-/// and the dialog state in `documents` / `tabs`), so the two cannot drift
-/// apart. The chrome tests are used by the entry probe only; the scanner's
-/// handling of chrome and of window roots is left to #326 (maintainer's
-/// scope decision on #328, 2026-11-01).
+/// #328: what the entry probe (`BoundedDialogProbe`) counts as a dialog and as
+/// window chrome. The global scanner (`DialogTreeScanner`, behind `dialog
+/// list`, `dismiss`, `is dialog` and the dialog state in `documents` / `tabs`)
+/// keeps its own copy of the dialog test and walks the whole window, chrome
+/// and window root included; changing that is left to #326 (maintainer's scope
+/// decision on #328, 2026-11-01).
 enum DialogCandidate {
-    /// A native dialog or sheet. Matched by role or subrole, at any depth the
-    /// walkers reach outside window chrome.
+    /// A native dialog or sheet, matched by role or subrole — the same test the
+    /// scanner makes. The probe applies it only below its target window and
+    /// outside window chrome.
     static func isDialog(role: String, subrole: String?) -> Bool {
         role == "AXSheet" || role == "AXDialog" || subrole == "AXDialog" || subrole == "AXSystemDialog"
     }
@@ -29,17 +28,19 @@ enum DialogCandidate {
     /// A closed list of three, matched exactly. Measured on Safari 27.2
     /// (2026-11-01): `AXToolbar` holds the address field and its buttons, the
     /// tab bar is `AXOpaqueProviderGroup` / `AXOpaqueProviderList`, each tab is
-    /// `AXRadioButton` / `AXTabButton`. A false positive on a zh-Hant interface
-    /// may have come from a node in that chrome, or from the window itself
-    /// (see `BoundedDialogProbe`); the node was not reproduced.
+    /// `AXRadioButton` / `AXTabButton`. The node behind the zh-Hant false
+    /// positive (#328) was not reproduced; this list is one of the shapes the
+    /// fix covers, not a named cause.
     static func isWindowChrome(role: String, subrole: String?) -> Bool {
-        if isChromeRole(role) { return true }
-        switch (role, subrole) {
-        case ("AXOpaqueProviderGroup", "AXOpaqueProviderList"): return true
-        case ("AXRadioButton", "AXTabButton"): return true
-        default: return false
-        }
+        isChromeRole(role) || chromeBySubrole.contains { $0.role == role && $0.subrole == subrole }
     }
+
+    /// The tab bar and a tab: chrome only with exactly this subrole. One list,
+    /// read by both `isWindowChrome` and `needsSubroleForChrome`.
+    private static let chromeBySubrole: [(role: String, subrole: String)] = [
+        ("AXOpaqueProviderGroup", "AXOpaqueProviderList"),
+        ("AXRadioButton", "AXTabButton"),
+    ]
 
     /// The part of the chrome test that needs no subrole: the toolbar. The
     /// probe asks this right after reading the role, so a subrole read that
@@ -50,9 +51,9 @@ enum DialogCandidate {
 
     /// Roles that are chrome only with a particular subrole (the tab bar and a
     /// tab). Reading a found dialog's text, the probe leaves such a node out
-    /// when its subrole cannot be read.
+    /// when its subrole cannot be read; one with no subrole is not chrome.
     static func needsSubroleForChrome(_ role: String) -> Bool {
-        role == "AXOpaqueProviderGroup" || role == "AXRadioButton"
+        chromeBySubrole.contains { $0.role == role }
     }
 
     /// One path element for debug output: the role, and the subrole when

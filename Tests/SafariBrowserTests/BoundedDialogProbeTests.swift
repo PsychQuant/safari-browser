@@ -186,10 +186,11 @@ final class BoundedDialogProbeTests: XCTestCase {
         Node(subrole: "AXDialog"), Node(role: "AXSheet"), Node(role: "AXDialog"), Node(subrole: "AXSystemDialog"),
     ]
 
-    /// One explanation of the reported false positive (the address field's
-    /// controls and the page title, read as a dialog): a node with a dialog
-    /// role inside window chrome. Safari puts JavaScript dialogs in the tab
-    /// content. The other explanation, the window itself, is tested below.
+    /// One shape that would give the reported false positive (the address
+    /// field's controls and the page title, read as a dialog): a node with a
+    /// dialog role inside window chrome. Safari puts JavaScript dialogs in the
+    /// tab content. Another shape, the window itself, is tested below; the
+    /// actual node was not reproduced.
     func testDialogLikeNodesInsideToolbarOrTabBarAreNotBlockingDialogs() {
         for (name, container) in Self.chromeContainers {
             for candidate in Self.dialogLikeNodes {
@@ -338,6 +339,40 @@ final class BoundedDialogProbeTests: XCTestCase {
             XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
                            .present(.init(message: "Save changes?", buttons: ["Save"])), role)
         }
+    }
+
+    /// A radio button or group that simply has no subrole is not chrome: its
+    /// text stays part of the dialog. Only an unreadable subrole is left out.
+    func testDialogDetailsKeepARadioButtonWithoutSubrole() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [30], windowID: 42),
+            30: Node(role: "AXSheet", children: [31, 33, 32]),
+            31: Node(role: "AXStaticText", text: "Choose one"),
+            33: Node(role: "AXRadioButton", children: [34]),
+            34: Node(role: "AXStaticText", text: "Keep both"),
+            32: Node(role: "AXButton", title: "OK"),
+        ]
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "Choose one Keep both", buttons: ["OK"])))
+    }
+
+    /// Known limit (spec: Container spanning the chrome): a dialog-like node
+    /// that contains the tab bar and the toolbar is still reported, with no
+    /// text; the path is what lets a recurrence be named.
+    func testContainerSpanningTheChromeIsAKnownLimitWithAPath() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [2], windowID: 42),
+            2: Node(subrole: "AXDialog", children: [10, 20]),
+            10: Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList", children: [11]),
+            11: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+            20: Node(role: "AXToolbar", children: [21]),
+            21: Node(role: "AXButton", title: "重新載入此網頁"),
+        ]
+        guard case .present(let dialog) = makeProbe(nodes: nodes).check(windowKey: .id(42)) else {
+            return XCTFail("the spanning container is reported (known limit)")
+        }
+        XCTAssertEqual(dialog, .init(message: "", buttons: []))
+        XCTAssertEqual(dialog.path, ["AXWindow", "AXGroup/AXDialog"])
     }
 
     func testEmptySubroleIsNotWrittenIntoThePath() {
