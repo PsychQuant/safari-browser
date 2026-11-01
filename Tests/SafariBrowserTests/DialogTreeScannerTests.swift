@@ -187,6 +187,42 @@ final class DialogTreeScannerTests: XCTestCase {
         XCTAssertEqual(press, .ambiguous(messages: ["Source", ""]))
     }
 
+    /// #328: `dialog list` must not offer the address field's controls as the
+    /// buttons of a dialog.
+    func testDialogLikeNodesInToolbarAndTabBarAreNotCandidates() {
+        let chrome = [Node(role: "AXToolbar"), Node(role: "AXToolbar", subrole: "AXDialog"),
+                      Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList"),
+                      Node(role: "AXRadioButton", subrole: "AXTabButton")]
+        for var container in chrome {
+            container.children = [3]
+            let p = Provider(nodes: [
+                1: Node(role: "AXWindow", children: [2], id: 42),
+                2: container,
+                3: Node(subrole: "AXDialog", children: [4, 5]),
+                4: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+                5: Node(role: "AXButton", title: "重新載入此網頁"),
+            ])
+            let snapshot = scan(p)
+            XCTAssertTrue(snapshot.candidates.isEmpty, container.role)
+            XCTAssertTrue(snapshot.isComplete, container.role)
+        }
+    }
+
+    func testContentDialogBesideChromeIsTheOnlyCandidate() {
+        let p = Provider(nodes: [
+            1: Node(role: "AXWindow", children: [10, 2], id: 42),
+            10: Node(role: "AXToolbar", children: [11]),
+            11: Node(subrole: "AXDialog", children: [12]),
+            12: Node(role: "AXButton", title: "重新載入此網頁"),
+            2: Node(role: "AXSplitGroup", children: [3]),
+            3: Node(role: "AXTabGroup", children: [4]),
+            4: Node(subrole: "AXDialog", children: [5, 6]),
+            5: Node(role: "AXStaticText", text: "Body"),
+            6: Node(role: "AXButton", title: "OK"),
+        ])
+        XCTAssertEqual(scan(p).scanResult, .one(.init(message: "Body", buttons: ["OK"])))
+    }
+
     func testRootModalSubroleIsDetectedInsteadOfReportedClear() {
         for subrole in ["AXDialog", "AXSystemDialog"] {
             let p = Provider(nodes: [

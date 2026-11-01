@@ -469,6 +469,38 @@ final class BlockingDialogGateTests: XCTestCase {
         }
     }
 
+    /// #328: the next false positive must be nameable from the debug line —
+    /// where in the window the probe found the node, never what it said.
+    func testDebugLineNamesTheRolePathOfAPresentDialog() {
+        let dialog = Dialog(message: "page title text", buttons: ["OK"],
+                            path: ["AXWindow/AXStandardWindow", "AXToolbar", "AXGroup/AXDialog"])
+        let (gate, stderr) = makeGate(probe: { _ in .present(dialog) },
+            environment: [BlockingDialogGate.debugVariable: "1"])
+        gate.check(.id(42))
+        let line = stderr.lines.first { $0.hasPrefix("dialog probe:") } ?? ""
+        XCTAssertTrue(line.contains("→ present at AXWindow/AXStandardWindow > AXToolbar > AXGroup/AXDialog"), line)
+        XCTAssertFalse(line.contains("page title text"), line)
+    }
+
+    func testDebugLineWithoutPathAndWithHostilePathStaysOneLine() {
+        let (plain, plainErr) = makeGate(probe: { [sample] _ in .present(sample) },
+            environment: [BlockingDialogGate.debugVariable: "1"])
+        plain.check(.id(42))
+        XCTAssertTrue(plainErr.lines.contains { $0.hasPrefix("dialog probe:") && $0.hasSuffix("→ present") })
+
+        let hostile = Dialog(message: "", buttons: [], path: ["AXWin\ndow", "AX\u{1B}[31mGroup"])
+        let (gate, stderr) = makeGate(probe: { _ in .present(hostile) },
+            environment: [BlockingDialogGate.debugVariable: "1"])
+        gate.check(.id(42))
+        // `lines` splits on LF, so a raw newline in a label would show up as a
+        // second, unprefixed line instead of one escaped line.
+        let debugLines = stderr.lines.filter { $0.contains("AXWin") || $0.contains("Group") }
+        XCTAssertEqual(debugLines.count, 1, "\(stderr.lines)")
+        XCTAssertTrue(debugLines.first?.hasSuffix(#"→ present at AXWin\ndow > AX\u{1B}[31mGroup"#) == true,
+                      "\(stderr.lines)")
+        XCTAssertFalse(stderr.lines.joined().contains("\u{1B}"))
+    }
+
     func testDebugRequiresExactlyOne() {
         for value in ["0", "", "true", "1"] {
             let (gate, stderr) = makeGate(probe: { _ in .clear },

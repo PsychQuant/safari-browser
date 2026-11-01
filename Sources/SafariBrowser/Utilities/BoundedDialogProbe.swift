@@ -88,14 +88,15 @@ final class BoundedDialogProbe: @unchecked Sendable {
             }
             guard let target else { return .unprobed }
 
-            var pending: [(P.Node, Int)] = [(target, 0)]
+            // Each entry carries the role path above it, for the debug line only.
+            var pending: [(P.Node, Int, [String])] = [(target, 0, [])]
             var inspected = 0
             var incomplete = false
             // Follow the first window-content path before sibling tab strips.
             // Breadth first visits every tab button before a depth-3 dialog in
             // Safari's content group, exhausting the budget on busy windows.
             while !pending.isEmpty && inspected < maxNodes {
-                let (node, depth) = pending.removeLast()
+                let (node, depth, ancestors) = pending.removeLast()
                 inspected += 1
                 do {
                     let role = try provider.role(node, timeout: budget.remaining())
@@ -103,9 +104,13 @@ final class BoundedDialogProbe: @unchecked Sendable {
                     // suspends JavaScript. Do not traverse into the WebArea.
                     if role == "AXWebArea" { continue }
                     let subrole = try provider.subrole(node, timeout: budget.remaining())
-                    if role == "AXSheet" || role == "AXDialog" || subrole == "AXDialog" || subrole == "AXSystemDialog" {
-                        return .present(details(of: node, provider: provider, budget: budget,
-                                                maxDepth: maxDepth, maxNodes: maxNodes))
+                    // Checked before the dialog test: chrome is never a dialog (#328).
+                    if DialogCandidate.isWindowChrome(role: role, subrole: subrole) { continue }
+                    let path = ancestors + [DialogCandidate.pathLabel(role: role, subrole: subrole)]
+                    if DialogCandidate.isDialog(role: role, subrole: subrole) {
+                        let found = details(of: node, provider: provider, budget: budget,
+                                            maxDepth: maxDepth, maxNodes: maxNodes)
+                        return .present(.init(message: found.message, buttons: found.buttons, path: path))
                     }
                     let children = try provider.children(node, timeout: budget.remaining())
                     if depth >= maxDepth {
@@ -113,7 +118,7 @@ final class BoundedDialogProbe: @unchecked Sendable {
                     } else {
                         let room = max(0, maxNodes - inspected - pending.count)
                         if children.count > room { incomplete = true }
-                        pending.append(contentsOf: children.prefix(room).reversed().map { ($0, depth + 1) })
+                        pending.append(contentsOf: children.prefix(room).reversed().map { ($0, depth + 1, path) })
                     }
                 } catch {
                     incomplete = true

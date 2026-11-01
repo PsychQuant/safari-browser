@@ -170,6 +170,115 @@ final class BoundedDialogProbeTests: XCTestCase {
         }
     }
 
+    // MARK: #328 — window chrome is never a JavaScript dialog
+
+    private static let chromeContainers: [(name: String, node: Node)] = [
+        ("toolbar", Node(role: "AXToolbar")),
+        // Pins the order: chrome is decided before the dialog test.
+        ("toolbar reporting a dialog subrole", Node(role: "AXToolbar", subrole: "AXDialog")),
+        ("tab bar", Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList")),
+        ("tab button", Node(role: "AXRadioButton", subrole: "AXTabButton")),
+    ]
+    private static let dialogLikeNodes: [Node] = [
+        Node(subrole: "AXDialog"), Node(role: "AXSheet"), Node(role: "AXDialog"), Node(subrole: "AXSystemDialog"),
+    ]
+
+    /// The reported false positive: the address field's controls and the page
+    /// title, read as a dialog. Whatever exposed a dialog role there was window
+    /// chrome; Safari puts JavaScript dialogs in the tab content.
+    func testDialogLikeNodesInsideToolbarOrTabBarAreNotBlockingDialogs() {
+        for (name, container) in Self.chromeContainers {
+            for candidate in Self.dialogLikeNodes {
+                var chrome = container
+                chrome.children = [3]
+                var dialogLike = candidate
+                dialogLike.children = [4, 5]
+                let nodes = [1: Node(role: "AXWindow", children: [2], windowID: 42),
+                             2: chrome, 3: dialogLike,
+                             4: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+                             5: Node(role: "AXButton", title: "重新載入此網頁")]
+                XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .clear,
+                               "\(candidate.role)/\(candidate.subrole ?? "-") inside the \(name)")
+            }
+        }
+    }
+
+    func testContentDialogAfterChromeIsFoundWithItsOwnText() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [10, 20, 2], windowID: 42),
+            10: Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList", children: [11]),
+            11: Node(role: "AXRadioButton", subrole: "AXTabButton", children: [12]),
+            12: Node(subrole: "AXDialog", children: [13]),
+            13: Node(role: "AXStaticText", text: "Safari Browser Test Page"),
+            20: Node(role: "AXToolbar", children: [21]),
+            21: Node(subrole: "AXDialog", children: [22]),
+            22: Node(role: "AXButton", title: "重新載入此網頁"),
+            2: Node(role: "AXSplitGroup", children: [3]),
+            3: Node(role: "AXTabGroup", children: [4]),
+            4: Node(subrole: "AXDialog", children: [5, 6]),
+            5: Node(role: "AXStaticText", text: "這是訊息"),
+            6: Node(role: "AXButton", title: "確定"),
+        ]
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "這是訊息", buttons: ["確定"])))
+    }
+
+    func testWindowLevelSheetBesideChromeIsStillFound() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [20, 30], windowID: 42),
+            20: Node(role: "AXToolbar", children: [21]),
+            21: Node(role: "AXButton", title: "重新載入此網頁"),
+            30: Node(role: "AXSheet", children: [31, 32]),
+            31: Node(role: "AXStaticText", text: "Save changes?"),
+            32: Node(role: "AXButton", title: "Don't Save"),
+        ]
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)),
+                       .present(.init(message: "Save changes?", buttons: ["Don't Save"])))
+    }
+
+    func testSkippedChromeDoesNotTurnATruncatedWalkIntoClear() {
+        let nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [20, 2], windowID: 42),
+            20: Node(role: "AXToolbar", children: [21]),
+            21: Node(role: "AXButton"),
+            2: Node(children: [3]), 3: Node(children: [4]), 4: Node(children: [5]), 5: Node(),
+        ]
+        XCTAssertEqual(makeProbe(nodes: nodes, maxDepth: 2).check(windowKey: .id(42)), .unprobed)
+    }
+
+    /// A window with many tabs used to exhaust the node budget in the tab bar
+    /// and report "could not inspect completely". The tab bar is not inspected,
+    /// so the parts that can hold a dialog are read in full.
+    func testLargeTabBarNoLongerExhaustsTheNodeBudget() {
+        var nodes: [Int: Node] = [
+            1: Node(role: "AXWindow", children: [2, 8, 9], windowID: 42),
+            2: Node(role: "AXSplitGroup", children: [3]),
+            3: Node(role: "AXTabGroup", children: [4]),
+            4: Node(),
+            8: Node(role: "AXOpaqueProviderGroup", subrole: "AXOpaqueProviderList", children: Array(100..<240)),
+            9: Node(role: "AXToolbar", children: [10]),
+            10: Node(role: "AXButton"),
+        ]
+        for id in 100..<240 { nodes[id] = Node(role: "AXRadioButton", subrole: "AXTabButton") }
+        XCTAssertEqual(makeProbe(nodes: nodes).check(windowKey: .id(42)), .clear)
+    }
+
+    func testPresentDialogCarriesARoleOnlyPathForDebugging() {
+        guard case .present(let dialog) = makeProbe().check(windowKey: .id(42)) else {
+            return XCTFail("the depth-three dialog must be found")
+        }
+        XCTAssertEqual(dialog.path, ["AXWindow", "AXGroup", "AXGroup", "AXGroup/AXDialog"])
+        XCTAssertFalse(dialog.path.joined().contains("這是訊息"), "the path holds roles, never text")
+    }
+
+    func testPathIsDiagnosticAndNotPartOfDialogIdentity() {
+        typealias Dialog = SafariBridge.BlockingDialog
+        XCTAssertEqual(Dialog(message: "m", buttons: ["OK"], path: ["AXWindow", "AXSheet"]),
+                       Dialog(message: "m", buttons: ["OK"]))
+        XCTAssertNotEqual(Dialog(message: "m", buttons: ["OK"]), Dialog(message: "n", buttons: ["OK"]))
+        XCTAssertNotEqual(Dialog(message: "m", buttons: ["OK"]), Dialog(message: "m", buttons: ["Cancel"]))
+    }
+
     func testWebContentDialogDoesNotCountAsNativeBlockingDialog() {
         let nodes = [1: Node(role: "AXWindow", children: [2], windowID: 42),
                      2: Node(role: "AXWebArea", children: [3]),

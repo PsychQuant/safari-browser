@@ -3548,6 +3548,22 @@ enum SafariBridge {
         /// Button titles, in the order Safari lists them. Used to tell the
         /// caller what would dismiss it — never to click anything.
         let buttons: [String]
+        /// #328: where the entry probe found the node — one role (with its
+        /// subrole) per level, from the window down. Roles only, never text.
+        /// Printed by the debug line; empty when the finder does not record
+        /// it. Not part of equality: two sightings of the same dialog are
+        /// the same dialog however they were reached.
+        let path: [String]
+
+        init(message: String, buttons: [String], path: [String] = []) {
+            self.message = message
+            self.buttons = buttons
+            self.path = path
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.message == rhs.message && lhs.buttons == rhs.buttons
+        }
     }
 
     // MARK: - #126 entry-point probe (one window, short timeout)
