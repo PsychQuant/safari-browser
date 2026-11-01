@@ -3552,7 +3552,10 @@ enum SafariBridge {
         /// subrole) per level, from the window down. Roles only, never text.
         /// Printed by the debug line; empty when the finder does not record
         /// it. Not part of equality: two sightings of the same dialog are
-        /// the same dialog however they were reached.
+        /// the same dialog however they were reached. Equality therefore says
+        /// nothing about where a dialog is: callers keep observations apart by
+        /// their own key (the gate by window, `dialog dismiss` by window ID and
+        /// AX element), never by comparing two of these.
         let path: [String]
 
         init(message: String, buttons: [String], path: [String] = []) {

@@ -248,7 +248,9 @@ final class BoundedDialogProbeTests: XCTestCase {
 
     /// A window with many tabs used to exhaust the node budget in the tab bar
     /// and report "could not inspect completely". The tab bar is not inspected,
-    /// so the parts that can hold a dialog are read in full.
+    /// so the parts that can hold a dialog are read in full. The fixture's
+    /// content path is shallow on purpose: on a real window the page's scroll
+    /// area at depth 5 still makes the walk incomplete (#187).
     func testLargeTabBarNoLongerExhaustsTheNodeBudget() {
         var nodes: [Int: Node] = [
             1: Node(role: "AXWindow", children: [2, 8, 9], windowID: 42),

@@ -39,7 +39,7 @@ The entry probe SHALL bound each caller wait below 100 ms and SHALL share a tota
 
 ---
 ### Requirement: Window chrome exclusion
-The entry probe and the `dialog list` / `dismiss` scanner SHALL decide dialog candidates with one shared predicate and SHALL NOT enter window chrome. Window chrome is a closed list of three, matched exactly: role `AXToolbar`; role `AXOpaqueProviderGroup` with subrole `AXOpaqueProviderList` (the tab bar); role `AXRadioButton` with subrole `AXTabButton` (a tab). The chrome test SHALL come before the dialog test, so a chrome node is never a candidate whatever subrole it reports. A skipped chrome subtree is an exclusion, not truncation: it SHALL NOT make a walk incomplete, and it MUST NOT turn an otherwise incomplete walk into clear. Dialogs in the tab content and sheets that are children of the window SHALL still be found. The list was measured on Safari 27.2 (2026-11-01, #328); the node behind the reported false positive was not reproduced, so the exclusion covers the chrome rather than naming one node.
+The entry probe and the `dialog list` / `dismiss` scanner SHALL decide dialog candidates with one shared predicate and SHALL NOT enter window chrome. Window chrome is a closed list of three, matched exactly: role `AXToolbar`; role `AXOpaqueProviderGroup` with subrole `AXOpaqueProviderList` (the tab bar); role `AXRadioButton` with subrole `AXTabButton` (a tab). The chrome test SHALL come before the dialog test, so a chrome node is never a candidate whatever subrole it reports. A skipped chrome subtree is an exclusion, not truncation: it SHALL NOT make a walk incomplete, and it MUST NOT turn an otherwise incomplete walk into clear. Dialogs in the tab content and sheets that are children of the window SHALL still be found. The list was measured on Safari 27.2 (2026-11-01, #328); the node behind the reported false positive was not reproduced, so the exclusion covers the chrome rather than naming one node. Known limit: the whole toolbar subtree is excluded whatever its subrole, so a blocking sheet that a future Safari attached under the toolbar would go unreported; the content-dialog and window-sheet scenarios are the guard against that drift.
 
 #### Scenario: Dialog-like node in the chrome
 - **WHEN** a node with a dialog role or subrole is inside the toolbar, the tab bar or a tab button, and nothing else in the window is a dialog
@@ -51,7 +51,7 @@ The entry probe and the `dialog list` / `dismiss` scanner SHALL decide dialog ca
 
 #### Scenario: Window with many tabs
 - **WHEN** the tab bar holds more tab buttons than the node budget and the rest of the window is read completely
-- **THEN** the probe returns clear rather than unprobed.
+- **THEN** the probe returns clear rather than unprobed. (On Safari 27.2 a normal window is not read completely yet: the page's scroll area sits at the depth limit, #187, so it still answers unprobed until that is fixed.)
 
 ---
 ### Requirement: Debug match path
