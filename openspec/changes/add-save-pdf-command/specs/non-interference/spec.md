@@ -11,6 +11,11 @@ The in-page read SHALL NOT send a network request: `only-if-cached` fails instea
 - **WHEN** `safari-browser save-pdf out.pdf --url "example.org/a.pdf"` targets a tab that is not the current tab of its window
 - **THEN** the file is written and the window's current tab and the frontmost application are unchanged
 
+#### Scenario: no Full Disk Access
+
+- **WHEN** opening Safari's cache folder fails with `EPERM` and the destination is elsewhere
+- **THEN** the file is written
+
 #### Scenario: no request during the read
 
 - **WHEN** `save-pdf` runs against a local server that logs requests

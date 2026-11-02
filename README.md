@@ -34,7 +34,7 @@ Need login? ──── Yes → safari-browser
 ## MCP stdio
 
 Run `safari-browser mcp` from an MCP client using the installed executable's
-absolute path. The server provides all 79 public CLI leaf commands,
+absolute path. The server provides all 80 public CLI leaf commands,
 including `help`, `setup` and daemon controls. Names follow the command path:
 `wait` becomes `safari.wait`, and `tab focus` becomes `safari.tab.focus`.
 Hidden commands and the MCP transport are excluded. The catalog and input
@@ -892,8 +892,11 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
 
 - **No request.** The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
   answers from what Safari holds or fails; there is no second attempt. A page controlled by a service worker
-  is refused, because a service worker can answer from the network. Measured on Safari 27.2 with a local
-  server that logs requests (`make test-save-pdf`).
+  is refused, because a service worker can answer from the network. Measured by hand with this same fetch on
+  Safari 27.2 against a local server that logs requests; `make test-save-pdf` repeats it with the command.
+- **It answers by URL.** What you get is what WebKit holds for the tab's address, which is what the tab shows
+  unless the document came from a POST or the same URL was reloaded elsewhere since. The checks below cannot
+  tell those apart. A redirect, a byte range or an answer for another URL is refused.
 - **It does run JavaScript in the tab**, which `pdf-cache` never does. It moves no mouse or keyboard, switches
   no tab, takes no focus, works on a background tab, and needs neither Accessibility nor Full Disk Access.
 - **Name the tab.** There is no default front tab. The tab must display the PDF itself: a PDF embedded in an HTML

@@ -55,26 +55,43 @@ pdf-cache 的價值是「不碰 Safari」這個可驗證的契約（`PDFCacheTes
 
 ### 錯誤是封閉列舉 `SavePDFFailure`
 
-`notPDF(contentType)`、`serviceWorker`、`notHeld(detail)`、`badStatus(code)`、`tooLarge(bytes)`、`pageReplaced`、`timedOut(seconds)`、`damagedReply(detail)`、`stagingFailed(detail)`。缺少目標是 `validate()` 的 usage 錯誤，不在這裡。`notHeld` 涵蓋 WebKit 沒持有與 CSP 擋下，兩者在頁面裡都是 `TypeError`，無法區分，訊息照實說。網址一律經 `PDFCacheURL.redact`。
+`notPDF(contentType)`、`serviceWorker`、`notHeld(detail)`、`badStatus(code)`、`differentResponse`、`readFailed(detail)`、`tooLarge(bytes)`、`tabChanged`、`bytesNotPDF`、`pageReplaced`、`timedOut(seconds)`、`damagedReply(detail)`、`stagingFailed(detail)`。缺少目標是 `validate()` 的 usage 錯誤，不在這裡。`notHeld` 只在 fetch 本身 reject 時使用，涵蓋 WebKit 沒持有與 CSP 擋下，兩者在頁面裡都是 `TypeError`，無法區分，訊息照實說；fetch 回答之後的失敗是 `readFailed`。頁面內的錯誤只回報 `e.name`：`e.message` 是 WebKit 的文字，可能帶簽章網址。成功輸出的網址經 `URLText.redactURL`。
+
+### 不需要 Full Disk Access
+
+`save-pdf` 只寫呼叫者指定的檔案，所以不要求 FDA；但 `copyVerified` 的保護資料夾檢查原本假設呼叫者打得開 Safari 的快取資料夾（`pdf-cache` 打得開）。`protectedFoldersMayBeClosed` 只給這個指令：打不開（EPERM、EACCES）時改比對路徑文字，其餘照舊。`pdf-cache` 維持「打不開不算通過」。測試程序持有 FDA，一般單元測試走不到這條路；以 `sandbox-exec` 拒絕讀那個資料夾可以重現（回 EPERM，與 TCC 相同）。
+
+### 回應要是這個網址的完整文件
+
+`only-if-cached` 依網址查，所以腳本要求 status 200（206 不是文件）、不是 redirect、回應網址等於分頁網址（不含 fragment）。這擋不住同網址內容已換的情形：另一個分頁重新載入過、或文件來自 POST 時，存到的可能不是畫面上那一份，而 `%PDF-`、頁面檢查、byte 數都會通過，頁面內也讀不到顯示中的位元組來比對。文件照實說這是「WebKit 為這個網址持有的內容」。
+
+### 先讀網址，腳本再比對
+
+目標解析之後、啟動腳本之前，`--window N --tab-in-window M` 的分頁可能移位，`--first-match` 的 #79 重新解析可能換到同視窗另一個分頁。多一次往返先讀 `location.href`，腳本比對不符就不呼叫 fetch。這不是身分檢查：兩個分頁同網址時分不出來，而那時存到的內容也相同。
 
 ## Implementation Contract
 
-**頁面腳本**（`TabPDFReader.startScript(slot:maxBytes:)`，一次 `do JavaScript`，立即返回）：
+**頁面腳本**（`TabPDFReader.startScript(slot:expectedURL:maxBytes:)`，一次 `do JavaScript`，立即返回）：
 
 ```
 (<sweep>, window.K = { u: <stamp> }, (function(s){
   function fail(code, detail) { s.fail = code; s.detail = detail; s.done = true; }
+  function named(e) { return e && e.name ? e.name : 'Error'; }
+  if (location.href !== 'EXPECTED') { fail('tab-changed', ''); return; }
   if (document.contentType !== 'application/pdf') { fail('not-pdf', document.contentType); return; }
   if (navigator.serviceWorker && navigator.serviceWorker.controller) { fail('service-worker', ''); return; }
-  s.url = location.href;
   fetch(location.href, { cache: 'only-if-cached', mode: 'same-origin' })
-    .then(function(r){ if (!r.ok) { fail('status', '' + r.status); return null; } return r.blob(); })
+    .then(function(r){
+      if (r.status !== 200) { fail('status', r.status); return null; }
+      if (r.redirected || r.url !== location.href.split('#')[0]) { fail('other-response', ''); return null; }
+      return r.blob();
+    }, function(e){ fail('not-held', named(e)); return null; })
     .then(function(b){ if (!b) return null; s.bytes = b.size;
       if (b.size > MAX) { fail('too-large', '' + b.size); return null; }
       return new Promise(function(res, rej){ var f = new FileReader();
         f.onload = function(){ res(f.result); }; f.onerror = function(){ rej(f.error); }; f.readAsDataURL(b); }); })
-    .then(function(u){ if (u === null) return; var t = u.slice(u.indexOf(',') + 1); s.text = t; s.len = t.length; s.done = true; })
-    .catch(function(e){ fail('not-held', '' + (e && e.message)); });
+    .then(function(u){ if (u === null) return; var i = u.lastIndexOf(','); var t = i < 0 ? '' : u.slice(i + 1); s.text = t; s.len = t.length; s.done = true; })
+    .catch(function(e){ fail('read-failed', named(e)); });
 })(window.K), 1)
 ```
 
@@ -90,6 +107,8 @@ pdf-cache 的價值是「不碰 Safari」這個可驗證的契約（`PDFCacheTes
 
 - WebKit 記憶體快取可能被清掉（實測 8 分鐘仍在，更久未測）→ `notHeld` 訊息指引重新顯示分頁或交給使用者，不連網。
 - 網站 CSP 可能擋下 fetch（ScienceDirect 未擋）→ 同上。
-- 頁面可覆寫 `fetch`、`FileReader`：PDF 文件沒有頁面腳本，`contentType` 檢查先行；威脅模型是失誤，不是惡意頁面。
+- 頁面可覆寫 `fetch`、`FileReader`，連 `document.contentType` 也可以，因為檢查跑在同一個頁面世界裡：有腳本的 HTML 頁面騙得過它，CLI 仍會回報 `source: "tab"`，只要位元組通過 `%PDF-` 與頁面檢查。實際顯示 PDF 的文件沒有頁面腳本。威脅模型是失誤，不是惡意頁面；CLI 只複核頁面報的數字（大小上限、base64 長度），不讓它決定這邊的配置。
 - `only-if-cached` 不連網是 WebKit 的行為，目前在 Safari 27.2 量到；e2e 以伺服器紀錄為準，新版 Safari 要重跑。
 - 50 MB 以上的讀回速度尚未量（`do JavaScript` 分塊）→ e2e 量測，超過上限的情況明確失敗。
+- 支援 Range 的伺服器上 WebKit 是否持有完整文件，手動量測時的 fixture 不支援 Range，沒有資料 → e2e 加了一個會回 206 的 fixture；status 200 的要求保證部分內容不會當成文件。ScienceDirect 的分頁（1.2 MB）回 200。
+- `file:` 分頁未量：依 Fetch 規格 `same-origin` 會 reject，訊息會是 `notHeld`。

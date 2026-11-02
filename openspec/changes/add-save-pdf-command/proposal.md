@@ -7,12 +7,12 @@
 - 新指令 `safari-browser save-pdf <path>`：把明確鎖定的分頁正在顯示的 PDF 存成檔，不發請求、不動鍵盤滑鼠。
 - 必須明確鎖定分頁（`--url`、`--url-exact`、`--url-endswith`、`--url-regex`、`--window [--tab-in-window]`、`--document`、`--tab`），沒有預設的 front tab；接受 `--profile` 與 `--first-match`。
 - 分頁文件不是 PDF、受 service worker 控制、WebKit 沒持有或頁面政策擋下、超過大小上限時失敗，一律不退回連網。
-- 寫檔重用 `PDFCacheOutput.copyVerified`（`%PDF-`、頁面檢查、`--force`、只用打開的資料夾），輸出一行或 `--json`（`path`、`size`、`pages`、`source`、`url`，網址去掉 query 與 fragment）。
+- 寫檔重用 `PDFCacheOutput.copyVerified`（`%PDF-`、頁面檢查、`--force`、只用打開的資料夾），不需要 Full Disk Access。輸出一行或 `--json`（`path`、`size`、`pages`、`source`、`url`，網址經 `URLText.redactURL`）。
 - `pdf-cache get` 以分頁比對不到時，錯誤訊息指向 `save-pdf`。
 
 ## Non-Goals
 
-- 不改 `pdf-cache` 的行為與規格（它「不執行 JavaScript、不操作 Safari」的契約不變）；只有 no-match 訊息多一句指引。
+- `pdf-cache` 「不執行 JavaScript、不操作 Safari」的契約不變；只有 no-match 訊息多一句指引，規格多記這一條。
 - 不涵蓋嵌在 HTML 裡的 PDF（`<embed>`、`<iframe>`、PDF.js）：分頁文件不是 PDF。
 - 不走 Safari 的「儲存為」或 PDF 檢視器的浮出按鈕（要 HID，維護者已排除）。
 - 不改 `save-image`（它的 Referer 問題在 #336）。
@@ -27,14 +27,15 @@
 ### Modified Capabilities
 
 - `non-interference`: 新增 `save-pdf` 的干擾分類（Non-interfering，不發請求）。
+- `pdf-cache`: 分頁比對不到時，錯誤訊息指向 `save-pdf`。
 
 ## Impact
 
-- Affected specs: `save-pdf`（新）、`non-interference`（新增 requirement）
+- Affected specs: `save-pdf`（新）、`non-interference`、`pdf-cache`（各新增一條 requirement）
 - Affected code:
   - `Sources/SafariBrowser/Commands/SavePDFCommand.swift`（新）
   - `Sources/SafariBrowser/Utilities/TabPDFReader.swift`（新）
   - `Sources/SafariBrowser/Utilities/SavePDFFailure.swift`（新）
-  - `Sources/SafariBrowser/Utilities/Errors.swift`、`Sources/SafariBrowser/SafariBrowser.swift`、`Sources/SafariBrowser/Commands/TargetOptions.swift`、`Sources/SafariBrowser/Utilities/PDFCacheFailure.swift`、`Sources/SafariBrowser/Utilities/PDFCacheOutput.swift`
-  - `Tests/SafariBrowserTests/TabPDFReaderTests.swift`、`Tests/SafariBrowserTests/SavePDFCommandTests.swift`（新）、`Tests/e2e-save-pdf.sh`（新）、`Tests/mcp-stdio.py`、`Makefile`
+  - `Sources/SafariBrowser/Utilities/Errors.swift`、`Sources/SafariBrowser/SafariBrowser.swift`、`Sources/SafariBrowser/Commands/TargetOptions.swift`、`Sources/SafariBrowser/ResultSlot.swift`、`Sources/SafariBrowser/Utilities/PDFCacheFailure.swift`、`Sources/SafariBrowser/Utilities/PDFCacheFormat.swift`、`Sources/SafariBrowser/Utilities/PDFCacheOutput.swift`、`Sources/SafariBrowser/Utilities/PDFCacheSelection.swift`
+  - `Tests/SafariBrowserTests/TabPDFReaderTests.swift`（新）、`Tests/e2e-save-pdf.sh`（新）、`Tests/SafariBrowserTests/FirstMatchResolutionTests.swift`、`Tests/SafariBrowserTests/MCPPersistentWorkerTests.swift`、`Tests/SafariBrowserTests/MCPToolCatalogTests.swift`、`Tests/SafariBrowserTests/PDFCacheSafetyTests.swift`、`Tests/mcp-stdio.py`、`Makefile`
   - `README.md`、`CHANGELOG.md`、`CLAUDE.md`

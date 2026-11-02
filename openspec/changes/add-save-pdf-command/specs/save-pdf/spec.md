@@ -6,7 +6,7 @@
 
 ### Requirement: save-pdf saves the displayed PDF without any request
 
-The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that writes the PDF document displayed by the targeted tab to `<path>`. It SHALL obtain the bytes only through one in-page `fetch` of the document's own URL with `cache: 'only-if-cached'` and `mode: 'same-origin'`. The page script SHALL contain no other network API, and the command itself SHALL open no network connection. When that fetch fails, the command SHALL fail and SHALL NOT retry with any other cache mode, request, or dialog.
+The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that writes the PDF document displayed by the targeted tab to `<path>`. It SHALL obtain the bytes only through one in-page `fetch` of the document's own URL with `cache: 'only-if-cached'` and `mode: 'same-origin'`. The page script SHALL contain no other network API, and the command itself SHALL open no network connection. When that fetch fails, the command SHALL fail and SHALL NOT retry with any other cache mode, request, or dialog. The answer SHALL have status 200, SHALL NOT be a redirect, and SHALL be for the tab's URL without its fragment; otherwise the command SHALL fail and save nothing. The fetch answers by URL: the command saves what WebKit holds for that address and does not claim it is what the tab renders.
 
 #### Scenario: a no-store PDF is saved with no new request
 
@@ -21,9 +21,14 @@ The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that write
 - **THEN** the command exits 1 with an error saying WebKit no longer holds the document or the page's policy blocked the read, and that nothing was requested
 - **AND** the server receives no request
 
+#### Scenario: a byte range or a redirect is not a document
+
+- **WHEN** the answer has status 206, or `redirected` is true, or its URL differs from the tab's URL without the fragment
+- **THEN** the command exits 1 and no file is written
+
 ### Requirement: The target tab must be named explicitly
 
-`save-pdf` SHALL require a tab-targeting flag (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--window` with optional `--tab-in-window`, `--document`, or `--tab`). Without one it SHALL fail with a usage error before contacting Safari. `--first-match` alone is not a target. It SHALL accept `--profile`. The target SHALL be resolved once at the start and every later step SHALL address that same tab; when the tab changes, the command SHALL fail and SHALL NOT read another tab.
+`save-pdf` SHALL require a tab-targeting flag (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--window` with optional `--tab-in-window`, `--document`, or `--tab`). Without one it SHALL fail with a usage error before contacting Safari. `--first-match` alone is not a target. It SHALL accept `--profile`. The target SHALL be resolved once at the start and every later step SHALL address that same tab. The tab's address SHALL be read once before the read starts, and the page script SHALL refuse to fetch when `location.href` differs from it, so a tab moved after resolution or a re-resolution under `--first-match` cannot supply another document. When the tab changes, the command SHALL fail and SHALL NOT read another tab. When the tab vanishes, the error SHALL name the target and SHALL NOT list other tabs.
 
 #### Scenario: no target
 
@@ -34,6 +39,16 @@ The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that write
 
 - **WHEN** the user runs `safari-browser save-pdf out.pdf --first-match`
 - **THEN** the command exits 64 and no AppleScript is run
+
+#### Scenario: another page at the tab's position
+
+- **WHEN** `location.href` differs from the address read before the read started
+- **THEN** the command exits 1, `fetch` is not called, and no file is written
+
+#### Scenario: the tab vanishes during the read
+
+- **WHEN** the targeted tab is closed after the command resolved it
+- **THEN** the command exits 1 with an error naming the target, and the error lists no other tab
 
 ### Requirement: Only a PDF document outside a service worker is read
 
@@ -51,7 +66,7 @@ The page script SHALL fail with a not-a-PDF error, naming the content type, when
 
 ### Requirement: The transfer belongs to one call and one document
 
-The page script SHALL park the result in a slot made for this call by `ResultSlot.make()`, and the command SHALL read it through the verified chunked read of `SafariBridge.readResultSlot`. The decoded byte count SHALL equal the size the page reported, or the command SHALL fail. When the slot is gone (the page was replaced), the command SHALL fail with a page-replaced error. When the page reports a size above `TabPDFReader.maxBytes` (268,435,456 bytes), the command SHALL fail before encoding the bytes. When the page does not finish within `TabPDFReader.deadlineSeconds` (60 seconds), the command SHALL fail. The command SHALL remove its slot when it finishes, except after a timeout.
+The page script SHALL park the result in a slot made for this call by `ResultSlot.make()`, and the command SHALL read it through the verified chunked read of `SafariBridge.readResultSlot`. The size and length the page reports SHALL be checked before they are used: the size SHALL NOT exceed `TabPDFReader.maxBytes`, and the length SHALL be the base64 length of that size. The decoded byte count SHALL equal the size the page reported, or the command SHALL fail. When the slot is gone (the page was replaced), the command SHALL fail with a page-replaced error. When the page reports a size above `TabPDFReader.maxBytes` (268,435,456 bytes), the command SHALL fail before encoding the bytes. When the page does not report a result within `TabPDFReader.deadlineSeconds` (60 seconds, counted from before the read is started), the command SHALL fail; a result arriving after that is not taken. The transfer back is not under this deadline. The command SHALL remove its slot when it finishes, except after a timeout.
 
 #### Scenario: the page is replaced during the read
 
@@ -70,7 +85,7 @@ The page script SHALL park the result in a slot made for this call by `ResultSlo
 
 ### Requirement: The file is published through the verified path
 
-The decoded bytes SHALL be written to an owner-only file inside a private temporary folder and published with `PDFCacheOutput.copyVerified`, which requires the `%PDF-` header and readable pages, refuses an existing destination unless `--force`, and leaves no destination on failure. An existing destination SHALL be refused before the bytes are transferred when `--force` is not given. The temporary folder SHALL be removed when the command finishes.
+The decoded bytes SHALL be written to an owner-only file inside a private temporary folder and published with `PDFCacheOutput.copyVerified`, which requires the `%PDF-` header and readable pages, refuses an existing destination unless `--force`, and leaves no destination on failure. An existing destination, and a destination whose parent is not a folder, SHALL be refused before the bytes are transferred when that can be seen. The temporary folder SHALL be removed when the command finishes. A destination inside Safari's cache folder SHALL be refused. The command does not need Full Disk Access, so that folder being impossible to open SHALL NOT be an error; the destination is then compared with the folder's path as written.
 
 #### Scenario: an existing destination
 
@@ -80,22 +95,24 @@ The decoded bytes SHALL be written to an owner-only file inside a private tempor
 #### Scenario: bytes that are not a PDF
 
 - **WHEN** the bytes read do not start with `%PDF-`
-- **THEN** the command fails, no file appears at the destination, and the temporary folder is gone
+- **THEN** the command fails with an error that does not name the temporary file, no file appears at the destination, and the temporary folder is gone
 
-### Requirement: Output shows the URL without its query
+#### Scenario: no access to Safari's cache folder
 
-On success the command SHALL print one line with the destination path, size, page count, and the tab's URL, or with `--json` one object with `path`, `size`, `pages`, `source` (`"tab"`), and `url`. Every URL in output and in error messages SHALL pass through `PDFCacheURL.redact`, so a signed query string never appears.
+- **WHEN** opening Safari's cache folder fails with `EPERM` or `EACCES`, as it does without Full Disk Access
+- **AND** the destination is elsewhere
+- **THEN** the file is published
+
+### Requirement: Output shows the URL without its secrets
+
+On success the command SHALL print one line with the destination path, size, page count, and the tab's URL, or with `--json` one object with `path`, `size`, `pages`, `source` (`"tab"`), and `url`. Every URL in output SHALL pass through `URLText.redactURL`, so a signed query string, a path parameter or credentials never appear. A failure inside the page SHALL report the error's name and not its message, whose text is WebKit's and can carry the URL.
 
 #### Scenario: a signed URL
 
 - **WHEN** the tab's URL is `https://cdn.example.org/main.pdf?X-Amz-Signature=SECRET`
 - **THEN** neither the output nor any error message contains `SECRET`
 
-### Requirement: pdf-cache names save-pdf when a tab has no cached copy
+#### Scenario: a rejection whose message carries the URL
 
-When `pdf-cache get` with a tab flag finds no cached record, its error SHALL add a line naming `safari-browser save-pdf`. `pdf-cache` SHALL NOT call it or read the tab's bytes.
-
-#### Scenario: no cached record for the tab
-
-- **WHEN** `pdf-cache get out.pdf --url "example.org/a.pdf"` finds no matching record
-- **THEN** the error names `save-pdf`, and no JavaScript is evaluated
+- **WHEN** the fetch rejects with `new TypeError('Load failed for https://x/?SECRET')`
+- **THEN** the error reports `TypeError` and does not contain `SECRET`
