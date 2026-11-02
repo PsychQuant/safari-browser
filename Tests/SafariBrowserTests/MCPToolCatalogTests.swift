@@ -10,7 +10,7 @@ final class MCPToolCatalogTests: XCTestCase {
 
     func testCurrentCatalogCoversEveryPublicLeafAndExpandedOptions() throws {
         let catalog = try current()
-        XCTAssertEqual(catalog.tools.count, 79)
+        XCTAssertEqual(catalog.tools.count, 80)
         XCTAssertEqual(catalog.tools.map(\.name), catalog.tools.map(\.name).sorted())
         XCTAssertTrue(catalog.tools.contains { $0.name == "safari.daemon.start" })
         XCTAssertTrue(catalog.tools.contains { $0.name == "safari.setup" })
@@ -18,6 +18,8 @@ final class MCPToolCatalogTests: XCTestCase {
         // #210: the cached-PDF commands are public leaves like history/downloads, so an MCP client can use them.
         XCTAssertTrue(catalog.tools.contains { $0.path == ["pdf-cache", "list"] })
         XCTAssertTrue(catalog.tools.contains { $0.path == ["pdf-cache", "get"] })
+        // #338
+        XCTAssertTrue(catalog.tools.contains { $0.path == ["save-pdf"] })
         XCTAssertFalse(catalog.tools.contains { $0.path.contains("__serve") || $0.path.contains("__mcp-exec") || $0.path.first == "mcp" || $0.path == ["tab", "switch"] })
         // #314: self-update replaces the binary an MCP server runs from; it is not a tool.
         XCTAssertFalse(catalog.tools.contains { $0.path.first == "self-update" })

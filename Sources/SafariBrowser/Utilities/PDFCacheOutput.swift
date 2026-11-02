@@ -184,6 +184,23 @@ enum PDFCacheOutput {
         return (parent.isEmpty ? "/" : parent, name)
     }
 
+    /// A first look, for a caller about to do something expensive before `copyVerified` (#338). The
+    /// decision that counts is still the one `copyVerified` makes on the opened folder.
+    static func refuseExistingDestination(_ destination: String, force: Bool) throws {
+        let split = try splitDestination(destination)
+        var folder = stat()
+        if stat(split.parent, &folder) != 0, errno == ENOENT || errno == ENOTDIR {
+            throw SafariBrowserError.pdfCache(.destinationDirectoryMissing(path: split.parent))
+        }
+        let path = split.parent == "/" ? "/\(split.name)" : "\(split.parent)/\(split.name)"
+        var existing = stat()
+        guard lstat(path, &existing) == 0 else { return }
+        if existing.st_mode & S_IFMT == S_IFDIR {
+            throw SafariBrowserError.pdfCache(.destinationWriteFailed(path: destination, detail: "it is a folder"))
+        }
+        if !force { throw SafariBrowserError.pdfCache(.destinationExists(path: destination)) }
+    }
+
     /// The folder as the kernel reports it for an open descriptor: symlinks resolved, case as stored.
     private static func canonicalPath(of fd: Int32) -> String? {
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))

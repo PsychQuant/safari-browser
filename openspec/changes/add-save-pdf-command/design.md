@@ -55,7 +55,7 @@ pdf-cache 的價值是「不碰 Safari」這個可驗證的契約（`PDFCacheTes
 
 ### 錯誤是封閉列舉 `SavePDFFailure`
 
-`targetRequired`、`notPDF(contentType)`、`serviceWorker`、`notHeld(detail)`、`badStatus(code)`、`tooLarge(bytes)`、`pageReplaced`、`timedOut`、`damagedReply(detail)`。`notHeld` 涵蓋 WebKit 沒持有與 CSP 擋下，兩者在頁面裡都是 `TypeError`，無法區分，訊息照實說。網址一律經 `PDFCacheURL.redact`。
+`notPDF(contentType)`、`serviceWorker`、`notHeld(detail)`、`badStatus(code)`、`tooLarge(bytes)`、`pageReplaced`、`timedOut(seconds)`、`damagedReply(detail)`、`stagingFailed(detail)`。缺少目標是 `validate()` 的 usage 錯誤，不在這裡。`notHeld` 涵蓋 WebKit 沒持有與 CSP 擋下，兩者在頁面裡都是 `TypeError`，無法區分，訊息照實說。網址一律經 `PDFCacheURL.redact`。
 
 ## Implementation Contract
 
@@ -82,7 +82,7 @@ pdf-cache 的價值是「不碰 Safari」這個可驗證的契約（`PDFCacheTes
 
 **流程**（`TabPDFReader.read(target:) async throws -> Read`）：start → 每 100 ms 輪詢，上限 `TabPDFReader.deadlineSeconds = 60` → 依狀態分派 → `SafariBridge.readResultSlot` 讀 base64 → `Data(base64Encoded:)` → 比對 byte 數 → 讀 `s.url`；結束時移除槽（逾時除外，`ResultSlot.removalIsWorthTrying`）。
 
-**輸出**：文字 `<path>  <size> B  <pages> page(s)  from tab <redacted url>`；`--json` 為 `{path,size,pages,source:"tab",url}`。結束碼：成功 0；`targetRequired` 為 usage 錯誤（64，由 `validate()` 擋下，不碰 Safari）；其餘 1。
+**輸出**：文字 `<path>  <size> B  <pages> page(s)  from tab <redacted url>`；`--json` 為 `{path,size,pages,source:"tab",url}`。結束碼：成功 0；沒有目標是 usage 錯誤（64，由 `validate()` 擋下，不碰 Safari）；其餘 1。
 
 **測試縫**：頁面腳本在 `FakePage`（JavaScriptCore）裡真的執行，以 shim 提供 `document`、`navigator`、`fetch`、`FileReader`；`DaemonRequestContext.appleScriptRunner` 接到 `FakePage`。
 

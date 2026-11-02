@@ -68,7 +68,7 @@ struct ResultSlot: Equatable, Sendable {
     static let stampExpression = nowExpression
 
     /// Record a use of the slot `s`, which must be in scope. A clock that cannot be read leaves the stamp as it was.
-    private static let touchStatement =
+    static let touchStatement =
         "try { var q = \(nowExpression); if (q !== undefined) { s.u = q; } } catch (x) {}"
 
     /// Remove every property of `window` that is an abandoned slot: its name starts with `__sbr_`, its value is an
