@@ -420,10 +420,10 @@ final class SavePDFPublishTests: XCTestCase {
         }
     }
 
-    func testTheDefaultCacheFolderIsSafarisWithOnlyTheHomeResolved() {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+    func testTheDefaultCacheFolderIsSafarisWithTheContainersFolderResolved() {
+        let containers = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Containers")
         XCTAssertEqual(TabPDFReader.cacheFolderPath.path,
-                       canonical(home).path + "/Library/Containers/com.apple.Safari/Data/Library/Caches/com.apple.Safari/WebKitCache")
+                       canonical(containers).path + "/com.apple.Safari/Data/Library/Caches/com.apple.Safari/WebKitCache")
     }
 
     /// A temporary folder can hand down an inheritable ACL; the mode bits alone would not keep other users out.

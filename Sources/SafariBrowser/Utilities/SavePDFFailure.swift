@@ -6,9 +6,9 @@ enum SavePDFFailure: Equatable, Sendable {
     case notPDF(contentType: String)
     /// A service worker controls the tab, and its answer could come from the network.
     case serviceWorker
-    /// The `only-if-cached` fetch rejected. WebKit no longer holds the document or the page's policy
-    /// blocked the read; the page cannot tell the two apart (both are a `TypeError`). `detail` is the
-    /// error's name, never its message.
+    /// The `only-if-cached` fetch rejected. WebKit does not hold the whole document (it was dropped, or the
+    /// load stopped) or the page's policy blocked the read; the page cannot tell these apart (all are a
+    /// `TypeError`). `detail` is the error's name, never its message.
     case notHeld(detail: String)
     /// The fetch answered with something other than 200. On WebKit a PDF document answers 200 whatever the
     /// server sent, so this is for an engine that does not.
@@ -38,7 +38,7 @@ enum SavePDFFailure: Equatable, Sendable {
         case .serviceWorker:
             return "A service worker controls this tab and its answer could come from the network, so nothing was read. Save this PDF by hand."
         case .notHeld(let detail):
-            return "Could not read the PDF from the tab (\(t(detail))): WebKit no longer holds the document, or the page's policy blocked the read. No request for the document was sent. Display the PDF again, or save it by hand."
+            return "Could not read the PDF from the tab (\(t(detail))): WebKit does not hold the whole document (it was dropped, or the load stopped), or the page's policy blocked the read. No request for the document was sent. Display the PDF again, or save it by hand."
         case .badStatus(let code):
             return "The tab answered with HTTP \(code), so nothing was saved. No request was sent."
         case .readFailed(let detail):
@@ -48,7 +48,7 @@ enum SavePDFFailure: Equatable, Sendable {
         case .notScriptable:
             return "The tab is not running scripts: it is still loading, or its policy forbids them. Nothing was read and no request was sent. Run this again when it has loaded, or save the PDF by hand."
         case .bytesNotPDF:
-            return "What WebKit holds for this tab's address does not start with %PDF-, so nothing was saved. No request was sent."
+            return "What the tab holds does not start with %PDF-, so nothing was saved. No request was sent."
         case .pageReplaced:
             return "The tab's page was replaced during the read, so nothing was saved."
         case .timedOut(let seconds):

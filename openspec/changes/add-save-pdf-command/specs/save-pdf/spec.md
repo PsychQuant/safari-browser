@@ -6,7 +6,7 @@
 
 ### Requirement: save-pdf saves the displayed PDF without any request
 
-The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that writes the PDF document displayed by the targeted tab to `<path>`. It SHALL obtain the bytes only through one in-page `fetch` of the document's own URL with `cache: 'only-if-cached'` and `mode: 'same-origin'`. The page script SHALL contain no other network API, and the command itself SHALL open no network connection. When that fetch fails, the command SHALL fail and SHALL NOT retry with any other cache mode, request, or dialog. An answer with a status other than 200 SHALL fail the command with nothing saved. The command saves what that fetch answers. It does not look at the server's status, which that answer does not show on WebKit: a PDF document answers 200 whatever the server sent, and a tab that arrived through a redirect is not refused.
+The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that writes the PDF document displayed by the targeted tab to `<path>`. It SHALL obtain the bytes only through one in-page `fetch` of the document's own URL with `cache: 'only-if-cached'` and `mode: 'same-origin'`. The page script SHALL contain no other network API, and the command itself SHALL open no network connection. When that fetch fails, the command SHALL fail and SHALL NOT retry with any other cache mode, request, or dialog. An answer with a status other than 200 SHALL fail the command with nothing saved. The command saves what that fetch answers, which is what the tab holds: a server that sent part of a document gives that part, and the page check refuses most such files but not all (a PDF with incremental updates cut at an earlier revision is a complete PDF with fewer pages). It does not look at the server's status, which that answer does not show on WebKit: a PDF document answers 200 whatever the server sent, and a tab that arrived through a redirect is not refused.
 
 #### Scenario: a no-store PDF is saved with no new request
 
@@ -18,7 +18,7 @@ The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that write
 #### Scenario: bytes WebKit does not hold are not fetched
 
 - **WHEN** the in-page fetch rejects
-- **THEN** the command exits 1 with an error saying WebKit no longer holds the document or the page's policy blocked the read, and that nothing was requested
+- **THEN** the command exits 1 with an error saying WebKit does not hold the whole document or the page's policy blocked the read, and that no request for the document was sent
 - **AND** the server receives no request
 
 #### Scenario: an answer that is not 200
@@ -90,7 +90,7 @@ The page script SHALL park the result in a slot made for this call by `ResultSlo
 
 ### Requirement: The file is published through the verified path
 
-The decoded bytes SHALL be written to an owner-only file inside a private temporary folder and published with `PDFCacheOutput.copyVerified`, which requires the `%PDF-` header and readable pages, refuses an existing destination unless `--force`, and leaves no destination on failure. An existing destination, and a destination whose parent is not a folder, SHALL be refused before the bytes are transferred when that can be seen. The temporary folder SHALL be removed when the command finishes. A destination inside Safari's cache folder SHALL be refused by comparing paths. The command SHALL NOT open or list that folder or anything else in Safari's container: without Full Disk Access that is another application's data, and touching it can raise a permission dialog.
+The decoded bytes SHALL be written to an owner-only file inside a private temporary folder and published with `PDFCacheOutput.copyVerified`, which requires the `%PDF-` header and readable pages, refuses an existing destination unless `--force`, and leaves no destination on failure. An existing destination, and a destination whose parent is not a folder, SHALL be refused before the bytes are transferred when that can be seen. The temporary folder SHALL be removed when the command finishes. A destination inside Safari's cache folder SHALL be refused by comparing paths. The command SHALL NOT open or list that folder or anything else in Safari's container, unless the caller names a destination inside it: without Full Disk Access that is another application's data, and touching it can raise a permission dialog.
 
 #### Scenario: an existing destination
 
@@ -109,11 +109,11 @@ The decoded bytes SHALL be written to an owner-only file inside a private tempor
 
 ### Requirement: Output shows the URL without its secrets
 
-On success the command SHALL print one line with the destination path, size, page count, and the tab's URL, or with `--json` one object with `path`, `size`, `pages`, `source` (`"tab"`), and `url`. The address SHALL stay in the page: no script the command sends SHALL contain it, because a script is a process argument, part of a timeout message and a daemon log entry, and the page SHALL report back only the protocol, host and path. That SHALL pass through `URLText.redactURL`, so a path parameter does not appear either. A failure inside the page SHALL report the error's name and not its message, whose text is WebKit's and can carry the URL.
+On success the command SHALL print one line with the destination path, size, page count, and the tab's URL, or with `--json` one object with `path`, `size`, `pages`, `source` (`"tab"`), and `url`. The scripts this command writes SHALL NOT contain the address, because a script is a process argument, part of a timeout message and a daemon log entry, and the page SHALL report back only the protocol, host and path. That SHALL pass through `URLText.redactURL`, so a path parameter does not appear either. Finding the tab is outside this: a target flag's guard contains what the caller typed, and `--url` reads the tabs' URLs as every command does. A failure inside the page SHALL report the error's name and not its message, whose text is WebKit's and can carry the URL.
 
 #### Scenario: a signed URL
 
-- **WHEN** the tab's URL is `https://cdn.example.org/main.pdf?X-Amz-Signature=SECRET`
+- **WHEN** the tab's URL is `https://cdn.example.org/main.pdf?X-Amz-Signature=SECRET` and the target flag does not name the query
 - **THEN** neither the output, nor any error message, nor any script sent to Safari contains `SECRET`
 
 #### Scenario: a rejection whose message carries the URL

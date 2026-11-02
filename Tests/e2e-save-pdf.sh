@@ -4,8 +4,8 @@
 # What only a real Safari can show: `fetch(..., {cache: 'only-if-cached'})` reads a `no-store` PDF
 # from memory and sends nothing. A local server logs every request, so "no request" is measured.
 #
-# It opens a Safari window of its own, which takes the foreground, and briefly brings Finder to the
-# front, so nothing here touches Safari unless you set E2E_SAVE_PDF_OK=1. Set it yourself, when that is
+# It opens a Safari window of its own, which takes the foreground, and then brings Finder to the
+# front and leaves it there, so nothing here touches Safari unless you set E2E_SAVE_PDF_OK=1. Set it yourself, when that is
 # fine (not during a call), with a window of the profile you want in front: the new window takes that
 # one's profile. After that every step addresses the fixture's URL or the new window's id, never a
 # window's position, and the only thing it closes is that window.
@@ -216,7 +216,7 @@ shows notheld.pdf application/pdf
 "$SB" js "history.replaceState(null, '', '/never-loaded.pdf')" --url "127.0.0.1:$PORT/notheld.pdf" >/dev/null 2>&1
 before=$(requests)
 msg=$("$SB" save-pdf "$OUT/n.pdf" --url "127.0.0.1:$PORT/never-loaded.pdf" 2>&1); rc=$?
-[[ $rc -eq 1 && "$msg" == *"no longer holds the document"* && ! -e "$OUT/n.pdf" ]] && pass "it fails, says why, and writes nothing" || fail "rc=$rc: $msg"
+[[ $rc -eq 1 && "$msg" == *"does not hold the whole document"* && ! -e "$OUT/n.pdf" ]] && pass "it fails, says why, and writes nothing" || fail "rc=$rc: $msg"
 no_new_request "$before"
 
 echo "=== a PDF reached through a redirect ==="
@@ -268,8 +268,8 @@ if shows csp.pdf application/pdf; then
     msg=$("$SB" save-pdf "$OUT/p.pdf" --url "127.0.0.1:$PORT/csp.pdf" 2>&1); rc=$?
     sleep 1
     if [[ $rc -eq 0 ]]; then
-        pass "not blocked: saved"
-    elif [[ "$msg" == *"no longer holds the document"* && ! -e "$OUT/p.pdf" ]]; then
+        cmp -s "$OUT/p.pdf" "$WORK/www/csp.pdf" && pass "not blocked: saved exactly" || fail "exit 0 with different bytes"
+    elif [[ "$msg" == *"does not hold the whole document"* && ! -e "$OUT/p.pdf" ]]; then
         pass "blocked: it fails, says why, and writes nothing"
     else
         fail "rc=$rc: $msg"
@@ -292,14 +292,16 @@ echo old > "$OUT/d.pdf"
 echo "=== a PDF still loading ==="
 open_tab slow/drip.pdf
 sleep 2
+before=$(requests)
 msg=$("$SB" save-pdf "$OUT/s.pdf" --url "127.0.0.1:$PORT/slow/drip.pdf" 2>&1); rc=$?
 if [[ $rc -eq 0 ]]; then
     cmp -s "$OUT/s.pdf" "$WORK/www/slow/drip.pdf" && pass "saved whole" || fail "exit 0 with a partial file"
-elif [[ ! -e "$OUT/s.pdf" ]]; then
-    pass "refused and wrote nothing: $msg"
+elif [[ "$msg" == *"not running scripts"* && ! -e "$OUT/s.pdf" ]]; then
+    pass "it says the tab is not running scripts, and writes nothing"
 else
-    fail "exit $rc left a file" "$msg"
+    fail "rc=$rc: the README says it reports a tab that runs no scripts" "$msg"
 fi
+no_new_request "$before"
 shows slow/drip.pdf application/pdf
 sleep 8
 rm -f "$OUT/s.pdf"
@@ -339,18 +341,18 @@ if [[ -e "$WORK/www/ranged/big.pdf" ]]; then
     shows ranged/big.pdf application/pdf
     before=$(settled_requests)
     ranges=$(grep -c 'ranged/big.pdf bytes=' "$LOG")
-    if [[ "$ranges" -eq 0 ]]; then
-        note "Safari asked for no range here, so this case measured nothing about ranges"
-    else
-        note "displaying it took $ranges range request(s)"
-    fi
+    note "displaying it took $ranges range request(s)"
     msg=$("$SB" save-pdf "$OUT/r.pdf" --url "127.0.0.1:$PORT/ranged/big.pdf" 2>&1); rc=$?
-    if [[ $rc -eq 0 ]]; then
-        cmp -s "$OUT/r.pdf" "$WORK/www/ranged/big.pdf" && pass "saved whole" || fail "exit 0 with different bytes"
-    elif [[ ! -e "$OUT/r.pdf" ]]; then
-        pass "refused and wrote nothing: $msg"
-    else
+    if [[ $rc -eq 0 ]] && ! cmp -s "$OUT/r.pdf" "$WORK/www/ranged/big.pdf"; then
+        fail "exit 0 with different bytes"
+    elif [[ $rc -ne 0 && -e "$OUT/r.pdf" ]]; then
         fail "exit $rc left a file" "$msg"
+    elif [[ "$ranges" -eq 0 ]]; then
+        note "Safari asked for no range here, so this case measured nothing about ranges (rc=$rc)"
+    elif [[ $rc -eq 0 ]]; then
+        pass "saved whole"
+    else
+        pass "refused and wrote nothing: $msg"
     fi
     no_new_request "$before"
 else

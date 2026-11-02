@@ -11,9 +11,12 @@ import Foundation
 /// A service worker sees every fetch of the page it controls and can answer from the network, so such a
 /// page is refused rather than read.
 ///
-/// The signed query stays in the page. No script sent from here contains the address, because a script is an
-/// `osascript` argument, part of a timeout message and a daemon log entry; the page reports back only the
-/// protocol, host and path.
+/// The scripts written here contain no address, because a script is an `osascript` argument, part of a timeout
+/// message and a daemon log entry; the page reports back only the protocol, host and path. Finding the tab is
+/// separate: `--url` reads the tabs' URLs as every command does.
+///
+/// What it saves is what the tab holds. A server that sent part of a document gives that part: most such files
+/// fail the page check, and a PDF with incremental updates cut at an earlier revision does not.
 enum TabPDFReader {
     /// Refused before encoding: base64 grows the bytes by 4/3, and each 262,144 units is one `do JavaScript`.
     static let maxBytes = 268_435_456
@@ -235,13 +238,14 @@ enum TabPDFReader {
         return staged
     }
 
-    /// Safari's cache folder spelled as `F_GETPATH` reports a folder under it. Only the home directory is
-    /// resolved: nothing inside another app's container is touched to find this out.
+    /// Safari's cache folder spelled as `F_GETPATH` reports a folder under it. Only the folders above the app
+    /// containers are resolved, so a relocated `~/Library/Containers` is seen and nothing inside another app's
+    /// container is touched to find this out.
     static var cacheFolderPath: URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let resolved = realpath(home, nil)
+        let containers = FileManager.default.homeDirectoryForCurrentUser.path + "/Library/Containers"
+        let resolved = realpath(containers, nil)
         defer { free(resolved) }
-        let base = resolved.map { String(cString: $0) } ?? home
-        return URL(fileURLWithPath: base + WebKitCacheReader.defaultCacheRoot.path.dropFirst(home.count))
+        let base = resolved.map { String(cString: $0) } ?? containers
+        return URL(fileURLWithPath: base + WebKitCacheReader.defaultCacheRoot.path.dropFirst(containers.count))
     }
 }

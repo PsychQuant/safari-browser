@@ -218,7 +218,8 @@ enum PDFCacheOutput {
     /// A destination inside one of Safari's own folders is refused, with or without `--force`:
     /// writing there replaces a record, a body or a temporary of Safari's, not a copy of ours.
     /// Both sides are canonicalised through a descriptor, so a symlink or a different spelling
-    /// of the same folder does not get past it.
+    /// of the same folder does not get past it. `byPathOnly` opens nothing: the destination's
+    /// side is still canonical, and the caller gives the folder's path already resolved.
     private static func refuseInside(
         _ folders: [URL], parentPath: String, destination: String, byPathOnly: Bool
     ) throws {

@@ -55,6 +55,9 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
                 size = os.path.getsize(os.path.join(root, "plain.pdf"))
                 part = size * 2 // 5
                 return self.send("plain.pdf", 206, extra=[("Content-Range", "bytes 0-%d/%d" % (part - 1, size))], upto=part)
+            if path == "/revision.pdf":
+                upto = int(open(os.path.join(root, "revision-cut"), "r").read())
+                return self.send("revision.pdf", 206, extra=[("Content-Range", "bytes 0-%d/%d" % (upto - 1, os.path.getsize(os.path.join(root, "revision.pdf"))))], upto=upto)
             if path == "/drip.pdf":
                 data = open(os.path.join(root, "drip.pdf"), "rb").read()
                 self.send_response(200); self.send_header("Content-Type", "application/pdf")
@@ -287,6 +290,28 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
                       "the README says a report goes out with the full address: \(log)")
     }
 
+    /// The limit the README states: the file is what the tab holds, and nothing says it is all the server has.
+    /// A PDF with an incremental update, cut where the first revision ends, is a complete PDF with fewer pages.
+    func testAPDFCutAtAnEarlierRevisionIsSavedAsTheTabHoldsIt() async throws {
+        let first = Self.manyPages(3, bytesEach: 80_000)
+        let startxref = first.range(of: Data("startxref".utf8), options: .backwards)!.lowerBound
+        let previous = Int(String(decoding: first[startxref...].dropFirst(10).prefix { $0 != 0x0A }, as: UTF8.self))!
+        var full = first
+        let replaced = full.count
+        full += Data("2 0 obj\n<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 /Touched true >>\nendobj\n".utf8)
+        let xref = full.count
+        full += Data(String(format: "xref\n2 1\n%010d 00000 n \ntrailer\n<< /Size 9 /Root 1 0 R /Prev %d >>\nstartxref\n%d\n%%%%EOF\n", replaced, previous, xref).utf8)
+        try full.write(to: root.appendingPathComponent("revision.pdf"))
+        try Data("\(first.count)".utf8).write(to: root.appendingPathComponent("revision-cut"))
+        let tab = try await open("/revision.pdf")
+        let result = try await read(tab)
+        XCTAssertEqual(result.bytes, first, "the tab holds what the server sent, not the whole file")
+        let out = root.appendingPathComponent("revision-out.pdf")
+        let published = try TabPDFReader.publish(result, to: out.path, force: false, stagingRoot: root)
+        XCTAssertEqual(published.pages, 3)
+        print("MEASURED revision: \(first.count) of \(full.count) bytes, saved with exit 0")
+    }
+
     /// WebKit answered 200 with the part it received. The page check is what stops it.
     func testATruncatedDocumentDoesNotPublish() async throws {
         let tab = try await open("/short.pdf")
@@ -379,6 +404,7 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         }
         let ranges = log.filter { $0.contains("/ranged.pdf bytes=") }.count
         print("MEASURED ranged: \(size) bytes, \(ranges) range request(s) while displaying")
+        try XCTSkipIf(ranges == 0, "WebKit asked for no range here, so this measured nothing about ranges")
         do {
             let result = try await read(tab)
             XCTAssertEqual(result.bytes, try data("ranged.pdf"), "a partial answer would have to be refused, not returned")

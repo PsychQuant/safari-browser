@@ -55,19 +55,19 @@ pdf-cache 的價值是「不碰 Safari」這個可驗證的契約（`PDFCacheTes
 
 ### 錯誤是封閉列舉 `SavePDFFailure`
 
-`notPDF(contentType)`、`serviceWorker`、`notHeld(detail)`、`badStatus(code)`、`readFailed(detail)`、`tooLarge(bytes)`、`notScriptable`、`bytesNotPDF`、`pageReplaced`、`timedOut(seconds)`、`damagedReply(detail)`、`stagingFailed(detail)`。缺少目標是 `validate()` 的 usage 錯誤，不在這裡。`notHeld` 只在 fetch 本身 reject 時使用，涵蓋 WebKit 沒持有與 CSP 擋下，兩者在頁面裡都是 `TypeError`，無法區分，訊息照實說；fetch 回答之後的失敗是 `readFailed`。頁面內的錯誤只回報 `e.name`：`e.message` 是 WebKit 的文字，可能帶簽章網址。
+`notPDF(contentType)`、`serviceWorker`、`notHeld(detail)`、`badStatus(code)`、`readFailed(detail)`、`tooLarge(bytes)`、`notScriptable`、`bytesNotPDF`、`pageReplaced`、`timedOut(seconds)`、`damagedReply(detail)`、`stagingFailed(detail)`。缺少目標是 `validate()` 的 usage 錯誤，不在這裡。`notHeld` 只在 fetch 本身 reject 時使用，涵蓋 WebKit 沒持有完整文件（被丟掉，或載入中止）與 CSP 擋下，都是 `TypeError`，無法區分，訊息照實說；fetch 回答之後的失敗是 `readFailed`。頁面內的錯誤只回報 `e.name`：`e.message` 是 WebKit 的文字，可能帶簽章網址。
 
 ### 不需要 Full Disk Access
 
-`save-pdf` 只寫呼叫者指定的檔案，所以不要求 FDA；但 `copyVerified` 的保護資料夾檢查原本假設呼叫者打得開 Safari 的快取資料夾（`pdf-cache` 打得開）。`protectedFoldersByPathOnly` 只給這個指令：只比對路徑文字（`cacheFolderPath` 只解析 home），不開也不 stat 那個資料夾。沒有 FDA 時那是別的 app 的資料，碰了可能跳權限對話框，而非干擾原則不允許；`sandbox-exec` 只重現得了 errno（EPERM），重現不了對話框，所以這裡選擇完全不碰。`pdf-cache` 維持「打不開不算通過」。
+`save-pdf` 只寫呼叫者指定的檔案，所以不要求 FDA；但 `copyVerified` 的保護資料夾檢查原本假設呼叫者打得開 Safari 的快取資料夾（`pdf-cache` 打得開）。`protectedFoldersByPathOnly` 只給這個指令：只比對路徑文字（`cacheFolderPath` 只解析到 `~/Library/Containers`），不開也不 stat 那個資料夾（呼叫者把目的地指到裡面時例外，隨後被拒）。沒有 FDA 時那是別的 app 的資料，碰了可能跳權限對話框，而非干擾原則不允許；`sandbox-exec` 只重現得了 errno（EPERM），重現不了對話框，所以這裡選擇完全不碰。`pdf-cache` 維持「打不開不算通過」。
 
 ### 回應是 WebKit 為文件合成的，不要拿它做保證
 
-離屏 `WKWebView` 量到：伺服器回 404、500、203、206，fetch 一律 200 且只有 `content-disposition`、`content-type` 兩個標頭；經 302 到達的分頁 `redirected:false`；兩個 view 同網址不同內容，各回自己顯示的；`no-store` 的 HTML 文件則回 TypeError。所以這個回應不是 HTTP 回應原樣，而是 PDF 文件自己給的。因此不檢查 `redirected` 與回應網址（第 1 輪加過，走不到，而且 ScienceDirect 本身就走轉址）；`r.status !== 200` 留著給不這樣回答的引擎，但不把它當保證。擋下截斷檔的是 `copyVerified` 的頁面檢查：切在 5% 到 99% 的 PDF 都打不開。`TabPDFWebKitTests`（`make test-save-pdf-webkit`）以真正的 `TabPDFReader.read` 重現了這些，而且是最終版腳本。Safari 上的行為由 e2e 重量；如果不同，這一節與 README 要改。
+離屏 `WKWebView` 量到：伺服器回 404、500、203、206，fetch 一律 200 且只有 `content-disposition`、`content-type` 兩個標頭；經 302 到達的分頁 `redirected:false`；兩個 view 同網址不同內容，各回自己顯示的；`no-store` 的 HTML 文件則回 TypeError。所以這個回應不是 HTTP 回應原樣，而是 PDF 文件自己給的。因此不檢查 `redirected` 與回應網址（第 1 輪加過，走不到，而且 ScienceDirect 本身就走轉址）；`r.status !== 200` 留著給不這樣回答的引擎，但不把它當保證。多數截斷檔由 `copyVerified` 的頁面檢查擋下（切在 5% 到 99% 的 PDF 都打不開），但有增量更新的 PDF 切在較早的 revision 是完整的 PDF，頁數較少、exit 0。回應看不到伺服器說的完整長度，指令無從判斷，所以照實寫成限制。`TabPDFWebKitTests`（`make test-save-pdf-webkit`）以真正的 `TabPDFReader.read` 重現了這些，而且是最終版腳本。Safari 上的行為由 e2e 重量；如果不同，這一節與 README 要改。
 
-### 身分靠 slot，網址不離開頁面
+### 身分靠 slot，腳本不含網址
 
-第 1 輪曾先讀 `location.href` 再讓腳本比對，第 2 輪拿掉，有兩個理由。它防不了解析目標到第一次讀網址之間的移位，只是把時間窗往前移；而且把完整簽章網址放進腳本，腳本是 `osascript` 的 argv，也會出現在逾時錯誤訊息與 daemon log。`ResultSlot` 只存在那份文件的 JS 環境裡，啟動腳本之後分頁換了任何東西，下一步就讀不到，這比比對網址更強（同網址的兩個分頁也分得開）。啟動之前的位置與 pattern 語意與其他指令相同，輸出列出讀到的網址給呼叫者核對。頁面只回 protocol、host、path。
+第 1 輪曾先讀 `location.href` 再讓腳本比對，第 2 輪拿掉，有兩個理由。它防不了解析目標到第一次讀網址之間的移位，只是把時間窗往前移；而且把完整簽章網址放進腳本，腳本是 `osascript` 的 argv，也會出現在逾時錯誤訊息與 daemon log。`ResultSlot` 只存在那份文件的 JS 環境裡，啟動腳本之後分頁換了任何東西，下一步就讀不到，這比比對網址更強（同網址的兩個分頁也分得開）。啟動之前的位置與 pattern 語意與其他指令相同，輸出列出讀到的網址給呼叫者核對。頁面只回 protocol、host、path。範圍只到這個指令寫的腳本：解析 `--url` 時讀所有分頁的 URL，daemon 開著時 log 會留下前 256 字元（#230），`--url-exact` 的完整網址則在每個腳本的 guard 裡。
 
 ### 啟動腳本要回固定字串
 
