@@ -882,30 +882,37 @@ local-data commands above.
 ### Saving what a tab displays (#338)
 
 A response marked `Cache-Control: no-store` never reaches the disk cache `pdf-cache` reads, so a tab can
-show a PDF that `pdf-cache get` cannot find (ScienceDirect's signed `main.pdf` URLs are one case). WebKit
-still holds the displayed document in memory, and `save-pdf` reads it from there:
+show a PDF that `pdf-cache get` cannot find (ScienceDirect's signed `main.pdf` URLs behave this way, probably
+for this reason; their headers were not read). WebKit still holds the displayed document in memory, and `save-pdf` reads it from there:
 
 ```bash
 safari-browser save-pdf paper.pdf --url 'example.org/main.pdf'
 safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, size, pages, source, url
 ```
 
-- **No request.** The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
+- **No request for the document.** The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
   answers from what Safari holds or fails; there is no second attempt. A page controlled by a service worker
   is refused, because a service worker can answer from the network. Measured by hand with this same fetch on
   Safari 27.2 against a local server that logs requests; `make test-save-pdf` repeats it with the command.
-- **It answers by URL.** What you get is what WebKit holds for the tab's address, which is what the tab shows
-  unless the document came from a POST or the same URL was reloaded elsewhere since. The checks below cannot
-  tell those apart. A redirect, a byte range or an answer for another URL is refused.
+  One thing is out of its hands: a response whose Content-Security-Policy blocks `connect-src` and names a
+  report endpoint makes the browser post a violation report, with the full address, when the fetch is blocked.
+  The page cannot see that policy beforehand.
+- **What it saves is what the fetch answers.** Measured on WebKit in an off-screen view, that answer is made for
+  the displayed PDF: status 200 whatever the server sent, so a PDF served with a 404 is saved like any other, a
+  redirect does not show, and two tabs on one URL with different content each gave their own. A truncated
+  document fails the page check below; nothing here looks at the server's status.
 - **It does run JavaScript in the tab**, which `pdf-cache` never does. It moves no mouse or keyboard, switches
-  no tab, takes no focus, works on a background tab, and needs neither Accessibility nor Full Disk Access.
+  no tab, takes no focus, works on a background tab, and needs neither Accessibility nor Full Disk Access. It
+  does not open Safari's own folders.
 - **Name the tab.** There is no default front tab. The tab must display the PDF itself: a PDF embedded in an HTML
   page (`<embed>`, `<iframe>`, PDF.js) is refused with the document's content type.
 - **When it fails**, WebKit no longer holds the document or the page's policy blocked the read; the page cannot
-  tell which. Nothing was requested. Display the PDF again, or save it by hand. How long WebKit keeps the
+  tell which. No request for the document was sent. Display the PDF again, or save it by hand. A tab still
+  loading runs no scripts, and the command says that instead. How long WebKit keeps the
   document is not known: a ScienceDirect tab still answered after 8 minutes, longer was not measured.
 - Up to 256 MiB. The file goes through the same checks as `pdf-cache get` (`%PDF-`, readable pages, an existing
-  destination kept unless `--force`), and URLs are printed without their query and fragment.
+  destination kept unless `--force`). The signed query never leaves the page: only the protocol, host and path
+  come back, printed without path parameters.
 
 ### Permissions
 

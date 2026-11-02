@@ -606,15 +606,18 @@ takes the update lock after a kill).
 
 ## Tab PDFs (`save-pdf`, #338)
 
-`pdf-cache` 讀磁碟快取，而 `no-store` 的回應不會進去。`save-pdf <path>` 在明確鎖定的分頁裡以 `fetch(location.href, {cache:'only-if-cached', mode:'same-origin'})` 讀 WebKit 記憶體裡的文件。**它與 pdf-cache 分開是刻意的**：pdf-cache 的契約是不執行 JavaScript、不操作 Safari（`PDFCacheTests` 在結構上釘住），不要把兩者合併，也不要在 pdf-cache 裡呼叫它（只有 no-match 訊息提到它）。
+`pdf-cache` 讀磁碟快取，而 `no-store` 的回應不會進去。`save-pdf <path>` 在明確鎖定的分頁裡以 `fetch(location.href, {cache:'only-if-cached', mode:'same-origin'})` 讀 WebKit 持有的文件。**它與 pdf-cache 分開是刻意的**：pdf-cache 的契約是不執行 JavaScript、不操作 Safari（`PDFCacheTests` 在結構上釘住），不要把兩者合併，也不要在 pdf-cache 裡呼叫它（只有 no-match 訊息提到它）。
 
-- **唯一的網路 API 是那一個 fetch**，失敗就失敗，不換 cache mode、不改走對話框（`testTheScriptNamesNoOtherWayToTheNetwork`）。`only-if-cached` 沒持有時不連網，是在 Safari 27.2 手動跑同一段 fetch、以伺服器紀錄量到的；`make test-save-pdf` 用指令本身重做一次（會開前景視窗，要 `E2E_SAVE_PDF_OK=1`），新版 Safari 要重跑。受 service worker 控制的頁面拒絕，因為它可以從網路回答。
-- **傳輸**：base64 存進這次呼叫的 `ResultSlot`，`readResultSlot` 分塊讀回，解碼後的 byte 數要等於頁面報的 `Blob.size`。不要改用 `fetchResourceWithCookies`（固定全域名稱，#190 那一類問題，#341）。沒做在頁面上算雜湊比對：同長度的改寫偵測不到。頁面報的 byte 數與長度在這邊先複核，才拿來配置。
-- **依網址回答，不是讀畫面**：腳本要求 status 200（206 不是文件）、不是 redirect、回應網址等於分頁網址（不含 fragment），但同網址內容已換時（別的分頁重新載入、文件來自 POST）偵測不到。啟動前多一次往返讀 `location.href`，腳本比對不符就不呼叫 fetch，移位或 `--first-match` 的重新解析才不會讀到別的文件。
-- **不需要 Full Disk Access，而這點一般測試看不見**：測試程序有 FDA。`copyVerified` 的保護資料夾檢查原本假設呼叫者打得開 Safari 的快取資料夾，第一版因此在沒有 FDA 時整份傳完才失敗；2301 個測試都過，是 verify 讀碼抓到的。`protectedFoldersMayBeClosed` 只給 `save-pdf`。重現方式：`sandbox-exec -p '(version 1)(allow default)(deny file-read* (subpath "<快取資料夾>"))' xcrun xctest -XCTest SafariBrowserTests.SavePDFPublishTests/testTheDefaultProtectedFolderDoesNotStopAnOrdinaryDestination .build/debug/SafariBrowserTests.xctest`（回 EPERM，與 TCC 相同）。
-- **發布**：寫進 `mkdtemp` 的私有資料夾（0700／0600），交給 `PDFCacheOutput.copyVerified`，暫存一律刪除；`refuseExistingDestination` 只是傳輸前的提早判斷，最終判定在 `copyVerified`。硬終止時暫存會留在 `$TMPDIR`（owner-only）。
-- **錯誤**：`SavePDFFailure` 是封閉列舉。`notHeld` 只在 fetch 本身 reject 時使用，涵蓋「WebKit 沒持有」與「CSP 擋下」：兩者在頁面裡都是 `TypeError`，分不出來，訊息照實說；fetch 回答之後的失敗是 `readFailed`。頁面內的錯誤只回報 `e.name`（`e.message` 是 WebKit 的文字，可能帶簽章網址）。分頁消失時經 `JSCommand.anchoredFailure` 指名目標，不列出全部 profile 的分頁。
-- **未量測**：WebKit 能持有多久（ScienceDirect 分頁 8 分鐘後仍在）；分塊讀回的實際耗時（`make test-save-pdf` 會印 50 MB 的耗時，還沒在真機跑過）。
+- **唯一的網路 API 是那一個 fetch**，失敗就失敗，不換 cache mode、不改走對話框（`testTheScriptNamesNoOtherWayToTheNetwork`）。`only-if-cached` 沒持有時不連網，是在 Safari 27.2 手動跑同一段 fetch、以伺服器紀錄量到的；`make test-save-pdf` 用指令本身重做一次（會開前景視窗，要 `E2E_SAVE_PDF_OK=1`），新版 Safari 要重跑。受 service worker 控制的頁面拒絕，因為它可以從網路回答。**一個例外擋不了**：回應的 CSP 擋 `connect-src` 又設了回報端點時，fetch 被擋的同時瀏覽器會 POST 違規報告，內含完整網址（離屏 WKWebView 量到）。頁面事前讀不到 CSP。
+- **回應是 WebKit 為 PDF 文件合成的**（離屏 WKWebView 量到，Safari 由 e2e 重量）：伺服器回 404、500、206，fetch 一律 200；經 302 到達的分頁 `redirected:false`；同網址兩個 view 內容不同時各回自己的；`no-store` 的 HTML 文件則回 TypeError。所以**不要加 `r.redirected`、`r.url` 這類檢查**（第 1 輪加過，是死碼，而 ScienceDirect 本身就走轉址），status 也不是保證：擋下截斷檔的是 `copyVerified` 的頁面檢查（5% 到 99% 都打不開）。`r.status !== 200` 留著，給不這樣回答的引擎。**shim 回答什麼是測試自己寫的**，這些行為只有真的 WebKit 量得出來。
+- **網址不離開頁面**：沒有任何腳本含網址。腳本是 `osascript` 的 argv，也會出現在逾時錯誤訊息與 daemon log（第 1 輪把網址放進腳本比對，兩條 verify 都抓到）。頁面只回 protocol、host、path，再經 `URLText.redactURL` 去路徑參數。頁面內的錯誤只回 `e.name`。
+- **身分靠 slot，不靠網址**：`ResultSlot` 只存在那份文件的 JS 環境裡，啟動之後分頁換了任何東西，下一步就讀不到（`pageReplaced`）。啟動之前，位置就是位置、pattern 就是 pattern，與其他指令相同（第 1 輪的「先讀網址再比對」只是把時間窗往前移）；輸出會列出讀到的網址。
+- **傳輸**：base64 存進這次呼叫的 slot，`readResultSlot` 分塊讀回，解碼後的 byte 數要等於頁面報的 `Blob.size`，而頁面報的數字先複核才拿來配置。不要改用 `fetchResourceWithCookies`（固定全域名稱，#341）。沒做在頁面上算雜湊比對：同長度的改寫偵測不到。
+- **不需要 Full Disk Access，也不碰 Safari 的資料夾**：`copyVerified` 的保護資料夾檢查原本假設呼叫者打得開（pdf-cache 打得開）。第一版因此在沒有 FDA 時整份傳完才失敗；測試程序有 FDA，2301 個測試都過，是 verify 讀碼抓到的。`protectedFoldersByPathOnly` 只比對路徑文字（`TabPDFReader.cacheFolderPath` 只解析 home），不開也不 stat 那個資料夾：沒有 FDA 時那是別的 app 的資料，碰了可能跳權限對話框，而 `sandbox-exec` 只重現 errno，重現不了對話框。重現沒有 FDA 的 errno：`sandbox-exec -p '(version 1)(allow default)(deny file-read* (subpath "<快取資料夾>"))' <指令>`。
+- **發布**：寫進 `mkdtemp` 的私有資料夾（0700／0600，去掉繼承的 ACL），交給 `PDFCacheOutput.copyVerified`，暫存一律刪除；`refuseExistingDestination` 只是傳輸前的提早判斷，最終判定在 `copyVerified`。硬終止時暫存會留在 `$TMPDIR`（owner-only）。
+- **錯誤**：`SavePDFFailure` 是封閉列舉。`notHeld` 只在 fetch 本身 reject 時使用，涵蓋「WebKit 沒持有」與「CSP 擋下」：兩者在頁面裡都是 `TypeError`，分不出來，訊息照實說；fetch 回答之後的失敗是 `readFailed`。啟動腳本沒回 `started` 是 `notScriptable`：WebKit 在 PDF 載入期間不執行任何腳本。分頁消失時經 `JSCommand.anchoredFailure` 指名目標，不列出全部 profile 的分頁。
+- **daemon**：AppleScript 在有 live socket 時走 daemon（所有指令都一樣），寫檔留在 CLI 程序。每個腳本含槽名，各占編譯快取一項；回傳的分塊前 256 字元會進 daemon log（#230）。
+- **未量測**：WebKit 能持有多久（ScienceDirect 分頁 8 分鐘後仍在）；Safari 上 `text/pdf`（WKWebView 顯示成 PDF，e2e 不跑，怕觸發下載）。
 - 頁面可以覆寫 `fetch`、`FileReader`，連 `document.contentType` 也可以（檢查跑在同一個頁面世界裡），所以有腳本的頁面騙得過它。實際顯示 PDF 的文件沒有頁面腳本；威脅模型是失誤，不是惡意頁面。
 
 ## Install-signature guard：suite 本身被 gate 管（#119, round 10）

@@ -55,35 +55,39 @@ pdf-cache 的價值是「不碰 Safari」這個可驗證的契約（`PDFCacheTes
 
 ### 錯誤是封閉列舉 `SavePDFFailure`
 
-`notPDF(contentType)`、`serviceWorker`、`notHeld(detail)`、`badStatus(code)`、`differentResponse`、`readFailed(detail)`、`tooLarge(bytes)`、`tabChanged`、`bytesNotPDF`、`pageReplaced`、`timedOut(seconds)`、`damagedReply(detail)`、`stagingFailed(detail)`。缺少目標是 `validate()` 的 usage 錯誤，不在這裡。`notHeld` 只在 fetch 本身 reject 時使用，涵蓋 WebKit 沒持有與 CSP 擋下，兩者在頁面裡都是 `TypeError`，無法區分，訊息照實說；fetch 回答之後的失敗是 `readFailed`。頁面內的錯誤只回報 `e.name`：`e.message` 是 WebKit 的文字，可能帶簽章網址。成功輸出的網址經 `URLText.redactURL`。
+`notPDF(contentType)`、`serviceWorker`、`notHeld(detail)`、`badStatus(code)`、`readFailed(detail)`、`tooLarge(bytes)`、`notScriptable`、`bytesNotPDF`、`pageReplaced`、`timedOut(seconds)`、`damagedReply(detail)`、`stagingFailed(detail)`。缺少目標是 `validate()` 的 usage 錯誤，不在這裡。`notHeld` 只在 fetch 本身 reject 時使用，涵蓋 WebKit 沒持有與 CSP 擋下，兩者在頁面裡都是 `TypeError`，無法區分，訊息照實說；fetch 回答之後的失敗是 `readFailed`。頁面內的錯誤只回報 `e.name`：`e.message` 是 WebKit 的文字，可能帶簽章網址。
 
 ### 不需要 Full Disk Access
 
-`save-pdf` 只寫呼叫者指定的檔案，所以不要求 FDA；但 `copyVerified` 的保護資料夾檢查原本假設呼叫者打得開 Safari 的快取資料夾（`pdf-cache` 打得開）。`protectedFoldersMayBeClosed` 只給這個指令：打不開（EPERM、EACCES）時改比對路徑文字，其餘照舊。`pdf-cache` 維持「打不開不算通過」。測試程序持有 FDA，一般單元測試走不到這條路；以 `sandbox-exec` 拒絕讀那個資料夾可以重現（回 EPERM，與 TCC 相同）。
+`save-pdf` 只寫呼叫者指定的檔案，所以不要求 FDA；但 `copyVerified` 的保護資料夾檢查原本假設呼叫者打得開 Safari 的快取資料夾（`pdf-cache` 打得開）。`protectedFoldersByPathOnly` 只給這個指令：只比對路徑文字（`cacheFolderPath` 只解析 home），不開也不 stat 那個資料夾。沒有 FDA 時那是別的 app 的資料，碰了可能跳權限對話框，而非干擾原則不允許；`sandbox-exec` 只重現得了 errno（EPERM），重現不了對話框，所以這裡選擇完全不碰。`pdf-cache` 維持「打不開不算通過」。
 
-### 回應要是這個網址的完整文件
+### 回應是 WebKit 為文件合成的，不要拿它做保證
 
-`only-if-cached` 依網址查，所以腳本要求 status 200（206 不是文件）、不是 redirect、回應網址等於分頁網址（不含 fragment）。這擋不住同網址內容已換的情形：另一個分頁重新載入過、或文件來自 POST 時，存到的可能不是畫面上那一份，而 `%PDF-`、頁面檢查、byte 數都會通過，頁面內也讀不到顯示中的位元組來比對。文件照實說這是「WebKit 為這個網址持有的內容」。
+離屏 `WKWebView` 量到：伺服器回 404、500、203、206，fetch 一律 200 且只有 `content-disposition`、`content-type` 兩個標頭；經 302 到達的分頁 `redirected:false`；兩個 view 同網址不同內容，各回自己顯示的；`no-store` 的 HTML 文件則回 TypeError。所以這個回應不是 HTTP 回應原樣，而是 PDF 文件自己給的。因此不檢查 `redirected` 與回應網址（第 1 輪加過，走不到，而且 ScienceDirect 本身就走轉址）；`r.status !== 200` 留著給不這樣回答的引擎，但不把它當保證。擋下截斷檔的是 `copyVerified` 的頁面檢查：切在 5% 到 99% 的 PDF 都打不開。Safari 上的行為由 e2e 重量；如果不同，這一節與 README 要改。
 
-### 先讀網址，腳本再比對
+### 身分靠 slot，網址不離開頁面
 
-目標解析之後、啟動腳本之前，`--window N --tab-in-window M` 的分頁可能移位，`--first-match` 的 #79 重新解析可能換到同視窗另一個分頁。多一次往返先讀 `location.href`，腳本比對不符就不呼叫 fetch。這不是身分檢查：兩個分頁同網址時分不出來，而那時存到的內容也相同。
+第 1 輪曾先讀 `location.href` 再讓腳本比對，第 2 輪拿掉，有兩個理由。它防不了解析目標到第一次讀網址之間的移位，只是把時間窗往前移；而且把完整簽章網址放進腳本，腳本是 `osascript` 的 argv，也會出現在逾時錯誤訊息與 daemon log。`ResultSlot` 只存在那份文件的 JS 環境裡，啟動腳本之後分頁換了任何東西，下一步就讀不到，這比比對網址更強（同網址的兩個分頁也分得開）。啟動之前的位置與 pattern 語意與其他指令相同，輸出列出讀到的網址給呼叫者核對。頁面只回 protocol、host、path。
+
+### 啟動腳本要回固定字串
+
+WebKit 在 PDF 載入期間不執行任何腳本（`Cannot execute JavaScript in this document`，離屏 WKWebView 量到），`do JavaScript` 什麼都不回。回固定字串而不是數字：數字經 AppleScript 可能印成 `1.0`。沒回 `started` 就是 `notScriptable`，不報成回覆損壞。
 
 ## Implementation Contract
 
-**頁面腳本**（`TabPDFReader.startScript(slot:expectedURL:maxBytes:)`，一次 `do JavaScript`，立即返回）：
+**頁面腳本**（`TabPDFReader.startScript(slot:maxBytes:)`，一次 `do JavaScript`，立即返回 `'started'`）：
 
 ```
 (<sweep>, window.K = { u: <stamp> }, (function(s){
   function fail(code, detail) { s.fail = code; s.detail = detail; s.done = true; }
   function named(e) { return e && e.name ? e.name : 'Error'; }
-  if (location.href !== 'EXPECTED') { fail('tab-changed', ''); return; }
-  if (document.contentType !== 'application/pdf') { fail('not-pdf', document.contentType); return; }
+  var type = document.contentType;
+  if (type !== 'application/pdf' && type !== 'text/pdf') { fail('not-pdf', type); return; }
   if (navigator.serviceWorker && navigator.serviceWorker.controller) { fail('service-worker', ''); return; }
+  s.shown = location.protocol + '//' + location.host + location.pathname;
   fetch(location.href, { cache: 'only-if-cached', mode: 'same-origin' })
     .then(function(r){
       if (r.status !== 200) { fail('status', r.status); return null; }
-      if (r.redirected || r.url !== location.href.split('#')[0]) { fail('other-response', ''); return null; }
       return r.blob();
     }, function(e){ fail('not-held', named(e)); return null; })
     .then(function(b){ if (!b) return null; s.bytes = b.size;
@@ -92,12 +96,12 @@ pdf-cache 的價值是「不碰 Safari」這個可驗證的契約（`PDFCacheTes
         f.onload = function(){ res(f.result); }; f.onerror = function(){ rej(f.error); }; f.readAsDataURL(b); }); })
     .then(function(u){ if (u === null) return; var i = u.lastIndexOf(','); var t = i < 0 ? '' : u.slice(i + 1); s.text = t; s.len = t.length; s.done = true; })
     .catch(function(e){ fail('read-failed', named(e)); });
-})(window.K), 1)
+})(window.K), 'started')
 ```
 
 **狀態腳本**（`statusScript(slot:)`）回傳封閉格式之一：`gone`、`wait`、`ok:<bytes>:<len>`、`fail:<code>:<detail>`。`parseStatus` 對其他內容一律視為 `damagedReply`。
 
-**流程**（`TabPDFReader.read(target:) async throws -> Read`）：start → 每 100 ms 輪詢，上限 `TabPDFReader.deadlineSeconds = 60` → 依狀態分派 → `SafariBridge.readResultSlot` 讀 base64 → `Data(base64Encoded:)` → 比對 byte 數 → 讀 `s.url`；結束時移除槽（逾時除外，`ResultSlot.removalIsWorthTrying`）。
+**流程**（`TabPDFReader.read(target:) async throws -> Read`）：start（沒回 `started` 就是 `notScriptable`）→ 每 100 ms 輪詢，期限從 start 之前算，`TabPDFReader.deadlineSeconds = 60` → 依狀態分派，複核頁面報的數字 → 讀 `s.shown` → `SafariBridge.readResultSlot` 讀 base64 → `Data(base64Encoded:)` → 比對 byte 數；結束時移除槽（分頁不再回應時除外，`ResultSlot.removalIsWorthTrying`）。
 
 **輸出**：文字 `<path>  <size> B  <pages> page(s)  from tab <redacted url>`；`--json` 為 `{path,size,pages,source:"tab",url}`。結束碼：成功 0；沒有目標是 usage 錯誤（64，由 `validate()` 擋下，不碰 Safari）；其餘 1。
 
@@ -110,5 +114,6 @@ pdf-cache 的價值是「不碰 Safari」這個可驗證的契約（`PDFCacheTes
 - 頁面可覆寫 `fetch`、`FileReader`，連 `document.contentType` 也可以，因為檢查跑在同一個頁面世界裡：有腳本的 HTML 頁面騙得過它，CLI 仍會回報 `source: "tab"`，只要位元組通過 `%PDF-` 與頁面檢查。實際顯示 PDF 的文件沒有頁面腳本。威脅模型是失誤，不是惡意頁面；CLI 只複核頁面報的數字（大小上限、base64 長度），不讓它決定這邊的配置。
 - `only-if-cached` 不連網是 WebKit 的行為，目前在 Safari 27.2 量到；e2e 以伺服器紀錄為準，新版 Safari 要重跑。
 - 50 MB 以上的讀回速度尚未量（`do JavaScript` 分塊）→ e2e 量測，超過上限的情況明確失敗。
-- 支援 Range 的伺服器上 WebKit 是否持有完整文件，手動量測時的 fixture 不支援 Range，沒有資料 → e2e 加了一個會回 206 的 fixture；status 200 的要求保證部分內容不會當成文件。ScienceDirect 的分頁（1.2 MB）回 200。
+- 線性化 PDF 在支援 Range 的伺服器上才會發 Range 請求，手動量測時的 fixture 不是 → e2e 用 `qpdf --linearize` 的 fixture，Range 數為 0 時明確說沒量到。離屏 WKWebView 上這種情況最後取回完整位元組。
+- CSP 擋下 fetch 又設了回報端點時，瀏覽器會把含簽章的完整網址 POST 給網站（離屏 WKWebView 量到）→ 頁面事前讀不到 CSP，擋不了；訊息寫「No request for the document was sent」，README 與規格寫明例外，e2e 量。這違背選這條路的前提（網站看不到這個動作），只在這個條件下成立，由維護者知悉。
 - `file:` 分頁未量：依 Fetch 規格 `same-origin` 會 reject，訊息會是 `notHeld`。

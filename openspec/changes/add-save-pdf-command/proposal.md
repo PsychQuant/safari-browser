@@ -6,7 +6,7 @@
 
 - 新指令 `safari-browser save-pdf <path>`：把明確鎖定的分頁正在顯示的 PDF 存成檔，不發請求、不動鍵盤滑鼠。
 - 必須明確鎖定分頁（`--url`、`--url-exact`、`--url-endswith`、`--url-regex`、`--window [--tab-in-window]`、`--document`、`--tab`），沒有預設的 front tab；接受 `--profile` 與 `--first-match`。
-- 分頁文件不是 PDF、受 service worker 控制、WebKit 沒持有或頁面政策擋下、超過大小上限時失敗，一律不退回連網。
+- 分頁文件不是 PDF、受 service worker 控制、WebKit 沒持有或頁面政策擋下、還不能執行腳本、超過大小上限時失敗，一律不退回連網。
 - 寫檔重用 `PDFCacheOutput.copyVerified`（`%PDF-`、頁面檢查、`--force`、只用打開的資料夾），不需要 Full Disk Access。輸出一行或 `--json`（`path`、`size`、`pages`、`source`、`url`，網址經 `URLText.redactURL`）。
 - `pdf-cache get` 以分頁比對不到時，錯誤訊息指向 `save-pdf`。
 
