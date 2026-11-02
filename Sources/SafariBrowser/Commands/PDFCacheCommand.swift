@@ -75,6 +75,8 @@ struct PDFCacheList: ParsableCommand {
             jsonData = { try PDFCacheFormat.temporaryListingJSON(listed, limit: limit) }
             if listed.isEmpty { LocalDataOutput.writeStderr("pdf-cache: no PDF found in the WebKitPDFs folders.\n") }
         }
+        // JSON prints no legend, and an agent reading rows is who the caution is for.
+        if json { LocalDataOutput.writeStderr(PDFCacheFormat.listingCaution + "\n") }
         try LocalDataOutput.emit(json: json, jsonData: jsonData, textRows: rendered.rows, legend: rendered.legend)
     }
 }
@@ -86,14 +88,14 @@ struct PDFCacheGet: AsyncParsableCommand {
         discussion: """
             Select exactly one of: a tab flag (--url, --url-exact, --url-endswith, --url-regex, \
             --window [--tab-in-window], --document, --tab), --key <prefix>, or --source webkit-pdfs --file <name>. \
-            A tab is matched by its exact URL (fragment removed); several matches stop and list the candidates, no match stops and says so. Only the default profile's cache is read, so --profile is refused.
+            A tab is matched by its exact URL (fragment removed); several matches stop and list the candidates, no match stops and says so. A row of `pdf-cache list` is not tied to any tab: --key and --file are for a PDF a person has identified. Only the default profile's cache is read, so --profile is refused.
             """
     )
 
     @Argument(help: "Where to write the PDF (the folder must exist)")
     var path: String
 
-    @Option(name: .long, help: "Select by the start (8+ hex characters) of a key shown by `pdf-cache list`")
+    @Option(name: .long, help: "Select by the start (8+ hex characters) of a key, for a PDF a person has identified in `pdf-cache list`")
     var key: String?
 
     @Option(name: .long, help: "Where to read: cache (default) or webkit-pdfs")

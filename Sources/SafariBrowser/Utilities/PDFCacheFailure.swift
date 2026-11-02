@@ -68,15 +68,15 @@ enum PDFCacheFailure: Equatable, Sendable {
             return """
                 pdf-cache get needs an explicit selection. Give exactly one of:
                   1. a tab flag: --url, --url-exact, --url-endswith, --url-regex, --window (with optional --tab-in-window), --document, or --tab
-                  2. --key <prefix>            (8 or more characters, from `safari-browser pdf-cache list`)
+                  2. --key <prefix>            (8 or more characters, for a PDF a person has identified in `safari-browser pdf-cache list`; a row is not tied to any tab)
                   3. --source webkit-pdfs --file <name>
-                It never picks a PDF on its own, not even when only one is cached.
+                It never picks a PDF on its own, not even when only one is cached. To save what a tab displays when it is not cached, use `safari-browser save-pdf`.
                 """
         case .noMatch(let subject, let unreadNote, _, true):
             let unread = unreadNote.map { "\n\(t($0))" } ?? ""
             return """
                 No file in the WebKitPDFs folders matches \(t(subject)).\(unread)
-                `safari-browser pdf-cache list --source webkit-pdfs` shows them, by folder and name, so that a person can identify one.
+                `safari-browser pdf-cache list --source webkit-pdfs` shows them, by folder and name, so that a person can identify one; add --json for names exactly as they are.
                 """
         case .noMatch(let subject, let unreadNote, let fromTab, false):
             let unread = unreadNote.map { "\n\(t($0))" } ?? ""
@@ -99,7 +99,7 @@ enum PDFCacheFailure: Equatable, Sendable {
             case .tabHolds:
                 step = "Nothing here says which one the tab displays. `safari-browser save-pdf <path>` with the same tab flag saves what the tab holds; --key <prefix> is for one a person has identified."
             case .folderAndName:
-                step = "Re-run with --file <folder>/<name> naming one of them, as shown above."
+                step = "Re-run with --file <folder>/<name>, using a folder shown above and the same name."
             }
             return """
                 \(t(subject)) matches \(candidates.count) cached PDFs; refusing to choose between them:

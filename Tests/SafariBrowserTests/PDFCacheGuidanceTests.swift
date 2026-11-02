@@ -76,6 +76,7 @@ final class PDFCacheGuidanceTests: XCTestCase {
         let text = message { try PDFCacheSelection.select(fileName: "a.pdf", from: pdfs) }
         XCTAssertFalse(text.contains("--key"), text)
         XCTAssertTrue(text.contains("--file <folder>/<name>"), text)
+        XCTAssertTrue(text.contains("the same name"), text)
     }
 
     func testFolderAndNameSelectsOne() throws {
@@ -83,13 +84,39 @@ final class PDFCacheGuidanceTests: XCTestCase {
         XCTAssertEqual(try PDFCacheSelection.select(fileName: "WebKitPDFs-B/a.pdf", from: pdfs), pdfs[1])
     }
 
-    /// What the refusal prints is what the next call takes.
-    func testACandidateLinesFirstFieldSelectsThatCandidate() throws {
-        let pdfs = [temporary("WebKitPDFs-A", "a.pdf"), temporary("WebKitPDFs-B", "a.pdf")]
-        for pdf in pdfs {
-            let first = String(PDFCacheFormat.candidateLine(pdf).components(separatedBy: "  ")[0])
-            XCTAssertEqual(try PDFCacheSelection.select(fileName: first, from: pdfs), pdf)
-        }
+    /// A candidate line escapes the name, so the way out cannot be "paste what is shown": a name with a dash or
+    /// a double space would then match nothing. The folder is shown as it is, and the name is what was typed.
+    func testTheWayOutWorksForANameACandidateLineEscapes() throws {
+        let name = "Paper \u{2014}  Final.pdf"
+        let pdfs = [temporary("WebKitPDFs-A", name), temporary("WebKitPDFs-B", name)]
+        let line = PDFCacheFormat.candidateLine(pdfs[1])
+        XCTAssertFalse(line.contains(name), "this test is about a name the line changes: \(line)")
+        let folder = String(line.components(separatedBy: "/")[0])
+        XCTAssertEqual(folder, "WebKitPDFs-B")
+        XCTAssertEqual(try PDFCacheSelection.select(fileName: "\(folder)/\(name)", from: pdfs), pdfs[1])
+    }
+
+    /// The name part matches as a bare name does, so a form of the name that selects one also selects within a folder.
+    func testTheNamePartMatchesAsABareNameDoes() throws {
+        let composed = "caf\u{00E9}.pdf"
+        let decomposed = "cafe\u{0301}.pdf"
+        let pdfs = [temporary("WebKitPDFs-A", decomposed)]
+        XCTAssertEqual(try PDFCacheSelection.select(fileName: composed, from: pdfs), pdfs[0])
+        XCTAssertEqual(try PDFCacheSelection.select(fileName: "WebKitPDFs-A/\(composed)", from: pdfs), pdfs[0])
+    }
+
+    func testAskingForASelectionDoesNotOfferTheListingAsTheWay() {
+        let text = PDFCacheFailure.selectionRequired.message
+        XCTAssertTrue(text.contains("a person has identified"), text)
+        XCTAssertTrue(text.contains("not tied to any tab"), text)
+        XCTAssertTrue(text.contains("safari-browser save-pdf"), text)
+    }
+
+    func testTheHelpAndTheJSONCautionSayTheSame() {
+        XCTAssertTrue(PDFCacheFormat.listingCaution.contains("not tied to any tab"))
+        let help = PDFCacheGet.helpMessage()
+        XCTAssertTrue(help.contains("not tied to any tab"), help)
+        XCTAssertTrue(help.contains("a person has identified"), help)
     }
 
     func testAFolderThatWasNotListedMatchesNothing() {

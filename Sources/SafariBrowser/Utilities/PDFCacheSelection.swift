@@ -150,12 +150,19 @@ enum PDFCacheSelection {
         return try single(matches, subject: subject)
     }
 
-    /// A name with a slash names its folder too, as the candidates are printed: there is no other way to
-    /// tell duplicates apart (#337). Only what the scan listed can match, so `..` reaches nothing.
+    /// A name with a slash names its folder too: there is no other way to tell duplicates apart (#337). The
+    /// name part matches as a bare name does, because what a candidate prints is escaped and is not what to type.
+    /// Only what the scan listed can match, so `..` reaches nothing.
     static func select(fileName: String, from pdfs: [TemporaryPDF]) throws -> TemporaryPDF {
-        let matches = fileName.unicodeScalars.contains("/")
-            ? pdfs.filter { PDFCacheURL.isSame("\($0.folder)/\($0.name)", fileName) }
-            : pdfs.filter { $0.name == fileName }
+        let scalars = fileName.unicodeScalars
+        let matches: [TemporaryPDF]
+        if let slash = scalars.firstIndex(of: "/") {
+            let folder = String(scalars[..<slash])
+            let name = String(scalars[scalars.index(after: slash)...])
+            matches = pdfs.filter { PDFCacheURL.isSame($0.folder, folder) && $0.name == name }
+        } else {
+            matches = pdfs.filter { $0.name == fileName }
+        }
         let subject = "file name \(fileName)"
         switch matches.count {
         case 1: return matches[0]

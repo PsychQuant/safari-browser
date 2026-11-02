@@ -34,6 +34,9 @@ enum PDFCacheFormat {
     private static func field(_ text: String) -> String { LocalDataOutput.sanitizeTextField(text) }
     private static func keyPrefix(_ key: String) -> String { String(key.prefix(12)) }
 
+    /// A row of the listing is for a person to identify a PDF (#340).
+    static let listingCaution = "pdf-cache: a row is not tied to any tab, and its URL has no query: the same URL can be a different PDF. Select a row only if a person has identified it."
+
     // MARK: - Network cache
 
     static func candidateLine(_ pdf: WebKitCachedPDF, timeZone: TimeZone = .current) -> String {
@@ -51,7 +54,7 @@ enum PDFCacheFormat {
                     + "\(pdf.partition.isEmpty ? "-" : field(PDFCacheURL.redact(pdf.partition).display))  "
                     + "\(field(PDFCacheURL.redact(pdf.requestURL).display))  \(pdf.size) B"
             },
-            legend: "pdf-cache: [N]  local-time  key  partition  url (no query, fragment, credentials or path parameters)  size  "
+            legend: "pdf-cache: [N]  local-time  key  partition  url (no query, fragment, credentials or path parameters; long ones cut)  size  "
                 + "(default limit 50; use --limit; a row is not tied to any tab: `pdf-cache get <path> --key <prefix>` is for a PDF a person has identified)")
     }
 

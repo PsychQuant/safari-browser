@@ -469,7 +469,7 @@ used to read the target tab's URL when a tab flag is given).
   The tests plant a `SECRET` query and assert it appears in no row, JSON, or error message of this
   command. The shared tab-resolution errors (`documentNotFound`, `ambiguousWindowMatch`) list open tabs'
   URLs unredacted for every command; they are outside this guarantee (#227). `--file` names and filesystem paths are
-  printed as given (`--file` needs the exact name, or `<folder>/<name>` when several folders hold it, #337; they are local file names, not URLs). Sizes and times come
+  printed as given (`--file` needs the actual name, or `<folder>/<name>` when several folders hold it, #337; rows and candidates escape odd characters, so what they show is not what to type for such a name; they are local file names, not URLs). Sizes and times come
   from the `lstat` that decided the entry is regular, never invented when a later lookup fails; the
   `readdir` loop clears errno before each call and reads it right after; the verification provider latches
   the first non-EINTR `pread` error so a read failure is never taken for end of file.
