@@ -43,15 +43,15 @@ enum PDFCacheOutput {
     /// descriptor reports it, so it says where the file is.
     ///
     /// `protectedFolders` are Safari's own folders; a destination inside one is
-    /// refused, with or without `--force`. `protectedFoldersMayBeClosed` is for a caller
-    /// that does not hold Full Disk Access (`save-pdf`): such a folder cannot be opened,
-    /// and that alone is then not a refusal. `afterParentOpened` and `beforePublish`
+    /// refused, with or without `--force`. `protectedFoldersByPathOnly` is for a caller
+    /// that does not hold Full Disk Access (`save-pdf`): the folder's path is compared as
+    /// given and the folder is never opened. `afterParentOpened` and `beforePublish`
     /// exist so tests can create the races the anchoring and the last checks are
     /// for (swap the folder, swap the staged file); production callers leave them
     /// alone.
     static func copyVerified(
         from source: URL, to destination: String, force: Bool, protectedFolders: [URL] = [],
-        protectedFoldersMayBeClosed: Bool = false, expectedSize: Int64? = nil, expectedKey: String = "",
+        protectedFoldersByPathOnly: Bool = false, expectedSize: Int64? = nil, expectedKey: String = "",
         afterParentOpened: () -> Void = {}, beforePublish: (String) -> Void = { _ in }
     ) throws -> Result {
         let split = try splitDestination(destination)
@@ -80,7 +80,7 @@ enum PDFCacheOutput {
         // a local between the failing call and the read of errno.
         let destinationPath = parentPath == "/" ? "/\(name)" : "\(parentPath)/\(name)"
         try refuseInside(
-            protectedFolders, parentPath: parentPath, destination: destinationPath, mayBeClosed: protectedFoldersMayBeClosed)
+            protectedFolders, parentPath: parentPath, destination: destinationPath, byPathOnly: protectedFoldersByPathOnly)
 
         var existing = stat()
         if fstatat(parentFD, name, &existing, AT_SYMLINK_NOFOLLOW) == 0 {
@@ -220,30 +220,30 @@ enum PDFCacheOutput {
     /// Both sides are canonicalised through a descriptor, so a symlink or a different spelling
     /// of the same folder does not get past it.
     private static func refuseInside(
-        _ folders: [URL], parentPath: String, destination: String, mayBeClosed: Bool
+        _ folders: [URL], parentPath: String, destination: String, byPathOnly: Bool
     ) throws {
+        // By bytes: `hasPrefix` compares Characters, and a name starting with a combining mark
+        // fuses with the slash, so the folder under it would not count as inside.
         func isInside(_ protected: String) -> Bool {
-            parentPath == protected || parentPath.hasPrefix(protected == "/" ? "/" : protected + "/")
+            parentPath == protected || parentPath.utf8.starts(with: (protected == "/" ? "/" : protected + "/").utf8)
         }
         func inside() -> SafariBrowserError {
             .pdfCache(.destinationWriteFailed(
-                path: destination, detail: "it is inside Safari's own cache folder, which this command only reads"))
+                path: destination, detail: byPathOnly
+                    ? "it is inside Safari's own cache folder"
+                    : "it is inside Safari's own cache folder, which this command only reads"))
         }
         for folder in folders {
+            if byPathOnly {
+                if isInside(folder.path) { throw inside() }
+                continue
+            }
             let fd = open(folder.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
             guard fd >= 0 else {
                 // A protected folder that does not exist cannot contain the destination; one that
-                // cannot be looked at is not a pass, unless the caller was never meant to look.
-                // Then the path as written is what is left to compare: without Full Disk Access
-                // nothing could be created in there anyway.
+                // cannot be looked at is not a pass.
                 let code = errno
                 if code == ENOENT || code == ENOTDIR { continue }
-                if mayBeClosed, code == EPERM || code == EACCES {
-                    let resolved = realpath(folder.path, nil)
-                    defer { free(resolved) }
-                    if isInside(resolved.map { String(cString: $0) } ?? folder.path) { throw inside() }
-                    continue
-                }
                 throw SafariBrowserError.pdfCache(.destinationWriteFailed(
                     path: destination, detail: "Safari's cache folder could not be checked (errno \(code))"))
             }
@@ -262,7 +262,7 @@ enum PDFCacheOutput {
     /// file does exist, with whatever ACL it inherited, between its creation and this call; a
     /// user the folder's ACL lets write could hold a descriptor opened in that instant, and
     /// that is outside the threat model. A file system without ACLs has nothing to remove.
-    private static func restrictToOwner(_ fd: Int32, destination: String) throws {
+    static func restrictToOwner(_ fd: Int32, destination: String) throws {
         guard fchmod(fd, 0o600) == 0 else { throw writeFailure(destination, errno) }
         guard let empty = acl_init(0) else { throw writeFailure(destination, errno) }
         defer { acl_free(UnsafeMutableRawPointer(empty)) }

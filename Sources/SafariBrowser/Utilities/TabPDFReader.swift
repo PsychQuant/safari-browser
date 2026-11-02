@@ -11,8 +11,9 @@ import Foundation
 /// A service worker sees every fetch of the page it controls and can answer from the network, so such a
 /// page is refused rather than read.
 ///
-/// The fetch answers by URL. It is not a read of what is on screen: a document that came from a POST, or a
-/// URL reloaded in another tab since, can give other bytes, and nothing here can tell.
+/// The signed query stays in the page. No script sent from here contains the address, because a script is an
+/// `osascript` argument, part of a timeout message and a daemon log entry; the page reports back only the
+/// protocol, host and path.
 enum TabPDFReader {
     /// Refused before encoding: base64 grows the bytes by 4/3, and each 262,144 units is one `do JavaScript`.
     static let maxBytes = 268_435_456
@@ -22,6 +23,8 @@ enum TabPDFReader {
     static let deadlineSeconds: Double = 60
     private static let pollNanoseconds: UInt64 = 100_000_000
     private static let detailLimit = 200
+    /// What the start script answers. A tab that runs no scripts answers nothing.
+    private static let startedReply = "started"
 
     struct Read: Equatable {
         let bytes: Data
@@ -39,25 +42,23 @@ enum TabPDFReader {
     // MARK: - scripts
 
     /// Starts the read and returns at once; `statusScript` says when it is done. Nothing is declared in the
-    /// page's scope. The slot exists before anything can fail, so every outcome is recorded on it.
-    ///
-    /// `expectedURL` is the address read just before: between that read and this script a moved tab or a
-    /// `--first-match` re-resolution can put another page at the same address. Only the error's name is
-    /// reported, because WebKit's message text is not ours and may carry the signed URL.
-    static func startScript(slot: ResultSlot, expectedURL: String, maxBytes: Int = TabPDFReader.maxBytes) -> String {
+    /// page's scope. The slot exists before anything can fail, so every outcome is recorded on it, and it exists
+    /// only in this document: every later step fails if the tab shows another one by then. Only the error's name
+    /// is reported, because WebKit's message text is not ours and can carry the signed URL.
+    static func startScript(slot: ResultSlot, maxBytes: Int = TabPDFReader.maxBytes) -> String {
         let ref = "window.\(slot.key)"
         return """
             (\(ResultSlot.sweepExpression), \(ref) = { u: \(ResultSlot.stampExpression) }, (function(s){
               function fail(code, detail) { s.fail = code; s.detail = ('' + detail).slice(0, \(detailLimit)); s.done = true; }
               function named(e) { return e && e.name ? e.name : 'Error'; }
               try {
-                if (location.href !== '\(expectedURL.escapedForJS)') { fail('tab-changed', ''); return; }
-                if (document.contentType !== 'application/pdf') { fail('not-pdf', document.contentType); return; }
+                var type = document.contentType;
+                if (type !== 'application/pdf' && type !== 'text/pdf') { fail('not-pdf', type); return; }
                 if (navigator.serviceWorker && navigator.serviceWorker.controller) { fail('service-worker', ''); return; }
+                s.shown = location.protocol + '//' + location.host + location.pathname;
                 fetch(location.href, { cache: 'only-if-cached', mode: 'same-origin' })
                   .then(function(r){
                     if (r.status !== 200) { fail('status', r.status); return null; }
-                    if (r.redirected || r.url !== location.href.split('#')[0]) { fail('other-response', ''); return null; }
                     return r.blob();
                   }, function(e){ fail('not-held', named(e)); return null; })
                   .then(function(b){ if (!b) { return null; } s.bytes = b.size;
@@ -67,13 +68,17 @@ enum TabPDFReader {
                   .then(function(u){ if (u === null) { return; } var i = u.lastIndexOf(','); var t = i < 0 ? '' : u.slice(i + 1); s.text = t; s.len = t.length; s.done = true; })
                   .catch(function(e){ fail('read-failed', named(e)); });
               } catch (e) { fail('read-failed', named(e)); }
-            })(\(ref)), 1)
+            })(\(ref)), '\(startedReply)')
             """
     }
 
     /// One of the four closed answers `parseStatus` reads.
     static func statusScript(slot: ResultSlot) -> String {
         "(function(){ var s = window.\(slot.key); if (!s) { return 'gone'; } \(ResultSlot.touchStatement) if (!s.done) { return 'wait'; } return s.fail ? 'fail:' + s.fail + ':' + s.detail : 'ok:' + s.bytes + ':' + s.len; })()"
+    }
+
+    private static func shownScript(slot: ResultSlot) -> String {
+        "(function(){ var s = window.\(slot.key); return s && s.shown ? s.shown : ''; })()"
     }
 
     /// Anything outside the closed format is damaged, never read as a result.
@@ -99,11 +104,9 @@ enum TabPDFReader {
             guard let colon = rest.firstIndex(of: ":") else { return .damaged("unexpected status") }
             let detail = String(rest[rest.index(after: colon)...])
             switch String(rest[..<colon]) {
-            case "tab-changed": return .failed(.tabChanged)
             case "not-pdf": return .failed(.notPDF(contentType: detail))
             case "service-worker": return .failed(.serviceWorker)
             case "not-held": return .failed(.notHeld(detail: detail))
-            case "other-response": return .failed(.differentResponse)
             case "read-failed": return .failed(.readFailed(detail: detail))
             case "status":
                 if let code = number(detail) { return .failed(.badStatus(code: code)) }
@@ -117,9 +120,10 @@ enum TabPDFReader {
 
     // MARK: - reading
 
-    /// `target` is expected to be already resolved once (`resolveToAnchoredTarget`), so every step addresses
-    /// the same tab. The slot is removed at the end, except after a timeout: the page is busy then, and a
-    /// removal would wait as long again. An abandoned slot is reclaimed later (#193).
+    /// `target` is expected to be already resolved once (`resolveToAnchoredTarget`). Until the start script
+    /// runs, a position names whatever is there and a pattern whatever matches, as for every command; from
+    /// then on the slot ties the steps to that document. The slot is removed at the end, unless the tab has
+    /// stopped answering (`ResultSlot.removalIsWorthTrying`). An abandoned slot is reclaimed later (#193).
     static func read(
         target: SafariBridge.TargetDocument, firstMatch: Bool = false,
         deadlineSeconds: Double = TabPDFReader.deadlineSeconds
@@ -127,13 +131,15 @@ enum TabPDFReader {
         func run(_ script: String) async throws -> String {
             try await SafariBridge.doJavaScript(script, target: target, firstMatch: firstMatch)
         }
-        let url = try await run("location.href").trimmingCharacters(in: .whitespacesAndNewlines)
         let slot = ResultSlot.make()
         let deadline = ContinuousClock.now + .seconds(deadlineSeconds)
         do {
-            _ = try await run(startScript(slot: slot, expectedURL: url))
+            guard try await run(startScript(slot: slot)).trimmingCharacters(in: .whitespacesAndNewlines) == startedReply else {
+                throw SafariBrowserError.savePDF(.notScriptable)
+            }
             let (bytes, length) = try await awaitCompletion(
                 slot: slot, deadline: deadline, deadlineSeconds: deadlineSeconds, run: run)
+            let shown = try await run(shownScript(slot: slot)).trimmingCharacters(in: .whitespacesAndNewlines)
             let text: String
             do {
                 text = length > 0
@@ -150,9 +156,8 @@ enum TabPDFReader {
                 throw SafariBrowserError.savePDF(.damagedReply(detail: "\(decoded.count) bytes arrived where \(bytes) were announced"))
             }
             await SafariBridge.removeResultSlot(slot, target: target, firstMatch: firstMatch)
-            return Read(bytes: decoded, url: url)
+            return Read(bytes: decoded, url: shown)
         } catch {
-            if case SafariBrowserError.savePDF(.timedOut) = error { throw error }
             await SafariBridge.removeResultSlot(slot, target: target, firstMatch: firstMatch, after: error)
             throw error
         }
@@ -190,11 +195,12 @@ enum TabPDFReader {
     /// Writes the bytes owner-only into a private folder and hands that file to `PDFCacheOutput.copyVerified`,
     /// which is the same path a cached PDF takes: `%PDF-`, readable pages, `--force`, one anchored folder.
     /// The private folder is removed whatever happens. This command needs no Full Disk Access, so Safari's
-    /// cache folder may be closed to it; that is not an error here, as it is for `pdf-cache`.
+    /// cache folder is compared by its path and never opened: without the permission that is another app's
+    /// data, and touching it can raise a dialog.
     static func publish(
         _ read: Read, to destination: String, force: Bool,
         stagingRoot: URL = FileManager.default.temporaryDirectory,
-        protectedFolder: URL = WebKitCacheReader.defaultCacheRoot
+        protectedFolder: URL = TabPDFReader.cacheFolderPath
     ) throws -> PDFCacheOutput.Result {
         var template = Array(stagingRoot.appendingPathComponent("safari-browser-save-pdf-XXXXXX").path.utf8CString)
         guard mkdtemp(&template) != nil else {
@@ -202,23 +208,40 @@ enum TabPDFReader {
         }
         let folder = URL(fileURLWithPath: String(cString: template), isDirectory: true)
         defer { try? FileManager.default.removeItem(at: folder) }
+        let staged = try stage(read.bytes, in: folder)
+        do {
+            return try PDFCacheOutput.copyVerified(
+                from: staged, to: destination, force: force, protectedFolders: [protectedFolder],
+                protectedFoldersByPathOnly: true, expectedSize: Int64(read.bytes.count))
+        } catch SafariBrowserError.pdfCache(.notAPDF) {
+            // Its message names the staged file, which the caller never heard of.
+            throw SafariBrowserError.savePDF(.bytesNotPDF)
+        }
+    }
+
+    /// Owner-only before a byte is written: a temporary folder can hand down an inheritable ACL.
+    static func stage(_ bytes: Data, in folder: URL) throws -> URL {
         let staged = folder.appendingPathComponent("tab-document.pdf")
         let fd = open(staged.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw SafariBrowserError.savePDF(.stagingFailed(detail: String(cString: strerror(errno)))) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         do {
-            try handle.write(contentsOf: read.bytes)
+            try PDFCacheOutput.restrictToOwner(fd, destination: staged.path)
+            try handle.write(contentsOf: bytes)
             try handle.close()
         } catch {
             throw SafariBrowserError.savePDF(.stagingFailed(detail: error.localizedDescription))
         }
-        do {
-            return try PDFCacheOutput.copyVerified(
-                from: staged, to: destination, force: force, protectedFolders: [protectedFolder],
-                protectedFoldersMayBeClosed: true, expectedSize: Int64(read.bytes.count))
-        } catch SafariBrowserError.pdfCache(.notAPDF) {
-            // Its message names the staged file, which the caller never heard of.
-            throw SafariBrowserError.savePDF(.bytesNotPDF)
-        }
+        return staged
+    }
+
+    /// Safari's cache folder spelled as `F_GETPATH` reports a folder under it. Only the home directory is
+    /// resolved: nothing inside another app's container is touched to find this out.
+    static var cacheFolderPath: URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let resolved = realpath(home, nil)
+        defer { free(resolved) }
+        let base = resolved.map { String(cString: $0) } ?? home
+        return URL(fileURLWithPath: base + WebKitCacheReader.defaultCacheRoot.path.dropFirst(home.count))
     }
 }
