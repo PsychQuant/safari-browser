@@ -67,7 +67,7 @@ enum PDFCacheFailure: Equatable, Sendable {
         case .noMatch(let subject, let unreadNote, let fromTab):
             let unread = unreadNote.map { "\n\(t($0))" } ?? ""
             let tabNote = fromTab
-                ? "\nThe tab may be showing a PDF that never reached the cache (a `no-store` response): `safari-browser save-pdf <path>` with the same tab flag saves what the tab displays, with no request."
+                ? "\nThe tab may be showing a PDF that never reached the cache (a `no-store` response): `safari-browser save-pdf <path>` with the same tab flag saves what the tab holds, without requesting the document."
                 : ""
             return """
                 No cached PDF matches \(t(subject)).\(unread)

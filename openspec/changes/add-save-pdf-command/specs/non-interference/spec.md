@@ -18,5 +18,5 @@ The in-page read SHALL NOT send a request for the document: `only-if-cached` fai
 
 #### Scenario: no request during the read
 
-- **WHEN** `save-pdf` runs against a local server that logs requests
-- **THEN** the log gains no entry
+- **WHEN** `save-pdf` runs against a local server that logs requests, and the document has no policy naming a report endpoint
+- **THEN** the log gains no entry during the read

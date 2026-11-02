@@ -9,12 +9,12 @@ import Foundation
 struct SavePDFCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "save-pdf",
-        abstract: "Save the PDF a tab displays, from the bytes WebKit already holds, with no request",
+        abstract: "Save the PDF a tab displays, from the bytes WebKit already holds, without requesting it",
         discussion: """
             Name the tab explicitly: --url, --url-exact, --url-endswith, --url-regex, --window [--tab-in-window], \
             --document or --tab. The tab must display the PDF itself; a PDF embedded in an HTML page is not covered. \
             The read uses fetch with cache 'only-if-cached', which cannot reach the network: when WebKit no longer \
-            holds the document the command fails and nothing is requested. A page controlled by a service worker is refused.
+            holds the document the command fails and the document is not requested. A page controlled by a service worker is refused.
             """
     )
 

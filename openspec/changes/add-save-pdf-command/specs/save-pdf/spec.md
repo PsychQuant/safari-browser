@@ -13,7 +13,7 @@ The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that write
 - **WHEN** a tab displays a PDF served with `Cache-Control: no-store`
 - **AND** the user runs `safari-browser save-pdf out.pdf --url "example.org/paper.pdf"`
 - **THEN** `out.pdf` holds the same bytes the server sent
-- **AND** the server receives no request after the one that displayed the PDF
+- **AND** the server receives no request for the document during the read
 
 #### Scenario: bytes WebKit does not hold are not fetched
 

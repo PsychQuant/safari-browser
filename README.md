@@ -905,7 +905,7 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
   and exits 0. Compare the page count if that matters.
 - **It does run JavaScript in the tab**, which `pdf-cache` never does. It moves no mouse or keyboard, switches
   no tab, takes no focus, works on a background tab, and needs neither Accessibility nor Full Disk Access. It
-  does not open Safari's own folders, unless you name a destination inside one (which is then refused).
+  reads nothing from Safari's own folders. A destination inside Safari's cache folder is refused.
 - **Name the tab.** There is no default front tab. The tab must display the PDF itself: a PDF embedded in an HTML
   page (`<embed>`, `<iframe>`, PDF.js) is refused with the document's content type.
 - **When it fails**, WebKit no longer holds the document or the page's policy blocked the read; the page cannot
@@ -917,7 +917,7 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
   path come back, printed without path parameters, so a signed query does not reach its output or errors. Finding
   the tab is separate: `--url` reads the tabs' URLs as every command does, and with a live daemon its log keeps up
   to 256 characters of those replies (#230). Prefer `--url` with part of the path: `--url-exact` needs the whole
-  address, query included, and that then sits in every script.
+  address, query included, and the target check added to each step then carries it.
 
 ### Permissions
 
