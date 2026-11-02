@@ -10,8 +10,9 @@ enum PDFCacheSource: String, ExpressibleByArgument, CaseIterable {
 }
 
 /// Query strings on signed URLs can be credentials, so every URL that is
-/// shown is reduced to scheme, host and path. Matching still uses the full
-/// string; only display is reduced.
+/// shown is reduced to scheme, host and path, without the credentials and path
+/// parameters `URLText` removes (#342). Matching still uses the full string;
+/// only display is reduced.
 enum PDFCacheURL {
     struct Redacted: Equatable {
         let display: String
@@ -30,10 +31,11 @@ enum PDFCacheURL {
     static func redact(_ url: String) -> Redacted {
         let withoutFragment = removingFragment(url)
         let scalars = withoutFragment.unicodeScalars
+        // The query goes first: `URLText` would leave a marker, and here it is a field of its own.
         guard let query = scalars.firstIndex(of: "?") else {
-            return Redacted(display: withoutFragment, hadQuery: false)
+            return Redacted(display: URLText.redactURL(withoutFragment), hadQuery: false)
         }
-        return Redacted(display: String(scalars[..<query]), hadQuery: true)
+        return Redacted(display: URLText.redactURL(String(scalars[..<query])), hadQuery: true)
     }
 
     /// Swift's `==` on strings treats canonically equivalent text as equal; a
@@ -120,7 +122,7 @@ enum PDFCacheSelection {
         if !scan.partialKeys.isEmpty { parts.append("\(scan.partialKeys.count) that hold only a byte range") }
         if !scan.outOfSyncKeys.isEmpty { parts.append("\(scan.outOfSyncKeys.count) whose record does not describe its body") }
         guard !parts.isEmpty else { return nil }
-        return "The cache also holds PDF bodies that were not considered: \(parts.joined(separator: ", ")). The one you mean may be among them; see `pdf-cache list`."
+        return "The cache also holds PDF bodies that were not considered: \(parts.joined(separator: ", ")). The one you mean may be among them; `pdf-cache list` does not show them."
     }
 
     /// Case-insensitive prefix of the record key. A body whose record cannot be
@@ -148,15 +150,19 @@ enum PDFCacheSelection {
         return try single(matches, subject: subject)
     }
 
+    /// A name with a slash names its folder too, as the candidates are printed: there is no other way to
+    /// tell duplicates apart (#337). Only what the scan listed can match, so `..` reaches nothing.
     static func select(fileName: String, from pdfs: [TemporaryPDF]) throws -> TemporaryPDF {
-        let matches = pdfs.filter { $0.name == fileName }
+        let matches = fileName.unicodeScalars.contains("/")
+            ? pdfs.filter { PDFCacheURL.isSame("\($0.folder)/\($0.name)", fileName) }
+            : pdfs.filter { $0.name == fileName }
         let subject = "file name \(fileName)"
         switch matches.count {
         case 1: return matches[0]
-        case 0: throw SafariBrowserError.pdfCache(.noMatch(subject: subject))
+        case 0: throw SafariBrowserError.pdfCache(.noMatch(subject: subject, fromFile: true))
         default:
             throw SafariBrowserError.pdfCache(.ambiguous(
-                subject: subject, candidates: matches.map { PDFCacheFormat.candidateLine($0) }))
+                subject: subject, candidates: matches.map { PDFCacheFormat.candidateLine($0) }, next: .folderAndName))
         }
     }
 
@@ -166,7 +172,7 @@ enum PDFCacheSelection {
         case 0: throw SafariBrowserError.pdfCache(.noMatch(subject: subject, unreadNote: unreadNote, fromTab: fromTab))
         default:
             throw SafariBrowserError.pdfCache(.ambiguous(
-                subject: subject, candidates: matches.map { PDFCacheFormat.candidateLine($0) }))
+                subject: subject, candidates: matches.map { PDFCacheFormat.candidateLine($0) }, next: fromTab ? .tabHolds : .longerKey))
         }
     }
 }

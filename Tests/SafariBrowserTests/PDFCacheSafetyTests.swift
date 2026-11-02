@@ -399,7 +399,7 @@ final class PDFCacheSafetyTests: XCTestCase {
         }
         // By tab: a miss says that part of the cache was not considered.
         XCTAssertThrowsError(try PDFCacheSelection.select(tabURL: "https://e.org/b.pdf", scan: scan)) {
-            guard case SafariBrowserError.pdfCache(.noMatch(_, let note, _)) = $0 else { return XCTFail("\($0)") }
+            guard case SafariBrowserError.pdfCache(.noMatch(_, let note, _, _)) = $0 else { return XCTFail("\($0)") }
             XCTAssertTrue(note?.contains("not considered") == true, "\(String(describing: note))")
             XCTAssertTrue("\($0)".contains("pdf-cache list") || ($0 as? SafariBrowserError)?.errorDescription?.contains("pdf-cache list") == true)
         }

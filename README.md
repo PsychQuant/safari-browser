@@ -841,7 +841,10 @@ safari-browser pdf-cache get paper.pdf --url example.org/a.pdf  # the tab whose 
 safari-browser pdf-cache get paper.pdf --key 9F3A62C1           # a key (8+ hex chars) from `list`
 safari-browser pdf-cache list --source webkit-pdfs              # the WebKitPDFs-* temporaries
 safari-browser pdf-cache get paper.pdf --source webkit-pdfs --file paper.pdf
+safari-browser pdf-cache get paper.pdf --source webkit-pdfs --file WebKitPDFs-AB12/paper.pdf  # same name in two folders
 ```
+
+A listing row is not tied to any tab, and the URL it shows has no query, so the same URL there can be a different PDF: `--key` and `--file` are for a PDF a person has identified. URLs are shown without query, fragment, credentials or path parameters.
 
 `get` acts only on an explicit selection — one of a tab flag, `--key`, or
 `--source webkit-pdfs --file` — and never picks a PDF for you, not even when only

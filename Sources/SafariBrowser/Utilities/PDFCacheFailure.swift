@@ -8,6 +8,13 @@ import Foundation
 /// telling the caller the cache is empty when the reader could not understand
 /// it is the failure this command is built to avoid.
 enum PDFCacheFailure: Equatable, Sendable {
+    /// What a selection that matched several can do next.
+    enum AmbiguousNextStep: Equatable, Sendable {
+        case longerKey
+        case tabHolds
+        case folderAndName
+    }
+
     /// `WebKitCache/` itself is absent.
     case cacheFolderMissing(path: String)
     /// `WebKitCache/` exists but has no `Version 17`; `seen` lists the `Version *` folders it does have.
@@ -20,9 +27,10 @@ enum PDFCacheFailure: Equatable, Sendable {
     /// when the cache also holds PDFs this command could not interpret (unreadable records, byte
     /// ranges, a record that disagrees with its body): "nothing matches" would then be a claim
     /// about a cache that was not fully understood.
-    case noMatch(subject: String, unreadNote: String? = nil, fromTab: Bool = false)
-    /// A selection matched several; `candidates` are display lines, not chosen between.
-    case ambiguous(subject: String, candidates: [String])
+    case noMatch(subject: String, unreadNote: String? = nil, fromTab: Bool = false, fromFile: Bool = false)
+    /// A selection matched several; `candidates` are display lines, not chosen between. What can be
+    /// done next depends on the form: `--key` is refused with `--file`, and nothing ties a key to a tab.
+    case ambiguous(subject: String, candidates: [String], next: AmbiguousNextStep = .longerKey)
     /// `--key` named a body whose record cannot be read.
     case unreadableRecord(key: String)
     /// `--key` named a body that is only a byte range of a resource, not a document.
@@ -64,23 +72,39 @@ enum PDFCacheFailure: Equatable, Sendable {
                   3. --source webkit-pdfs --file <name>
                 It never picks a PDF on its own, not even when only one is cached.
                 """
-        case .noMatch(let subject, let unreadNote, let fromTab):
+        case .noMatch(let subject, let unreadNote, _, true):
+            let unread = unreadNote.map { "\n\(t($0))" } ?? ""
+            return """
+                No file in the WebKitPDFs folders matches \(t(subject)).\(unread)
+                `safari-browser pdf-cache list --source webkit-pdfs` shows them, by folder and name, so that a person can identify one.
+                """
+        case .noMatch(let subject, let unreadNote, let fromTab, false):
             let unread = unreadNote.map { "\n\(t($0))" } ?? ""
             let tabNote = fromTab
                 ? "\nThe tab may be showing a PDF that never reached the cache (a `no-store` response): `safari-browser save-pdf <path>` with the same tab flag saves what the tab holds, without requesting the document."
                 : ""
             return """
                 No cached PDF matches \(t(subject)).\(unread)
-                Run `safari-browser pdf-cache list` to see what is cached. A tab is matched by its \
-                exact URL (fragment removed), and responses stored inside the record itself rather \
-                than in a separate body file are not covered.\(tabNote)
+                A tab is matched by its exact URL (fragment removed), and responses stored inside the record \
+                itself rather than in a separate body file are not covered.\(tabNote)
+                `safari-browser pdf-cache list` shows what is cached so that a person can identify a PDF. A row is \
+                not tied to any tab, and the URL it shows has no query: the same URL there can be a different PDF.
                 """
-        case .ambiguous(let subject, let candidates):
+        case .ambiguous(let subject, let candidates, let next):
             let lines = candidates.map { "  \($0)" }.joined(separator: "\n")
+            let step: String
+            switch next {
+            case .longerKey:
+                step = "Re-run with a longer --key prefix naming one of them."
+            case .tabHolds:
+                step = "Nothing here says which one the tab displays. `safari-browser save-pdf <path>` with the same tab flag saves what the tab holds; --key <prefix> is for one a person has identified."
+            case .folderAndName:
+                step = "Re-run with --file <folder>/<name> naming one of them, as shown above."
+            }
             return """
                 \(t(subject)) matches \(candidates.count) cached PDFs; refusing to choose between them:
                 \(lines)
-                Re-run with --key <prefix> naming one of them.
+                \(step)
                 """
         case .unreadableRecord(let key):
             return "The record for cached PDF '\(t(key))' cannot be read as the 'Version 17' layout, so it cannot be selected."

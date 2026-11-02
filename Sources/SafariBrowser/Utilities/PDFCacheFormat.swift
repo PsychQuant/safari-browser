@@ -51,8 +51,8 @@ enum PDFCacheFormat {
                     + "\(pdf.partition.isEmpty ? "-" : field(PDFCacheURL.redact(pdf.partition).display))  "
                     + "\(field(PDFCacheURL.redact(pdf.requestURL).display))  \(pdf.size) B"
             },
-            legend: "pdf-cache: [N]  local-time  key  partition  url (query and fragment removed)  size  "
-                + "(default limit 50; use --limit; select one with `pdf-cache get <path> --key <prefix>`)")
+            legend: "pdf-cache: [N]  local-time  key  partition  url (no query, fragment, credentials or path parameters)  size  "
+                + "(default limit 50; use --limit; a row is not tied to any tab: `pdf-cache get <path> --key <prefix>` is for a PDF a person has identified)")
     }
 
     static func cacheListingJSON(_ pdfs: [WebKitCachedPDF], limit: Int) throws -> Data {
@@ -81,7 +81,7 @@ enum PDFCacheFormat {
                 "[\(index + 1)]  \(timestamp(pdf.date, timeZone: timeZone))  \(field(pdf.name))  \(field(pdf.folder))  \(pdf.size) B"
             },
             legend: "pdf-cache (webkit-pdfs): [N]  local-time  file  folder  size  "
-                + "(default limit 50; use --limit; select one with `pdf-cache get <path> --source webkit-pdfs --file <name>`)")
+                + "(default limit 50; use --limit; `pdf-cache get <path> --source webkit-pdfs --file <name>`, or <folder>/<name> when several folders hold that name, is for a file a person has identified)")
     }
 
     static func temporaryListingJSON(_ pdfs: [TemporaryPDF], limit: Int) throws -> Data {

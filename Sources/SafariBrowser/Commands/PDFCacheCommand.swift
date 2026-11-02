@@ -99,7 +99,7 @@ struct PDFCacheGet: AsyncParsableCommand {
     @Option(name: .long, help: "Where to read: cache (default) or webkit-pdfs")
     var source: PDFCacheSource = .cache
 
-    @Option(name: .long, help: "With --source webkit-pdfs: the file name to copy")
+    @Option(name: .long, help: "With --source webkit-pdfs: the file name to copy, or <folder>/<name> when several folders hold that name")
     var file: String?
 
     @Flag(name: .long, help: "Replace the destination if it exists")

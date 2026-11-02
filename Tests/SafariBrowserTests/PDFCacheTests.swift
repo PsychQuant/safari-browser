@@ -150,7 +150,7 @@ final class PDFCacheTests: XCTestCase {
         let cached = [pdf(key: "AAAA1111AAAA", url: "https://example.org/a.pdf", partitionDirectory: "P1", partition: "https://one.example"),
                       pdf(key: "CCCC3333CCCC", url: "https://example.org/a.pdf", partitionDirectory: "P2", partition: "https://two.example")]
         XCTAssertThrowsError(try PDFCacheSelection.select(tabURL: "https://example.org/a.pdf", from: cached)) {
-            guard case SafariBrowserError.pdfCache(.ambiguous(_, let candidates)) = $0 else { return XCTFail("\($0)") }
+            guard case SafariBrowserError.pdfCache(.ambiguous(_, let candidates, _)) = $0 else { return XCTFail("\($0)") }
             XCTAssertEqual(candidates.count, 2)
             XCTAssertTrue(candidates[0].contains("AAAA1111AAAA".prefix(12)) && candidates[1].contains("CCCC3333CCCC".prefix(12)))
             XCTAssertTrue($0.localizedDescription.contains("--key"))
@@ -179,7 +179,7 @@ final class PDFCacheTests: XCTestCase {
         XCTAssertEqual(try PDFCacheSelection.select(keyPrefix: "99990000", scan: scan).key, "99990000AAAA")
         XCTAssertEqual(try PDFCacheSelection.select(keyPrefix: "abcd1234e", scan: scan).key, "ABCD1234EEEE")
         XCTAssertThrowsError(try PDFCacheSelection.select(keyPrefix: "ABCD1234", scan: scan)) {
-            guard case SafariBrowserError.pdfCache(.ambiguous(_, let candidates)) = $0 else { return XCTFail("\($0)") }
+            guard case SafariBrowserError.pdfCache(.ambiguous(_, let candidates, _)) = $0 else { return XCTFail("\($0)") }
             XCTAssertEqual(candidates.count, 2)
         }
         XCTAssertThrowsError(try PDFCacheSelection.select(keyPrefix: "00000000", scan: scan)) {
@@ -202,7 +202,7 @@ final class PDFCacheTests: XCTestCase {
         }
         // A prefix shared by a whole body and a partial one is ambiguous, and both are shown.
         XCTAssertThrowsError(try PDFCacheSelection.select(keyPrefix: "AAAA1111", scan: scan)) {
-            guard case SafariBrowserError.pdfCache(.ambiguous(_, let candidates)) = $0 else { return XCTFail("\($0)") }
+            guard case SafariBrowserError.pdfCache(.ambiguous(_, let candidates, _)) = $0 else { return XCTFail("\($0)") }
             XCTAssertEqual(candidates.count, 2)
             XCTAssertTrue(candidates.contains { $0.contains("byte range only") })
         }
@@ -622,7 +622,7 @@ final class PDFCacheTests: XCTestCase {
         // The same name in two folders is refused, and both folders are listed.
         XCTAssertThrowsError(try PDFCacheService.retrieve(form: .file("a.pdf"), tabURL: nil, paths: paths,
                                                           destination: out.appendingPathComponent("a.pdf").path, force: false)) {
-            guard case SafariBrowserError.pdfCache(.ambiguous(_, let candidates)) = $0 else { return XCTFail("\($0)") }
+            guard case SafariBrowserError.pdfCache(.ambiguous(_, let candidates, _)) = $0 else { return XCTFail("\($0)") }
             XCTAssertEqual(candidates.count, 2)
         }
         XCTAssertThrowsError(try PDFCacheService.retrieve(form: .file("missing.pdf"), tabURL: nil, paths: paths,

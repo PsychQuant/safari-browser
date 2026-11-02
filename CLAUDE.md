@@ -457,18 +457,19 @@ used to read the target tab's URL when a tab flag is given).
   profile's store is read; a named profile has its own). That does not identify the profile of a tab
   chosen with `--url` / `--window`: such a tab's URL is still looked up in the default store, so a miss or
   the default profile's version of the same URL is possible (#243). Never "newest" or "the only one".
+- **A listing row is not a next step** (#340): it is not tied to any tab and shows no query, and an agent reads the CLI's words at the moment of failure. On 2026-11-02 one followed "run `pdf-cache list`", picked a row with the same displayed URL, and copied another PDF with exit 0. Do not bring back wording that offers the listing or `--key` as the way out of a tab miss; `PDFCacheGuidanceTests` pins this.
 - **Matching is byte equality** (UTF-8, not Swift's canonical-equivalence `==`) of the tab URL (fragment removed)
   with the record's request URL.
   Several matches stop and list the candidates; zero matches stop and say so (with a count of the PDFs
   the scan could not interpret, because the one meant may be among them); there is no near-match
   fallback and no fallback between the two sources.
-- **URLs are shown without query or fragment** (`PDFCacheURL.redact`, delimiters found among Unicode
+- **URLs are shown without query, fragment, credentials or path parameters** (`PDFCacheURL.redact` cuts the query, keeps `has_query` as its own field, and hands the rest to `URLText.redactURL`, #342; delimiters found among Unicode
   *scalars* — `String.firstIndex(of: "?")` compares grapheme clusters and misses a `?` followed by a
   combining mark); matching uses the full string.
   The tests plant a `SECRET` query and assert it appears in no row, JSON, or error message of this
   command. The shared tab-resolution errors (`documentNotFound`, `ambiguousWindowMatch`) list open tabs'
   URLs unredacted for every command; they are outside this guarantee (#227). `--file` names and filesystem paths are
-  printed as given (`--file` needs the exact name; they are local file names, not URLs). Sizes and times come
+  printed as given (`--file` needs the exact name, or `<folder>/<name>` when several folders hold it, #337; they are local file names, not URLs). Sizes and times come
   from the `lstat` that decided the entry is regular, never invented when a later lookup fails; the
   `readdir` loop clears errno before each call and reads it right after; the verification provider latches
   the first non-EINTR `pread` error so a read failure is never taken for end of file.

@@ -169,7 +169,7 @@ For a tab-targeting selection, the command SHALL read the target tab's URL throu
 ---
 ### Requirement: URLs are shown without query or fragment
 
-The query and fragment SHALL be located among Unicode scalars, so that a combining mark after `?` or `#` cannot hide them. Every URL the command itself prints — in list rows, JSON, `get` output, and its own error messages — SHALL be shown with its query and fragment removed. File names inside the `WebKitPDFs-*` folders and filesystem paths are printed as they are (they are local file names, and `--file` needs the exact name); they are not URLs. Errors raised by the shared tab resolution when a tab flag matches no tab or several tabs (`documentNotFound`, `ambiguousWindowMatch`) list the URLs of open tabs as they do for every command; they are not produced by this command and are outside this requirement. Matching SHALL use the complete URL as specified in "A tab selection maps to a record by exact URL"; only display is reduced. The JSON field `has_query` SHALL say whether a query was removed.
+The query and fragment SHALL be located among Unicode scalars, so that a combining mark after `?` or `#` cannot hide them. Every URL the command itself prints — in list rows, JSON, `get` output, and its own error messages — SHALL be shown with its query and fragment removed, and through `URLText.redactURL` without credentials or path parameters. File names inside the `WebKitPDFs-*` folders and filesystem paths are printed as they are (they are local file names, and `--file` needs the exact name, or `<folder>/<name>`); they are not URLs. Errors raised by the shared tab resolution when a tab flag matches no tab or several tabs (`documentNotFound`, `ambiguousWindowMatch`) list the URLs of open tabs as they do for every command; they are not produced by this command and are outside this requirement. Matching SHALL use the complete URL as specified in "A tab selection maps to a record by exact URL"; only display is reduced. The JSON field `has_query` SHALL say whether a query was removed.
 
 #### Scenario: a signed URL is listed
 
@@ -246,7 +246,17 @@ A record that fails class 3 while others parse SHALL be left out of `list` outpu
 #### Scenario: same name in two folders
 
 - **WHEN** `--source webkit-pdfs --file a.pdf` finds `a.pdf` in two folders
-- **THEN** the command fails and lists both folders
+- **THEN** the command fails, lists both folders as `<folder>/<name>`, and names `--file <folder>/<name>` as the next step, not `--key`
+
+#### Scenario: folder and name select one
+
+- **WHEN** `--source webkit-pdfs --file WebKitPDFs-B/a.pdf` runs and that folder and name were listed
+- **THEN** that file is copied; a folder that was not listed, or a path with `..`, matches nothing
+
+#### Scenario: the listing is not offered as a way to choose
+
+- **WHEN** a tab selection finds no cached record, or several, or `pdf-cache list` prints its legend
+- **THEN** the text says a listing row is for a person to identify a PDF and is not tied to any tab, and a tab selection names `save-pdf`
 
 ---
 ### Requirement: Access failures keep their cause
