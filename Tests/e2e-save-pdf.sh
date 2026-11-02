@@ -65,13 +65,30 @@ def pdf(padding):
     return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, x)
 sizes = {"nostore.pdf": 250_000, "background.pdf": 250_000, "notheld.pdf": 250_000, "landed.pdf": 250_000,
          "error404.pdf": 250_000, "csp.pdf": 250_000, "changing-a.pdf": 250_000, "changing-b.pdf": 300_000,
-         "slow/drip.pdf": 2_000_000, "nostore50.pdf": 50 * 1024 * 1024, "plain-big.pdf": 20 * 1024 * 1024}
+         "slow/drip.pdf": 2_000_000, "nostore50.pdf": 50 * 1024 * 1024}
 for name, size in sizes.items():
     open(os.path.join(root, name), "wb").write(pdf(size))
+def many_pages(count, each):
+    # Pages that are really referenced, so that qpdf --linearize keeps them.
+    objs = [b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(b"%d 0 R" % (3 + 2 * i) for i in range(count)), count)]
+    content = b"q Q\n" * (each // 4)
+    for i in range(count):
+        objs.append(b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents %d 0 R >>" % (4 + 2 * i))
+        objs.append(b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream")
+    out = b"%PDF-1.4\n"; offs = []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out)); out += b"%d 0 obj\n" % i + o + b"\nendobj\n"
+    x = len(out); out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    out += b"".join(b"%010d 00000 n \n" % o for o in offs)
+    return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, x)
+open(os.path.join(root, "plain-big.pdf"), "wb").write(many_pages(200, 100_000))
 open(os.path.join(root, "plain.html"), "w").write("<!doctype html><title>plain</title><p>not a pdf")
 PY
 # WebKit asks for byte ranges only for a linearized PDF, so the ranged case needs one.
-if command -v qpdf >/dev/null; then qpdf --linearize "$WORK/www/plain-big.pdf" "$WORK/www/ranged/big.pdf" 2>/dev/null; fi
+if command -v qpdf >/dev/null; then
+    qpdf --linearize --compress-streams=n --object-streams=disable --warning-exit-0 "$WORK/www/plain-big.pdf" "$WORK/www/ranged/big.pdf" 2>/dev/null
+fi
 cat > "$WORK/serve.py" <<'PY'
 import http.server, re, sys, time
 root, log, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -108,6 +125,14 @@ class H(http.server.SimpleHTTPRequestHandler):
                 self.wfile.write(data[i:i + step]); self.wfile.flush(); time.sleep(1)
             return
         m = re.fullmatch(r"bytes=(\d+)-(\d*)", self.headers.get("Range", ""))
+        if self.path.startswith("/ranged/") and not m:
+            # Slowly, as over a real network: that is when the viewer asks for ranges of its own.
+            data = self.body(self.path.lstrip("/")); step = len(data) // 20 + 1
+            try:
+                for i in range(0, len(data), step):
+                    self.wfile.write(data[i:i + step]); self.wfile.flush(); time.sleep(0.25)
+            except OSError: pass
+            return
         if not (m and self.path.startswith("/ranged/")): return super().do_GET()
         data = open(self.translate_path(self.path), "rb").read()
         start, end = int(m[1]), min(int(m[2]) if m[2] else len(data) - 1, len(data) - 1)

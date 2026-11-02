@@ -15,7 +15,7 @@ export SAFARI_BROWSER_BIN
         verify-developer-id verify-install-signature \
         test test-unit test-smoke test-all test-install-signature \
         test-install-signature-strict \
-        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-dialog test-exec-script test-mark-tab test-save-pdf test-csp test-target-identity test-reference-edges
+        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-dialog test-exec-script test-mark-tab test-save-pdf test-save-pdf-webkit test-csp test-target-identity test-reference-edges
 
 # The release build is wrapped so the binary learns its own version (#278).
 # scripts/stamp-version.sh writes `git describe` into the tracked placeholder
@@ -335,6 +335,10 @@ test-mark-tab: build-debug
 # #338: opens a foreground Safari window; needs E2E_SAVE_PDF_OK=1. Not during a call.
 test-save-pdf: build-debug
 	./Tests/e2e-save-pdf.sh
+
+# #338: the page script on a real WebKit (an off-screen WKWebView), with no Safari.
+test-save-pdf-webkit:
+	SAVE_PDF_WEBKIT=1 swift test --filter TabPDFWebKitTests
 
 # #76: js on strict-CSP pages (eval-free wrappers) + interaction commands.
 test-csp: build-debug

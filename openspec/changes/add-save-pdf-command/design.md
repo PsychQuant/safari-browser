@@ -63,7 +63,7 @@ pdf-cache 的價值是「不碰 Safari」這個可驗證的契約（`PDFCacheTes
 
 ### 回應是 WebKit 為文件合成的，不要拿它做保證
 
-離屏 `WKWebView` 量到：伺服器回 404、500、203、206，fetch 一律 200 且只有 `content-disposition`、`content-type` 兩個標頭；經 302 到達的分頁 `redirected:false`；兩個 view 同網址不同內容，各回自己顯示的；`no-store` 的 HTML 文件則回 TypeError。所以這個回應不是 HTTP 回應原樣，而是 PDF 文件自己給的。因此不檢查 `redirected` 與回應網址（第 1 輪加過，走不到，而且 ScienceDirect 本身就走轉址）；`r.status !== 200` 留著給不這樣回答的引擎，但不把它當保證。擋下截斷檔的是 `copyVerified` 的頁面檢查：切在 5% 到 99% 的 PDF 都打不開。Safari 上的行為由 e2e 重量；如果不同，這一節與 README 要改。
+離屏 `WKWebView` 量到：伺服器回 404、500、203、206，fetch 一律 200 且只有 `content-disposition`、`content-type` 兩個標頭；經 302 到達的分頁 `redirected:false`；兩個 view 同網址不同內容，各回自己顯示的；`no-store` 的 HTML 文件則回 TypeError。所以這個回應不是 HTTP 回應原樣，而是 PDF 文件自己給的。因此不檢查 `redirected` 與回應網址（第 1 輪加過，走不到，而且 ScienceDirect 本身就走轉址）；`r.status !== 200` 留著給不這樣回答的引擎，但不把它當保證。擋下截斷檔的是 `copyVerified` 的頁面檢查：切在 5% 到 99% 的 PDF 都打不開。`TabPDFWebKitTests`（`make test-save-pdf-webkit`）以真正的 `TabPDFReader.read` 重現了這些，而且是最終版腳本。Safari 上的行為由 e2e 重量；如果不同，這一節與 README 要改。
 
 ### 身分靠 slot，網址不離開頁面
 
@@ -114,6 +114,6 @@ WebKit 在 PDF 載入期間不執行任何腳本（`Cannot execute JavaScript in
 - 頁面可覆寫 `fetch`、`FileReader`，連 `document.contentType` 也可以，因為檢查跑在同一個頁面世界裡：有腳本的 HTML 頁面騙得過它，CLI 仍會回報 `source: "tab"`，只要位元組通過 `%PDF-` 與頁面檢查。實際顯示 PDF 的文件沒有頁面腳本。威脅模型是失誤，不是惡意頁面；CLI 只複核頁面報的數字（大小上限、base64 長度），不讓它決定這邊的配置。
 - `only-if-cached` 不連網是 WebKit 的行為，目前在 Safari 27.2 量到；e2e 以伺服器紀錄為準，新版 Safari 要重跑。
 - 50 MB 以上的讀回速度尚未量（`do JavaScript` 分塊）→ e2e 量測，超過上限的情況明確失敗。
-- 線性化 PDF 在支援 Range 的伺服器上才會發 Range 請求，手動量測時的 fixture 不是 → e2e 用 `qpdf --linearize` 的 fixture，Range 數為 0 時明確說沒量到。離屏 WKWebView 上這種情況最後取回完整位元組。
+- 線性化 PDF 在支援 Range 的伺服器上、主串流夠慢時才會發 Range 請求，手動量測時的 fixture 不是 → e2e 與 WebKit 測試都用 `qpdf --linearize` 的多頁 fixture，Range 數為 0 時明確說沒量到。離屏 WKWebView 量到 4 個 Range 請求，讀取期間 0 個，取回完整位元組。
 - CSP 擋下 fetch 又設了回報端點時，瀏覽器會把含簽章的完整網址 POST 給網站（離屏 WKWebView 量到）→ 頁面事前讀不到 CSP，擋不了；訊息寫「No request for the document was sent」，README 與規格寫明例外，e2e 量。這違背選這條路的前提（網站看不到這個動作），只在這個條件下成立，由維護者知悉。
 - `file:` 分頁未量：依 Fetch 規格 `same-origin` 會 reject，訊息會是 `notHeld`。

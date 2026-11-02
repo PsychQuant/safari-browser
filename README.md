@@ -897,8 +897,8 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
   One thing is out of its hands: a response whose Content-Security-Policy blocks `connect-src` and names a
   report endpoint makes the browser post a violation report, with the full address, when the fetch is blocked.
   The page cannot see that policy beforehand.
-- **What it saves is what the fetch answers.** Measured on WebKit in an off-screen view, that answer is made for
-  the displayed PDF: status 200 whatever the server sent, so a PDF served with a 404 is saved like any other, a
+- **What it saves is what the fetch answers.** Measured on WebKit in an off-screen view (`make test-save-pdf-webkit`,
+  no Safari involved), that answer is made for the displayed PDF: status 200 whatever the server sent, so a PDF served with a 404 is saved like any other, a
   redirect does not show, and two tabs on one URL with different content each gave their own. A truncated
   document fails the page check below; nothing here looks at the server's status.
 - **It does run JavaScript in the tab**, which `pdf-cache` never does. It moves no mouse or keyboard, switches

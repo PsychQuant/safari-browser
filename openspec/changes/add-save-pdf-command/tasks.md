@@ -46,4 +46,5 @@
 - [x] 9.4 只回報錯誤名稱；fetch 之後的失敗不報成 WebKit 沒持有；啟動腳本沒回 `started` 是 `notScriptable`；逗號與 scalar 的邊界。驗證：同上（design: 啟動腳本要回固定字串）
 - [x] 9.5 CLI 複核頁面報的數字；期限從啟動前算，逾時才回來的結果不收；逾時後移除 slot。驗證：同上
 - [x] 9.6 分頁消失時指名目標、不列分頁；`--profile` 確實傳到解析；輸出網址經 `URLText.redactURL`；訊息不顯示暫存檔名；父路徑是檔案時提早拒絕；暫存檔去掉繼承的 ACL；組合字元開頭的資料夾名稱仍算在快取內。驗證：`swift test --filter SavePDF`
+- [x] 9.8 真 WebKit 測試：`TabPDFWebKitTests` 跑真正的 `TabPDFReader.read`，每個 `do JavaScript` 在離屏 `WKWebView` 執行，對應 12 個案例（no-store、404、轉址、同網址兩份、未持有、HTML、`text/pdf`、CSP 回報、截斷、載入中、50 MB、線性化 Range）。驗證：`make test-save-pdf-webkit`，12 個通過（design: 回應是 WebKit 為文件合成的，不要拿它做保證）
 - [x] 9.7 重寫 e2e：同意之前不碰 Safari、以視窗 id 或 fixture 網址定址、「沒有請求」有正向對照，加上未持有、轉址、404、同網址換內容、CSP 回報、載入中、無 FDA、線性化 Range 案例，前景比對時先把 Finder 拉到前面。驗證：`bash -n`，未設旗標時 exit 77；真機結果見 8.1
