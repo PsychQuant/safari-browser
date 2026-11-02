@@ -604,6 +604,17 @@ takes the update lock after a kill).
   A running-binary test compiles a tiny C program with `cc` (a copy of an arm64e Apple binary
   such as `/bin/sleep` is killed at launch off the system volume) and skips without a compiler.
 
+## Tab PDFs (`save-pdf`, #338)
+
+`pdf-cache` 讀磁碟快取，而 `no-store` 的回應不會進去。`save-pdf <path>` 在明確鎖定的分頁裡以 `fetch(location.href, {cache:'only-if-cached', mode:'same-origin'})` 讀 WebKit 記憶體裡的文件。**它與 pdf-cache 分開是刻意的**：pdf-cache 的契約是不執行 JavaScript、不操作 Safari（`PDFCacheTests` 在結構上釘住），不要把兩者合併，也不要在 pdf-cache 裡呼叫它（只有 no-match 訊息提到它）。
+
+- **唯一的網路 API 是那一個 fetch**，失敗就失敗，不換 cache mode、不改走對話框（`testTheScriptNamesNoOtherWayToTheNetwork`）。`only-if-cached` 沒持有時不連網，是在 Safari 27.2 以伺服器紀錄量到的（`make test-save-pdf`，會開前景視窗，要 `E2E_SAVE_PDF_OK=1`）；新版 Safari 要重跑。受 service worker 控制的頁面拒絕，因為它可以從網路回答。
+- **傳輸**：base64 存進這次呼叫的 `ResultSlot`，`readResultSlot` 分塊讀回，解碼後的 byte 數要等於頁面報的 `Blob.size`。不要改用 `fetchResourceWithCookies`（固定全域名稱，#190 那一類問題）。沒做在頁面上算雜湊比對：同長度的改寫偵測不到。
+- **發布**：寫進 `mkdtemp` 的私有資料夾（0700／0600），交給 `PDFCacheOutput.copyVerified`，暫存一律刪除；`refuseExistingDestination` 只是傳輸前的提早判斷，最終判定在 `copyVerified`。硬終止時暫存會留在 `$TMPDIR`（owner-only）。
+- **錯誤**：`SavePDFFailure` 是封閉列舉。`notHeld` 涵蓋「WebKit 沒持有」與「CSP 擋下」：兩者在頁面裡都是 `TypeError`，分不出來，訊息照實說。
+- **未量測**：WebKit 能持有多久（ScienceDirect 分頁 8 分鐘後仍在）；分塊讀回的實際耗時（`make test-save-pdf` 會印 50 MB 的耗時，還沒在真機跑過）。
+- 頁面可以覆寫 `fetch`／`FileReader`，但 PDF 文件沒有頁面腳本，而 `contentType` 檢查先行；威脅模型是失誤，不是惡意頁面。
+
 ## Install-signature guard：suite 本身被 gate 管（#119, round 10）
 
 #122 後的 authoritative policy 位於 `Sources/SafariBrowser/Utilities/SignatureAssessment.swift`，

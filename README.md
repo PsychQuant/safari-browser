@@ -879,6 +879,31 @@ are not covered. The `WebKitPDFs-*` folders were seen to appear after someone pr
 and the command never presses it for you. Requires **Full Disk Access**, like the
 local-data commands above.
 
+### Saving what a tab displays (#338)
+
+A response marked `Cache-Control: no-store` never reaches the disk cache `pdf-cache` reads, so a tab can
+show a PDF that `pdf-cache get` cannot find (ScienceDirect's signed `main.pdf` URLs are one case). WebKit
+still holds the displayed document in memory, and `save-pdf` reads it from there:
+
+```bash
+safari-browser save-pdf paper.pdf --url 'example.org/main.pdf'
+safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, size, pages, source, url
+```
+
+- **No request.** The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
+  answers from what Safari holds or fails; there is no second attempt. A page controlled by a service worker
+  is refused, because a service worker can answer from the network. Measured on Safari 27.2 with a local
+  server that logs requests (`make test-save-pdf`).
+- **It does run JavaScript in the tab**, which `pdf-cache` never does. It moves no mouse or keyboard, switches
+  no tab, takes no focus, works on a background tab, and needs neither Accessibility nor Full Disk Access.
+- **Name the tab.** There is no default front tab. The tab must display the PDF itself: a PDF embedded in an HTML
+  page (`<embed>`, `<iframe>`, PDF.js) is refused with the document's content type.
+- **When it fails**, WebKit no longer holds the document or the page's policy blocked the read; the page cannot
+  tell which. Nothing was requested. Display the PDF again, or save it by hand. How long WebKit keeps the
+  document is not known: a ScienceDirect tab still answered after 8 minutes, longer was not measured.
+- Up to 256 MiB. The file goes through the same checks as `pdf-cache get` (`%PDF-`, readable pages, an existing
+  destination kept unless `--force`), and URLs are printed without their query and fragment.
+
 ### Permissions
 
 ```bash
