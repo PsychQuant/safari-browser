@@ -10,10 +10,15 @@ import Foundation
 ///
 /// A service worker sees every fetch of the page it controls and can answer from the network, so such a
 /// page is refused rather than read.
+///
+/// The fetch answers by URL. It is not a read of what is on screen: a document that came from a POST, or a
+/// URL reloaded in another tab since, can give other bytes, and nothing here can tell.
 enum TabPDFReader {
     /// Refused before encoding: base64 grows the bytes by 4/3, and each 262,144 units is one `do JavaScript`.
     static let maxBytes = 268_435_456
-    /// `only-if-cached` answers from memory; this bounds a page that never settles.
+    /// `only-if-cached` answers from memory; this bounds a page that never settles. It runs from before the
+    /// read is started until the page reports a result. The transfer back is not under it: each chunk is one
+    /// `do JavaScript` with its own process timeout.
     static let deadlineSeconds: Double = 60
     private static let pollNanoseconds: UInt64 = 100_000_000
     private static let detailLimit = 200
@@ -35,24 +40,33 @@ enum TabPDFReader {
 
     /// Starts the read and returns at once; `statusScript` says when it is done. Nothing is declared in the
     /// page's scope. The slot exists before anything can fail, so every outcome is recorded on it.
-    static func startScript(slot: ResultSlot, maxBytes: Int = TabPDFReader.maxBytes) -> String {
+    ///
+    /// `expectedURL` is the address read just before: between that read and this script a moved tab or a
+    /// `--first-match` re-resolution can put another page at the same address. Only the error's name is
+    /// reported, because WebKit's message text is not ours and may carry the signed URL.
+    static func startScript(slot: ResultSlot, expectedURL: String, maxBytes: Int = TabPDFReader.maxBytes) -> String {
         let ref = "window.\(slot.key)"
         return """
             (\(ResultSlot.sweepExpression), \(ref) = { u: \(ResultSlot.stampExpression) }, (function(s){
               function fail(code, detail) { s.fail = code; s.detail = ('' + detail).slice(0, \(detailLimit)); s.done = true; }
+              function named(e) { return e && e.name ? e.name : 'Error'; }
               try {
+                if (location.href !== '\(expectedURL.escapedForJS)') { fail('tab-changed', ''); return; }
                 if (document.contentType !== 'application/pdf') { fail('not-pdf', document.contentType); return; }
                 if (navigator.serviceWorker && navigator.serviceWorker.controller) { fail('service-worker', ''); return; }
-                s.url = location.href;
                 fetch(location.href, { cache: 'only-if-cached', mode: 'same-origin' })
-                  .then(function(r){ if (!r.ok) { fail('status', r.status); return null; } return r.blob(); })
+                  .then(function(r){
+                    if (r.status !== 200) { fail('status', r.status); return null; }
+                    if (r.redirected || r.url !== location.href.split('#')[0]) { fail('other-response', ''); return null; }
+                    return r.blob();
+                  }, function(e){ fail('not-held', named(e)); return null; })
                   .then(function(b){ if (!b) { return null; } s.bytes = b.size;
                     if (b.size > \(maxBytes)) { fail('too-large', b.size); return null; }
                     return new Promise(function(res, rej){ var f = new FileReader();
                       f.onload = function(){ res(f.result); }; f.onerror = function(){ rej(f.error); }; f.readAsDataURL(b); }); })
-                  .then(function(u){ if (u === null) { return; } var t = u.slice(u.indexOf(',') + 1); s.text = t; s.len = t.length; s.done = true; })
-                  .catch(function(e){ fail('not-held', e && e.message !== undefined ? e.message : e); });
-              } catch (e) { fail('not-held', e && e.message !== undefined ? e.message : e); }
+                  .then(function(u){ if (u === null) { return; } var i = u.lastIndexOf(','); var t = i < 0 ? '' : u.slice(i + 1); s.text = t; s.len = t.length; s.done = true; })
+                  .catch(function(e){ fail('read-failed', named(e)); });
+              } catch (e) { fail('read-failed', named(e)); }
             })(\(ref)), 1)
             """
     }
@@ -62,16 +76,12 @@ enum TabPDFReader {
         "(function(){ var s = window.\(slot.key); if (!s) { return 'gone'; } \(ResultSlot.touchStatement) if (!s.done) { return 'wait'; } return s.fail ? 'fail:' + s.fail + ':' + s.detail : 'ok:' + s.bytes + ':' + s.len; })()"
     }
 
-    private static func urlScript(slot: ResultSlot) -> String {
-        "(function(){ var s = window.\(slot.key); return s && s.url ? s.url : ''; })()"
-    }
-
     /// Anything outside the closed format is damaged, never read as a result.
     static func parseStatus(_ raw: String) -> Status {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if text == "gone" { return .gone }
         if text == "wait" { return .wait }
-        func number(_ part: Substring) -> Int? {
+        func number(_ part: some StringProtocol) -> Int? {
             guard !part.isEmpty, part.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }) else { return nil }
             return Int(part)
         }
@@ -83,13 +93,18 @@ enum TabPDFReader {
             return .damaged("unexpected status")
         }
         if text.hasPrefix("fail:") {
-            let rest = text.dropFirst(5)
+            // By Unicode scalar: a detail starting with a combining mark fuses with the colon into one
+            // Character, and a Character search would not find that colon (#255).
+            let rest = text.dropFirst(5).unicodeScalars
             guard let colon = rest.firstIndex(of: ":") else { return .damaged("unexpected status") }
-            let detail = rest[rest.index(after: colon)...]
-            switch rest[..<colon] {
-            case "not-pdf": return .failed(.notPDF(contentType: String(detail)))
+            let detail = String(rest[rest.index(after: colon)...])
+            switch String(rest[..<colon]) {
+            case "tab-changed": return .failed(.tabChanged)
+            case "not-pdf": return .failed(.notPDF(contentType: detail))
             case "service-worker": return .failed(.serviceWorker)
-            case "not-held": return .failed(.notHeld(detail: String(detail)))
+            case "not-held": return .failed(.notHeld(detail: detail))
+            case "other-response": return .failed(.differentResponse)
+            case "read-failed": return .failed(.readFailed(detail: detail))
             case "status":
                 if let code = number(detail) { return .failed(.badStatus(code: code)) }
             case "too-large":
@@ -109,14 +124,16 @@ enum TabPDFReader {
         target: SafariBridge.TargetDocument, firstMatch: Bool = false,
         deadlineSeconds: Double = TabPDFReader.deadlineSeconds
     ) async throws -> Read {
-        let slot = ResultSlot.make()
         func run(_ script: String) async throws -> String {
             try await SafariBridge.doJavaScript(script, target: target, firstMatch: firstMatch)
         }
+        let url = try await run("location.href").trimmingCharacters(in: .whitespacesAndNewlines)
+        let slot = ResultSlot.make()
+        let deadline = ContinuousClock.now + .seconds(deadlineSeconds)
         do {
-            _ = try await run(startScript(slot: slot))
-            let (bytes, length) = try await awaitCompletion(slot: slot, deadlineSeconds: deadlineSeconds, run: run)
-            let url = try await run(urlScript(slot: slot))
+            _ = try await run(startScript(slot: slot, expectedURL: url))
+            let (bytes, length) = try await awaitCompletion(
+                slot: slot, deadline: deadline, deadlineSeconds: deadlineSeconds, run: run)
             let text: String
             do {
                 text = length > 0
@@ -133,7 +150,7 @@ enum TabPDFReader {
                 throw SafariBrowserError.savePDF(.damagedReply(detail: "\(decoded.count) bytes arrived where \(bytes) were announced"))
             }
             await SafariBridge.removeResultSlot(slot, target: target, firstMatch: firstMatch)
-            return Read(bytes: decoded, url: url.trimmingCharacters(in: .whitespacesAndNewlines))
+            return Read(bytes: decoded, url: url)
         } catch {
             if case SafariBrowserError.savePDF(.timedOut) = error { throw error }
             await SafariBridge.removeResultSlot(slot, target: target, firstMatch: firstMatch, after: error)
@@ -141,20 +158,28 @@ enum TabPDFReader {
         }
     }
 
+    /// The numbers are the page's word, so they are checked before they size anything on this side: the page
+    /// script enforces the limit only for a page that did not replace it.
     private static func awaitCompletion(
-        slot: ResultSlot, deadlineSeconds: Double, run: (String) async throws -> String
+        slot: ResultSlot, deadline: ContinuousClock.Instant, deadlineSeconds: Double,
+        run: (String) async throws -> String
     ) async throws -> (bytes: Int, length: Int) {
-        let started = ContinuousClock.now
         while true {
-            switch parseStatus(try await run(statusScript(slot: slot))) {
-            case .ok(let bytes, let length): return (bytes, length)
+            let status = parseStatus(try await run(statusScript(slot: slot)))
+            switch status {
+            case .ok, .wait: break
             case .failed(let failure): throw SafariBrowserError.savePDF(failure)
             case .gone: throw SafariBrowserError.savePDF(.pageReplaced)
             case .damaged(let detail): throw SafariBrowserError.savePDF(.damagedReply(detail: detail))
-            case .wait: break
             }
-            if ContinuousClock.now - started >= .seconds(deadlineSeconds) {
+            if ContinuousClock.now >= deadline {
                 throw SafariBrowserError.savePDF(.timedOut(seconds: deadlineSeconds))
+            }
+            if case .ok(let bytes, let length) = status {
+                guard bytes <= maxBytes, length == (bytes + 2) / 3 * 4 else {
+                    throw SafariBrowserError.savePDF(.damagedReply(detail: "the page announced \(bytes) bytes in \(length) characters"))
+                }
+                return (bytes, length)
             }
             try await Task.sleep(nanoseconds: pollNanoseconds)
         }
@@ -164,10 +189,12 @@ enum TabPDFReader {
 
     /// Writes the bytes owner-only into a private folder and hands that file to `PDFCacheOutput.copyVerified`,
     /// which is the same path a cached PDF takes: `%PDF-`, readable pages, `--force`, one anchored folder.
-    /// The private folder is removed whatever happens.
+    /// The private folder is removed whatever happens. This command needs no Full Disk Access, so Safari's
+    /// cache folder may be closed to it; that is not an error here, as it is for `pdf-cache`.
     static func publish(
         _ read: Read, to destination: String, force: Bool,
-        stagingRoot: URL = FileManager.default.temporaryDirectory
+        stagingRoot: URL = FileManager.default.temporaryDirectory,
+        protectedFolder: URL = WebKitCacheReader.defaultCacheRoot
     ) throws -> PDFCacheOutput.Result {
         var template = Array(stagingRoot.appendingPathComponent("safari-browser-save-pdf-XXXXXX").path.utf8CString)
         guard mkdtemp(&template) != nil else {
@@ -185,8 +212,13 @@ enum TabPDFReader {
         } catch {
             throw SafariBrowserError.savePDF(.stagingFailed(detail: error.localizedDescription))
         }
-        return try PDFCacheOutput.copyVerified(
-            from: staged, to: destination, force: force, protectedFolders: [WebKitCacheReader.defaultCacheRoot],
-            expectedSize: Int64(read.bytes.count))
+        do {
+            return try PDFCacheOutput.copyVerified(
+                from: staged, to: destination, force: force, protectedFolders: [protectedFolder],
+                protectedFoldersMayBeClosed: true, expectedSize: Int64(read.bytes.count))
+        } catch SafariBrowserError.pdfCache(.notAPDF) {
+            // Its message names the staged file, which the caller never heard of.
+            throw SafariBrowserError.savePDF(.bytesNotPDF)
+        }
     }
 }

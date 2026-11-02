@@ -41,12 +41,19 @@ struct SavePDFCommand: AsyncParsableCommand {
         // Before the transfer: a refusal after moving 50 MB through `do JavaScript` helps nobody.
         // `copyVerified` still makes the final decision.
         try PDFCacheOutput.refuseExistingDestination(path, force: force)
+        let original = target.resolve()
         let anchored = try await SafariBridge.resolveToAnchoredTarget(
-            target.resolve(), firstMatch: target.firstMatch,
+            original, firstMatch: target.firstMatch,
             warnWriter: TargetOptions.stderrWarnWriter, profile: target.profile)
-        let read = try await TabPDFReader.read(target: anchored, firstMatch: target.firstMatch)
+        let read: TabPDFReader.Read
+        do {
+            read = try await TabPDFReader.read(target: anchored, firstMatch: target.firstMatch)
+        } catch let error as SafariBrowserError {
+            // A tab that vanished names the target; the untranslated error lists every profile's tabs.
+            throw JSCommand.anchoredFailure(error, original: original, anchored: anchored)
+        }
         let result = try TabPDFReader.publish(read, to: path, force: force)
-        let url = PDFCacheURL.redact(read.url).display
+        let url = URLText.redactURL(read.url)
         if json {
             print(String(decoding: try PDFCacheFormat.tabSavedJSON(result, url: url), as: UTF8.self))
         } else {

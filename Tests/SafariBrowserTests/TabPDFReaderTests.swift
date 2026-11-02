@@ -33,22 +33,25 @@ enum TabPDFFixture {
     /// A page displaying `bytes`, with shims around what the script may touch.
     static func page(
         bytes: Data = pdf(), contentType: String = "application/pdf", status: Int = 200,
-        reject: Bool = false, serviceWorker: Bool = false, reportedSize: Int? = nil, neverSettles: Bool = false
+        reject: Bool = false, serviceWorker: Bool = false, reportedSize: Int? = nil, neverSettles: Bool = false,
+        url: String = signedURL, redirected: Bool = false, responseURL: String? = nil
     ) -> FakePage {
         let page = FakePage()
         install(on: page, bytes: bytes, contentType: contentType, status: status, reject: reject,
-                serviceWorker: serviceWorker, reportedSize: reportedSize, neverSettles: neverSettles)
+                serviceWorker: serviceWorker, reportedSize: reportedSize, neverSettles: neverSettles,
+                url: url, redirected: redirected, responseURL: responseURL)
         return page
     }
 
     static func install(
         on page: FakePage, bytes: Data = pdf(), contentType: String = "application/pdf", status: Int = 200,
-        reject: Bool = false, serviceWorker: Bool = false, reportedSize: Int? = nil, neverSettles: Bool = false
+        reject: Bool = false, serviceWorker: Bool = false, reportedSize: Int? = nil, neverSettles: Bool = false,
+        url: String = signedURL, redirected: Bool = false, responseURL: String? = nil
     ) {
         _ = page.evaluate("""
             var __fetches = [], __readers = 0;
             var document = { contentType: '\(contentType)' };
-            var location = { href: '\(signedURL)' };
+            var location = { href: '\(url)' };
             var navigator = { serviceWorker: { controller: \(serviceWorker ? "{}" : "null") } };
             function FileReader() { __readers++; }
             FileReader.prototype.readAsDataURL = function (b) {
@@ -59,7 +62,8 @@ enum TabPDFFixture {
                 __fetches.push(JSON.stringify({ u: u, o: o }));
                 \(neverSettles ? "return new Promise(function () {});" : "")
                 \(reject ? "return Promise.reject(new TypeError('Load failed'));" : "")
-                return Promise.resolve({ ok: \(status) >= 200 && \(status) < 300, status: \(status),
+                return Promise.resolve({ ok: \(status) >= 200 && \(status) < 300, status: \(status), redirected: \(redirected),
+                    url: \(responseURL.map { "'\($0)'" } ?? "location.href.split('#')[0]"),
                     blob: function () { return Promise.resolve({ size: \(reportedSize ?? bytes.count), b64: '\(bytes.base64EncodedString())' }); } });
             }
             """)
@@ -71,8 +75,8 @@ enum TabPDFFixture {
 }
 
 final class TabPDFReaderScriptTests: XCTestCase {
-    private func run(_ page: FakePage, _ slot: ResultSlot = .make()) throws -> String {
-        _ = page.evaluate(TabPDFReader.startScript(slot: slot))
+    private func run(_ page: FakePage, _ slot: ResultSlot = .make(), expected: String = TabPDFFixture.signedURL) throws -> String {
+        _ = page.evaluate(TabPDFReader.startScript(slot: slot, expectedURL: expected))
         return page.evaluate(TabPDFReader.statusScript(slot: slot)) ?? ""
     }
 
@@ -108,12 +112,69 @@ final class TabPDFReaderScriptTests: XCTestCase {
         XCTAssertTrue(try run(page).hasPrefix("ok:"))
     }
 
-    func testARejectedFetchIsReportedAsNotHeld() throws {
-        XCTAssertEqual(try run(TabPDFFixture.page(reject: true)), "fail:not-held:Load failed")
+    func testARejectedFetchIsReportedAsNotHeldByNameOnly() throws {
+        let page = TabPDFFixture.page()
+        _ = page.evaluate("fetch = function () { return Promise.reject(new TypeError('Load failed for https://x/?SECRET')); };")
+        XCTAssertEqual(try run(page), "fail:not-held:TypeError")
+    }
+
+    func testAnotherPageAtTheAddressIsNotFetched() throws {
+        let page = TabPDFFixture.page(url: "https://other.example/neighbour.pdf")
+        XCTAssertEqual(try run(page), "fail:tab-changed:")
+        XCTAssertEqual(TabPDFFixture.fetches(page), [])
+    }
+
+    func testAnExpectedAddressWithAQuoteIsComparedAsWritten() throws {
+        let page = TabPDFFixture.page()
+        _ = page.evaluate("location.href = \"https://e.org/it's.pdf\";")
+        XCTAssertTrue(try run(page, expected: "https://e.org/it's.pdf").hasPrefix("ok:"))
     }
 
     func testAnErrorStatusIsReported() throws {
         XCTAssertEqual(try run(TabPDFFixture.page(status: 504)), "fail:status:504")
+    }
+
+    func testAByteRangeIsNotADocument() throws {
+        let page = TabPDFFixture.page(status: 206)
+        XCTAssertEqual(try run(page), "fail:status:206")
+        XCTAssertEqual(page.evaluate("'' + __readers"), "0")
+    }
+
+    func testARedirectIsNotRead() throws {
+        let page = TabPDFFixture.page(redirected: true)
+        XCTAssertEqual(try run(page), "fail:other-response:")
+        XCTAssertEqual(page.evaluate("'' + __readers"), "0")
+    }
+
+    func testAnAnswerForAnotherURLIsNotRead() throws {
+        let page = TabPDFFixture.page(responseURL: "https://cdn.example.org/other.pdf")
+        XCTAssertEqual(try run(page), "fail:other-response:")
+        XCTAssertEqual(page.evaluate("'' + __readers"), "0")
+    }
+
+    func testAFailureAfterTheFetchAnsweredIsNotCalledNotHeld() throws {
+        let body = TabPDFFixture.page()
+        _ = body.evaluate("fetch = function (u) { return Promise.resolve({ status: 200, redirected: false, url: u.split('#')[0], blob: function () { return Promise.reject(new RangeError('x')); } }); };")
+        XCTAssertEqual(try run(body), "fail:read-failed:RangeError")
+
+        let reader = TabPDFFixture.page()
+        _ = reader.evaluate("FileReader.prototype.readAsDataURL = function () { var self = this; self.error = new Error('x'); self.error.name = 'NotReadableError'; Promise.resolve().then(function () { self.onerror(); }); };")
+        XCTAssertEqual(try run(reader), "fail:read-failed:NotReadableError")
+    }
+
+    func testAContentTypeWithACommaStillGivesTheBase64() throws {
+        let bytes = TabPDFFixture.pdf()
+        let page = TabPDFFixture.page(bytes: bytes)
+        _ = page.evaluate("FileReader.prototype.readAsDataURL = function (b) { var self = this; self.result = 'data:application/pdf; name=\"a, b.pdf\";base64,' + b.b64; Promise.resolve().then(function () { self.onload(); }); };")
+        let slot = ResultSlot.make()
+        XCTAssertTrue(try run(page, slot).hasPrefix("ok:"))
+        XCTAssertEqual(page.evaluate("window.\(slot.key).text"), bytes.base64EncodedString())
+    }
+
+    func testADataURLWithNoCommaIsEmptyNotItsOwnPrefix() throws {
+        let page = TabPDFFixture.page(bytes: Data())
+        _ = page.evaluate("FileReader.prototype.readAsDataURL = function () { var self = this; self.result = 'data:'; Promise.resolve().then(function () { self.onload(); }); };")
+        XCTAssertEqual(try run(page), "ok:0:0")
     }
 
     func testAResultOverTheLimitIsNotEncoded() throws {
@@ -125,11 +186,11 @@ final class TabPDFReaderScriptTests: XCTestCase {
     func testAScriptThatFailsOutrightStillFinishes() throws {
         let page = TabPDFFixture.page()
         _ = page.evaluate("fetch = function () { throw new Error('boom'); };")
-        XCTAssertEqual(try run(page), "fail:not-held:boom")
+        XCTAssertEqual(try run(page), "fail:read-failed:Error")
     }
 
     func testTheScriptNamesNoOtherWayToTheNetwork() {
-        let script = TabPDFReader.startScript(slot: .make())
+        let script = TabPDFReader.startScript(slot: .make(), expectedURL: TabPDFFixture.signedURL)
         XCTAssertEqual(script.components(separatedBy: "fetch(").count - 1, 1)
         XCTAssertTrue(script.contains("cache: 'only-if-cached'"))
         for token in ["XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource", "importScripts", "force-cache", "no-store",
@@ -157,6 +218,13 @@ final class TabPDFReaderStatusTests: XCTestCase {
         XCTAssertEqual(TabPDFReader.parseStatus("fail:service-worker:"), .failed(.serviceWorker))
         XCTAssertEqual(TabPDFReader.parseStatus("fail:status:504"), .failed(.badStatus(code: 504)))
         XCTAssertEqual(TabPDFReader.parseStatus("fail:too-large:9"), .failed(.tooLarge(bytes: 9)))
+        XCTAssertEqual(TabPDFReader.parseStatus("fail:tab-changed:"), .failed(.tabChanged))
+        XCTAssertEqual(TabPDFReader.parseStatus("fail:other-response:"), .failed(.differentResponse))
+        XCTAssertEqual(TabPDFReader.parseStatus("fail:read-failed:Error"), .failed(.readFailed(detail: "Error")))
+    }
+
+    func testADetailStartingWithACombiningMarkKeepsItsCode() {
+        XCTAssertEqual(TabPDFReader.parseStatus("fail:not-held:\u{0301}Load failed"), .failed(.notHeld(detail: "\u{0301}Load failed")))
     }
 
     func testAnythingElseIsADamagedReply() {
@@ -224,6 +292,33 @@ final class TabPDFReaderFlowTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(page.keys(withPrefix: ResultSlot.keyPrefix).count, 1)
     }
 
+    func testTheDeadlineCountsFromTheStartAndALateAnswerIsNotTaken() async {
+        let page = TabPDFFixture.page()
+        let got = await failure(page, deadline: 0)
+        XCTAssertEqual(got, .timedOut(seconds: 0))
+        XCTAssertEqual(page.keys(withPrefix: ResultSlot.keyPrefix).count, 1)
+    }
+
+    func testAnotherPageAppearingAtTheAddressIsAFailureAndNothingIsFetched() async {
+        let page = TabPDFFixture.page()
+        page.beforeRun = { script in
+            if script.contains("only-if-cached") { _ = page.evaluate("location.href = 'https://other.example/neighbour.pdf';") }
+        }
+        let got = await failure(page)
+        XCTAssertEqual(got, .tabChanged)
+        XCTAssertEqual(TabPDFFixture.fetches(page), [])
+    }
+
+    func testNumbersThePageCouldNotHaveAreADamagedReplyAndNothingIsRead() async {
+        let tooMany = "ok:\(TabPDFReader.maxBytes + 1):\((TabPDFReader.maxBytes + 3) / 3 * 4)"
+        for reply in [tooMany, "ok:3:400000000"] {
+            let page = TabPDFFixture.page()
+            page.forced = { $0.contains("'wait'") ? reply : nil }
+            guard case .damagedReply? = await failure(page) else { return XCTFail("accepted \(reply)") }
+            XCTAssertFalse(page.javaScripts.contains { $0.contains("substring(") }, reply)
+        }
+    }
+
     func testAByteCountThatDoesNotMatchIsADamagedReply() async {
         let page = TabPDFFixture.page(reportedSize: 1)
         guard case .damagedReply? = await failure(page) else { return XCTFail("accepted") }
@@ -231,7 +326,7 @@ final class TabPDFReaderFlowTests: XCTestCase, @unchecked Sendable {
 
     func testBase64ThatDoesNotDecodeIsADamagedReply() async {
         let page = TabPDFFixture.page()
-        _ = page.evaluate("FileReader.prototype.readAsDataURL = function (b) { var self = this; self.result = 'data:x;base64,!!!'; Promise.resolve().then(function () { self.onload(); }); };")
+        _ = page.evaluate("FileReader.prototype.readAsDataURL = function (b) { var self = this; self.result = 'data:x;base64,' + new Array(Math.ceil(b.size / 3) * 4 + 1).join('!'); Promise.resolve().then(function () { self.onload(); }); };")
         guard case .damagedReply? = await failure(page) else { return XCTFail("accepted") }
     }
 
@@ -244,7 +339,7 @@ final class TabPDFReaderFlowTests: XCTestCase, @unchecked Sendable {
     func testAFailureRemovesTheSlot() async {
         let page = TabPDFFixture.page(reject: true)
         let got = await failure(page)
-        XCTAssertEqual(got, .notHeld(detail: "Load failed"))
+        XCTAssertEqual(got, .notHeld(detail: "TypeError"))
         XCTAssertEqual(page.keys(withPrefix: ResultSlot.keyPrefix), [])
     }
 
@@ -265,6 +360,9 @@ final class SavePDFFailureTests: XCTestCase {
         XCTAssertTrue(SavePDFFailure.serviceWorker.message.contains("service worker"))
         XCTAssertTrue(SavePDFFailure.notPDF(contentType: "text/html").message.contains("text/html"))
         XCTAssertTrue(SavePDFFailure.tooLarge(bytes: 9).message.contains("\(TabPDFReader.maxBytes)"))
+        for failure: SavePDFFailure in [.tabChanged, .differentResponse, .readFailed(detail: "Error"), .bytesNotPDF, .badStatus(code: 206)] {
+            XCTAssertTrue(failure.message.contains("No request was sent"), failure.message)
+        }
     }
 
     func testAHostileDetailStaysOnOneLine() {
@@ -285,10 +383,60 @@ final class SavePDFPublishTests: XCTestCase {
 
     private var staging: URL { folder.appendingPathComponent("staging") }
 
-    private func publish(_ bytes: Data, to name: String = "out.pdf", force: Bool = false) throws -> PDFCacheOutput.Result {
+    private func publish(
+        _ bytes: Data, to name: String = "out.pdf", force: Bool = false, protectedFolder: URL? = nil
+    ) throws -> PDFCacheOutput.Result {
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         return try TabPDFReader.publish(.init(bytes: bytes, url: TabPDFFixture.signedURL),
-                                        to: folder.appendingPathComponent(name).path, force: force, stagingRoot: staging)
+                                        to: folder.appendingPathComponent(name).path, force: force, stagingRoot: staging,
+                                        protectedFolder: protectedFolder ?? folder.appendingPathComponent("no-such-folder"))
+    }
+
+    private func makeFolder(_ name: String, mode: Int16) throws -> URL {
+        let made = folder.appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: made, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: made.path)
+        addTeardownBlock { try? FileManager.default.setAttributes([.posixPermissions: Int16(0o700)], ofItemAtPath: made.path) }
+        return made
+    }
+
+    /// The case that failed without Full Disk Access, after the whole transfer. `Tests/e2e-save-pdf.sh` runs the
+    /// real thing under `sandbox-exec`, which gives the same EPERM as TCC; here it is the mode bits' EACCES.
+    func testACacheFolderThisProcessCannotOpenIsNotAnError() throws {
+        let closed = try makeFolder("closed", mode: 0o000)
+        XCTAssertEqual(try publish(TabPDFFixture.pdf(), protectedFolder: closed).pages, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("out.pdf").path))
+    }
+
+    /// Whatever this process may do with Safari's real cache folder. `make test-save-pdf` and the sandbox run in
+    /// the #338 verify report are what make it the no-Full-Disk-Access case; only the folder is opened, nothing is read.
+    func testTheDefaultProtectedFolderDoesNotStopAnOrdinaryDestination() throws {
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let out = folder.appendingPathComponent("default.pdf")
+        let result = try TabPDFReader.publish(.init(bytes: TabPDFFixture.pdf(), url: TabPDFFixture.signedURL),
+                                              to: out.path, force: false, stagingRoot: staging)
+        XCTAssertEqual(result.pages, 1)
+    }
+
+    func testADestinationInsideAClosedCacheFolderIsStillRefused() throws {
+        let sub = try makeFolder("listless/sub", mode: 0o700)
+        let listless = try makeFolder("listless", mode: 0o300)
+        XCTAssertThrowsError(try publish(TabPDFFixture.pdf(), to: "listless/sub/out.pdf", protectedFolder: listless)) { error in
+            guard case SafariBrowserError.pdfCache(.destinationWriteFailed(_, let detail)) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(detail.contains("inside Safari's own cache folder"), detail)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sub.appendingPathComponent("out.pdf").path))
+    }
+
+    func testPDFCacheStillDoesNotPassAFolderItCannotOpen() throws {
+        let closed = try makeFolder("closed", mode: 0o000)
+        let source = folder.appendingPathComponent("source.pdf")
+        try TabPDFFixture.pdf().write(to: source)
+        XCTAssertThrowsError(try PDFCacheOutput.copyVerified(
+            from: source, to: folder.appendingPathComponent("out.pdf").path, force: false, protectedFolders: [closed])) { error in
+            guard case SafariBrowserError.pdfCache(.destinationWriteFailed(_, let detail)) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(detail.contains("could not be checked"), detail)
+        }
     }
 
     func testAReadablePDFIsPublishedOwnerOnlyAndTheStagingFolderIsGone() throws {
@@ -303,7 +451,8 @@ final class SavePDFPublishTests: XCTestCase {
 
     func testBytesThatAreNotAPDFLeaveNothing() throws {
         XCTAssertThrowsError(try publish(Data("<html>".utf8))) { error in
-            guard case SafariBrowserError.pdfCache(.notAPDF) = error else { return XCTFail("\(error)") }
+            guard case SafariBrowserError.savePDF(.bytesNotPDF) = error else { return XCTFail("\(error)") }
+            XCTAssertFalse(error.localizedDescription.contains("tab-document"), error.localizedDescription)
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("out.pdf").path))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: staging.path), [])
@@ -329,6 +478,14 @@ final class SavePDFPublishTests: XCTestCase {
             guard case SafariBrowserError.pdfCache(.destinationWriteFailed) = error else { return XCTFail("\(error)") }
         }
     }
+
+    func testAFileWhereTheFolderShouldBeIsRefusedEarly() throws {
+        let file = folder.appendingPathComponent("notes.txt")
+        try Data("x".utf8).write(to: file)
+        XCTAssertThrowsError(try PDFCacheOutput.refuseExistingDestination(file.appendingPathComponent("out.pdf").path, force: false)) { error in
+            guard case SafariBrowserError.pdfCache(.destinationDirectoryMissing) = error else { return XCTFail("\(error)") }
+        }
+    }
 }
 
 final class SavePDFCommandTests: XCTestCase, @unchecked Sendable {
@@ -342,7 +499,9 @@ final class SavePDFCommandTests: XCTestCase, @unchecked Sendable {
 
     override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
 
-    private func run(_ args: [String], page: FakePage, fake: JSCommandRoundTripTests.FakeSafari = .init()) async throws -> String {
+    private func run(
+        _ args: [String], page: FakePage, fake: JSCommandRoundTripTests.FakeSafari = .init(), vanishOn: String? = nil
+    ) async throws -> String {
         let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         let command = try SavePDFCommand.parse(args)
         let out = JSCommandRoundTripTests.FDCapture(STDOUT_FILENO)
@@ -351,7 +510,8 @@ final class SavePDFCommandTests: XCTestCase, @unchecked Sendable {
             try await DaemonRequestContext.$current.withValue(context) {
                 try await WindowDialogObservation.$provider.withValue({ WindowDialogObservation.unavailable(reason: "test") }) {
                     try await DaemonRequestContext.$appleScriptRunner.withValue({ script in
-                        script.contains("do JavaScript") ? try page.respond(script) : try fake.respond(script)
+                        if let vanishOn, script.contains(vanishOn) { return try fake.respond(script) }
+                        return script.contains("do JavaScript") ? try page.respond(script) : try fake.respond(script)
                     }) { try await command.run() }
                 }
             }
@@ -381,6 +541,30 @@ final class SavePDFCommandTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(line.contains("from tab https://cdn.example.org/1-s2.0/main.pdf"), line)
         XCTAssertTrue(line.contains("1 page(s)"), line)
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), TabPDFFixture.pdf())
+    }
+
+    func testThePathParametersAndCredentialsAreNotPrinted() async throws {
+        let path = folder.appendingPathComponent("out.pdf").path
+        let page = TabPDFFixture.page(url: "https://cdn.example.org/x;jsessionid=SECRET/main.pdf")
+        let line = try await run([path, "--json"] + target, page: page)
+        XCTAssertFalse(line.contains("SECRET"), line)
+    }
+
+    /// A tab that vanishes names the target. The untranslated error lists every profile's tabs, and this
+    /// Mac has other people's profiles in Safari.
+    func testAVanishedTabDoesNotListOtherTabs() async throws {
+        for args in [target, ["--window", "1"]] {
+            let path = folder.appendingPathComponent("gone-\(args.count).pdf").path
+            let fake = JSCommandRoundTripTests.FakeSafari(failJSContaining: "only-if-cached")
+            do {
+                _ = try await run([path] + args, page: TabPDFFixture.page(), fake: fake, vanishOn: "only-if-cached")
+                XCTFail("accepted")
+            } catch let error as SafariBrowserError {
+                guard case .anchoredTargetChanged = error else { return XCTFail("\(args): \(error)") }
+                XCTAssertFalse(error.localizedDescription.contains("w2.example"), error.localizedDescription)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+        }
     }
 
     func testJSONHasTheFiveFieldsAndNoQuery() async throws {

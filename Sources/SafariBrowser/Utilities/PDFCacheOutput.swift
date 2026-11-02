@@ -43,13 +43,15 @@ enum PDFCacheOutput {
     /// descriptor reports it, so it says where the file is.
     ///
     /// `protectedFolders` are Safari's own folders; a destination inside one is
-    /// refused, with or without `--force`. `afterParentOpened` and `beforePublish`
+    /// refused, with or without `--force`. `protectedFoldersMayBeClosed` is for a caller
+    /// that does not hold Full Disk Access (`save-pdf`): such a folder cannot be opened,
+    /// and that alone is then not a refusal. `afterParentOpened` and `beforePublish`
     /// exist so tests can create the races the anchoring and the last checks are
     /// for (swap the folder, swap the staged file); production callers leave them
     /// alone.
     static func copyVerified(
         from source: URL, to destination: String, force: Bool, protectedFolders: [URL] = [],
-        expectedSize: Int64? = nil, expectedKey: String = "",
+        protectedFoldersMayBeClosed: Bool = false, expectedSize: Int64? = nil, expectedKey: String = "",
         afterParentOpened: () -> Void = {}, beforePublish: (String) -> Void = { _ in }
     ) throws -> Result {
         let split = try splitDestination(destination)
@@ -77,7 +79,8 @@ enum PDFCacheOutput {
         // A constant, so that `writeFailure(destinationPath, errno)` evaluates nothing but
         // a local between the failing call and the read of errno.
         let destinationPath = parentPath == "/" ? "/\(name)" : "\(parentPath)/\(name)"
-        try refuseInside(protectedFolders, parentPath: parentPath, destination: destinationPath)
+        try refuseInside(
+            protectedFolders, parentPath: parentPath, destination: destinationPath, mayBeClosed: protectedFoldersMayBeClosed)
 
         var existing = stat()
         if fstatat(parentFD, name, &existing, AT_SYMLINK_NOFOLLOW) == 0 {
@@ -189,7 +192,11 @@ enum PDFCacheOutput {
     static func refuseExistingDestination(_ destination: String, force: Bool) throws {
         let split = try splitDestination(destination)
         var folder = stat()
-        if stat(split.parent, &folder) != 0, errno == ENOENT || errno == ENOTDIR {
+        if stat(split.parent, &folder) == 0 {
+            if folder.st_mode & S_IFMT != S_IFDIR {
+                throw SafariBrowserError.pdfCache(.destinationDirectoryMissing(path: split.parent))
+            }
+        } else if errno == ENOENT || errno == ENOTDIR {
             throw SafariBrowserError.pdfCache(.destinationDirectoryMissing(path: split.parent))
         }
         let path = split.parent == "/" ? "/\(split.name)" : "\(split.parent)/\(split.name)"
@@ -212,14 +219,31 @@ enum PDFCacheOutput {
     /// writing there replaces a record, a body or a temporary of Safari's, not a copy of ours.
     /// Both sides are canonicalised through a descriptor, so a symlink or a different spelling
     /// of the same folder does not get past it.
-    private static func refuseInside(_ folders: [URL], parentPath: String, destination: String) throws {
+    private static func refuseInside(
+        _ folders: [URL], parentPath: String, destination: String, mayBeClosed: Bool
+    ) throws {
+        func isInside(_ protected: String) -> Bool {
+            parentPath == protected || parentPath.hasPrefix(protected == "/" ? "/" : protected + "/")
+        }
+        func inside() -> SafariBrowserError {
+            .pdfCache(.destinationWriteFailed(
+                path: destination, detail: "it is inside Safari's own cache folder, which this command only reads"))
+        }
         for folder in folders {
             let fd = open(folder.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
             guard fd >= 0 else {
                 // A protected folder that does not exist cannot contain the destination; one that
-                // cannot be looked at is not a pass.
+                // cannot be looked at is not a pass, unless the caller was never meant to look.
+                // Then the path as written is what is left to compare: without Full Disk Access
+                // nothing could be created in there anyway.
                 let code = errno
                 if code == ENOENT || code == ENOTDIR { continue }
+                if mayBeClosed, code == EPERM || code == EACCES {
+                    let resolved = realpath(folder.path, nil)
+                    defer { free(resolved) }
+                    if isInside(resolved.map { String(cString: $0) } ?? folder.path) { throw inside() }
+                    continue
+                }
                 throw SafariBrowserError.pdfCache(.destinationWriteFailed(
                     path: destination, detail: "Safari's cache folder could not be checked (errno \(code))"))
             }
@@ -228,10 +252,7 @@ enum PDFCacheOutput {
                 throw SafariBrowserError.pdfCache(.destinationWriteFailed(
                     path: destination, detail: "Safari's cache folder could not be identified"))
             }
-            if parentPath == protected || parentPath.hasPrefix(protected == "/" ? "/" : protected + "/") {
-                throw SafariBrowserError.pdfCache(.destinationWriteFailed(
-                    path: destination, detail: "it is inside Safari's own cache folder, which this command only reads"))
-            }
+            if isInside(protected) { throw inside() }
         }
     }
 
