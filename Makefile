@@ -337,8 +337,13 @@ test-save-pdf: build-debug
 	./Tests/e2e-save-pdf.sh
 
 # #338: the page script on a real WebKit (an off-screen WKWebView), with no Safari.
+# The second step is the case the e2e cannot run: no access to Safari's folders, as without Full Disk Access.
+# Safari refuses Apple events from a sandboxed process, so this one is the command against a fake page.
 test-save-pdf-webkit:
 	SAVE_PDF_WEBKIT=1 swift test --filter TabPDFWebKitTests
+	sandbox-exec -p '(version 1)(allow default)(deny file-read* (subpath "$(HOME)/Library/Containers/com.apple.Safari"))' \
+		xcrun xctest -XCTest SafariBrowserTests.SavePDFCommandTests/testTheOutputLineHasNoQuery .build/debug/SafariBrowserTests.xctest 2>&1 \
+		| grep 'Executed 1 test, with 0 failures'
 
 # #76: js on strict-CSP pages (eval-free wrappers) + interaction commands.
 test-csp: build-debug

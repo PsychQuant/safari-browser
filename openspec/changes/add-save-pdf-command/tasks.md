@@ -35,7 +35,7 @@
 
 ## 8. 真機驗收
 
-- [ ] 8.1 `Tests/e2e-save-pdf.sh`（`make test-save-pdf`）：沒有 `E2E_SAVE_PDF_OK=1` 就不碰 Safari；閘門是這個明確的同意，由人在適當時段、把要用的 profile 的視窗拉到前面後設定（機器上平常就有別的視窗，所以不以「有其他視窗」為停止條件）。以 localhost 伺服器提供 `no-store` PDF，在自己開的視窗驗證位元組相同、伺服器 0 個新請求、背景分頁可用且現用分頁與前景 app 不變、50 MB 的耗時。之後的步驟都以 fixture 網址或視窗 id 定址，只關自己的視窗。案例清單見 9.7。驗證：使用者同意的時段跑一次，結果寫進 PR（requirement: save-pdf is non-interfering and sends no request）
+- [x] 8.1 `Tests/e2e-save-pdf.sh`（`make test-save-pdf`）：沒有 `E2E_SAVE_PDF_OK=1` 就不碰 Safari；閘門是這個明確的同意，由人在適當時段、把要用的 profile 的視窗拉到前面後設定（機器上平常就有別的視窗，所以不以「有其他視窗」為停止條件）。以 localhost 伺服器提供 `no-store` PDF，在自己開的視窗驗證位元組相同、伺服器 0 個新請求、背景分頁可用且現用分頁與前景 app 不變、50 MB 的耗時。之後的步驟都以 fixture 網址或視窗 id 定址，只關自己的視窗。案例清單見 9.7。驗證：使用者同意的時段跑一次，結果寫進 PR（requirement: save-pdf is non-interfering and sends no request）。2026-11-03 跑過，33 項 32 項通過；沒過的「讀不到快取資料夾」是測試方法走不通（Safari 拒絕 sandbox 裡的 Apple Event，`-10004`），已移到 `make test-save-pdf-webkit`
 - [ ] 8.2 ScienceDirect 驗收：DOI 10.1016/j.wneu.2019.02.206 的分頁，`save-pdf` 存檔成功、`%PDF-`、頁數可讀。驗證：由持有該分頁的 session 執行並回報
 
 ## 9. Verify 第 1、2 輪的修正
@@ -47,4 +47,4 @@
 - [x] 9.5 CLI 複核頁面報的數字；期限從啟動前算，逾時才回來的結果不收；逾時後移除 slot。驗證：同上
 - [x] 9.6 分頁消失時指名目標、不列分頁；`--profile` 確實傳到解析；輸出網址經 `URLText.redactURL`；訊息不顯示暫存檔名；父路徑是檔案時提早拒絕；暫存檔去掉繼承的 ACL；組合字元開頭的資料夾名稱仍算在快取內。驗證：`swift test --filter SavePDF`
 - [x] 9.8 真 WebKit 測試：`TabPDFWebKitTests` 跑真正的 `TabPDFReader.read`，每個 `do JavaScript` 在離屏 `WKWebView` 執行，對應 13 個案例（no-store、404、轉址、同網址兩份、未持有、HTML、`text/pdf`、CSP 回報、截斷、切在較早 revision、載入中、50 MB、線性化 Range）。驗證：`make test-save-pdf-webkit`，13 個通過（design: 回應是 WebKit 為文件合成的，不要拿它做保證）
-- [x] 9.7 重寫 e2e：同意之前不碰 Safari、以視窗 id 或 fixture 網址定址、「沒有請求」有正向對照，加上未持有、轉址、404、同網址換內容、CSP 回報、載入中、無 FDA、線性化 Range 案例，前景比對時先把 Finder 拉到前面。驗證：`bash -n`，未設旗標時 exit 77；真機結果見 8.1
+- [x] 9.7 重寫 e2e：同意之前不碰 Safari、以視窗 id 或 fixture 網址定址、「沒有請求」有正向對照，加上未持有、轉址、404、同網址換內容、CSP 回報、載入中、線性化 Range 案例，前景比對時先把 Finder 拉到前面。驗證：`bash -n`，未設旗標時 exit 77；真機結果見 8.1

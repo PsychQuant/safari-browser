@@ -10,6 +10,10 @@
 # one's profile. After that every step addresses the fixture's URL or the new window's id, never a
 # window's position, and the only thing it closes is that window.
 #
+# Not here: running without Full Disk Access. sandbox-exec gives the same EPERM as TCC, but Safari refuses
+# Apple events from a sandboxed process (-10004) even when the sandbox denies nothing, so the command stops
+# long before it writes. `make test-save-pdf-webkit` runs that case against a fake page.
+#
 # Exit 77 (automake skip) when the guard is not set or Safari is not running.
 
 set -u
@@ -307,21 +311,6 @@ sleep 8
 rm -f "$OUT/s.pdf"
 msg=$("$SB" save-pdf "$OUT/s.pdf" --url "127.0.0.1:$PORT/slow/drip.pdf" 2>&1); rc=$?
 [[ $rc -eq 0 ]] && cmp -s "$OUT/s.pdf" "$WORK/www/slow/drip.pdf" && pass "saved whole once it had loaded" || fail "rc=$rc: $msg"
-
-echo "=== without access to Safari's cache folder ==="
-# sandbox-exec refuses with the EPERM TCC gives without Full Disk Access. It cannot show whether macOS
-# would ask first; the command does not open that folder, which is what makes the question moot. The
-# command's own process is what writes the file, whichever way its AppleScript travels.
-CACHE="$HOME/Library/Containers/com.apple.Safari/Data/Library/Caches"
-NOFDA="(version 1)(allow default)(deny file-read* (subpath \"$CACHE\"))"
-if denied=$(sandbox-exec -p "$NOFDA" python3 -Ic 'import os,sys
-try: os.open(sys.argv[1], os.O_RDONLY); print("opened")
-except OSError as e: print(e.errno)' "$CACHE" 2>/dev/null) && [[ "$denied" == "1" ]]; then
-    msg=$(sandbox-exec -p "$NOFDA" "$SB" save-pdf "$OUT/f.pdf" --url "127.0.0.1:$PORT/nostore.pdf" 2>&1); rc=$?
-    [[ $rc -eq 0 ]] && cmp -s "$OUT/f.pdf" "$WORK/www/nostore.pdf" && pass "saved without reading that folder" || fail "rc=$rc: $msg"
-else
-    note "sandbox-exec did not deny the folder here ($denied); not checked"
-fi
 
 echo "=== 50 MB ==="
 open_tab nostore50.pdf

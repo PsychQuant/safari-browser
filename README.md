@@ -892,14 +892,14 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
 
 - **No request for the document.** The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
   answers from what Safari holds or fails; there is no second attempt. A page controlled by a service worker
-  is refused, because a service worker can answer from the network. Measured by hand with this same fetch on
-  Safari 27.2 against a local server that logs requests; `make test-save-pdf` repeats it with the command.
+  is refused, because a service worker can answer from the network. Measured on Safari 27.2 against a local
+  server that logs requests (`make test-save-pdf`, which opens a window).
   One thing is out of its hands: a response whose Content-Security-Policy blocks `connect-src` and names a
   report endpoint makes the browser post a violation report, with the full address, when the fetch is blocked.
   The page cannot see that policy beforehand.
-- **What it saves is what the fetch answers.** Measured on WebKit in an off-screen view (`make test-save-pdf-webkit`,
-  no Safari involved), that answer is made for the displayed PDF: status 200 whatever the server sent, so a PDF served with a 404 is saved like any other, a
-  redirect does not show, and two tabs on one URL with different content each gave their own. So it saves what
+- **What it saves is what the fetch answers**, and that answer is made for the displayed PDF. Measured on Safari: a PDF
+  served with a 404 is saved like any other, a tab reached through a redirect saves, and two tabs on one URL with different
+  content each gave their own. In an off-screen WebKit view (`make test-save-pdf-webkit`, no Safari involved) the status reads 200 whatever the server sent. So it saves what
   the tab holds, and a server that sent only part of a document gives you that part: most such files fail the
   page check below, but a PDF with incremental updates cut at an earlier revision reads fine with fewer pages,
   and exits 0. Compare the page count if that matters.
@@ -912,7 +912,7 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
   tell which. No request for the document was sent. Display the PDF again, or save it by hand. A tab still
   loading runs no scripts, and the command says that instead. How long WebKit keeps the
   document is not known: a ScienceDirect tab still answered after 8 minutes, longer was not measured.
-- Up to 256 MiB. The file goes through the same checks as `pdf-cache get` (`%PDF-`, readable pages, an existing
+- Up to 256 MiB; 50 MB took about 30 s on Safari, moved in chunks. The file goes through the same checks as `pdf-cache get` (`%PDF-`, readable pages, an existing
   destination kept unless `--force`). The scripts it writes contain no address, and only the protocol, host and
   path come back, printed without path parameters, so a signed query does not reach its output or errors. Finding
   the tab is separate: `--url` reads the tabs' URLs as every command does, and with a live daemon its log keeps up
