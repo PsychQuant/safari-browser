@@ -617,7 +617,7 @@ takes the update lock after a kill).
 - **發布**：寫進 `mkdtemp` 的私有資料夾（0700／0600，去掉繼承的 ACL），交給 `PDFCacheOutput.copyVerified`，暫存一律刪除；`refuseExistingDestination` 只是傳輸前的提早判斷，最終判定在 `copyVerified`。硬終止時暫存會留在 `$TMPDIR`（owner-only）。
 - **錯誤**：`SavePDFFailure` 是封閉列舉。`notHeld` 只在 fetch 本身 reject 時使用，涵蓋「WebKit 沒持有完整文件」（被丟掉，或載入中止）與「CSP 擋下」：都是 `TypeError`，分不出來，訊息照實說；fetch 回答之後的失敗是 `readFailed`。啟動腳本沒回 `started` 是 `notScriptable`：WebKit 在 PDF 載入期間不執行任何腳本。分頁消失時經 `JSCommand.anchoredFailure` 指名目標，不列出全部 profile 的分頁。
 - **daemon**：AppleScript 在有 live socket 時走 daemon（所有指令都一樣），寫檔留在 CLI 程序。每個腳本含槽名，各占編譯快取一項；回傳的分塊前 256 字元會進 daemon log（#230）。
-- **未量測**：WebKit 能持有多久（ScienceDirect 分頁 8 分鐘後仍在）；Safari 上 `text/pdf`（WKWebView 顯示成 PDF，e2e 不跑，怕觸發下載）；無 FDA 的環境下在真 Safari 上跑一次（見上，`sandbox-exec` 做不到）。
+- **實例**：ScienceDirect 上指令 1.7 秒存下 10 頁（2026-11-03）。**未量測**：WebKit 能持有多久（ScienceDirect 分頁 8 分鐘後仍在）；Safari 上 `text/pdf`（WKWebView 顯示成 PDF，e2e 不跑，怕觸發下載）；無 FDA 的環境下在真 Safari 上跑一次（見上，`sandbox-exec` 做不到）。
 - 頁面可以覆寫 `fetch`、`FileReader`，連 `document.contentType` 也可以（檢查跑在同一個頁面世界裡），所以有腳本的頁面騙得過它。實際顯示 PDF 的文件沒有頁面腳本；威脅模型是失誤，不是惡意頁面。
 
 ## Install-signature guard：suite 本身被 gate 管（#119, round 10）

@@ -36,7 +36,7 @@
 ## 8. 真機驗收
 
 - [x] 8.1 `Tests/e2e-save-pdf.sh`（`make test-save-pdf`）：沒有 `E2E_SAVE_PDF_OK=1` 就不碰 Safari；閘門是這個明確的同意，由人在適當時段、把要用的 profile 的視窗拉到前面後設定（機器上平常就有別的視窗，所以不以「有其他視窗」為停止條件）。以 localhost 伺服器提供 `no-store` PDF，在自己開的視窗驗證位元組相同、伺服器 0 個新請求、背景分頁可用且現用分頁與前景 app 不變、50 MB 的耗時。之後的步驟都以 fixture 網址或視窗 id 定址，只關自己的視窗。案例清單見 9.7。驗證：使用者同意的時段跑一次，結果寫進 PR（requirement: save-pdf is non-interfering and sends no request）。2026-11-03 跑過，33 項 32 項通過；沒過的「讀不到快取資料夾」是測試方法走不通（Safari 拒絕 sandbox 裡的 Apple Event，`-10004`），已移到 `make test-save-pdf-webkit`
-- [ ] 8.2 ScienceDirect 驗收：DOI 10.1016/j.wneu.2019.02.206 的分頁，`save-pdf` 存檔成功、`%PDF-`、頁數可讀。驗證：由持有該分頁的 session 執行並回報
+- [x] 8.2 ScienceDirect 驗收：DOI 10.1016/j.wneu.2019.02.206 的分頁，`save-pdf` 存檔成功、`%PDF-`、頁數可讀。原定由另一個 session 執行，它的 Apple Events 卡住，維護者改交這個 session。2026-11-03：`akashic fulltext fetch` 開到 `pdf-shown`（當日第 1 次嘗試，沒有 CAPTCHA），`save-pdf` exit 0、1.7 秒、1,219,976 bytes、10 頁，首頁 DOI 與標題相符
 
 ## 9. Verify 第 1、2 輪的修正
 
