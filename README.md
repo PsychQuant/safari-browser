@@ -34,7 +34,7 @@ Need login? ──── Yes → safari-browser
 ## MCP stdio
 
 Run `safari-browser mcp` from an MCP client using the installed executable's
-absolute path. The server provides all 79 public CLI leaf commands,
+absolute path. The server provides all 80 public CLI leaf commands,
 including `help`, `setup` and daemon controls. Names follow the command path:
 `wait` becomes `safari.wait`, and `tab focus` becomes `safari.tab.focus`.
 Hidden commands and the MCP transport are excluded. The catalog and input
@@ -878,6 +878,46 @@ are not covered. The `WebKitPDFs-*` folders were seen to appear after someone pr
 "Open with Preview" in Safari's PDF viewer (one observation), so that source is opt-in
 and the command never presses it for you. Requires **Full Disk Access**, like the
 local-data commands above.
+
+### Saving what a tab displays (#338)
+
+A response marked `Cache-Control: no-store` never reaches the disk cache `pdf-cache` reads, so a tab can
+show a PDF that `pdf-cache get` cannot find (ScienceDirect's signed `main.pdf` URLs behave this way, probably
+for this reason; their headers were not read). WebKit still holds the displayed document in memory, and `save-pdf` reads it from there:
+
+```bash
+safari-browser save-pdf paper.pdf --url 'example.org/main.pdf'
+safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, size, pages, source, url
+```
+
+- **No request for the document.** The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
+  answers from what Safari holds or fails; there is no second attempt. A page controlled by a service worker
+  is refused, because a service worker can answer from the network. Measured on Safari 27.2 against a local
+  server that logs requests (`make test-save-pdf`, which opens a window).
+  One thing is out of its hands: a response whose Content-Security-Policy blocks `connect-src` and names a
+  report endpoint makes the browser post a violation report, with the full address, when the fetch is blocked.
+  The page cannot see that policy beforehand.
+- **What it saves is what the fetch answers**, and that answer is made for the displayed PDF. Measured on Safari: a PDF
+  served with a 404 is saved like any other, a tab reached through a redirect saves, and two tabs on one URL with different
+  content each gave their own. In an off-screen WebKit view (`make test-save-pdf-webkit`, no Safari involved) the status reads 200 whatever the server sent. So it saves what
+  the tab holds, and a server that sent only part of a document gives you that part: most such files fail the
+  page check below, but a PDF with incremental updates cut at an earlier revision reads fine with fewer pages,
+  and exits 0. Compare the page count if that matters.
+- **It does run JavaScript in the tab**, which `pdf-cache` never does. It moves no mouse or keyboard, switches
+  no tab, takes no focus, works on a background tab, and needs neither Accessibility nor Full Disk Access. It
+  reads nothing from Safari's own folders. A destination inside Safari's cache folder is refused.
+- **Name the tab.** There is no default front tab. The tab must display the PDF itself: a PDF embedded in an HTML
+  page (`<embed>`, `<iframe>`, PDF.js) is refused with the document's content type.
+- **When it fails**, WebKit no longer holds the document or the page's policy blocked the read; the page cannot
+  tell which. No request for the document was sent. Display the PDF again, or save it by hand. A tab still
+  loading runs no scripts, and the command says that instead. How long WebKit keeps the
+  document is not known: a ScienceDirect tab still answered after 8 minutes, longer was not measured.
+- Up to 256 MiB; 50 MB took about 30 s on Safari, moved in chunks. The file goes through the same checks as `pdf-cache get` (`%PDF-`, readable pages, an existing
+  destination kept unless `--force`). The scripts it writes contain no address, and only the protocol, host and
+  path come back, printed without path parameters, so a signed query does not reach its output or errors. Finding
+  the tab is separate: `--url` reads the tabs' URLs as every command does, and with a live daemon its log keeps up
+  to 256 characters of those replies (#230). Prefer `--url` with part of the path: `--url-exact` needs the whole
+  address, query included, and the target check added to each step then carries it.
 
 ### Permissions
 

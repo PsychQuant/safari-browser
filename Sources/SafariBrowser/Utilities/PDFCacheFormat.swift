@@ -102,6 +102,17 @@ enum PDFCacheFormat {
         return "\(field(result.path))  \(result.size) B  \(result.pages) page(s)  from \(origin)"
     }
 
+    // MARK: - save-pdf (#338)
+
+    /// `url` is already redacted.
+    static func tabSavedRow(_ result: PDFCacheOutput.Result, url: String) -> String {
+        "\(field(result.path))  \(result.size) B  \(result.pages) page(s)  from tab \(field(url))"
+    }
+
+    static func tabSavedJSON(_ result: PDFCacheOutput.Result, url: String) throws -> Data {
+        try encode(["path": result.path, "size": result.size, "pages": result.pages, "source": "tab", "url": url] as [String: Any])
+    }
+
     static func retrievedJSON(_ retrieved: PDFCacheService.Retrieved) throws -> Data {
         var object: [String: Any] = [
             "path": retrieved.result.path, "size": retrieved.result.size, "pages": retrieved.result.pages,

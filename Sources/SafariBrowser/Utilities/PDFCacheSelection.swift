@@ -105,7 +105,7 @@ enum PDFCacheSelection {
     static func select(tabURL: String, from pdfs: [WebKitCachedPDF], unreadNote: String? = nil) throws -> WebKitCachedPDF {
         let wanted = PDFCacheURL.removingFragment(tabURL)
         let subject = "the tab's URL \(PDFCacheURL.redact(tabURL).display)"
-        return try single(pdfs.filter { PDFCacheURL.isSame($0.requestURL, wanted) }, subject: subject, unreadNote: unreadNote)
+        return try single(pdfs.filter { PDFCacheURL.isSame($0.requestURL, wanted) }, subject: subject, unreadNote: unreadNote, fromTab: true)
     }
 
     /// The tab form over a whole scan: a miss says so when part of the cache could not be read.
@@ -160,10 +160,10 @@ enum PDFCacheSelection {
         }
     }
 
-    private static func single(_ matches: [WebKitCachedPDF], subject: String, unreadNote: String? = nil) throws -> WebKitCachedPDF {
+    private static func single(_ matches: [WebKitCachedPDF], subject: String, unreadNote: String? = nil, fromTab: Bool = false) throws -> WebKitCachedPDF {
         switch matches.count {
         case 1: return matches[0]
-        case 0: throw SafariBrowserError.pdfCache(.noMatch(subject: subject, unreadNote: unreadNote))
+        case 0: throw SafariBrowserError.pdfCache(.noMatch(subject: subject, unreadNote: unreadNote, fromTab: fromTab))
         default:
             throw SafariBrowserError.pdfCache(.ambiguous(
                 subject: subject, candidates: matches.map { PDFCacheFormat.candidateLine($0) }))

@@ -62,6 +62,8 @@ enum SafariBrowserError: LocalizedError {
     case safariDataReadFailed(path: String, detail: String)
     /// #210: a `pdf-cache` command stopped. The cases live in `PDFCacheFailure`.
     case pdfCache(PDFCacheFailure)
+    /// #338: `save-pdf` stopped. The cases live in `SavePDFFailure`.
+    case savePDF(SavePDFFailure)
     case screenRecordingRequired(postPreflight: Bool, underlying: String?)
     case webAreaNotFound(reason: String)
     case imageCroppingFailed(reason: String)
@@ -431,6 +433,8 @@ enum SafariBrowserError: LocalizedError {
         case .safariDataParseFailed(let path, let detail):
             return "Could not parse Safari data file \(TerminalText.escaped(path)): \(TerminalText.escaped(detail))"
         case .pdfCache(let failure):
+            return failure.message
+        case .savePDF(let failure):
             return failure.message
 
         case .elementAmbiguous(let selector, let matches):

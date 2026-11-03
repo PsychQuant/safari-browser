@@ -20,7 +20,7 @@ enum PDFCacheFailure: Equatable, Sendable {
     /// when the cache also holds PDFs this command could not interpret (unreadable records, byte
     /// ranges, a record that disagrees with its body): "nothing matches" would then be a claim
     /// about a cache that was not fully understood.
-    case noMatch(subject: String, unreadNote: String? = nil)
+    case noMatch(subject: String, unreadNote: String? = nil, fromTab: Bool = false)
     /// A selection matched several; `candidates` are display lines, not chosen between.
     case ambiguous(subject: String, candidates: [String])
     /// `--key` named a body whose record cannot be read.
@@ -64,13 +64,16 @@ enum PDFCacheFailure: Equatable, Sendable {
                   3. --source webkit-pdfs --file <name>
                 It never picks a PDF on its own, not even when only one is cached.
                 """
-        case .noMatch(let subject, let unreadNote):
+        case .noMatch(let subject, let unreadNote, let fromTab):
             let unread = unreadNote.map { "\n\(t($0))" } ?? ""
+            let tabNote = fromTab
+                ? "\nThe tab may be showing a PDF that never reached the cache (a `no-store` response): `safari-browser save-pdf <path>` with the same tab flag saves what the tab holds, without requesting the document."
+                : ""
             return """
                 No cached PDF matches \(t(subject)).\(unread)
                 Run `safari-browser pdf-cache list` to see what is cached. A tab is matched by its \
                 exact URL (fragment removed), and responses stored inside the record itself rather \
-                than in a separate body file are not covered.
+                than in a separate body file are not covered.\(tabNote)
                 """
         case .ambiguous(let subject, let candidates):
             let lines = candidates.map { "  \($0)" }.joined(separator: "\n")

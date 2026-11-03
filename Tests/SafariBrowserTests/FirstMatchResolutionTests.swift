@@ -61,6 +61,7 @@ final class FirstMatchResolutionTests: XCTestCase, @unchecked Sendable {
             ("get text", { try await self.run(GetText.self, ["#sel"] + $1, on: $0) }),
             ("get html", { try await self.run(GetHTML.self, ["#sel"] + $1, on: $0) }),
             ("save-image", { try await self.run(SaveImageCommand.self, [save, "--element", "svg"] + $1, on: $0) }),
+            ("save-pdf", { try await self.run(SavePDFCommand.self, [save] + $1, on: $0) }),
             ("upload --js", { try await self.run(UploadCommand.self, ["input", upload, "--js"] + $1, on: $0) }),
             ("upload without Accessibility", { fake, args in
                 var command = try UploadCommand.parse(["input", upload] + args)

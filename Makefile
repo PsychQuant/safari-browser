@@ -15,7 +15,7 @@ export SAFARI_BROWSER_BIN
         verify-developer-id verify-install-signature \
         test test-unit test-smoke test-all test-install-signature \
         test-install-signature-strict \
-        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-dialog test-exec-script test-mark-tab test-csp test-target-identity test-reference-edges
+        test-e2e test-e2e-profile test-tab-focus test-daemon-parity test-dialog test-exec-script test-mark-tab test-save-pdf test-save-pdf-webkit test-csp test-target-identity test-reference-edges
 
 # The release build is wrapped so the binary learns its own version (#278).
 # scripts/stamp-version.sh writes `git describe` into the tracked placeholder
@@ -331,6 +331,19 @@ test-exec-script: build-debug
 
 test-mark-tab: build-debug
 	./Tests/e2e-mark-tab.sh
+
+# #338: opens a foreground Safari window; needs E2E_SAVE_PDF_OK=1. Not during a call.
+test-save-pdf: build-debug
+	./Tests/e2e-save-pdf.sh
+
+# #338: the page script on a real WebKit (an off-screen WKWebView), with no Safari.
+# The second step is the case the e2e cannot run: no access to Safari's folders, as without Full Disk Access.
+# Safari refuses Apple events from a sandboxed process, so this one is the command against a fake page.
+test-save-pdf-webkit:
+	SAVE_PDF_WEBKIT=1 swift test --filter TabPDFWebKitTests
+	sandbox-exec -p '(version 1)(allow default)(deny file-read* (subpath "$(HOME)/Library/Containers/com.apple.Safari"))' \
+		xcrun xctest -XCTest SafariBrowserTests.SavePDFCommandTests/testTheOutputLineHasNoQuery .build/debug/SafariBrowserTests.xctest 2>&1 \
+		| grep 'Executed 1 test, with 0 failures'
 
 # #76: js on strict-CSP pages (eval-free wrappers) + interaction commands.
 test-csp: build-debug

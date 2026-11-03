@@ -29,6 +29,7 @@ struct SafariBrowser: AsyncParsableCommand {
             HighlightCommand.self,
             ScreenshotCommand.self,
             SaveImageCommand.self,
+            SavePDFCommand.self,
             PdfCommand.self,
             DragCommand.self,
             SetCommand.self,

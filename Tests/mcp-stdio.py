@@ -89,8 +89,8 @@ class MCPStdioTests(unittest.TestCase):
             cursor = result.get('nextCursor')
             if cursor is None:
                 break
-        self.assertEqual(len(tools), 77)
-        self.assertEqual(len({t['name'] for t in tools}), 77)
+        self.assertEqual(len(tools), 80)
+        self.assertEqual(len({t['name'] for t in tools}), 80)
         for tool in tools:
             with self.subTest(tool=tool['name']):
                 args = {'options': {'help': True}} if 'help' in tool['inputSchema']['properties']['options']['properties'] else {}
