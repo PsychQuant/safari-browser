@@ -297,10 +297,12 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         let startxref = first.range(of: Data("startxref".utf8), options: .backwards)!.lowerBound
         let previous = Int(String(decoding: first[startxref...].dropFirst(10).prefix { $0 != 0x0A }, as: UTF8.self))!
         var full = first
-        let replaced = full.count
-        full += Data("2 0 obj\n<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 /Touched true >>\nendobj\n".utf8)
+        let pages = full.count
+        full += Data("2 0 obj\n<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R 9 0 R] /Count 4 >>\nendobj\n".utf8)
+        let page = full.count
+        full += Data("9 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>\nendobj\n".utf8)
         let xref = full.count
-        full += Data(String(format: "xref\n2 1\n%010d 00000 n \ntrailer\n<< /Size 9 /Root 1 0 R /Prev %d >>\nstartxref\n%d\n%%%%EOF\n", replaced, previous, xref).utf8)
+        full += Data(String(format: "xref\n2 1\n%010d 00000 n \n9 1\n%010d 00000 n \ntrailer\n<< /Size 10 /Root 1 0 R /Prev %d >>\nstartxref\n%d\n%%%%EOF\n", pages, page, previous, xref).utf8)
         try full.write(to: root.appendingPathComponent("revision.pdf"))
         try Data("\(first.count)".utf8).write(to: root.appendingPathComponent("revision-cut"))
         let tab = try await open("/revision.pdf")
@@ -309,7 +311,10 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         let out = root.appendingPathComponent("revision-out.pdf")
         let published = try TabPDFReader.publish(result, to: out.path, force: false, stagingRoot: root)
         XCTAssertEqual(published.pages, 3)
-        print("MEASURED revision: \(first.count) of \(full.count) bytes, saved with exit 0")
+        let whole = try TabPDFReader.publish(.init(bytes: full, url: ""), to: root.appendingPathComponent("revision-whole.pdf").path,
+                                             force: false, stagingRoot: root)
+        XCTAssertEqual(whole.pages, 4, "the whole file has one page more, so the cut one really has fewer")
+        print("MEASURED revision: \(first.count) of \(full.count) bytes saved with \(published.pages) of \(whole.pages) pages, exit 0")
     }
 
     /// WebKit answered 200 with the part it received. The page check is what stops it.
