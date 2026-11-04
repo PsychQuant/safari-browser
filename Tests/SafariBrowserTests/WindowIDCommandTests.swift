@@ -80,6 +80,18 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    /// Without `--profile` the reference itself names the window by id (no enumeration); a missing id raises in the
+    /// script and is reported as a targeting miss, never answered from the front window.
+    func testGetURLWithAMissingWindowIDIsATargetingMiss() async throws {
+        let fake = TwoProfileFake()
+        do {
+            try await run(GetURL.self, ["--window-id", "9999"], on: fake)
+            XCTFail("a missing window id must fail")
+        } catch SafariBrowserError.documentNotFound {}
+        XCTAssertFalse(fake.scripts.contains { $0.contains("front window") }, transcript(fake))
+        XCTAssertEqual(fake.scripts.filter { $0.contains("window id 9999") }.count, 1, transcript(fake))
+    }
+
     // MARK: 2.2 js anchors by id and fails closed without one
 
     func testJSWithAMissingWindowIDFailsBeforeAnyJavaScript() async throws {

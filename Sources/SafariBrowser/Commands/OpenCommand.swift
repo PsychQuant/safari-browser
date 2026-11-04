@@ -28,17 +28,20 @@ struct OpenCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func validate() throws {
-        // --new-tab only supports --window (pick which window to add the tab to).
+        // --new-tab names a window (pick which window to add the tab to): --window,
+        // --window-id, --profile. Every flag that names a tab is rejected (#352:
+        // the URL flags other than --url used to be ignored, not rejected).
         if newTab {
-            if target.url != nil || target.tab != nil || target.document != nil || target.tabInWindow != nil {
+            if target.url != nil || target.urlExact != nil || target.urlEndswith != nil || target.urlRegex != nil
+                || target.tab != nil || target.document != nil || target.tabInWindow != nil {
                 throw ValidationError(
-                    "--new-tab only supports --window for targeting; --url, --tab, --document, and --tab-in-window are not allowed."
+                    "--new-tab only supports --window, --window-id, and --profile for targeting; --url, --url-exact, --url-endswith, --url-regex, --tab, --document, and --tab-in-window are not allowed."
                 )
             }
         }
         // --new-window creates a brand-new window — no targeting makes sense.
         if newWindow {
-            if target.url != nil || target.tab != nil || target.document != nil || target.window != nil || target.tabInWindow != nil {
+            if target.hasExplicitTarget || target.tabInWindow != nil {
                 throw ValidationError(
                     "--new-window creates a new window and does not accept any targeting flags."
                 )
@@ -69,8 +72,9 @@ struct OpenCommand: AsyncParsableCommand {
             return
         }
         if newTab {
-            // #51: open the new tab in the requested profile's window.
-            try await SafariBridge.openURLInNewTab(url, window: profileWindow() ?? target.window)
+            // #51: open the new tab in the requested profile's window. #351 / #352: by its id, never by a position
+            // read after Safari is activated.
+            try await SafariBridge.openURLInNewTab(url, window: newTabWindow())
             return
         }
         if replaceTab {
@@ -87,10 +91,11 @@ struct OpenCommand: AsyncParsableCommand {
         // across ALL profiles could land in the wrong identity. Otherwise
         // search for an exact URL match and focus it; when no match exists,
         // open a new tab.
-        let hasExplicitTarget = target.url != nil
-            || target.window != nil
-            || target.tab != nil
-            || target.document != nil
+        // #352: `TargetOptions.hasExplicitTarget` is the one list of flags that
+        // name a tab — this used to be a local copy that left out --window-id
+        // and the URL flags other than --url (safari-browser#233), so
+        // `open --url-endswith S <url>` opened a new tab instead.
+        let hasExplicitTarget = target.hasExplicitTarget
             || target.tabInWindow != nil
             || profile != nil
 
@@ -114,24 +119,33 @@ struct OpenCommand: AsyncParsableCommand {
         }
 
         // No existing tab matches — open a new tab in the front window.
-        try await SafariBridge.openURLInNewTab(url, window: nil)
+        try await SafariBridge.openURLInNewTab(url, window: .front)
     }
 
-    /// Resolve the requested profile's window index (its front window, or
-    /// --window N validated within it), or nil when --profile is not set. #51.
-    private func profileWindow() async throws -> Int? {
-        guard let profile = target.resolveProfile() else { return nil }
+    /// The window `--new-tab` creates the tab in (#351, #352):
+    /// - `--window-id W`: that window, without `activate`; with `--profile` the
+    ///   enumeration first checks W belongs to the profile (fails closed otherwise).
+    /// - `--profile P [--window k]`: the id the profile-scoped enumeration read
+    ///   for that window (`activate` kept); a legacy record without an id falls
+    ///   back to its position, which the script pins before `activate`.
+    /// - `--window N`: the position, pinned by id before `activate` in the script.
+    /// - nothing: the front window.
+    private func newTabWindow() async throws -> SafariBridge.NewTabWindow {
+        let profile = target.resolveProfile()
+        if let windowID = target.windowID {
+            if let profile {
+                try SafariBridge.checkWindowID(windowID, profile: profile, in: await SafariBridge.listAllWindows())
+            }
+            return .id(windowID, activate: false)
+        }
+        guard let profile else { return target.window.map { .index($0) } ?? .front }
         let base: SafariBridge.TargetDocument = target.window.map { .windowIndex($0) } ?? .frontWindow
-        let concrete = try await SafariBridge.resolveToConcreteTarget(
-            base,
+        let resolved = try await SafariBridge.resolveNativeTarget(
+            from: base,
             firstMatch: target.firstMatch,
             warnWriter: TargetOptions.stderrWarnWriter,
             profile: profile
         )
-        switch concrete {
-        case .windowIndex(let n): return n
-        case .windowTab(let n, _): return n
-        default: return target.window
-        }
+        return resolved.windowID.map { .id($0) } ?? .index(resolved.windowIndex)
     }
 }

@@ -22,9 +22,9 @@
 
 涵蓋 requirement「Open URL in new tab」與「Open with a window id names a target」；design「`open` 的三條路」。
 
-- [ ] 3.1 [P] `open`（非 `--new-tab`）以 `TargetOptions.hasExplicitTarget || profile != nil` 判斷有沒有指定目標：`open --window-id W <url>` 導航那個視窗的目前分頁，`open --url-endswith S <url>` 導航符合的分頁（safari-browser#233），都不開新分頁。驗證：fake runner 測試斷言送出的是 `openURL` 的導航腳本（`window id` 參照），沒有 `make new tab`
-- [ ] 3.2 [P] 由 `local/351`（`b5ab06b`）帶入 `SafariBridge.NewTabWindow` 與 `openURLInNewTabScript`，加 `activate` 開關：`--window-id W` → `tell window id W`、無 `activate`、仍 `set current tab`；`--window N` → 先 `set _w to id of window N` 再 `activate` 再 `tell window id _w`；無目標 → front window 照舊。驗證：腳本文字測試與 `NSAppleScript` 編譯測試（三種形狀都編得過）
-- [ ] 3.3 `open --new-tab --profile P [--window k]` 以 `resolveNativeTarget` 回傳的 `windowID` 建分頁（`.id`，保留 `activate`）；沒有 id 時退回 `.index(<全域編號>)`；解析不出一個視窗時失敗。`--new-tab` 的驗證接受 `--window`、`--window-id`、`--profile`，拒絕其他目標旗標（訊息列出可用的三個）。驗證：fake 列舉＋fake runner 的測試，斷言腳本是 `tell window id <列舉時的 id>`，以及驗證錯誤的測試
+- [x] 3.1 [P] `open`（非 `--new-tab`）以 `TargetOptions.hasExplicitTarget || profile != nil` 判斷有沒有指定目標：`open --window-id W <url>` 導航那個視窗的目前分頁，`open --url-endswith S <url>` 導航符合的分頁（safari-browser#233），都不開新分頁。驗證：fake runner 測試斷言送出的是 `openURL` 的導航腳本（`window id` 參照），沒有 `make new tab`
+- [x] 3.2 [P] 由 `local/351`（`b5ab06b`）帶入 `SafariBridge.NewTabWindow` 與 `openURLInNewTabScript`，加 `activate` 開關：`--window-id W` → `tell window id W`、無 `activate`、仍 `set current tab`；`--window N` → 先 `set _w to id of window N` 再 `activate` 再 `tell window id _w`；無目標 → front window 照舊。驗證：腳本文字測試與 `NSAppleScript` 編譯測試（三種形狀都編得過）
+- [x] 3.3 `open --new-tab --profile P [--window k]` 以 `resolveNativeTarget` 回傳的 `windowID` 建分頁（`.id`，保留 `activate`）；沒有 id 時退回 `.index(<全域編號>)`；解析不出一個視窗時失敗。`--new-tab` 的驗證接受 `--window`、`--window-id`、`--profile`，拒絕其他目標旗標（訊息列出可用的三個）。驗證：fake 列舉＋fake runner 的測試，斷言腳本是 `tell window id <列舉時的 id>`，以及驗證錯誤的測試
 
 ## 4. exec 與 `documents`
 
