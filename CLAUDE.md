@@ -146,6 +146,7 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
 
 **規則**：
 - `--url` / `--window` / `--tab` / `--document` 四者**互斥**
+- **`--window-id W`（#352）**：以 Safari 的 `id of window`（`documents --json` 的 `window_id`）指定視窗，與上面四者及 `--window` 互斥；可配 `--tab-in-window`。內部是 `TargetDocument.windowID(W, tabInWindow:)`，參照一律 `window id W`；id 不存在或不屬於 `--profile` 時 `documentNotFound`，**絕不**退回 `front window`。`--window N` 維持位置語意。`--window-id W --tab-in-window T --profile P` 刻意回 `.windowID` 而非 `.resolvedTab`：`resolveToConcreteTarget` 的 profile 分支直接放行 `.resolvedTab`，不這樣就沒有地方檢查 W 屬於 P。`open --new-tab --window-id W` 不 `activate`（仍設成目前分頁）；`--window N` 先讀 id 再 `activate`；`--profile` 用列舉讀到的 id（`SafariBridge.NewTabWindow`）
 - Read-only query 自動 document-scoped，modal sheet 不會 block（#21 fix）
 - **Window-level UI ops**（`tabs` / `tab` / `open --new-tab` / `open --new-window`）只接受 `--window`
 - **Window-only primitives**（`close` / `screenshot` / `pdf` / `upload --native` / `upload --allow-hid`）**接受完整 TargetOptions**（#26）— 透過 `SafariBridge.resolveNativeTarget` 把 `--url` / `--tab` / `--document` 映射到具體 `(windowIndex, tabIndexInWindow)` pair，keystroke-based commands 會先 tab-switch 再 raise window 再送 keystroke
@@ -182,7 +183,7 @@ safari-browser pdf --tab 2 --allow-hid out.pdf  # --tab alias for --document
 
 **`--first-match` 的接法（#231）**：帶 `TargetOptions` 的指令有兩種：把旗標交給 bridge（`resolveWithFirstMatch()`，或 `doJavaScript(..., firstMatch:, warnWriter:)`；原始的 `.urlMatch` 目標在 `doJavaScript` 與 `doJavaScriptLarge` 的入口各解析一次，`doJavaScriptLarge` 之後的讀取用那個分頁），或用 `TargetOptions.resolveFirstMatchOnce()`：有 `--first-match`、沒有 `--profile`、目標是 URL 類旗標時只解析一次成具體分頁（一次列舉、多個匹配時一則警告），之後的讀取都跟著那個分頁；其他組合與 `resolveProfileScoped()` 相同。**兩種不要「統一」**：後者的單次解析與單一警告是刻意的。`FirstMatchResolutionTests` 有逐指令的行為測試與逐 struct 的形狀檢查（形狀檢查不是證明）；已知沒接的是 #233 列出的 `screenshot`、`open`、`tab`、`tabs`、`wait` 的旗標判斷與目標導航後的重新解析，不是一份完整清單。
 
-AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪些 documents，然後用 `--url <substring>` 明確指定。避免靠 `front window` 的 z-order 猜測。
+AI agent 在多視窗環境建議：先跑 `safari-browser documents` 看有哪些 documents，然後用 `--url <substring>` 明確指定；要固定某個視窗，用 `documents --json` 的 `window_id` 配 `--window-id`。避免靠 `front window` 或 `--window N` 的 z-order 猜測。
 
 新抽象：
 - `SafariBridge.TargetDocument` enum — 四個 case（#23）
