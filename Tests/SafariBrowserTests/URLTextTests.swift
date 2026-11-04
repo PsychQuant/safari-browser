@@ -588,7 +588,9 @@ final class URLTextTests: XCTestCase {
 
     /// The count is the number of places that show a tab URL, so removing one is a failure too.
     func testTheNumberOfRedactionSitesIsWhatWasReviewed() throws {
-        let counts = [("SafariBridge.swift", 11), ("Commands/JSCommand.swift", 1), ("Commands/UploadCommand.swift", 2), ("Utilities/Errors.swift", 1)]
+        // 13 (#352): `checkWindowID`'s candidate listing and the `--window-id W --tab-in-window T` out-of-range
+        // listing both show tab URLs in a `documentNotFound`; both redact.
+        let counts = [("SafariBridge.swift", 13), ("Commands/JSCommand.swift", 1), ("Commands/UploadCommand.swift", 2), ("Utilities/Errors.swift", 1)]
         for (file, expected) in counts {
             let found = try source(file).components(separatedBy: "URLText.redactURL(").count - 1
             XCTAssertEqual(found, expected, "\(file): a redaction site was added or removed — decide it, then update this count")

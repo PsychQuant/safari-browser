@@ -21,6 +21,7 @@ final class TargetOptionsTests: XCTestCase {
         urlRegex: String? = nil,
         profile: String? = nil,
         window: Int? = nil,
+        windowID: Int? = nil,
         tab: Int? = nil,
         document: Int? = nil,
         tabInWindow: Int? = nil,
@@ -39,6 +40,8 @@ final class TargetOptionsTests: XCTestCase {
         // via parse(); only the zero-arg test path needs the explicit init.
         opts.profile = profile
         opts.window = window
+        // #352: same reason as profile above — validate() reads it.
+        opts.windowID = windowID
         opts.tab = tab
         opts.document = document
         opts.tabInWindow = tabInWindow
