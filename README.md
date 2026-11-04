@@ -633,6 +633,7 @@ safari-browser tabs --window 2         # list tabs of window 2
 safari-browser tab <n>                 # switch to tab
 safari-browser tab new                 # new tab
 safari-browser tab new --window 2      # new tab in window 2
+safari-browser tab new --window-id <id> # new tab in that window, without activating Safari (#352)
 ```
 
 ### Blocking Dialogs
@@ -986,6 +987,8 @@ drives a document accepts one of four mutually exclusive global flags:
 safari-browser <cmd> --url <substring>  # tab whose URL CONTAINS this text (see below)
 safari-browser <cmd> --window <n>       # current document of the Nth window (1-indexed)
 safari-browser <cmd> --window <n> --tab-in-window <m>   # window N's Mth tab — "wN.tM"
+safari-browser <cmd> --window-id <id>   # current tab of the window with this stable id (#352)
+safari-browser <cmd> --window-id <id> --tab-in-window <m>
 safari-browser <cmd> --tab <n>          # document N (alias for --document)
 safari-browser <cmd> --document <n>     # document N in Safari's document collection
 safari-browser <cmd> --profile <name>   # restrict to windows of named Safari profile (#47)
@@ -1006,6 +1009,16 @@ can retarget positionally (#72).
 **To target "window 1, tab 3"** use `--window 1 --tab-in-window 3`. Run
 `safari-browser documents` first — its `wN.tM` column is exactly these two
 numbers.
+
+**To keep targeting the same window while others move** use `--window-id`
+(#352). `--window N` counts windows from the front, so a window raised in
+between (by you, or by Safari being activated) changes what N names.
+`--window-id` takes Safari's own window id, which does not change while the
+window is open: read it from `documents --json` (`window_id`). A missing id, or
+a window outside `--profile`, fails with `No Safari document matches`; it never
+falls back to the front window. `close`, `screenshot`, `pdf` and
+`upload --native` find the window by its id but still act on it by its position
+(#353).
 
 **Identity-anchored `--url` / `--document` resolution (#79)**: a `--url` or
 `--document` match resolves to the tab's *identity* (`tab T of window id W`,

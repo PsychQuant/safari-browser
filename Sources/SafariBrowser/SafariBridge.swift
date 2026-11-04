@@ -616,7 +616,7 @@ enum SafariBridge {
                     throw SafariBrowserError.documentNotFound(
                         pattern: "window id \(windowID) (profile: \"\(profile)\")",
                         availableDocuments: [
-                            "(window id \(windowID) has no current tab; "
+                            "(could not read the current tab of window id \(windowID): no tabs, or Safari did not answer; "
                                 + "run `safari-browser documents --json` for window ids)",
                         ])
                 }
@@ -663,8 +663,8 @@ enum SafariBridge {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window id \(windowID)",
                     availableDocuments: [
-                        "(no Safari window with id \(windowID) has a current tab; "
-                            + "run `safari-browser documents --json` for window ids)",
+                        "(could not read the current tab of window id \(windowID): no such window, no tabs, "
+                            + "or Safari did not answer; run `safari-browser documents --json` for window ids)",
                     ])
             }
             return .anchoredCurrentTab(windowID: windowID, tabInWindow: anchor.currentTabIndex,
@@ -944,6 +944,10 @@ enum SafariBridge {
         // #9: Use do JavaScript for navigation to avoid race with page's own JS redirects.
         // Fallback to set URL when do JavaScript fails (e.g., about:blank, no open tabs).
         let jsCode = "window.location.href=\(url.jsStringLiteral)"
+        // #352: a window id names a window that must exist; with no window
+        // open the reference fails (a targeting miss) instead of a new window.
+        let mayCreateWindow: Bool
+        if case .windowID = target { mayCreateWindow = false } else { mayCreateWindow = true }
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
@@ -952,17 +956,29 @@ enum SafariBridge {
         // Route through runTargetedAppleScript so `--url typo open ...` also
         // gets the user-friendly documentNotFound error with available docs
         // listed, matching the read-only getter behavior.
+        let navigate = """
+                    try
+                        do JavaScript "\(jsCode.escapedForAppleScript)" in \(docRef)
+                    on error
+                        set URL of \(docRef) to "\(url.escapedForAppleScript)"
+                    end try
+            """
+        guard mayCreateWindow else {
+            _ = try await runTargetedAppleScript("""
+                tell application "Safari"
+                    activate
+                \(navigate)
+                end tell
+                """, target: target)
+            return
+        }
         _ = try await runTargetedAppleScript("""
             tell application "Safari"
                 activate
                 if (count of windows) = 0 then
                     make new document with properties {URL:"\(url.escapedForAppleScript)"}
                 else
-                    try
-                        do JavaScript "\(jsCode.escapedForAppleScript)" in \(docRef)
-                    on error
-                        set URL of \(docRef) to "\(url.escapedForAppleScript)"
-                    end try
+            \(navigate)
                 end if
             end tell
             """, target: target)
@@ -993,9 +1009,19 @@ enum SafariBridge {
     /// for `.front`. With no window open, a new document is made, as before (only for `.front` and `.index`: an id that
     /// no longer exists is an error, not a new window of whichever profile Safari picks).
     static func openURLInNewTabScript(_ url: String, window: NewTabWindow) -> String {
-        let u = url.escapedForAppleScript
+        newTabScript(properties: " with properties {URL:\"\(url.escapedForAppleScript)\"}", window: window)
+    }
+
+    /// `tab new` (#352): the same script without a URL.
+    static func openNewTabScript(window: NewTabWindow) -> String {
+        newTabScript(properties: "", window: window)
+    }
+
+    /// `properties` is either empty or ` with properties {URL:"<escaped>"}`; both the new tab and the new document
+    /// (no window open) get it.
+    private static func newTabScript(properties: String, window: NewTabWindow) -> String {
         let createTab = """
-                        set newTab to make new tab with properties {URL:"\(u)"}
+                        set newTab to make new tab\(properties)
                         set current tab to newTab
             """
         switch window {
@@ -1004,7 +1030,7 @@ enum SafariBridge {
                 tell application "Safari"
                     activate
                     if (count of windows) = 0 then
-                        make new document with properties {URL:"\(u)"}
+                        make new document\(properties)
                     else
                         tell front window
                 \(createTab)
@@ -1017,7 +1043,7 @@ enum SafariBridge {
                 tell application "Safari"
                     if (count of windows) = 0 then
                         activate
-                        make new document with properties {URL:"\(u)"}
+                        make new document\(properties)
                     else
                         set _w to id of window \(n)
                         activate
@@ -2674,6 +2700,11 @@ enum SafariBridge {
     ) throws -> ResolvedWindowTarget {
         // Apply profile filter at the entry, before the case-by-case
         // resolution logic. nil = legacy behavior (all windows count).
+        // #352: a window id is checked against the profile by `checkWindowID`,
+        // whose miss names only that profile's windows.
+        if case .windowID(let windowID, _) = target, let profile {
+            try checkWindowID(windowID, profile: profile, in: windows)
+        }
         let candidates: [WindowInfo]
         if let profile = profile {
             candidates = windows.filter { $0.profile == profile }
@@ -2704,6 +2735,13 @@ enum SafariBridge {
         let candidates = profile.map { p in windows.filter { $0.profile == p } } ?? windows
         if let window = candidates.first(where: { $0.windowID == windowID }) { return window }
         let scope = profile.map { " (profile: \"\($0)\")" } ?? ""
+        if let profile, candidates.isEmpty {
+            // Not the generic profile-miss listing, which names every other
+            // profile's windows and tabs.
+            throw SafariBrowserError.documentNotFound(
+                pattern: "window id \(windowID)\(scope)",
+                availableDocuments: ["(no window of profile \"\(profile)\" is open)"])
+        }
         throw SafariBrowserError.documentNotFound(
             pattern: "window id \(windowID)\(scope)",
             availableDocuments: candidates.map { w -> String in
@@ -3373,8 +3411,15 @@ enum SafariBridge {
 
     /// Switch the target window's current tab to tab `index`. `window: nil`
     /// means the front window.
-    static func switchToTab(_ index: Int, window: Int? = nil) async throws {
-        let windowRef = window.map { "window \($0)" } ?? "front window"
+    /// #352: the window as `open --new-tab` names it — `.id` by stable id
+    /// (the caller has checked it exists), `.index` by position, `.front`.
+    static func switchToTab(_ index: Int, in window: NewTabWindow) async throws {
+        let windowRef: String
+        switch window {
+        case .front: windowRef = "front window"
+        case .index(let n): windowRef = "window \(n)"
+        case .id(let w, _): windowRef = "window id \(w)"
+        }
         try await runAppleScript("""
             tell application "Safari"
                 set current tab of \(windowRef) to tab \(index) of \(windowRef)
@@ -3382,23 +3427,11 @@ enum SafariBridge {
             """)
     }
 
-    /// Open a new empty tab in the target window. `window: nil` means the
-    /// front window.
-    static func openNewTab(window: Int? = nil) async throws {
-        let windowRef = window.map { "window \($0)" } ?? "front window"
-        try await runAppleScript("""
-            tell application "Safari"
-                activate
-                if (count of windows) = 0 then
-                    make new document
-                else
-                    tell \(windowRef)
-                        set newTab to make new tab
-                        set current tab to newTab
-                    end tell
-                end if
-            end tell
-            """)
+    /// `tab new` (#352): one script, the same window handling as
+    /// `openURLInNewTab` (an id is never looked up again; `.index` reads the
+    /// id before `activate`; `.id(_, activate: false)` does not activate).
+    static func openNewTab(in window: NewTabWindow) async throws {
+        try await runAppleScript(openNewTabScript(window: window))
     }
 
     // MARK: - Screenshot

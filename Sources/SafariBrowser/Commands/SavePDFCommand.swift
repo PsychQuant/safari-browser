@@ -33,7 +33,7 @@ struct SavePDFCommand: AsyncParsableCommand {
         guard !path.isEmpty else { throw ValidationError("The destination path must not be empty.") }
         guard target.hasExplicitTarget else {
             throw ValidationError(
-                "save-pdf needs an explicit tab: --url, --url-exact, --url-endswith, --url-regex, --window [--tab-in-window], --document or --tab. It never reads the front tab by default.")
+                "save-pdf needs an explicit tab: --url, --url-exact, --url-endswith, --url-regex, --window [--tab-in-window], --window-id [--tab-in-window], --document or --tab. It never reads the front tab by default.")
         }
     }
 

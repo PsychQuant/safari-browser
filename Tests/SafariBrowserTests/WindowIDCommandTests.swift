@@ -12,10 +12,13 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
     final class TwoProfileFake: @unchecked Sendable {
         private let lock = NSLock()
         private var sent: [String] = []
-        let windows: [(id: Int, profile: String, tabs: [String])] = [
+        let windows: [(id: Int, profile: String, tabs: [String])]
+        init(windows: [(id: Int, profile: String, tabs: [String])] = [
             (101, "個人", (1...3).map { "https://own.example/\($0)" }),
             (202, "Work", (1...2).map { "https://work.example/\($0)" }),
-        ]
+        ]) {
+            self.windows = windows
+        }
         var scripts: [String] { lock.withLock { sent } }
 
         func respond(_ script: String) throws -> String {

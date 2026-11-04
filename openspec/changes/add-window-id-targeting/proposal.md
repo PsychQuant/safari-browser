@@ -19,6 +19,7 @@
   - `open --new-tab --profile P [--window k]`：用 profile 篩選的列舉本來就讀到的視窗 id，不再以位置重新查（#351 更正後的病因：`concreteTarget` 對視窗層級的解析丟掉了 id）。
 - `exec`：in-process dispatcher 接受 `--window-id`，重組參數時帶上它。
 - `documents --json`：每一列在最上層加 `window_id`（與 `blocking_dialog.window_id` 同值；讀不到時為 null，#349）。
+- `tab <N>`／`tab new`：與 `open --new-tab` 同樣的視窗處理（`--window-id` 先確認存在再以 id 指定、`tab new` 不 `activate`；`--profile` 用列舉讀到的 id；`tab new --window N` 先讀 id 再 `activate`）。`tab focus` 以解析出的視窗 id 切分頁（verify 第一輪補上：原本漏掉 `tab`）。
 - `--window N` 維持位置語意（維護者 2026-11-05）。
 
 ## Non-Goals (optional)
@@ -26,7 +27,9 @@
 - `close`、`screenshot`、`pdf`、`upload --native` 這些視窗層級的原始動作（拆到 #353）。
 - 分頁的穩定身分（#188）。
 - 開了多個視窗時對 `--window N` 警告或拒絕（#287）。
-- `open --new-tab` 不用 `--window-id` 時的 `activate` 行為（#350 其餘部分）。
+- `open --new-tab` 不用 `--window-id` 時的 `activate` 行為（#350 其餘部分）；`open --window-id W <url>`（導航）仍會 `activate`。
+- 讓**每個**指令都在開頭把 `--window N` 解析成 id 一次。`js`、`wait`、`save-pdf` 已經這樣做（#180）；其他指令維持每次 Apple event 依位置解析（與先前相同）。診斷時記下的「resolved to an id once」只在這些指令成立，其餘另開 issue 追蹤。
+- `open` 的 focus-existing 在「同 Space 別的視窗」層會先 raise 視窗再以 `window N` 切分頁（issue 第一點涵蓋的視窗層級動作之一），與 `close` 等同屬 #353 的範圍。
 
 ## Capabilities
 
@@ -39,14 +42,15 @@
 - `document-targeting`: 新增「以視窗 id 指定視窗」的 requirement（`--window-id`、互斥、profile 檢查、fail closed）。
 - `navigation`: 「Open URL in new tab」改為以視窗 id 建分頁，並接受 `--window-id`、`--profile`。
 - `document-listing`: JSON 每列加 `window_id`。
+- `tab-management`: 「Switch to tab by index」與「Open new empty tab」接受 `--window-id`，`--profile` 以 id 指定。
 
 ## Impact
 
-- Affected specs: `document-targeting`, `navigation`, `document-listing`
+- Affected specs: `document-targeting`, `navigation`, `document-listing`, `tab-management`
 - Affected code:
   - `Sources/SafariBrowser/Commands/TargetOptions.swift`
   - `Sources/SafariBrowser/SafariBridge.swift`
-  - `Sources/SafariBrowser/Commands/OpenCommand.swift`
+  - `Sources/SafariBrowser/Commands/OpenCommand.swift`, `Sources/SafariBrowser/Commands/TabCommand.swift`
   - `Sources/SafariBrowser/Commands/DocumentsCommand.swift`
   - `Sources/SafariBrowser/Exec/CommandDispatch.swift`, `Sources/SafariBrowser/Exec/ScriptInterpreter.swift`
   - Tests: `Tests/SafariBrowserTests/`（新增 `WindowIDTargetingTests.swift`、`OpenNewTabWindowTests.swift`）

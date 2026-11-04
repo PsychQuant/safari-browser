@@ -2,9 +2,9 @@
 
 ### Requirement: Target a window by its stable id
 
-The system SHALL accept a global `--window-id <id>` flag on every subcommand that composes the shared targeting options. The value SHALL be a positive integer naming a Safari window by its AppleScript `id of window`, which does not change while the window exists. Without `--tab-in-window`, the target SHALL be the current tab of that window, read once at command start. With `--tab-in-window <m>`, the target SHALL be the `m`-th tab of that window, referenced as `tab m of window id <id>`.
+The system SHALL accept a global `--window-id <id>` flag on every subcommand that composes the shared targeting options. The value SHALL be a positive integer naming a Safari window by its AppleScript `id of window`, which does not change while the window exists. Without `--tab-in-window`, the target SHALL be the current tab of that window: `js` and `wait` SHALL read its index once at command start and fail if a different tab becomes current (the same check `--window <n>` has); other commands SHALL address it as `document of window id <id>`, that window's current tab at each Apple event. With `--tab-in-window <m>`, the target SHALL be the `m`-th tab of that window, referenced as `tab m of window id <id>`.
 
-`--window-id` SHALL be mutually exclusive with `--window`, `--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab` and `--document`; a combination SHALL be rejected with a validation error before Safari is contacted. `--tab-in-window` SHALL be accepted with either `--window` or `--window-id`. When `--profile <name>` is also given, the window SHALL belong to that profile; otherwise the command SHALL fail without acting. When no window has the given id, the command SHALL fail with a document-not-found error and SHALL NOT fall back to the front window or to any other window. A value below 1 SHALL be rejected with a validation error.
+`--window-id` SHALL be mutually exclusive with `--window`, `--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab` and `--document`; a combination SHALL be rejected with a validation error before Safari is contacted. `--tab-in-window` SHALL be accepted with either `--window` or `--window-id`. When `--profile <name>` is also given, the window SHALL belong to that profile; otherwise the command SHALL fail without acting. When no window has the given id, the command SHALL fail with a document-not-found error and SHALL NOT fall back to the front window or to any other window. When the profile check fails, the error SHALL list only the windows of the requested profile, and when that profile has no window open it SHALL list none. A value below 1 SHALL be rejected with a validation error. Commands that act on a whole window (`close`, `screenshot`, `pdf`, `upload --native`) SHALL find the window by its id; acting on it by id end to end is out of scope here (safari-browser#353).
 
 #### Scenario: Current tab of a window by id
 
@@ -23,13 +23,20 @@ The system SHALL accept a global `--window-id <id>` flag on every subcommand tha
 - **WHEN** user runs `safari-browser get url --window-id 9999`
 - **AND** no Safari window has the id 9999
 - **THEN** the command fails with a document-not-found error
-- **AND** no other window is read
+- **AND** nothing is read from or sent to any tab
 
 #### Scenario: Window id outside the requested profile
 
 - **WHEN** user runs `safari-browser get url --window-id 4711 --profile Work`
 - **AND** window 4711 belongs to the profile `Personal`
 - **THEN** the command fails without reading the window
+
+#### Scenario: Window id with a profile that has no window open
+
+- **WHEN** user runs `safari-browser get url --window-id 4711 --profile Work`
+- **AND** no window of the profile `Work` is open
+- **THEN** the command fails with a document-not-found error
+- **AND** the error lists no tab URL of any other profile
 
 #### Scenario: Window id combined with another targeting flag
 
@@ -45,3 +52,107 @@ The system SHALL accept a global `--window-id <id>` flag on every subcommand tha
 
 - **WHEN** user runs `safari-browser exec --window-id 4711` with a script whose steps read the page
 - **THEN** every step targets the current tab of window 4711 in the in-process path and in the subprocess path alike
+
+## MODIFIED Requirements
+
+### Requirement: Target document selection via CLI flags
+
+The system SHALL provide a set of global CLI flags that select the target Safari document for any subsequent subcommand. The flags fall into three mutually exclusive groups:
+
+1. **URL-matching flags** (all mutually exclusive with each other and with the remaining groups): `--url <substring>`, `--url-exact <url>`, `--url-endswith <suffix>`, `--url-regex <pattern>`.
+2. **Index-based flags** (mutually exclusive with each other and with group 1): `--window <n>`, `--window-id <id>`, `--tab <n>`, `--document <n>`. `--window <n>` counts windows from the front; `--window-id <id>` names a window by its stable id (see "Target a window by its stable id").
+3. **Composite same-URL escape hatch**: `--window <n>` or `--window-id <id>` combined with `--tab-in-window <m>` targets the `m`-th tab of that window. This composite SHALL be rejected if paired with any flag from group 1, or with `--tab` or `--document`.
+
+If no target flag is provided, the system SHALL default to the first document in Safari's document collection (`document 1`). If more than one flag is supplied in a way that violates the exclusivity rules, the system SHALL reject the invocation with a validation error before executing the subcommand.
+
+#### Scenario: Default targeting with no flags
+
+- **WHEN** user runs `safari-browser get url` with no target flag
+- **THEN** the system resolves the target to `document 1` of Safari
+- **AND** the command returns the URL of that document
+
+#### Scenario: URL substring targeting
+
+- **WHEN** user runs `safari-browser get --url "plaud" url`
+- **AND** Safari has multiple documents, one of which has `https://web.plaud.ai/` as its URL
+- **THEN** the system resolves the target to the first document whose URL contains the substring `plaud`
+- **AND** the command returns `https://web.plaud.ai/`
+
+#### Scenario: URL exact targeting
+
+- **WHEN** user runs `safari-browser get --url-exact "https://web.plaud.ai/" url`
+- **AND** Safari has a document whose URL equals `https://web.plaud.ai/` exactly
+- **THEN** the system resolves the target to that document
+- **AND** the command returns `https://web.plaud.ai/`
+
+#### Scenario: URL endsWith targeting
+
+- **WHEN** user runs `safari-browser get --url-endswith "/play" url`
+- **AND** Safari has a document whose URL ends with `/play`
+- **THEN** the system resolves the target to that document
+- **AND** the command returns the full URL of that document
+
+#### Scenario: URL regex targeting
+
+- **WHEN** user runs `safari-browser get --url-regex "lesson/[a-f0-9-]+$" url`
+- **AND** Safari has a document whose URL matches the regex
+- **THEN** the system resolves the target to that document
+- **AND** the command returns the full URL
+
+#### Scenario: Window index targeting
+
+- **WHEN** user runs `safari-browser get --window 2 url`
+- **AND** Safari has at least two windows
+- **THEN** the system resolves the target to the document of the second window (1-indexed)
+- **AND** the command returns that window's document URL
+
+#### Scenario: Document index targeting
+
+- **WHEN** user runs `safari-browser get --document 3 url`
+- **AND** Safari has at least three documents in its document collection
+- **THEN** the system resolves the target to `document 3`
+- **AND** the command returns that document's URL
+
+#### Scenario: Tab alias for document
+
+- **WHEN** user runs `safari-browser get --tab 2 url`
+- **THEN** the system treats `--tab 2` identically to `--document 2`
+- **AND** the command returns the URL of `document 2`
+
+#### Scenario: Mutually exclusive URL flags rejected
+
+- **WHEN** user runs `safari-browser get url --url plaud --url-endswith /play`
+- **THEN** the system SHALL print a usage error identifying the conflicting URL flags
+- **AND** the system SHALL exit with a non-zero status before invoking any Safari operation
+
+#### Scenario: URL flag combined with window index rejected
+
+- **WHEN** user runs `safari-browser get url --url plaud --window 2`
+- **THEN** the system SHALL print a usage error identifying the mutually exclusive flags
+- **AND** the system SHALL exit with a non-zero status before invoking any Safari operation
+
+### Requirement: Composite targeting flag --tab-in-window
+
+The CLI SHALL accept a new flag `--tab-in-window N` (1-indexed) that selects a specific tab within a Safari window. This flag SHALL be valid only when paired with `--window M` or `--window-id W`; supplying `--tab-in-window` without either SHALL produce a validation error before any AppleScript executes.
+
+When both `--window M` and `--tab-in-window N` are supplied, the resolver SHALL target the Nth tab of the Mth window as enumerated by `tabs of windows`; with `--window-id W` it SHALL target `tab N of window id W`. This provides a structured addressing mechanism for tabs that share an identical URL and cannot be disambiguated through `--url <substring>`.
+
+`--tab-in-window` SHALL be mutually exclusive with `--url`, `--tab`, and `--document` (the existing exclusivity contract extends to this new flag).
+
+#### Scenario: --tab-in-window requires --window
+
+- **WHEN** user runs `safari-browser get url --tab-in-window 2` without supplying `--window`
+- **THEN** the CLI SHALL exit with a validation error stating that `--tab-in-window` requires `--window`
+- **AND** no AppleScript SHALL execute
+
+#### Scenario: --window + --tab-in-window resolves correctly
+
+- **WHEN** Safari has window 1 with three tabs (`a`, `b`, `c` in order) and user runs `safari-browser get url --window 1 --tab-in-window 2`
+- **THEN** the command SHALL return the URL of tab `b`
+
+#### Scenario: Disambiguate same-URL tabs via composite flag
+
+- **WHEN** window 1 contains two tabs both at `https://web.plaud.ai/` (tab indices 1 and 2)
+- **AND** user runs `safari-browser click "button.upload" --window 1 --tab-in-window 2`
+- **THEN** the command SHALL act on the second tab specifically
+- **AND** the first tab SHALL remain unaffected

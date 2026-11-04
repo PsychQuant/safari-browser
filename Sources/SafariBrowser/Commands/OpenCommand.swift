@@ -133,9 +133,9 @@ struct OpenCommand: AsyncParsableCommand {
     private func newTabWindow() async throws -> SafariBridge.NewTabWindow {
         let profile = target.resolveProfile()
         if let windowID = target.windowID {
-            if let profile {
-                try SafariBridge.checkWindowID(windowID, profile: profile, in: await SafariBridge.listAllWindows())
-            }
+            // Checked before anything is sent, with or without --profile, so a
+            // missing id is a targeting miss rather than a raw AppleScript error.
+            try SafariBridge.checkWindowID(windowID, profile: profile, in: await SafariBridge.listAllWindows())
             return .id(windowID, activate: false)
         }
         guard let profile else { return target.window.map { .index($0) } ?? .front }

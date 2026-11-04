@@ -10,12 +10,15 @@ import Foundation
 /// - `--url <substring>` (standalone)
 /// - `--window N` (standalone, or paired with `--tab-in-window`)
 /// - `--window N --tab-in-window M` (composite, same-URL escape hatch — #28)
+/// - `--window-id W` (standalone, or paired with `--tab-in-window`) — the
+///   window by its stable AppleScript id (#352)
 /// - `--tab N` (standalone, **deprecated** — alias for `--document`)
 /// - `--document N` (standalone)
 ///
 /// Exclusivity rules:
-/// 1. `--tab-in-window` SHALL pair with `--window`; solo usage is rejected.
-/// 2. `--window` SHALL NOT combine with `--url`, `--tab`, or `--document`.
+/// 1. `--tab-in-window` SHALL pair with `--window` or `--window-id`; solo usage is rejected.
+/// 2. `--window` SHALL NOT combine with `--url`, `--tab`, or `--document`;
+///    `--window-id` SHALL NOT combine with any of those or with `--window`.
 /// 3. `--url`, `--tab`, `--document` are mutually exclusive with each other.
 struct TargetOptions: ParsableArguments {
     @Option(
@@ -73,7 +76,7 @@ struct TargetOptions: ParsableArguments {
         name: .customLong("window-id"),
         help: ArgumentHelp(
             "Target the Safari window whose stable id is W (its current tab; pair with --tab-in-window for another tab).",
-            discussion: "The id is Safari's own `id of window`: it does not change while the window is open, so a window raised in front of it cannot redirect the command, unlike --window N, which counts windows from the front. Read the ids from `safari-browser documents --json` (`window_id`). A window id that does not exist, or one outside --profile, fails with \"No Safari document matches\"; it never falls back to the front window. Mutually exclusive with --window, --url, --url-exact, --url-endswith, --url-regex, --tab and --document."
+            discussion: "The id is Safari's own `id of window`: it does not change while the window is open, unlike --window N, which counts windows from the front, so a window raised in between does not change which window the reference names. Read the ids from `safari-browser documents --json` (`window_id`). A window id that does not exist, or one outside --profile, fails with \"No Safari document matches\"; it never falls back to the front window. `close`, `screenshot`, `pdf` and `upload --native` find the window by its id but still act on it by its position (#353). Mutually exclusive with --window, --url, --url-exact, --url-endswith, --url-regex, --tab and --document."
         )
     )
     var windowID: Int?

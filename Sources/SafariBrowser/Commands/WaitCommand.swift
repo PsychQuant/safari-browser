@@ -360,7 +360,7 @@ struct WaitCommand: AsyncParsableCommand {
     }
 
     /// The target as the user named it, for a target-changed error.
-    private static func describe(_ original: SafariBridge.TargetDocument, _ anchored: SafariBridge.TargetDocument) -> String {
+    static func describe(_ original: SafariBridge.TargetDocument, _ anchored: SafariBridge.TargetDocument) -> String {
         let position: String
         if case .resolvedTab(let windowID, let tab, _, _) = anchored {
             position = "window id \(windowID) tab \(tab) at command start"
@@ -371,6 +371,8 @@ struct WaitCommand: AsyncParsableCommand {
         case .urlMatch(let matcher): return "the tab matching \(matcher.description) (\(position))"
         case .documentIndex(let n): return "document \(n) (\(position))"
         case .windowTab(let w, let t): return "window \(w) tab \(t) (\(position))"
+        case .windowID(let id, let t): return t.map { "window id \(id) tab \($0)" } ?? "the current tab of window id \(id) (\(position))"
+        case .resolvedTab(let w, let t, .none, _): return "window id \(w) tab \(t)"
         default: return "the target tab (\(position))"
         }
     }
