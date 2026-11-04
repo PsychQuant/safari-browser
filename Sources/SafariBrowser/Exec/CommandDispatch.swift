@@ -161,6 +161,6 @@ extension TargetOptions {
     /// supersede the exec-level shared target.
     static let targetFlagNames: Set<String> = [
         "--url", "--url-exact", "--url-endswith", "--url-regex", "--profile",
-        "--window", "--tab", "--document", "--tab-in-window",
+        "--window", "--window-id", "--tab", "--document", "--tab-in-window",
     ]
 }

@@ -374,6 +374,29 @@ final class ScriptInterpreterTests: XCTestCase {
         // which would produce a duplicate --profile and an ArgumentParser error.
         XCTAssertTrue(TargetOptions.targetFlagNames.contains("--profile"))
     }
+
+    // MARK: #352 --window-id in exec
+
+    /// The subprocess path re-serialises the exec-level target; dropping `--window-id` would send every step to the
+    /// front window.
+    func testEncodeTargetArgsCarriesTheWindowID() throws {
+        let target = try TargetOptions.parse(["--window-id", "4711", "--tab-in-window", "2"])
+        let args = ScriptInterpreter.encodeTargetArgs(target)
+        XCTAssertEqual(try TargetOptions.parse(args).resolve(), target.resolve(), "\(args)")
+        XCTAssertTrue(args.contains("--window-id"), "\(args)")
+    }
+
+    /// The in-process path and the subprocess path read a step's `--window-id` into the same target.
+    func testAStepsWindowIDIsATargetOverrideOnBothPaths() throws {
+        XCTAssertTrue(TargetOptions.targetFlagNames.contains("--window-id"))
+        let step = ["--window-id", "4711"]
+        XCTAssertTrue(InProcessStepDispatcher.runsInProcess(cmd: "get url", args: step))
+        XCTAssertEqual(InProcessStepDispatcher.stripTargetFlags(step), [])
+        let inProcess = try TargetOptions.parse(InProcessStepDispatcher.extractTargetArgs(step)).resolve()
+        let subprocess = try TargetOptions.parse(step).resolve()
+        XCTAssertEqual(inProcess, .windowID(4711))
+        XCTAssertEqual(inProcess, subprocess)
+    }
 }
 
 private extension Array {

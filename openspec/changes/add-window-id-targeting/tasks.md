@@ -30,8 +30,8 @@
 
 涵蓋 requirement「Machine-readable JSON output」與「Target a window by its stable id」的 exec scenario；design「exec」「`documents --json`」。
 
-- [ ] 4.1 [P] exec：`CommandDispatch` 的允許旗標含 `--window-id`，`ScriptInterpreter` 重組參數時帶上它；in-process 與 subprocess 兩條路對 `--window-id` 解析出相同目標。驗證：exec 的參數重組測試與 in-process dispatcher 測試
-- [ ] 4.2 [P] `documents --json` 每列加最上層 `window_id`（與 `blocking_dialog.window_id` 同值，讀不到為 `null`），其餘欄位不變。驗證：`documents --json` 的序列化測試（有 id、無 id 各一）
+- [x] 4.1 [P] exec：`CommandDispatch` 的允許旗標含 `--window-id`，`ScriptInterpreter` 重組參數時帶上它；in-process 與 subprocess 兩條路對 `--window-id` 解析出相同目標。驗證：exec 的參數重組測試與 in-process dispatcher 測試
+- [x] 4.2 [P] `documents --json` 每列加最上層 `window_id`（與 `blocking_dialog.window_id` 同值，讀不到為 `null`），其餘欄位不變。驗證：`documents --json` 的序列化測試（有 id、無 id 各一）
 
 ## 5. 文件與驗收
 
