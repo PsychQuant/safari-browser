@@ -28,7 +28,7 @@
 - 分頁的穩定身分（#188）。
 - 開了多個視窗時對 `--window N` 警告或拒絕（#287）。
 - `open --new-tab` 不用 `--window-id` 時的 `activate` 行為（#350 其餘部分）；`open --window-id W <url>`（導航）仍會 `activate`。
-- 讓**每個**指令都在開頭把 `--window N` 解析成 id 一次。`js`、`wait`、`save-pdf` 已經這樣做（#180）；其他指令維持每次 Apple event 依位置解析（與先前相同）。診斷時記下的「resolved to an id once」只在這些指令成立，其餘另開 issue 追蹤。
+- 讓**每個**指令都在開頭把 `--window N` 解析成 id 一次。`js`、`wait`、`save-pdf` 已經這樣做（#180）；其他指令維持每次 Apple event 依位置解析（與先前相同）。診斷時記下的「resolved to an id once」只在這些指令成立，其餘由 #354 追蹤。
 - `open` 的 focus-existing 在「同 Space 別的視窗」層會先 raise 視窗再以 `window N` 切分頁（issue 第一點涵蓋的視窗層級動作之一），與 `close` 等同屬 #353 的範圍。
 
 ## Capabilities
