@@ -70,6 +70,15 @@ struct TargetOptions: ParsableArguments {
     var window: Int?
 
     @Option(
+        name: .customLong("window-id"),
+        help: ArgumentHelp(
+            "Target the Safari window whose stable id is W (its current tab; pair with --tab-in-window for another tab).",
+            discussion: "The id is Safari's own `id of window`: it does not change while the window is open, so a window raised in front of it cannot redirect the command, unlike --window N, which counts windows from the front. Read the ids from `safari-browser documents --json` (`window_id`). A window id that does not exist, or one outside --profile, fails with \"No Safari document matches\"; it never falls back to the front window. Mutually exclusive with --window, --url, --url-exact, --url-endswith, --url-regex, --tab and --document."
+        )
+    )
+    var windowID: Int?
+
+    @Option(
         name: .long,
         help: "Target document N (1-indexed). Alias for --document; kept for browser-automation familiarity."
     )
@@ -84,8 +93,8 @@ struct TargetOptions: ParsableArguments {
     @Option(
         name: .long,
         help: ArgumentHelp(
-            "Target the Nth tab within --window M (1-indexed). Same-URL escape hatch.",
-            discussion: "Requires --window. Example: --window 1 --tab-in-window 2 targets the second tab of window 1, useful when multiple tabs share the same URL."
+            "Target the Nth tab within --window M or --window-id W (1-indexed). Same-URL escape hatch.",
+            discussion: "Requires --window or --window-id. Example: --window 1 --tab-in-window 2 targets the second tab of window 1, useful when multiple tabs share the same URL."
         )
     )
     var tabInWindow: Int?
@@ -183,10 +192,10 @@ struct TargetOptions: ParsableArguments {
 
         try validateMarkTabFlags()
 
-        // Rule 1: --tab-in-window requires --window
-        if tabInWindow != nil && window == nil {
+        // Rule 1: --tab-in-window requires --window or --window-id
+        if tabInWindow != nil && window == nil && windowID == nil {
             throw ValidationError(
-                "--tab-in-window requires --window (e.g. --window 1 --tab-in-window 2)"
+                "--tab-in-window requires --window or --window-id (e.g. --window 1 --tab-in-window 2)"
             )
         }
 
@@ -232,6 +241,17 @@ struct TargetOptions: ParsableArguments {
             document.map { _ in "--document" },
         ].compactMap { $0 }
 
+        // Rule 2 (#352): --window-id names the window by id; every other
+        // flag that names a window or tab is a second, competing target.
+        if windowID != nil {
+            let others = standaloneFlags + (window != nil ? ["--window"] : [])
+            if !others.isEmpty {
+                throw ValidationError(
+                    "--window-id is mutually exclusive with \(others.joined(separator: ", "))"
+                )
+            }
+        }
+
         // Rule 2: --window not combinable with standalone flags
         if window != nil && !standaloneFlags.isEmpty {
             throw ValidationError(
@@ -251,6 +271,9 @@ struct TargetOptions: ParsableArguments {
         // opaque appleScriptFailed messages — fail fast here.
         if let w = window, w < 1 {
             throw ValidationError("--window must be >= 1 (1-indexed), got \(w)")
+        }
+        if let id = windowID, id < 1 {
+            throw ValidationError("--window-id must be a Safari window id (>= 1), got \(id)")
         }
         if let t = tab, t < 1 {
             throw ValidationError("--tab must be >= 1 (1-indexed), got \(t)")
@@ -304,7 +327,7 @@ struct TargetOptions: ParsableArguments {
     /// must not count them.
     var hasExplicitTarget: Bool {
         url != nil || urlExact != nil || urlEndswith != nil || urlRegex != nil
-            || window != nil || tab != nil || document != nil
+            || window != nil || windowID != nil || tab != nil || document != nil
     }
 
     /// Convert the parsed flags into a `TargetDocument`. Precedence
@@ -315,6 +338,17 @@ struct TargetOptions: ParsableArguments {
     /// 4. `--tab` / `--document` → `.documentIndex`
     /// 5. none → `.frontWindow`
     func resolve() -> SafariBridge.TargetDocument {
+        // #352: by stable window id. With `--tab-in-window` and no profile it is
+        // already identity-anchored. With `--profile` it stays `.windowID` so the
+        // profile branch of `resolveToConcreteTarget` checks the window belongs
+        // to that profile (that branch passes a `.resolvedTab` through unchecked).
+        if let id = windowID {
+            if let m = tabInWindow {
+                if let profile, !profile.isEmpty { return .windowID(id, tabInWindow: m) }
+                return .resolvedTab(windowID: id, tabInWindow: m, rematch: nil, profile: nil)
+            }
+            return .windowID(id)
+        }
         if let w = window, let m = tabInWindow {
             return .windowTab(window: w, tabInWindow: m)
         }

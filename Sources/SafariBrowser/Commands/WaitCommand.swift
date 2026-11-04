@@ -108,7 +108,7 @@ struct WaitCommand: AsyncParsableCommand {
             // cryptic "Provide milliseconds..." error. If target.url is
             // the ONLY thing they set, they almost certainly meant the old
             // wait-for-URL semantic — point them at --for-url explicitly.
-            if target.url != nil && target.window == nil && target.tab == nil && target.document == nil {
+            if target.url != nil && target.window == nil && target.windowID == nil && target.tab == nil && target.document == nil {
                 throw ValidationError(
                     "`wait --url <pattern>` was renamed to `wait --for-url <pattern>` in #23 — `--url` is now a global targeting flag. Retry as `safari-browser wait --for-url \"\(target.url!)\"` (see CHANGELOG)."
                 )

@@ -14,22 +14,27 @@ struct TabsCommand: AsyncParsableCommand {
 
     func validate() throws {
         // `tabs` lists tabs of a window — document-level targeting doesn't
-        // make sense, so reject everything except --window (and the no-flag
-        // default, which means front window).
-        if target.url != nil || target.tab != nil || target.document != nil {
+        // make sense, so reject everything except --window / --window-id (and
+        // the no-flag default, which means front window).
+        if target.url != nil || target.urlExact != nil || target.urlEndswith != nil || target.urlRegex != nil
+            || target.tab != nil || target.document != nil {
             throw ValidationError(
-                "`tabs` only supports --window for targeting; --url, --tab, and --document are not allowed."
+                "`tabs` only supports --window or --window-id for targeting; --url, --url-exact, --url-endswith, --url-regex, --tab, and --document are not allowed."
             )
         }
     }
 
     func run() async throws {
         let tabs: [SafariBridge.TabInfo]
-        if let profile = target.resolveProfile() {
-            let base: SafariBridge.TargetDocument = target.window.map { .windowIndex($0) } ?? .frontWindow
+        // #352: `--window-id` goes through the resolver too, which finds the
+        // window by id (fails closed when it is missing or outside --profile);
+        // `listTabs(in:)` then reads it by that id.
+        if target.windowID != nil || target.resolveProfile() != nil {
+            let base: SafariBridge.TargetDocument = target.windowID.map { .windowID($0) }
+                ?? target.window.map { .windowIndex($0) } ?? .frontWindow
             let resolved = try await SafariBridge.resolveNativeTarget(
                 from: base, firstMatch: target.firstMatch,
-                warnWriter: TargetOptions.stderrWarnWriter, profile: profile, probeDialog: false)
+                warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile(), probeDialog: false)
             tabs = try await SafariBridge.listTabs(in: resolved, probeDialog: false)
         } else {
             tabs = try await SafariBridge.listTabs(window: target.window, probeDialog: false)
@@ -39,7 +44,7 @@ struct TabsCommand: AsyncParsableCommand {
             return
         }
         let observation = WindowDialogObservation.capture()
-        if (target.window != nil || target.resolveProfile() != nil),
+        if (target.window != nil || target.windowID != nil || target.resolveProfile() != nil),
            let windowID = tabs.first?.windowID,
            let dialog = observation.singleDialog(for: windowID) {
             DocumentsCommand.emitDialogWarning(BlockingDialogWarning.firstLine(windowKey: .id(windowID), dialog: dialog) + "\n")

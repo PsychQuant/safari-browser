@@ -105,6 +105,19 @@ enum SafariBridge {
         /// tabs fails closed instead of silently running in another tab.
         /// Produced only by `resolveToAnchoredTarget` (i.e. by `js` and `wait`).
         case anchoredCurrentTab(windowID: Int, tabInWindow: Int, profile: String?)
+        /// #352: `--window-id W` — the current tab of the window whose stable
+        /// AppleScript id is W (`id of window`). Unlike `.windowIndex(N)` it
+        /// never names a z-order position, so a window raised in front of it
+        /// (including by this tool's own `activate`) cannot redirect it. Every
+        /// reference renders as `window id W`; a missing id fails closed and
+        /// never falls back to `front window`. The async anchoring entry
+        /// (`resolveToAnchoredTarget`) turns it into `.anchoredCurrentTab`.
+        /// `tabInWindow` is set only for `--window-id W --tab-in-window T
+        /// --profile P`, which the profile filter must still check: the
+        /// profile branch of `resolveToConcreteTarget` validates it once and
+        /// collapses it to `.resolvedTab` (a `.resolvedTab` passes that branch
+        /// unchecked, so it cannot carry an unvalidated user target).
+        case windowID(Int, tabInWindow: Int? = nil)
         /// Composite target: the tab-in-window-th tab of the window-th
         /// window. Addresses same-URL duplicate tabs that `.urlMatch`
         /// cannot disambiguate (issue #28 gap #2). Always requires both
@@ -163,6 +176,10 @@ enum SafariBridge {
             return "tab \(tab) of window id \(windowID)"
         case .anchoredCurrentTab(let windowID, let tab, _):
             return "tab \(tab) of window id \(windowID)"
+        case .windowID(let windowID, let tab):
+            // #352: the window by its stable id — never a z-order position.
+            if let tab { return "tab \(tab) of window id \(windowID)" }
+            return "document of window id \(windowID)"
         }
     }
 
@@ -342,10 +359,17 @@ enum SafariBridge {
                 warnWriter: warnWriter,
                 profile: profile
             )
+            // #352: the profile filter has checked that window id W belongs
+            // to the profile. Keep the id — `concreteTarget` would turn a
+            // window without a known tab into `.windowIndex(<position>)`.
+            if case .windowID(let windowID, _) = target {
+                guard let tab = resolved.anchorTabIndex else { return .windowID(windowID) }
+                return .resolvedTab(windowID: windowID, tabInWindow: tab, rematch: nil, profile: profile)
+            }
             return concreteTarget(from: resolved, original: target, profile: profile)
         }
         switch target {
-        case .frontWindow, .windowIndex, .windowTab, .resolvedTab, .anchoredCurrentTab:
+        case .frontWindow, .windowIndex, .windowTab, .resolvedTab, .anchoredCurrentTab, .windowID:
             return target
         case .urlMatch, .documentIndex:
             let resolved = try await resolveNativeTarget(
@@ -523,7 +547,7 @@ enum SafariBridge {
             guard let anchor else { return target }
             return .anchoredCurrentTab(windowID: anchor.windowID, tabInWindow: anchor.currentTabIndex,
                                        profile: profile)
-        case .windowTab, .urlMatch, .documentIndex, .resolvedTab, .anchoredCurrentTab:
+        case .windowTab, .urlMatch, .documentIndex, .resolvedTab, .anchoredCurrentTab, .windowID:
             return target
         }
     }
@@ -573,6 +597,22 @@ enum SafariBridge {
                                                profile: profile)
                 }
                 return concreteTarget(from: resolved, original: target, profile: profile)
+            case .windowID(let windowID, nil):
+                // #352: the enumeration checks that window id W belongs to the
+                // profile; the anchor is then read by that same id. No anchor
+                // fails closed — there is no position to fall back to.
+                _ = try await resolveNativeTarget(
+                    from: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
+                guard let anchor = await readWindowAnchor(windowID: windowID) else {
+                    throw SafariBrowserError.documentNotFound(
+                        pattern: "window id \(windowID) (profile: \"\(profile)\")",
+                        availableDocuments: [
+                            "(window id \(windowID) has no current tab; "
+                                + "run `safari-browser documents --json` for window ids)",
+                        ])
+                }
+                return .anchoredCurrentTab(windowID: windowID, tabInWindow: anchor.currentTabIndex,
+                                           profile: profile)
             default:
                 break
             }
@@ -602,6 +642,24 @@ enum SafariBridge {
             return anchoredTarget(concrete, anchor: await readWindowAnchor(index: 1), profile: profile)
         case .windowIndex(let n):
             return anchoredTarget(concrete, anchor: await readWindowAnchor(index: n), profile: profile)
+        case .windowID(let windowID, let tab):
+            // #352: `--window-id W` names no position, so there is no
+            // positional target to fall back to: no anchor (no such window,
+            // a window with no tabs, a timeout) fails closed here, before any
+            // JavaScript is sent.
+            if let tab {
+                return .resolvedTab(windowID: windowID, tabInWindow: tab, rematch: nil, profile: profile)
+            }
+            guard let anchor = await readWindowAnchor(windowID: windowID) else {
+                throw SafariBrowserError.documentNotFound(
+                    pattern: "window id \(windowID)",
+                    availableDocuments: [
+                        "(no Safari window with id \(windowID) has a current tab; "
+                            + "run `safari-browser documents --json` for window ids)",
+                    ])
+            }
+            return .anchoredCurrentTab(windowID: windowID, tabInWindow: anchor.currentTabIndex,
+                                       profile: profile)
         }
     }
 
@@ -857,6 +915,8 @@ enum SafariBridge {
             return "window id \(windowID) tab \(tab)\(suffix)"
         case .anchoredCurrentTab(let windowID, let tab, _):
             return "window id \(windowID) tab \(tab) (current tab at command start)"
+        case .windowID(let windowID, let tab):
+            return tab.map { "window id \(windowID) tab \($0)" } ?? "window id \(windowID)"
         }
     }
 
@@ -2576,6 +2636,26 @@ enum SafariBridge {
         return try pickNativeTargetCore(target, in: candidates)
     }
 
+    /// #352: the window whose stable AppleScript id is `windowID`, among the
+    /// windows of `profile` when one is given. Fails closed with
+    /// `documentNotFound` when no such window exists or it belongs to another
+    /// profile; the listing names only the windows that were candidates, so a
+    /// profile mismatch never prints another profile's tab URLs.
+    @discardableResult
+    static func checkWindowID(_ windowID: Int, profile: String?, in windows: [WindowInfo]) throws -> WindowInfo {
+        let candidates = profile.map { p in windows.filter { $0.profile == p } } ?? windows
+        if let window = candidates.first(where: { $0.windowID == windowID }) { return window }
+        let scope = profile.map { " (profile: \"\($0)\")" } ?? ""
+        throw SafariBrowserError.documentNotFound(
+            pattern: "window id \(windowID)\(scope)",
+            availableDocuments: candidates.map { w -> String in
+                let id = w.windowID.map { "window id \($0)" } ?? "window \(w.windowIndex) (no id)"
+                let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(0 tabs)"
+                return "\(id): \(cur)"
+            }
+        )
+    }
+
     /// Inner core (private) — unchanged switch logic operating on the
     /// already-filtered candidate list. Extracted so the entry point's
     /// profile-filter responsibility stays separate from per-case
@@ -2644,6 +2724,26 @@ enum SafariBridge {
                 tabIndexInWindow: window.currentTabIndex == tab ? nil : tab,
                 windowID: windowID,
                 anchorTabIndex: tab
+            )
+
+        case .windowID(let windowID, let tab):
+            // #352: by stable id only — a missing id is an error, never the
+            // front window. `windows` is already the profile's candidates.
+            let window = try checkWindowID(windowID, profile: nil, in: windows)
+            if let tab, tab < 1 || tab > window.tabs.count {
+                throw SafariBrowserError.documentNotFound(
+                    pattern: "window id \(windowID) tab \(tab)",
+                    availableDocuments: window.tabs.map {
+                        "window id \(windowID) tab \($0.tabIndex): \(URLText.redactURL($0.url))"
+                    }
+                )
+            }
+            let anchor = tab ?? (window.tabs.isEmpty ? nil : window.currentTabIndex)
+            return ResolvedWindowTarget(
+                windowIndex: window.windowIndex,
+                tabIndexInWindow: tab.flatMap { $0 == window.currentTabIndex ? nil : $0 },
+                windowID: windowID,
+                anchorTabIndex: anchor
             )
 
         case .windowIndex(let n):
@@ -2816,7 +2916,7 @@ enum SafariBridge {
                 case .windowIndex(let index):
                     resolved = ResolvedWindowTarget(windowIndex: index, tabIndexInWindow: nil,
                                                     windowID: await readWindowID(index: index))
-                case .urlMatch, .documentIndex, .windowTab, .resolvedTab, .anchoredCurrentTab:
+                case .urlMatch, .documentIndex, .windowTab, .resolvedTab, .anchoredCurrentTab, .windowID:
                     resolved = try resolveNativeTargetInWindows(target, windows: await listAllWindows(),
                         firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
                 }
@@ -3583,6 +3683,7 @@ enum SafariBridge {
         case .windowTab(let window, _): return .index(window)
         case .resolvedTab(let windowID, _, _, _): return .id(windowID)
         case .anchoredCurrentTab(let windowID, _, _): return .id(windowID)
+        case .windowID(let windowID, _): return .id(windowID)
         case .urlMatch, .documentIndex: return nil
         }
     }

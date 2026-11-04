@@ -2,17 +2,21 @@
 
 涵蓋 requirement「Target a window by its stable id」的旗標、互斥與值域部分。
 
-- [ ] 1.1 `--window-id <W>` 是 `TargetOptions` 的選項；與 `--window`、`--url`、`--url-exact`、`--url-endswith`、`--url-regex`、`--tab`、`--document` 同時給時，`validate()` 以點名雙方的錯誤拒絕；`--tab-in-window` 可配 `--window` 或 `--window-id`；值小於 1 拒絕。驗證：`WindowIDTargetingTests` 的 validation 測試（每一組互斥、`--tab-in-window` 單獨仍要求 `--window` 或 `--window-id`、0 與負數）
-- [ ] 1.2 `TargetOptions.hasExplicitTarget` 計入 `--window-id`（以及原本漏掉的 URL 旗標仍在其中）；`resolve()` 對 `--window-id W` 回 `.windowID(W)`，配 `--tab-in-window T` 回 `.resolvedTab(windowID: W, tabInWindow: T, rematch: nil, profile:)`。驗證：resolution 單元測試斷言回傳的 `TargetDocument`
+- [x] 1.1 `--window-id <W>` 是 `TargetOptions` 的選項；與 `--window`、`--url`、`--url-exact`、`--url-endswith`、`--url-regex`、`--tab`、`--document` 同時給時，`validate()` 以點名雙方的錯誤拒絕；`--tab-in-window` 可配 `--window` 或 `--window-id`；值小於 1 拒絕。驗證：`WindowIDTargetingTests` 的 validation 測試（每一組互斥、`--tab-in-window` 單獨仍要求 `--window` 或 `--window-id`、0 與負數）
+- [x] 1.2 `TargetOptions.hasExplicitTarget` 計入 `--window-id`（以及原本漏掉的 URL 旗標仍在其中）；`resolve()` 對 `--window-id W` 回 `.windowID(W)`，配 `--tab-in-window T` 回 `.resolvedTab(windowID: W, tabInWindow: T, rematch: nil, profile:)`。驗證：resolution 單元測試斷言回傳的 `TargetDocument`
 
 ## 2. `TargetDocument.windowID` 的解析
 
 涵蓋 requirement「Target a window by its stable id」的解析與 fail closed；design「`--window-id` 的 `TargetDocument`：新增 `.windowID(Int)`，非同步錨定時轉成 `.anchoredCurrentTab`」與「profile 檢查放在解析時」。
 
-- [ ] 2.1 新增 `TargetDocument.windowID(Int)`，`resolveDocumentReference` 回 `document of window id W`；其餘 switch 處逐一處理（參照一律 `window id W`，不出現 `front window` 或位置）。驗證：參照字串的單元測試，以及以 fake `appleScriptRunner` 跑 `get url --window-id 4711` 與 `click --window-id 4711 <sel>`，斷言送出的 AppleScript 含 `window id 4711`、不含 `front window`
-- [ ] 2.2 `resolveToAnchoredTarget` 遇到 `.windowID(W)` 以 `readWindowAnchor(windowID: W)` 轉成 `.anchoredCurrentTab`；讀不到 → `documentNotFound`。驗證：fake runner 讓 anchor 讀不到時 `js --window-id 9999 "1"` 以 `No Safari document matches` 失敗，且沒有送出任何 `do JavaScript`
-- [ ] 2.3 native resolver（`pickNativeTarget`）以 id 找視窗：找到 → 那個視窗；找不到 → `documentNotFound`，不退回 front window。驗證：`pickNativeTarget(.windowID(...), in:)` 的純函式測試（找到、找不到、零分頁的視窗）
-- [ ] 2.4 `--window-id W --profile P`：W 不屬於 P 時以 `documentNotFound` 失敗，訊息不列別的 profile 的分頁網址；屬於時照常解析。驗證：以 fake 列舉（兩個 profile 的視窗）的測試，涵蓋 `.windowID` 與 `.resolvedTab` 兩種形狀
+- [x] 2.1 新增 `TargetDocument.windowID(Int)`，`resolveDocumentReference` 回 `document of window id W`；其餘 switch 處逐一處理（參照一律 `window id W`，不出現 `front window` 或位置）。驗證：參照字串的單元測試，以及以 fake `appleScriptRunner` 跑 `get url --window-id 4711` 與 `click --window-id 4711 <sel>`，斷言送出的 AppleScript 含 `window id 4711`、不含 `front window`
+- [x] 2.2 `resolveToAnchoredTarget` 遇到 `.windowID(W)` 以 `readWindowAnchor(windowID: W)` 轉成 `.anchoredCurrentTab`；讀不到 → `documentNotFound`。驗證：fake runner 讓 anchor 讀不到時 `js --window-id 9999 "1"` 以 `No Safari document matches` 失敗，且沒有送出任何 `do JavaScript`
+- [x] 2.3 native resolver（`pickNativeTarget`）以 id 找視窗：找到 → 那個視窗；找不到 → `documentNotFound`，不退回 front window。驗證：`pickNativeTarget(.windowID(...), in:)` 的純函式測試（找到、找不到、零分頁的視窗）
+- [x] 2.4 `--window-id W --profile P`：W 不屬於 P 時以 `documentNotFound` 失敗，訊息不列別的 profile 的分頁網址；屬於時照常解析。驗證：以 fake 列舉（兩個 profile 的視窗）的測試，涵蓋 `.windowID` 與 `.resolvedTab` 兩種形狀
+
+- ASSUMPTION（實作時決定，verify 時請挑戰）：
+  - `TargetDocument.windowID` 帶一個可選的分頁序號（`windowID(Int, tabInWindow: Int? = nil)`）。`--window-id W --tab-in-window T` 沒有 `--profile` 時照 1.2 回 `.resolvedTab`；有 `--profile` 時回 `.windowID(W, tabInWindow: T)`，因為 `resolveToConcreteTarget` 的 profile 分支直接放行 `.resolvedTab`，不改形狀就沒有地方檢查 W 是否屬於 P。profile 分支驗證後才收斂成 `.resolvedTab`。
+  - 不在本表的三處也改了，否則 `--window-id` 會被安靜地丟掉：`tabs`（自己由 `--window` 組目標；現在 `--window-id` 走解析器，且 `--url-exact`／`--url-endswith`／`--url-regex` 也和 `--url` 一樣被拒，以前是被忽略）、`screenshot` 的本地 `hasExplicitTarget`（只加 `--window-id`；URL 旗標的同類缺口是 #233）、`wait` 的 `--url` 改名提示。
 
 ## 3. `open`
 

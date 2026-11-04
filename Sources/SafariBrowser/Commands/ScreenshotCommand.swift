@@ -132,6 +132,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // resolver to preserve its existing fallback behavior.
         let hasExplicitTarget = target.url != nil
             || target.window != nil
+            || target.windowID != nil
             || target.tab != nil
             || target.document != nil
 
