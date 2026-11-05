@@ -136,16 +136,21 @@ final class WindowIDRound3Tests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    /// The translation of a window lost mid-command stays within `--profile`.
+    /// The translation of a window lost mid-command stays within `--profile`, on both shapes: `get url` keeps `.windowID`
+    /// (a miss lists nothing), and `get text` resolves through `resolveProfileScoped` to `.resolvedTab(profile:)`, whose
+    /// listing is filtered.
     func testAWindowClosedAfterTheProfileCheckListsNoOtherProfilesTabs() async throws {
-        let fake = Fake()
-        fake.closesAfterFirstListing = 202
-        do {
-            try await run(GetURL.self, ["--window-id", "202", "--tab-in-window", "1", "--profile", "Work"], on: fake)
-            XCTFail("window 202 closed")
-        } catch let error as SafariBrowserError {
-            guard case .documentNotFound = error else { return XCTFail("\(error)") }
-            XCTAssertFalse(error.localizedDescription.contains("own.example"), error.localizedDescription)
+        let args = ["--window-id", "202", "--tab-in-window", "1", "--profile", "Work"]
+        for (type, arguments) in [(GetURL.self as any AsyncParsableCommand.Type, args), (GetText.self, ["#sel"] + args)] {
+            let fake = Fake()
+            fake.closesAfterFirstListing = 202
+            do {
+                try await run(type, arguments, on: fake)
+                XCTFail("\(arguments): window 202 closed")
+            } catch let error as SafariBrowserError {
+                guard case .documentNotFound = error else { return XCTFail("\(arguments): \(error)") }
+                XCTAssertFalse(error.localizedDescription.contains("own.example"), error.localizedDescription)
+            }
         }
     }
 
