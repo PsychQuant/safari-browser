@@ -81,7 +81,7 @@ struct OpenCommand: AsyncParsableCommand {
             // Opt-out of focus-existing: navigate the (profile-scoped) target
             // document via `do JavaScript window.location.href`.
             let scoped = try await target.resolveProfileScoped()
-            try await SafariBridge.openURL(url, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, pinnedWindow: target.windowID)
+            try await SafariBridge.openURL(url, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
 
@@ -101,7 +101,7 @@ struct OpenCommand: AsyncParsableCommand {
 
         if hasExplicitTarget {
             let scoped = try await target.resolveProfileScoped()
-            try await SafariBridge.openURL(url, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, pinnedWindow: target.windowID)
+            try await SafariBridge.openURL(url, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
 

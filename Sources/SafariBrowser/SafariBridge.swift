@@ -989,16 +989,15 @@ enum SafariBridge {
         _ url: String,
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil,
-        pinnedWindow: Int? = nil
+        warnWriter: ((String) -> Void)? = nil
     ) async throws {
         // #9: Use do JavaScript for navigation to avoid race with page's own JS redirects.
         // Fallback to set URL when do JavaScript fails (e.g., about:blank, no open tabs).
         let jsCode = "window.location.href=\(url.jsStringLiteral)"
         // #352: a window id names a window that must exist; with no window
         // open the reference fails (a targeting miss) instead of a new window.
-        // `pinnedWindow` is that id when `--profile` already collapsed the target.
-        var windowID = pinnedWindow
+        // `.resolvedTab` is that id once `--profile` collapsed the target.
+        var windowID: Int?
         switch target {
         case .windowID(let id, _), .resolvedTab(let id, _, _, _): windowID = id
         default: break

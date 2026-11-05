@@ -59,7 +59,8 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
             // A tab past the end of a window that exists.
             if let id = Self.int(after: "window id ", in: script), let tab = Self.int(after: "tab ", in: script),
                let window = windows.first(where: { $0.id == id }), tab > window.tabs.count {
-                if Self.setsOnTheMissingObject(script) {
+                // Only reading that very tab raises early; reading its window does not.
+                if Self.setsOnTheMissingObject(script.replacingOccurrences(of: "get name of window", with: "")) {
                     throw SafariBrowserError.appleScriptFailed("execution error: Safari got an error: Can’t set tab \(tab) to \"x\". (-10006)")
                 }
                 throw SafariBrowserError.appleScriptFailed("execution error: Can’t get tab \(tab). Invalid index. (-1719)")
