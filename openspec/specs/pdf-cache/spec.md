@@ -25,7 +25,7 @@
 
 `pdf-cache get` SHALL act only on a selection the caller states. The selection forms are a closed list of three; no other input SHALL be treated as a selection, and none SHALL be inferred from similarity to these:
 
-1. a tab-targeting flag: `--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--window` (with or without `--tab-in-window`), `--document`, or `--tab`;
+1. a tab-targeting flag: `--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--window` or `--window-id` (each with or without `--tab-in-window`), `--document`, or `--tab`;
 2. `--key <prefix>`;
 3. `--source webkit-pdfs --file <name>`.
 
@@ -42,7 +42,7 @@ When no selection is given, the command SHALL fail before reading the cache and 
 - **WHEN** `safari-browser pdf-cache get out.pdf --profile Work` runs, with or without a selection
 - **THEN** the command fails with a usage error that says only the default profile's cache is read, before any read
 
-The flag is the only way the command is told about a profile. A tab chosen with `--url`, `--window`, `--tab` or `--document` can still belong to a named profile; the command does not identify the profile of the tab it resolved, so that tab's URL is looked up in the default profile's cache (#243).
+The flag is the only way the command is told about a profile. A tab chosen with `--url`, `--window`, `--window-id`, `--tab` or `--document` can still belong to a named profile; the command does not identify the profile of the tab it resolved, so that tab's URL is looked up in the default profile's cache (#243).
 
 #### Scenario: two selection forms
 
