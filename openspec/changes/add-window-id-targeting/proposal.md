@@ -20,6 +20,7 @@
 - `exec`：in-process dispatcher 接受 `--window-id`，重組參數時帶上它。
 - `documents --json`：每一列在最上層加 `window_id`（與 `blocking_dialog.window_id` 同值；讀不到時為 null，#349）。
 - `tab <N>`／`tab new`：與 `open --new-tab` 同樣的視窗處理（`--window-id` 先確認存在再以 id 指定、`tab new` 不 `activate`；`--profile` 用列舉讀到的 id；`tab new --window N` 先讀 id 再 `activate`）。`tab focus` 以解析出的視窗 id 切分頁（verify 第一輪補上：原本漏掉 `tab`）。
+- 把 `--profile` 轉成視窗的路徑（`open --profile`、`get text`、`get html`、`save-image`、`upload`）保留列舉讀到的 id（#351 Expected：「every command that turns `--profile` into a window number」）。
 - `--window N` 維持位置語意（維護者 2026-11-05）。
 
 ## Non-Goals (optional)
@@ -29,7 +30,7 @@
 - 開了多個視窗時對 `--window N` 警告或拒絕（#287）。
 - `open --new-tab` 不用 `--window-id` 時的 `activate` 行為（#350 其餘部分）；`open --window-id W <url>`（導航）仍會 `activate`。
 - 讓**每個**指令都在開頭把 `--window N` 解析成 id 一次。`js`、`wait`、`save-pdf` 已經這樣做（#180）；其他指令維持每次 Apple event 依位置解析（與先前相同）。診斷時記下的「resolved to an id once」只在這些指令成立，其餘由 #354 追蹤。
-- `open` 的 focus-existing 在「同 Space 別的視窗」層會先 raise 視窗再以 `window N` 切分頁（issue 第一點涵蓋的視窗層級動作之一），與 `close` 等同屬 #353 的範圍。
+- `open` 的 focus-existing 在「同 Space 別的視窗」層會先 raise 視窗再以 `window N` 切分頁（issue 第一點涵蓋的視窗層級動作之一），與 `close` 等同屬 #353 的範圍（已記在 #353）。
 
 ## Capabilities
 
@@ -44,11 +45,12 @@
 - `document-listing`: JSON 每列加 `window_id`。
 - `script-exec`: 目標旗標的封閉列舉加 `--window-id`。
 - `pdf-cache`、`save-pdf`: tab 旗標的列舉加 `--window-id`。
+- `wait`: 目標形式的封閉列舉加 `--window-id`。
 - `tab-management`: 「List all tabs」「Switch to tab by index」「Open new empty tab」接受 `--window-id`，`--profile` 以 id 指定。
 
 ## Impact
 
-- Affected specs: `document-targeting`, `navigation`, `document-listing`, `tab-management`, `script-exec`, `pdf-cache`, `save-pdf`
+- Affected specs: `document-targeting`, `navigation`, `document-listing`, `tab-management`, `script-exec`, `pdf-cache`, `save-pdf`, `wait`
 - Issues: 含 #351 與 #305（`open --new-tab --profile` 以列舉讀到的視窗 id 開分頁，視窗消失時 fail closed）
 - Affected code:
   - `Sources/SafariBrowser/Commands/TargetOptions.swift`

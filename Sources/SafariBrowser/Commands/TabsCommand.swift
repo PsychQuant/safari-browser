@@ -17,11 +17,17 @@ struct TabsCommand: AsyncParsableCommand {
         // make sense, so reject everything except --window / --window-id (and
         // the no-flag default, which means front window).
         if target.url != nil || target.urlExact != nil || target.urlEndswith != nil || target.urlRegex != nil
-            || target.tab != nil || target.document != nil {
+            || target.tab != nil || target.document != nil || target.tabInWindow != nil {
             throw ValidationError(
-                "`tabs` only supports --window or --window-id for targeting; --url, --url-exact, --url-endswith, --url-regex, --tab, and --document are not allowed."
+                "`tabs` only supports --window or --window-id for targeting; --url, --url-exact, --url-endswith, --url-regex, --tab, --document, and --tab-in-window are not allowed."
             )
         }
+    }
+
+    /// #352: a window named by id that closed since it was checked is a targeting miss.
+    private func requireWindow() async throws {
+        guard let id = target.windowID else { return }
+        try SafariBridge.checkWindowID(id, profile: target.resolveProfile(), in: await SafariBridge.listAllWindows())
     }
 
     func run() async throws {
@@ -35,7 +41,14 @@ struct TabsCommand: AsyncParsableCommand {
             let resolved = try await SafariBridge.resolveNativeTarget(
                 from: base, firstMatch: target.firstMatch,
                 warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile(), probeDialog: false)
-            tabs = try await SafariBridge.listTabs(in: resolved, probeDialog: false)
+            do {
+                tabs = try await SafariBridge.listTabs(in: resolved, probeDialog: false)
+            } catch where target.windowID != nil {
+                try await requireWindow()
+                throw error
+            }
+            // `readTabs` answers "no tabs" when no window is open at all.
+            if tabs.isEmpty, target.windowID != nil { try await requireWindow() }
         } else {
             tabs = try await SafariBridge.listTabs(window: target.window, probeDialog: false)
         }

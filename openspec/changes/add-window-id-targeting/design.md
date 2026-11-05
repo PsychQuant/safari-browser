@@ -33,10 +33,15 @@
 
 `--window-id W --profile P`：以 `listAllWindows()` 的結果找 id W 的視窗，比對它的 `profile`；找不到 → `documentNotFound`，profile 不符 → `documentNotFound`（訊息說 window W 不屬於 P，不印別的 profile 的分頁；P 沒有開著的視窗時也一樣）。檢查之後目標仍是視窗的目前分頁（`document of window id W`），不把列舉當下的分頁序號固定下來，與 `--window N --profile` 相同。原因：`resolveToConcreteTarget` 對 `.resolvedTab` 直接回傳、不檢查 profile（`SafariBridge.swift:337`），不能依賴它。
 
+### 視窗層級的 `--profile` 解析保留 id（#351、#305）
+
+`concreteTarget` 對沒有分頁序號的解析原本回 `.windowIndex(<全域位置>)`，把列舉讀到的 id 丟掉，之後的 Apple event 再依位置查一次。這是 #351 更正後的病因，`open --profile P`、`get text`、`get html`、`save-image`、`upload` 都經過它。改成有 id 就回 `.windowID(id)`，舊列舉（沒有 id）才回 `.windowIndex`。`.windowID` 之後的 bridge 呼叫不必再列舉。
+
 ### `open` 的三條路
 
 - `OpenCommand` 的本地 `hasExplicitTarget` 加 `target.windowID != nil`。改成直接用 `TargetOptions.hasExplicitTarget || profile != nil`，並讓 `TargetOptions.hasExplicitTarget` 計入 `--window-id`，一次修掉 safari-browser#233 的同類缺口（`--url-exact`／`--url-endswith`／`--url-regex` 也因此被計入）。這會改變 #233 描述的行為：`open --url-endswith S <url>` 從「開新分頁」變成「導航符合的分頁」，與 spec「targeting flag 指定要改哪個分頁」一致；記在 CHANGELOG。
 - `--new-tab`：驗證允許 `--window`、`--window-id`、`--profile`（及其組合 `--profile`＋`--window`），其他目標旗標拒絕。`--window-id W` → `NewTabWindow.id(W)`，腳本不含 `activate`，仍 `set current tab to newTab`。`--window N`（無 profile）→ `.index(N)`（`b5ab06b` 的腳本：先讀 id 再 `activate`）。`--profile P [--window k]` → 以 `resolveNativeTarget`（它回 `ResolvedWindowTarget`，含 `windowID`）取得 id → `.id`；沒有 id（舊列舉）→ `.index(<全域編號>)`。
+- 導航：`--window-id`、或 `--profile` 解析出 id 的目標，腳本先 `get id of window id W` 再導航，最後才 `activate`。先檢查是因為 `set URL` 打在不存在的物件上回 -10006（真機量到），不在 `isObjectNotFound` 的 -1719／-1728 之內；`get` 回 -1728，會翻成 targeting miss。
 - `.id` 時 `activate` 的取捨：只有 `--window-id` 不 `activate`（維護者裁決）；`--profile` 走 `.id` 時保留 `activate`，維持現有使用者看到的行為。`NewTabWindow` 加一個 `activate: Bool`。
 
 ### exec

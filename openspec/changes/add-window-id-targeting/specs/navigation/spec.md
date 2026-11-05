@@ -46,7 +46,7 @@ The system SHALL open a given URL in Safari. The default behavior SHALL be focus
 
 When the caller supplies `--replace-tab`, the command SHALL instead navigate the front window's current tab to the requested URL via `do JavaScript "window.location.href=..."`, ignoring any matching existing tab. When the caller supplies any of the targeting flags (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--window`, `--window-id`, `--tab`, `--document`, `--tab-in-window`) or `--profile`, the command SHALL navigate the resolved target tab via `do JavaScript "window.location.href=..."` regardless of focus-existing considerations; the targeting flags explicitly select which tab to modify.
 
-When no Safari window exists, the system SHALL create a new document, except with `--window-id`: a window id names a window that must exist, so the command SHALL fail with a document-not-found error instead.
+When no Safari window exists, the system SHALL create a new document with no target flag, with `--replace-tab`, and with `--window <n>`. With any other target flag (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--window-id`, `--tab`, `--document`, `--window <n> --tab-in-window <m>`) or `--profile`, the command SHALL fail with a document-not-found error and no window SHALL be created. A target named by `--window-id` or resolved to a window id SHALL be checked before navigating, and Safari SHALL be activated only after navigating.
 
 When `--url <substring>` is used with `open` and more than one tab matches, the command SHALL fail-closed with `ambiguousWindowMatch` unless `--first-match` is supplied (per the unified fail-closed policy in `document-targeting`).
 
@@ -105,7 +105,7 @@ This requirement supersedes the earlier default of "navigate the front window's 
 #### Scenario: No Safari window exists
 
 - **WHEN** Safari is running but has zero windows
-- **AND** user runs `safari-browser open https://example.com` (or with any flag other than `--window-id`)
+- **AND** user runs `safari-browser open https://example.com` (or with `--replace-tab` or `--window <n>`)
 - **THEN** the system SHALL create a new Safari document at `https://example.com`
 
 #### Scenario: A URL flag other than --url navigates the matching tab
@@ -113,6 +113,12 @@ This requirement supersedes the earlier default of "navigate the front window's 
 - **WHEN** user runs `safari-browser open https://new.example/ --url-endswith "/report"` and exactly one tab's URL ends with `/report`
 - **THEN** the system navigates that tab to `https://new.example/`
 - **AND** no new tab is opened
+
+#### Scenario: A URL flag that matches nothing fails
+
+- **WHEN** user runs `safari-browser open https://new.example/ --url-exact https://nope.example/` and no tab has that URL
+- **THEN** the command fails with a document-not-found error
+- **AND** no tab is navigated and no tab or window is created
 
 #### Scenario: Window id with no Safari window open
 

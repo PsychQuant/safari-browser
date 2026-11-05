@@ -273,7 +273,9 @@ enum SafariBridge {
                 // `runTargetedAppleScript` reports it as `documentNotFound`.
                 // With `--profile` the enumeration below checks membership.
                 let key = BlockingDialogGate.WindowKey.id(id)
-                BlockingDialogGate.shared.check(key)
+                // A stale id is this flag's ordinary miss and not yet known to be
+                // one: no "could not inspect" line ahead of the error.
+                BlockingDialogGate.shared.check(key, announceUnprobed: false)
                 return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key,
                     diagnosticTarget: tab.map { BackgroundTabDiagnosticTarget(windowID: id, tabIndex: $0, matcher: nil) })
             }
@@ -344,9 +346,10 @@ enum SafariBridge {
     /// - `.frontWindow` / `.windowIndex` / `.windowTab` return unchanged
     ///   (already concrete).
     /// - `.urlMatch` / `.documentIndex` resolve via `resolveNativeTarget`
-    ///   (fires `warnWriter` at most once) and collapse to `.windowTab`
-    ///   when a specific tab-in-window is known, or `.windowIndex` when
-    ///   only the window is known (tab defaults to current-of-window).
+    ///   (fires `warnWriter` at most once) and collapse to `.resolvedTab`
+    ///   when a specific tab is known, or `.windowID` when only the window is
+    ///   known (tab defaults to current-of-window); `.windowTab` / `.windowIndex`
+    ///   only for legacy enumerations without window ids.
     static func resolveToConcreteTarget(
         _ target: TargetDocument,
         firstMatch: Bool = false,
@@ -417,6 +420,11 @@ enum SafariBridge {
         }
         if let tab = resolved.tabIndexInWindow {
             return .windowTab(window: resolved.windowIndex, tabInWindow: tab)
+        }
+        // #351 / #305: a window-level resolution keeps the id it read, so no
+        // later Apple event looks a position up again. Legacy records have none.
+        if let windowID = resolved.windowID {
+            return .windowID(windowID)
         }
         return .windowIndex(resolved.windowIndex)
     }
@@ -600,9 +608,9 @@ enum SafariBridge {
     ///   tab in one script); no anchor (0-tab window, no window, timeout)
     ///   → unchanged, so the existing error paths are byte-identical.
     ///
-    /// Kept separate from `resolveToConcreteTarget` on purpose: callers of
-    /// `TargetOptions.resolveProfileScoped` hand its `.windowIndex` / `.windowTab`
-    /// results to bridge calls that take no `profile:`.
+    /// Kept separate from `resolveToConcreteTarget` on purpose: that one does not
+    /// read the current tab; callers of `TargetOptions.resolveProfileScoped` hand
+    /// its results to bridge calls that take no `profile:`.
     static func resolveToAnchoredTarget(
         _ target: TargetDocument,
         firstMatch: Bool = false,
@@ -983,15 +991,17 @@ enum SafariBridge {
         _ url: String,
         target: TargetDocument = .frontWindow,
         firstMatch: Bool = false,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        pinnedWindow: Int? = nil
     ) async throws {
         // #9: Use do JavaScript for navigation to avoid race with page's own JS redirects.
         // Fallback to set URL when do JavaScript fails (e.g., about:blank, no open tabs).
         let jsCode = "window.location.href=\(url.jsStringLiteral)"
         // #352: a window id names a window that must exist; with no window
         // open the reference fails (a targeting miss) instead of a new window.
-        let mayCreateWindow: Bool
-        if case .windowID = target { mayCreateWindow = false } else { mayCreateWindow = true }
+        // `pinnedWindow` is that id when `--profile` already collapsed the target.
+        var windowID = pinnedWindow
+        if case .windowID(let id, _) = target { windowID = id }
         let docRef = try await resolveToAppleScript(
             target,
             firstMatch: firstMatch,
@@ -1007,11 +1017,15 @@ enum SafariBridge {
                         set URL of \(docRef) to "\(url.escapedForAppleScript)"
                     end try
             """
-        guard mayCreateWindow else {
-            // `activate` last: the reference names the window by id, so a raised
-            // window cannot redirect it, and a miss leaves Safari where it was.
+        if let windowID {
+            // The window is checked first: `get` on a missing object raises
+            // -1728, a targeting miss, while the `set URL` fallback below would
+            // raise -10006 (measured on a real Safari). `activate` last: the
+            // reference names the window by id, so a raised window cannot
+            // redirect it, and a miss leaves Safari where it was.
             _ = try await runTargetedAppleScript("""
                 tell application "Safari"
+                    get id of window id \(windowID)
                 \(navigate)
                     activate
                 end tell
@@ -2798,6 +2812,11 @@ enum SafariBridge {
                 pattern: "window id \(windowID)\(scope)",
                 availableDocuments: ["(no window of profile \"\(profile)\" is open)"])
         }
+        guard profile != nil else {
+            // An id names one window: no other window's tab is listed for it.
+            throw SafariBrowserError.documentNotFound(
+                pattern: "window id \(windowID)", availableDocuments: ["(no such window)"])
+        }
         throw SafariBrowserError.documentNotFound(
             pattern: "window id \(windowID)\(scope)",
             availableDocuments: candidates.map { w -> String in
@@ -2856,8 +2875,8 @@ enum SafariBridge {
             }
             return ResolvedWindowTarget(windowIndex: first.windowIndex, tabIndexInWindow: nil, windowID: first.windowID)
 
-        case .resolvedTab(let windowID, let tab, _, _),
-             .anchoredCurrentTab(let windowID, let tab, _):
+        case .resolvedTab(let windowID, let tab, _, let carried),
+             .anchoredCurrentTab(let windowID, let tab, let carried):
             // Already-concrete identity target (#79) re-entering the
             // resolver (defensive totality — production flows render it
             // directly via resolveDocumentReference). Map the stable id
@@ -2866,7 +2885,7 @@ enum SafariBridge {
             guard let window = windows.first(where: { $0.windowID == windowID }) else {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window id \(windowID) tab \(tab)",
-                    availableDocuments: windows.flatMap { w in
+                    availableDocuments: windows.filter { carried == nil || $0.profile == carried }.flatMap { w in
                         w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
                     }
                 )
@@ -3479,11 +3498,11 @@ enum SafariBridge {
         case .index(let n): windowRef = "window \(n)"
         case .id(let w, _): windowRef = "window id \(w)"
         }
-        try await runAppleScript("""
+        try await runNewTabScript("""
             tell application "Safari"
                 set current tab of \(windowRef) to tab \(index) of \(windowRef)
             end tell
-            """)
+            """, window: window)
     }
 
     /// `tab new` (#352): one script, the same window handling as

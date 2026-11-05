@@ -2,7 +2,7 @@
 
 ### Requirement: List all tabs
 
-The system SHALL list the open tabs of the target Safari window, printing each tab's index, title, and URL to stdout. The default target SHALL be the front window. When `--window <n>` is provided, the system SHALL list the tabs of window `n` instead. When `--window-id <id>` is provided, the system SHALL list the tabs of the window with that id, and SHALL fail with a document-not-found error when it does not exist or does not belong to `--profile`. Other targeting flags (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`, `--document`) SHALL be rejected because "listing tabs" only makes sense at window granularity.
+The system SHALL list the open tabs of the target Safari window, printing each tab's index, title, and URL to stdout. The default target SHALL be the front window. When `--window <n>` is provided, the system SHALL list the tabs of window `n` instead. When `--window-id <id>` is provided, the system SHALL list the tabs of the window with that id, and SHALL fail with a document-not-found error when it does not exist or does not belong to `--profile`. Other targeting flags (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`, `--document`, `--tab-in-window`) SHALL be rejected because "listing tabs" only makes sense at window granularity.
 
 #### Scenario: List tabs of front window
 

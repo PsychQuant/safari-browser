@@ -37,7 +37,7 @@
 
 - [x] 5.1 CHANGELOG（Unreleased）、`CLAUDE.md` 的 multi-window 段落、`--window-id` 的 `--help` 說明：寫明 `--window-id` 的語意、與 `--window N` 的差別、`open --url-endswith` 行為改變（#233）、#351 已含在內。驗證：內容檢查，`safari-browser --help` 與 `safari-browser get --help` 出現 `--window-id`（實作時更正：頂層 `--help` 只列子指令、不列任何目標旗標，改以 `safari-browser get url --help` 與 `open --help` 驗證）
 - [x] 5.2 全套測試通過（`swift test`），新增保護各做一次 mutation（拿掉互斥、拿掉 profile 檢查、`.windowID` 退回 front window、`--window-id` 時加回 `activate`、`open` 的 `hasExplicitTarget` 漏算），每個都有具名測試抓到。驗證：`swift test` 結果與 mutation 紀錄
-- [ ] 5.3 真機驗收（需維護者同意開分頁）：多個視窗、Safari 不在前景時，`open --new-tab --window-id W` 與 `tab new --window-id W` 開在視窗 W、不搶前景；`get url --window-id W` 讀到 W 的目前分頁；#351 的原始情境（`open --new-tab --window 1` 與 `--profile P`，三次都開到別的視窗）重跑一次。驗證：真機紀錄寫進 issue；未獲同意時在 Implementation Complete 照實標為未做
+- [ ] 5.3 真機驗收（需維護者同意開分頁）：多個視窗、Safari 不在前景時，`open --new-tab --window-id W` 與 `tab new --window-id W` 開在視窗 W、不搶前景；`get url --window-id W` 讀到 W 的目前分頁；#351 的原始情境（`open --new-tab --window 1` 與 `--profile P`，三次都開到別的視窗）重跑一次；`open --window-id <不存在>` 回 `No Safari document matches`；`make new tab` 打在不存在的 id 回 -1728 或 -1719（`runNewTabScript` 靠這兩個碼翻譯，還沒在真機量過）。驗證：真機紀錄寫進 issue；未獲同意時在 Implementation Complete 照實標為未做
   - 2026-11-05 狀態：**未做**。真機驗收要在維護者的 Safari 開分頁，本次 session 未取得同意；以 fake runner 與 `NSAppleScript` 編譯測試涵蓋腳本形狀，多視窗、Safari 不在前景時的實際行為仍未證明。
 
 ## 6. verify 第一輪的修正（2026-11-05）
@@ -57,3 +57,12 @@
 - [x] 7.4 找不到 id 不列舉、不列別的視窗，提示指向 `documents --json`；檢查之後才關掉的視窗：`tab`、`tab new`、`open --new-tab` 回 `documentNotFound`，`--profile` 的翻譯只列該 profile。`open --window-id` 導航成功才 `activate`。驗證：`WindowIDRound3Tests`
 - [x] 7.5 spec：script-exec、pdf-cache、save-pdf、tab-management〈List all tabs〉的 MODIFIED delta；navigation 的 scenario 與 new-tab 文字；document-targeting 的「其他指令」與 native 上傳路徑的封閉列舉；design、proposal（含 #305）。驗證：`spectra validate`
 - [x] 7.6 文件：CHANGELOG（`tab --profile` 的舊行為寫錯、exec 句刪除）、README、CLAUDE.md（三處舊句）、`--help`、pdf-cache 與 save-pdf 的 help。驗證：內容檢查
+
+## 8. verify 第三輪的修正（2026-11-05）
+
+- [x] 8.1 `concreteTarget` 對視窗層級的解析有 id 就回 `.windowID`：`open --profile`、`get text`、`get html`、`save-image`、`upload` 不再依位置重查（Blocking，#351 Expected）。驗證：`testAProfileAloneKeepsTheEnumerationsWindowID`
+- [x] 8.2 `open --window-id` 導航前先 `get id of window id W`，缺視窗回 `documentNotFound` 而不是 -10006（Blocking）；帶 `--profile` 收斂成 `.resolvedTab` 時同一支腳本。Fake 依真機量到的 -10006 改寫。驗證：`testOpenWithAMissingWindowIDIsATargetingMiss`
+- [x] 8.3 沒有 `--profile` 時 miss 不列任何視窗。驗證：`testAMissOnTheEnumeratingPathsListsNoOtherWindow`
+- [x] 8.4 `tab focus`、`tabs` 把檢查後才關掉的視窗回報為 targeting miss；`tabs` 拒絕 `--tab-in-window`；hint 依列表內容決定；`--window-id` 的捷徑不印 dialog probe 警告；native resolver 的列表守住 carried profile。驗證：`WindowIDRound4Tests`
+- [x] 8.5 spec：document-targeting〈Document not found〉、document-listing〈Discovery aid〉、wait〈Wait for URL pattern〉的 MODIFIED delta；navigation 的無視窗文字與 URL 旗標 miss；pdf-cache 的 profile 註記。驗證：`spectra validate`
+- [x] 8.6 文件：還原誤刪的 CLAUDE.md #21 那行；README 的 window-level 段落；CHANGELOG 收窄、真機註記涵蓋全部、不列沒有發布過的 bug。驗證：內容檢查

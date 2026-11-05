@@ -49,6 +49,11 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
             }
             if let id = Self.int(after: "window id ", in: script),
                !windows.contains(where: { $0.id == id }) || id == closesAfterFirstListing {
+                // Measured on a real Safari: `set` on a missing object is -10006, not -1728, so the
+                // navigation script's `on error` fallback surfaces it unless the window was checked first.
+                if script.contains("set URL of"), !script.contains("get id of window id") {
+                    throw SafariBrowserError.appleScriptFailed("execution error: Safari got an error: Can’t set window id \(id) to \"x\". (-10006)")
+                }
                 throw SafariBrowserError.appleScriptFailed("execution error: Can’t get window id \(id). (-1728)")
             }
             return "https://own.example/1"
@@ -80,10 +85,14 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
         for (label, drive) in [
             ("get url", { (fake: TwoProfileFake) in try await self.run(GetURL.self, ["--window-id", "101"], on: fake) }),
             ("click", { (fake: TwoProfileFake) in try await self.run(ClickCommand.self, ["button", "--window-id", "101"], on: fake) }),
+            ("wait --js", { (fake: TwoProfileFake) in try await self.run(WaitCommand.self, ["--window-id", "101", "--js", "1", "--timeout", "0"], on: fake) }),
         ] as [(String, (TwoProfileFake) async throws -> Void)] {
             let fake = TwoProfileFake()
             do { try await drive(fake) } catch { /* the fake's canned answers may fail later; the scripts are what matter */ }
-            let targeted = fake.scripts.filter { $0.contains("tell application \"Safari\"") && !$0.contains("set windowCount") }
+            // The anchor read names the window as `set _id to W` / `window id _id`.
+            let targeted = fake.scripts.filter {
+                $0.contains("tell application \"Safari\"") && !$0.contains("set windowCount") && !$0.contains("set _id to ")
+            }
             XCTAssertFalse(targeted.isEmpty, "\(label): nothing was sent:\n\(transcript(fake))")
             XCTAssertTrue(targeted.allSatisfy { $0.contains("window id 101") }, "\(label):\n\(transcript(fake))")
             XCTAssertFalse(fake.scripts.contains { $0.contains("front window") }, "\(label):\n\(transcript(fake))")

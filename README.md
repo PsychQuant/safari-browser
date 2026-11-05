@@ -1137,10 +1137,11 @@ same JSON encoder and observation; its explicit per-request probe setting
 takes precedence over the daemon process environment. Bare `tabs --daemon`
 continues to render in the client after its AppleScript requests.
 
-`tabs`, `tab <n>`, `tab new`, `open --new-tab`, and `open --new-window`
-only accept `--window` because they are window-level UI operations;
-supplying `--url`, `--tab`, or `--document` is rejected with a usage
-error.
+`tabs`, `tab <n>`, `tab new`, and `open --new-tab` only accept `--window`,
+`--window-id`, and `--profile` because they are window-level UI operations;
+`open --new-window` accepts no targeting flag. Supplying a flag that names a
+tab (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`,
+`--document`, `--tab-in-window`) is rejected with a usage error.
 
 `close`, `screenshot`, `pdf`, and `upload --native` **accept the full
 targeting surface** (`--url`, `--window`, `--tab`, `--document`) via

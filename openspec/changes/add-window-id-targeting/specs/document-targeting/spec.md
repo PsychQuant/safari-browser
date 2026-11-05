@@ -4,7 +4,7 @@
 
 The system SHALL accept a global `--window-id <id>` flag on every subcommand that composes the shared targeting options. The value SHALL be a positive integer naming a Safari window by its AppleScript `id of window`, which does not change while the window exists. Without `--tab-in-window`, the target SHALL be the current tab of that window: `js`, `wait` and `save-pdf` SHALL read its index once at command start and fail if a different tab becomes current (the same check `--window <n>` has); other commands SHALL address it as `document of window id <id>`, that window's current tab at each Apple event, with or without `--profile`. With `--tab-in-window <m>`, the target SHALL be the `m`-th tab of that window, referenced as `tab m of window id <id>`; `js`, `wait` and `save-pdf` SHALL check that it exists before running anything.
 
-`--window-id` SHALL be mutually exclusive with `--window`, `--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab` and `--document`; a combination SHALL be rejected with a validation error before Safari is contacted. `--tab-in-window` SHALL be accepted with either `--window` or `--window-id`. When `--profile <name>` is also given, the window SHALL belong to that profile; otherwise the command SHALL fail without acting. When no window has the given id, or the window has no tab `m`, the command SHALL fail with a document-not-found error and SHALL NOT fall back to the front window or to any other window; without `--profile` the error SHALL NOT enumerate or list other windows' tabs for a read, and SHALL point at the window ids rather than at `--window <n>`. When the profile check fails, the error SHALL list only the windows of the requested profile, and when that profile has no window open it SHALL list none. A value below 1 SHALL be rejected with a validation error. `close`, `screenshot`, `pdf`, and `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted) SHALL find the window by its id; acting on it by id end to end is out of scope here (safari-browser#353). This list of commands is closed.
+`--window-id` SHALL be mutually exclusive with `--window`, `--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab` and `--document`; a combination SHALL be rejected with a validation error before Safari is contacted. `--tab-in-window` SHALL be accepted with either `--window` or `--window-id`. When `--profile <name>` is also given, the window SHALL belong to that profile; otherwise the command SHALL fail without acting. When no window has the given id, or the window has no tab `m`, the command SHALL fail with a document-not-found error and SHALL NOT fall back to the front window or to any other window; without `--profile` the error SHALL list no window's tabs, and it SHALL point at the window ids rather than at `--window <n>`. When the profile check fails, the error SHALL list only the windows of the requested profile, and when that profile has no window open it SHALL list none. A value below 1 SHALL be rejected with a validation error. `close`, `screenshot`, `pdf`, and `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted) SHALL find the window by its id; acting on it by id end to end is out of scope here (safari-browser#353). This list of commands is closed. `documents` lists every tab and `wait <ms>` / `wait --jitter` read no tab: they accept the flag and do not use it, as they do `--window <n>`.
 
 #### Scenario: Current tab of a window by id
 
@@ -61,6 +61,24 @@ The system SHALL accept a global `--window-id <id>` flag on every subcommand tha
 - **THEN** every step targets the current tab of window 4711 in the in-process path and in the subprocess path alike
 
 ## MODIFIED Requirements
+
+### Requirement: Document not found surfaces discoverable error
+
+When the user supplies a target flag that does not match any document (URL substring not found, window index out of range, document index out of range), the system SHALL throw `SafariBrowserError.documentNotFound(pattern: String, availableDocuments: [String])`. The error description MUST list the tabs the miss is about — every tab for an unscoped miss; for a scoped miss fewer (a miss on one window's tab lists that window's tabs, a window-level miss lists each window's current tab) — each with its URL shown as the requirement "URLs of tabs in targeting errors, warnings and navigation notes are shown without query or fragment" says, and, whenever it lists any URL, MUST say that `safari-browser documents` prints the URLs in full (an empty listing has no URL to say it about), so the user can correct their target from the listing or, when the difference is in a query, from `safari-browser documents`. A miss on `--window-id` is the exception: it names one window and SHALL list no tab, except that with `--profile` it SHALL list that profile's windows by id.
+
+#### Scenario: URL substring with no matching document
+
+- **WHEN** Safari has documents `[https://web.plaud.ai/, https://platform.claude.com/]`
+- **AND** user runs `safari-browser get --url xyz url`
+- **THEN** the system SHALL throw `documentNotFound` with `pattern: "xyz"` and `availableDocuments` listing both URLs
+- **AND** the error description SHALL contain both `https://web.plaud.ai/` and `https://platform.claude.com/`
+
+#### Scenario: Window index out of range
+
+- **WHEN** Safari has one window
+- **AND** user runs `safari-browser get --window 5 url`
+- **THEN** the system SHALL throw `documentNotFound` identifying the requested window index
+- **AND** the error description SHALL list available windows
 
 ### Requirement: Target document selection via CLI flags
 
