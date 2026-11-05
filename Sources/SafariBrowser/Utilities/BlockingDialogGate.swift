@@ -208,7 +208,7 @@ final class BlockingDialogGate: @unchecked Sendable {
     /// Keep the short state lock away from AX work: the bounded worker may be
     /// waiting on an unresponsive application while other windows need a result.
     @discardableResult
-    func check(_ key: WindowKey, forceRefresh: Bool = false, announceUnprobed: Bool = true) -> BlockingDialogState {
+    func check(_ key: WindowKey, forceRefresh: Bool = false) -> BlockingDialogState {
         guard environment[Self.optOutVariable] != "1" else { return .unprobed }
         let started = now()
         let lookup: (cached: BlockingDialogState?, token: UInt64, reserved: TimeInterval, epoch: UInt64, limited: Bool) = lock.withLock {
@@ -258,7 +258,7 @@ final class BlockingDialogGate: @unchecked Sendable {
             case .accessibilityDenied where !warnedUnavailable:
                 warnedUnavailable = true
                 lines.append(BlockingDialogWarning.probeUnavailableLine() + "\n")
-            case .unprobed where announceUnprobed && !warnedUnavailable && !reused && !lookup.limited:
+            case .unprobed where !warnedUnavailable && !reused && !lookup.limited:
                 warnedUnavailable = true
                 lines.append(BlockingDialogWarning.unmappableLine(windowKey: key) + "\n")
             case .present, .accessibilityDenied, .unprobed, .clear:

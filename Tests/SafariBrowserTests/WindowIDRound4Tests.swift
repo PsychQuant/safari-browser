@@ -60,9 +60,37 @@ final class WindowIDRound4Tests: XCTestCase, @unchecked Sendable {
             }
             XCTAssertEqual(acting(fake).count, 1, transcript(fake))
             let script = acting(fake)[0]
-            let check = try XCTUnwrap(script.range(of: "get id of window id 9999"), script)
+            let check = try XCTUnwrap(script.range(of: "get name of "), script)
             let navigate = try XCTUnwrap(script.range(of: "do JavaScript"), script)
             XCTAssertLessThan(check.lowerBound, navigate.lowerBound, script)
+        }
+    }
+
+    /// The reference is what must exist: a window that is there with a tab that is not ends the same way.
+    func testOpenWithAMissingTabIsATargetingMiss() async throws {
+        for args in [["--window-id", "202", "--tab-in-window", "99"], ["--window-id", "202", "--tab-in-window", "99", "--replace-tab"]] {
+            let fake = Fake()
+            do {
+                try await run(OpenCommand.self, ["https://n.example/"] + args, on: fake)
+                XCTFail("\(args) must fail")
+            } catch let error as SafariBrowserError {
+                guard case .documentNotFound = error else { return XCTFail("\(args): \(error)") }
+            }
+        }
+    }
+
+    /// `--profile` collapses these to `.resolvedTab`; they take the same script as `--window-id`.
+    func testOpenWithAProfileAndATabChecksTheTargetAndActivatesLast() async throws {
+        for args in [["--url", "work.example/1", "--profile", "Work"], ["--window", "1", "--tab-in-window", "1", "--profile", "Work"]] {
+            let fake = Fake()
+            try await run(OpenCommand.self, ["https://n.example/"] + args, on: fake)
+            let script = try XCTUnwrap(fake.scripts.first { $0.contains("window.location.href") }, transcript(fake))
+            XCTAssertFalse(script.contains("make new document"), "\(args):\n\(script)")
+            let check = try XCTUnwrap(script.range(of: "get name of "), script)
+            let navigate = try XCTUnwrap(script.range(of: "do JavaScript"), script)
+            let activate = try XCTUnwrap(script.range(of: "activate"), script)
+            XCTAssertLessThan(check.lowerBound, navigate.lowerBound, script)
+            XCTAssertLessThan(navigate.lowerBound, activate.lowerBound, script)
         }
     }
 
@@ -159,28 +187,11 @@ final class WindowIDRound4Tests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(ids.contains("--window-id"), ids)
     }
 
-    /// A stale id is this flag's ordinary miss: a line about a dialog must not precede the error, on stderr or anywhere
-    /// a caller matching the first line of stderr would read it.
-    func testAMissingWindowIDPrintsNoDialogProbeWarning() async throws {
+    /// A live window named by id keeps the warning every other target gets: the probe runs before the script, so it
+    /// cannot tell a stale id from a live one, and hiding the line for both hid it for the window it was meant for.
+    func testAWindowIDKeepsTheProbeWarning() async throws {
         let fake = Fake()
-        var command = try GetURL.parse(["--window-id", "9999"])
-        let context = DaemonRequestContext(probe: { _ in .unprobed }, environment: [:])
-        do {
-            try await DaemonRequestContext.$current.withValue(context) {
-                try await WindowDialogObservation.$provider.withValue({ WindowDialogObservation.unavailable(reason: "test") }) {
-                    try await DaemonRequestContext.$appleScriptRunner.withValue({ try fake.respond($0) }) {
-                        try await command.run()
-                    }
-                }
-            }
-        } catch {}
-        XCTAssertFalse(context.diagnostics.joined().contains("dialog probe"), "\(context.diagnostics)")
-    }
-
-    /// The same probe on a window that is simply being read keeps its warning everywhere else.
-    func testOtherTargetsKeepTheProbeWarning() async throws {
-        let fake = Fake()
-        var command = try GetURL.parse(["--window", "1"])
+        var command = try GetURL.parse(["--window-id", "101"])
         let context = DaemonRequestContext(probe: { _ in .unprobed }, environment: [:])
         do {
             try await DaemonRequestContext.$current.withValue(context) {
@@ -195,6 +206,18 @@ final class WindowIDRound4Tests: XCTestCase, @unchecked Sendable {
     }
 
     /// The native resolver's listing for a lost `.resolvedTab` stays within the profile it carries.
+    func testALostResolvedTabWithNoWindowOfItsProfileSaysSo() {
+        let own = SafariBridge.WindowInfo(windowIndex: 1, currentTabIndex: 1,
+            tabs: [SafariBridge.TabInWindow(tabIndex: 1, url: "https://own.example/1", title: "t", isCurrent: true)],
+            profile: "個人", windowID: 101)
+        XCTAssertThrowsError(try SafariBridge.pickNativeTarget(
+            .resolvedTab(windowID: 202, tabInWindow: 1, rematch: nil, profile: "Work"), in: [own])) { error in
+            let text = (error as? SafariBrowserError)?.localizedDescription ?? ""
+            XCTAssertFalse(text.contains("no Safari documents are currently open"), text)
+            XCTAssertTrue(text.contains("Work"), text)
+        }
+    }
+
     func testALostResolvedTabListsOnlyItsProfile() {
         let own = SafariBridge.WindowInfo(windowIndex: 1, currentTabIndex: 1,
             tabs: [SafariBridge.TabInWindow(tabIndex: 1, url: "https://own.example/1", title: "t", isCurrent: true)],

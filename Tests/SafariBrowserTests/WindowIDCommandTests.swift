@@ -51,12 +51,26 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
                !windows.contains(where: { $0.id == id }) || id == closesAfterFirstListing {
                 // Measured on a real Safari: `set` on a missing object is -10006, not -1728, so the
                 // navigation script's `on error` fallback surfaces it unless the window was checked first.
-                if script.contains("set URL of"), !script.contains("get id of window id") {
+                if Self.setsOnTheMissingObject(script) {
                     throw SafariBrowserError.appleScriptFailed("execution error: Safari got an error: Can’t set window id \(id) to \"x\". (-10006)")
                 }
                 throw SafariBrowserError.appleScriptFailed("execution error: Can’t get window id \(id). (-1728)")
             }
+            // A tab past the end of a window that exists.
+            if let id = Self.int(after: "window id ", in: script), let tab = Self.int(after: "tab ", in: script),
+               let window = windows.first(where: { $0.id == id }), tab > window.tabs.count {
+                if Self.setsOnTheMissingObject(script) {
+                    throw SafariBrowserError.appleScriptFailed("execution error: Safari got an error: Can’t set tab \(tab) to \"x\". (-10006)")
+                }
+                throw SafariBrowserError.appleScriptFailed("execution error: Can’t get tab \(tab). Invalid index. (-1719)")
+            }
             return "https://own.example/1"
+        }
+
+        /// Measured on a real Safari: `set` on a missing object is -10006, not -1728 — so a script reaches it unless it
+        /// read the same reference first. Only `set URL` was measured; `set current tab` is assumed to behave the same.
+        static func setsOnTheMissingObject(_ script: String) -> Bool {
+            (script.contains("set URL of") || script.contains("set current tab of")) && !script.contains("get name of ")
         }
 
         static func int(after marker: String, in text: String) -> Int? {

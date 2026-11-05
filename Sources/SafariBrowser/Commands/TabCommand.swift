@@ -114,7 +114,16 @@ struct TabFocusCommand: AsyncParsableCommand {
         // (idempotent no-op in that case).
         // #352: by the window id the resolver read, not its position looked up again.
         if let tab = resolved.tabIndexInWindow {
-            try await SafariBridge.switchToTab(tab, in: resolved.windowID.map { .id($0) } ?? .index(resolved.windowIndex))
+            do {
+                try await SafariBridge.switchToTab(tab, in: resolved.windowID.map { .id($0) } ?? .index(resolved.windowIndex))
+            } catch {
+                // A window that closed since it was checked is a targeting miss,
+                // whichever code the `set` answers with.
+                if let id = target.windowID {
+                    try SafariBridge.checkWindowID(id, profile: target.resolveProfile(), in: await SafariBridge.listAllWindows())
+                }
+                throw error
+            }
         }
     }
 }

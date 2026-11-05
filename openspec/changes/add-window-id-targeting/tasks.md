@@ -37,7 +37,7 @@
 
 - [x] 5.1 CHANGELOG（Unreleased）、`CLAUDE.md` 的 multi-window 段落、`--window-id` 的 `--help` 說明：寫明 `--window-id` 的語意、與 `--window N` 的差別、`open --url-endswith` 行為改變（#233）、#351 已含在內。驗證：內容檢查，`safari-browser --help` 與 `safari-browser get --help` 出現 `--window-id`（實作時更正：頂層 `--help` 只列子指令、不列任何目標旗標，改以 `safari-browser get url --help` 與 `open --help` 驗證）
 - [x] 5.2 全套測試通過（`swift test`），新增保護各做一次 mutation（拿掉互斥、拿掉 profile 檢查、`.windowID` 退回 front window、`--window-id` 時加回 `activate`、`open` 的 `hasExplicitTarget` 漏算），每個都有具名測試抓到。驗證：`swift test` 結果與 mutation 紀錄
-- [ ] 5.3 真機驗收（需維護者同意開分頁）：多個視窗、Safari 不在前景時，`open --new-tab --window-id W` 與 `tab new --window-id W` 開在視窗 W、不搶前景；`get url --window-id W` 讀到 W 的目前分頁；#351 的原始情境（`open --new-tab --window 1` 與 `--profile P`，三次都開到別的視窗）重跑一次；`open --window-id <不存在>` 回 `No Safari document matches`；`make new tab` 打在不存在的 id 回 -1728 或 -1719（`runNewTabScript` 靠這兩個碼翻譯，還沒在真機量過）。驗證：真機紀錄寫進 issue；未獲同意時在 Implementation Complete 照實標為未做
+- [ ] 5.3 真機驗收（需維護者同意開分頁）：多個視窗、Safari 不在前景時，`open --new-tab --window-id W` 與 `tab new --window-id W` 開在視窗 W、不搶前景；`get url --window-id W` 讀到 W 的目前分頁；#351 的原始情境（`open --new-tab --window 1` 與 `--profile P`，三次都開到別的視窗）重跑一次；`open --window-id <不存在>` 回 `No Safari document matches`；`open --window-id W --tab-in-window 99` 回 `No Safari document matches`；`make new tab` 與 `set current tab` 打在不存在的 id 回什麼碼（`runNewTabScript` 靠 -1728／-1719 翻譯，都還沒在真機量過）。驗證：真機紀錄寫進 issue；未獲同意時在 Implementation Complete 照實標為未做
   - 2026-11-05 狀態：**未做**。真機驗收要在維護者的 Safari 開分頁，本次 session 未取得同意；以 fake runner 與 `NSAppleScript` 編譯測試涵蓋腳本形狀，多視窗、Safari 不在前景時的實際行為仍未證明。
 
 ## 6. verify 第一輪的修正（2026-11-05）
@@ -63,6 +63,14 @@
 - [x] 8.1 `concreteTarget` 對視窗層級的解析有 id 就回 `.windowID`：`open --profile`、`get text`、`get html`、`save-image`、`upload` 不再依位置重查（Blocking，#351 Expected）。驗證：`testAProfileAloneKeepsTheEnumerationsWindowID`
 - [x] 8.2 `open --window-id` 導航前先 `get id of window id W`，缺視窗回 `documentNotFound` 而不是 -10006（Blocking）；帶 `--profile` 收斂成 `.resolvedTab` 時同一支腳本。Fake 依真機量到的 -10006 改寫。驗證：`testOpenWithAMissingWindowIDIsATargetingMiss`
 - [x] 8.3 沒有 `--profile` 時 miss 不列任何視窗。驗證：`testAMissOnTheEnumeratingPathsListsNoOtherWindow`
-- [x] 8.4 `tab focus`、`tabs` 把檢查後才關掉的視窗回報為 targeting miss；`tabs` 拒絕 `--tab-in-window`；hint 依列表內容決定；`--window-id` 的捷徑不印 dialog probe 警告；native resolver 的列表守住 carried profile。驗證：`WindowIDRound4Tests`
+- [x] 8.4 `tab focus`、`tabs` 把檢查後才關掉的視窗回報為 targeting miss；`tabs` 拒絕 `--tab-in-window`；hint 依列表內容決定；native resolver 的列表守住 carried profile。驗證：`WindowIDRound4Tests`
 - [x] 8.5 spec：document-targeting〈Document not found〉、document-listing〈Discovery aid〉、wait〈Wait for URL pattern〉的 MODIFIED delta；navigation 的無視窗文字與 URL 旗標 miss；pdf-cache 的 profile 註記。驗證：`spectra validate`
 - [x] 8.6 文件：還原誤刪的 CLAUDE.md #21 那行；README 的 window-level 段落；CHANGELOG 收窄、真機註記涵蓋全部、不列沒有發布過的 bug。驗證：內容檢查
+
+## 9. 第四輪 verify（縮小版）的修正（2026-11-05）
+
+- [x] 9.1 `open` 導航前讀參照本身（`get name of <ref>`），不是只讀視窗：`--tab-in-window` 指到不存在的分頁時回 `documentNotFound`。驗證：`testOpenWithAMissingTabIsATargetingMiss`
+- [x] 9.2 `--profile` 收斂成 `.resolvedTab` 的目標走同一支腳本。驗證：`testOpenWithAProfileAndATabChecksTheTargetAndActivatesLast`
+- [x] 9.3 撤掉 `announceUnprobed`：探測在腳本之前跑，分不出失效的 id 與活著的視窗，靜音會連有效視窗一起靜音。失效的 id 前面會多一行 dialog 探測警告，呼叫端比對 stderr 時要跳過 `⚠` 開頭的行。驗證：`testAWindowIDKeepsTheProbeWarning`
+- [x] 9.4 `tab focus` 比照 `tab <N>`，以 `checkWindowID` 判斷視窗是否還在，不靠錯誤碼。Fake 把 `set current tab` 也當 -10006（假設，未量）。驗證：`testTabFocusReportsAWindowClosedAfterTheCheckAsATargetingMiss`
+- [x] 9.5 lost `.resolvedTab` 的列表在該 profile 沒有視窗時據實說明。驗證：`testALostResolvedTabWithNoWindowOfItsProfileSaysSo`
