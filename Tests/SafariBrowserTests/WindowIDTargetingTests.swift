@@ -44,16 +44,12 @@ final class WindowIDTargetingTests: XCTestCase {
         XCTAssertEqual(try parse(["--window-id", "4711"]).resolve(), .windowID(4711))
     }
 
+    /// Always `.windowID`, with or without `--profile`: a `.resolvedTab` is treated as already checked everywhere, so a
+    /// user's flags must not produce one (#352 verify round 2).
     func testWindowIDWithATabResolvesToThatTabOfTheWindowByID() throws {
-        let target = try parse(["--window-id", "4711", "--tab-in-window", "2"]).resolve()
-        XCTAssertEqual(target, .resolvedTab(windowID: 4711, tabInWindow: 2, rematch: nil, profile: nil))
-    }
-
-    /// With `--profile` the tab target stays `.windowID` so the profile check runs: the profile
-    /// branch of `resolveToConcreteTarget` passes a `.resolvedTab` through unchecked.
-    func testWindowIDWithATabAndAProfileStaysUncheckedUntilTheProfileBranch() throws {
-        let target = try parse(["--window-id", "4711", "--tab-in-window", "2", "--profile", "Work"]).resolve()
-        XCTAssertEqual(target, .windowID(4711, tabInWindow: 2))
+        XCTAssertEqual(try parse(["--window-id", "4711", "--tab-in-window", "2"]).resolve(), .windowID(4711, tabInWindow: 2))
+        XCTAssertEqual(try parse(["--window-id", "4711", "--tab-in-window", "2", "--profile", "Work"]).resolve(),
+                       .windowID(4711, tabInWindow: 2))
     }
 
     func testTheTabOfAWindowByIDRendersAsThatTab() {

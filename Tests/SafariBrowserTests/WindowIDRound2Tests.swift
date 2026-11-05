@@ -58,8 +58,8 @@ final class WindowIDRound2Tests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    /// `--profile` used to drop the id the enumeration read (`.resolvedTab` fell to `default`) and act on the front
-    /// window.
+    /// `tab --profile P` used to act on a window position looked up again in a later Apple event (the #351 class); it
+    /// now uses the id the enumeration read.
     func testTabWithAProfileUsesTheEnumerationsWindowID() async throws {
         for args in [["2", "--profile", "Work"], ["new", "--profile", "Work"]] {
             let fake = Fake()
@@ -119,8 +119,9 @@ final class WindowIDRound2Tests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(target.contains("window id 202"), target)
         XCTAssertFalse(target.contains("front window"), target)
 
+        // A tab that vanished mid-command: the window was checked at command start.
         let missing = SafariBrowserError.documentNotFound(pattern: "x", availableDocuments: ["https://work.example/1"])
-        let tabMapped = JSCommand.anchoredFailure(missing, original: .resolvedTab(windowID: 202, tabInWindow: 2, rematch: nil, profile: nil),
+        let tabMapped = JSCommand.anchoredFailure(missing, original: .windowID(202, tabInWindow: 2),
                                                   anchored: .resolvedTab(windowID: 202, tabInWindow: 2, rematch: nil, profile: nil))
         guard case .anchoredTargetChanged(let tabTarget) = tabMapped else { return XCTFail("a vanished tab must not list every tab: \(tabMapped)") }
         XCTAssertTrue(tabTarget.contains("window id 202 tab 2"), tabTarget)

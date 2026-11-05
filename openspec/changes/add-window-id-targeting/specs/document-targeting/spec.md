@@ -2,9 +2,9 @@
 
 ### Requirement: Target a window by its stable id
 
-The system SHALL accept a global `--window-id <id>` flag on every subcommand that composes the shared targeting options. The value SHALL be a positive integer naming a Safari window by its AppleScript `id of window`, which does not change while the window exists. Without `--tab-in-window`, the target SHALL be the current tab of that window: `js` and `wait` SHALL read its index once at command start and fail if a different tab becomes current (the same check `--window <n>` has); other commands SHALL address it as `document of window id <id>`, that window's current tab at each Apple event. With `--tab-in-window <m>`, the target SHALL be the `m`-th tab of that window, referenced as `tab m of window id <id>`.
+The system SHALL accept a global `--window-id <id>` flag on every subcommand that composes the shared targeting options. The value SHALL be a positive integer naming a Safari window by its AppleScript `id of window`, which does not change while the window exists. Without `--tab-in-window`, the target SHALL be the current tab of that window: `js`, `wait` and `save-pdf` SHALL read its index once at command start and fail if a different tab becomes current (the same check `--window <n>` has); other commands SHALL address it as `document of window id <id>`, that window's current tab at each Apple event, with or without `--profile`. With `--tab-in-window <m>`, the target SHALL be the `m`-th tab of that window, referenced as `tab m of window id <id>`; `js`, `wait` and `save-pdf` SHALL check that it exists before running anything.
 
-`--window-id` SHALL be mutually exclusive with `--window`, `--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab` and `--document`; a combination SHALL be rejected with a validation error before Safari is contacted. `--tab-in-window` SHALL be accepted with either `--window` or `--window-id`. When `--profile <name>` is also given, the window SHALL belong to that profile; otherwise the command SHALL fail without acting. When no window has the given id, the command SHALL fail with a document-not-found error and SHALL NOT fall back to the front window or to any other window. When the profile check fails, the error SHALL list only the windows of the requested profile, and when that profile has no window open it SHALL list none. A value below 1 SHALL be rejected with a validation error. Commands that act on a whole window (`close`, `screenshot`, `pdf`, `upload --native`) SHALL find the window by its id; acting on it by id end to end is out of scope here (safari-browser#353).
+`--window-id` SHALL be mutually exclusive with `--window`, `--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab` and `--document`; a combination SHALL be rejected with a validation error before Safari is contacted. `--tab-in-window` SHALL be accepted with either `--window` or `--window-id`. When `--profile <name>` is also given, the window SHALL belong to that profile; otherwise the command SHALL fail without acting. When no window has the given id, or the window has no tab `m`, the command SHALL fail with a document-not-found error and SHALL NOT fall back to the front window or to any other window; without `--profile` the error SHALL NOT enumerate or list other windows' tabs for a read, and SHALL point at the window ids rather than at `--window <n>`. When the profile check fails, the error SHALL list only the windows of the requested profile, and when that profile has no window open it SHALL list none. A value below 1 SHALL be rejected with a validation error. `close`, `screenshot`, `pdf`, and `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted) SHALL find the window by its id; acting on it by id end to end is out of scope here (safari-browser#353). This list of commands is closed.
 
 #### Scenario: Current tab of a window by id
 
@@ -23,7 +23,14 @@ The system SHALL accept a global `--window-id <id>` flag on every subcommand tha
 - **WHEN** user runs `safari-browser get url --window-id 9999`
 - **AND** no Safari window has the id 9999
 - **THEN** the command fails with a document-not-found error
-- **AND** nothing is read from or sent to any tab
+- **AND** no JavaScript runs in any tab and no tab or window is changed
+
+#### Scenario: Tab that does not exist in a window named by id
+
+- **WHEN** user runs `safari-browser js --window-id 4711 --tab-in-window 9 "1"`
+- **AND** window 4711 has three tabs
+- **THEN** the command fails with a document-not-found error
+- **AND** the script runs in no tab
 
 #### Scenario: Window id outside the requested profile
 

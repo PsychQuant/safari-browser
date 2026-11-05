@@ -76,7 +76,7 @@ struct TargetOptions: ParsableArguments {
         name: .customLong("window-id"),
         help: ArgumentHelp(
             "Target the Safari window whose stable id is W (its current tab; pair with --tab-in-window for another tab).",
-            discussion: "The id is Safari's own `id of window`: it does not change while the window is open, unlike --window N, which counts windows from the front, so a window raised in between does not change which window the reference names. Read the ids from `safari-browser documents --json` (`window_id`). A window id that does not exist, or one outside --profile, fails with \"No Safari document matches\"; it never falls back to the front window. `close`, `screenshot`, `pdf` and `upload --native` find the window by its id but still act on it by its position (#353). Mutually exclusive with --window, --url, --url-exact, --url-endswith, --url-regex, --tab and --document."
+            discussion: "The id is Safari's own `id of window`: it does not change while the window is open, unlike --window N, which counts windows from the front, so a window raised in between does not change which window the reference names. Read the ids from `safari-browser documents --json` (`window_id`). A window id that does not exist, or one outside --profile, fails with \"No Safari document matches\"; it never falls back to the front window. `close`, `screenshot`, `pdf`, and `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted) find the window by its id but still act on it by its position (#353). Mutually exclusive with --window, --url, --url-exact, --url-endswith, --url-regex, --tab and --document."
         )
     )
     var windowID: Int?
@@ -335,22 +335,19 @@ struct TargetOptions: ParsableArguments {
 
     /// Convert the parsed flags into a `TargetDocument`. Precedence
     /// (already checked as mutually exclusive by `validate()`):
+    /// 0. `--window-id` (with or without `--tab-in-window`) → `.windowID(w, tabInWindow: m)`
     /// 1. `--window + --tab-in-window` → `.windowTab(w, m)`
     /// 2. `--url` → `.urlContains`
     /// 3. `--window` only → `.windowIndex`
     /// 4. `--tab` / `--document` → `.documentIndex`
     /// 5. none → `.frontWindow`
     func resolve() -> SafariBridge.TargetDocument {
-        // #352: by stable window id. With `--tab-in-window` and no profile it is
-        // already identity-anchored. With `--profile` it stays `.windowID` so the
-        // profile branch of `resolveToConcreteTarget` checks the window belongs
-        // to that profile (that branch passes a `.resolvedTab` through unchecked).
+        // #352: by stable window id, always as `.windowID`. Every consumer treats
+        // a `.resolvedTab` as already checked, so a user's flags must not produce
+        // one: nothing would notice a missing window or tab before the first
+        // action, and `open` would still make a new window.
         if let id = windowID {
-            if let m = tabInWindow {
-                if let profile, !profile.isEmpty { return .windowID(id, tabInWindow: m) }
-                return .resolvedTab(windowID: id, tabInWindow: m, rematch: nil, profile: nil)
-            }
-            return .windowID(id)
+            return .windowID(id, tabInWindow: tabInWindow)
         }
         if let w = window, let m = tabInWindow {
             return .windowTab(window: w, tabInWindow: m)

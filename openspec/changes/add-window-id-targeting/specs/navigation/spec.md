@@ -2,7 +2,7 @@
 
 ### Requirement: Open URL in new tab
 
-The system SHALL open a given URL in a new tab of the target window. When no target flag is provided, the system SHALL use the front window. When `--window <n>` is provided, the system SHALL read the id of window `n` before activating Safari and SHALL create the tab in the window with that id, so that activating Safari cannot redirect the tab to another window. When `--window-id <id>` is provided, the system SHALL create the tab in the window with that id without activating Safari, and the new tab SHALL become that window's current tab. When `--profile <name>` is provided, the system SHALL create the tab in the window resolved within that profile using the window id from the same enumeration, and SHALL fail rather than use the front window when the resolution cannot name one window. A window that no longer exists SHALL make the command fail without opening a tab elsewhere. Other targeting flags (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`, `--document`, `--tab-in-window`) SHALL be rejected for `open --new-tab` because "new tab" operates on a window, not on a document.
+The system SHALL open a given URL in a new tab of the target window. When no target flag is provided, the system SHALL use the front window. When `--window <n>` is provided, the system SHALL read the id of window `n` before activating Safari and SHALL create the tab in the window with that id, so that activating Safari cannot redirect the tab to another window. When `--window-id <id>` is provided, the system SHALL create the tab in the window with that id without activating Safari, and the new tab SHALL become that window's current tab. When `--profile <name>` is provided, the system SHALL create the tab in the window resolved within that profile using the window id from the same enumeration, and SHALL fail rather than use the front window when the resolution cannot name one window. A window named by `--window-id` or resolved to an id that no longer exists SHALL make the command fail without opening a tab elsewhere. With no Safari window open, `--window <n>` makes a new document, as `open` does without a flag. When the enumeration reports no window id for the profile's window (legacy records), the system SHALL use that window's position, read before activating Safari as for `--window <n>`. Other targeting flags (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`, `--document`, `--tab-in-window`) SHALL be rejected for `open --new-tab` because "new tab" operates on a window, not on a document.
 
 #### Scenario: New tab in front window
 
@@ -105,7 +105,7 @@ This requirement supersedes the earlier default of "navigate the front window's 
 #### Scenario: No Safari window exists
 
 - **WHEN** Safari is running but has zero windows
-- **AND** user runs `safari-browser open https://example.com` (or with any flag)
+- **AND** user runs `safari-browser open https://example.com` (or with any flag other than `--window-id`)
 - **THEN** the system SHALL create a new Safari document at `https://example.com`
 
 #### Scenario: A URL flag other than --url navigates the matching tab

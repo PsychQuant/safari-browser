@@ -981,7 +981,7 @@ already deleted.
 ### Multi-window Targeting (#17 #18 #21 #23 #79)
 
 When Safari has more than one window, every subcommand that reads from or
-drives a document accepts one of four mutually exclusive global flags:
+drives a document accepts one of these mutually exclusive global flags:
 
 ```bash
 safari-browser <cmd> --url <substring>  # tab whose URL CONTAINS this text (see below)
@@ -1016,8 +1016,9 @@ between (by you, or by Safari being activated) changes what N names.
 `--window-id` takes Safari's own window id, which does not change while the
 window is open: read it from `documents --json` (`window_id`). A missing id, or
 a window outside `--profile`, fails with `No Safari document matches`; it never
-falls back to the front window. `close`, `screenshot`, `pdf` and
-`upload --native` find the window by its id but still act on it by its position
+falls back to the front window. `close`, `screenshot`, `pdf`, and `upload` on
+its native paths (`--native`, `--allow-hid`, or the default when Accessibility
+is granted) find the window by its id but still act on it by its position
 (#353).
 
 **Identity-anchored `--url` / `--document` resolution (#79)**: a `--url` or

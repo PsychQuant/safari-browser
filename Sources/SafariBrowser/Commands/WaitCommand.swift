@@ -372,7 +372,6 @@ struct WaitCommand: AsyncParsableCommand {
         case .documentIndex(let n): return "document \(n) (\(position))"
         case .windowTab(let w, let t): return "window \(w) tab \(t) (\(position))"
         case .windowID(let id, let t): return t.map { "window id \(id) tab \($0)" } ?? "the current tab of window id \(id) (\(position))"
-        case .resolvedTab(let w, let t, .none, _): return "window id \(w) tab \(t)"
         default: return "the target tab (\(position))"
         }
     }

@@ -1,5 +1,36 @@
 ## MODIFIED Requirements
 
+### Requirement: List all tabs
+
+The system SHALL list the open tabs of the target Safari window, printing each tab's index, title, and URL to stdout. The default target SHALL be the front window. When `--window <n>` is provided, the system SHALL list the tabs of window `n` instead. When `--window-id <id>` is provided, the system SHALL list the tabs of the window with that id, and SHALL fail with a document-not-found error when it does not exist or does not belong to `--profile`. Other targeting flags (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`, `--document`) SHALL be rejected because "listing tabs" only makes sense at window granularity.
+
+#### Scenario: List tabs of front window
+
+- **WHEN** user runs `safari-browser tabs` with no target flag
+- **THEN** stdout contains a list of tabs of the front window with format `<index>\t<title>\t<url>` per line
+
+#### Scenario: List tabs of specific window
+
+- **WHEN** user runs `safari-browser tabs --window 2`
+- **AND** window 2 has three tabs
+- **THEN** stdout contains exactly three lines, listing the tabs of window 2
+- **AND** SHALL NOT include any tabs from window 1
+
+#### Scenario: No tabs open
+
+- **WHEN** user runs `safari-browser tabs` and Safari has no windows
+- **THEN** stdout is empty and the CLI exits with zero status
+
+#### Scenario: tabs rejects document-level targeting
+
+- **WHEN** user runs `safari-browser tabs --url plaud`
+- **THEN** the system SHALL reject the invocation with a validation error explaining that `tabs` only accepts `--window` or `--window-id`
+
+#### Scenario: List tabs of a window by id
+
+- **WHEN** user runs `safari-browser tabs --window-id 4711`
+- **THEN** stdout lists the tabs of the window whose id is 4711
+
 ### Requirement: Switch to tab by index
 
 The system SHALL switch the target Safari window's current tab to the tab at the given index. The default target SHALL be the front window. When `--window <n>` is provided, the system SHALL operate on window `n`. When `--window-id <id>` is provided, the system SHALL operate on `window id <id>`, after checking that the window exists (and belongs to `--profile`, when given), and SHALL fail with a document-not-found error otherwise. With `--profile` and no window flag, the system SHALL operate on the profile's window by the id the enumeration read. Flags that name a tab (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`, `--document`, `--tab-in-window`) SHALL be rejected because the tab-switch operation changes UI state inside a window.

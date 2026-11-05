@@ -9,7 +9,7 @@ import XCTest
 /// current) and id 202 in the profile Work (`https://work.example/1…2`).
 final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
 
-    final class TwoProfileFake: @unchecked Sendable {
+    class TwoProfileFake: @unchecked Sendable {
         private let lock = NSLock()
         private var sent: [String] = []
         let windows: [(id: Int, profile: String, tabs: [String])]
@@ -20,13 +20,18 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
             self.windows = windows
         }
         var scripts: [String] { lock.withLock { sent } }
+        /// A window that disappears once the first enumeration has seen it: the race between a check and the action.
+        var closesAfterFirstListing: Int?
+        private var listings = 0
 
         func respond(_ script: String) throws -> String {
             lock.withLock { sent.append(script) }
             if script.contains("set windowCount to count of windows") {
                 let gs = "\u{1D}", rs = "\u{1E}"
                 var out = ""
-                for (i, window) in windows.enumerated() {
+                let first = lock.withLock { listings += 1; return listings == 1 }
+                let open = windows.filter { first || $0.id != closesAfterFirstListing }
+                for (i, window) in open.enumerated() {
                     for (j, url) in window.tabs.enumerated() {
                         out += ["\(i + 1)", "\(j + 1)", j == 0 ? "1" : "0", url,
                                 "Tab \(j + 1)", "\(window.profile) — Tab 1", "\(window.id)"].joined(separator: gs) + rs
@@ -36,12 +41,14 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
             }
             // `windowAnchorScript(windowID:)`: "id GS current-tab-index", or an error for a missing id.
             if script.contains("set _id to "), let id = Self.int(after: "set _id to ", in: script) {
-                guard windows.contains(where: { $0.id == id }) else {
+                guard let window = windows.first(where: { $0.id == id && $0.id != closesAfterFirstListing }) else {
                     throw SafariBrowserError.appleScriptFailed("execution error: Can’t get window id \(id). (-1728)")
                 }
-                return "\(id)\u{1D}1"
+                // `tabAnchorScript`: "id GS tab-count"; `windowAnchorScript`: "id GS current-tab-index".
+                return script.contains("count of tabs of window id _id") ? "\(id)\u{1D}\(window.tabs.count)" : "\(id)\u{1D}1"
             }
-            if let id = Self.int(after: "window id ", in: script), !windows.contains(where: { $0.id == id }) {
+            if let id = Self.int(after: "window id ", in: script),
+               !windows.contains(where: { $0.id == id }) || id == closesAfterFirstListing {
                 throw SafariBrowserError.appleScriptFailed("execution error: Can’t get window id \(id). (-1728)")
             }
             return "https://own.example/1"
@@ -93,6 +100,8 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
         } catch SafariBrowserError.documentNotFound {}
         XCTAssertFalse(fake.scripts.contains { $0.contains("front window") }, transcript(fake))
         XCTAssertEqual(fake.scripts.filter { $0.contains("window id 9999") }.count, 1, transcript(fake))
+        XCTAssertFalse(fake.scripts.contains { $0.contains("set windowCount") },
+                       "a miss on an id lists nothing, so it does not enumerate:\n\(transcript(fake))")
     }
 
     // MARK: 2.2 js anchors by id and fails closed without one

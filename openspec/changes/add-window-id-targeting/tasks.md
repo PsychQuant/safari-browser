@@ -3,7 +3,7 @@
 涵蓋 requirement「Target a window by its stable id」的旗標、互斥與值域部分。
 
 - [x] 1.1 `--window-id <W>` 是 `TargetOptions` 的選項；與 `--window`、`--url`、`--url-exact`、`--url-endswith`、`--url-regex`、`--tab`、`--document` 同時給時，`validate()` 以點名雙方的錯誤拒絕；`--tab-in-window` 可配 `--window` 或 `--window-id`；值小於 1 拒絕。驗證：`WindowIDTargetingTests` 的 validation 測試（每一組互斥、`--tab-in-window` 單獨仍要求 `--window` 或 `--window-id`、0 與負數）
-- [x] 1.2 `TargetOptions.hasExplicitTarget` 計入 `--window-id`（以及原本漏掉的 URL 旗標仍在其中）；`resolve()` 對 `--window-id W` 回 `.windowID(W)`，配 `--tab-in-window T` 回 `.resolvedTab(windowID: W, tabInWindow: T, rematch: nil, profile:)`。驗證：resolution 單元測試斷言回傳的 `TargetDocument`
+- [x] 1.2 `TargetOptions.hasExplicitTarget` 計入 `--window-id`（以及原本漏掉的 URL 旗標仍在其中）；`resolve()` 對 `--window-id W` 回 `.windowID(W)`，配 `--tab-in-window T` 回 `.windowID(W, tabInWindow: T)`（verify 第二輪起；原文的 `.resolvedTab` 見第 7 組）。驗證：resolution 單元測試斷言回傳的 `TargetDocument`
 
 ## 2. `TargetDocument.windowID` 的解析
 
@@ -15,7 +15,7 @@
 - [x] 2.4 `--window-id W --profile P`：W 不屬於 P 時以 `documentNotFound` 失敗，訊息不列別的 profile 的分頁網址；屬於時照常解析。驗證：以 fake 列舉（兩個 profile 的視窗）的測試，涵蓋 `.windowID` 與 `.resolvedTab` 兩種形狀
 
 - ASSUMPTION（實作時決定，verify 時請挑戰）：
-  - `TargetDocument.windowID` 帶一個可選的分頁序號（`windowID(Int, tabInWindow: Int? = nil)`）。`--window-id W --tab-in-window T` 沒有 `--profile` 時照 1.2 回 `.resolvedTab`；有 `--profile` 時回 `.windowID(W, tabInWindow: T)`，因為 `resolveToConcreteTarget` 的 profile 分支直接放行 `.resolvedTab`，不改形狀就沒有地方檢查 W 是否屬於 P。profile 分支驗證後才收斂成 `.resolvedTab`。
+  - `TargetDocument.windowID` 帶一個可選的分頁序號（`windowID(Int, tabInWindow: Int? = nil)`），`--window-id` 一律解析成它。`.resolvedTab` 在各處都被當成已驗證過，驗證之後才收斂（第 7 組）。
   - 不在本表的三處也改了，否則 `--window-id` 會被安靜地丟掉：`tabs`（自己由 `--window` 組目標；現在 `--window-id` 走解析器，且 `--url-exact`／`--url-endswith`／`--url-regex` 也和 `--url` 一樣被拒，以前是被忽略）、`screenshot` 的本地 `hasExplicitTarget`（只加 `--window-id`；URL 旗標的同類缺口是 #233）、`wait` 的 `--url` 改名提示。
 
 ## 3. `open`
@@ -48,3 +48,12 @@
 - [x] 6.4 `--window-id` 配 `--profile`、而該 profile 沒有開著的視窗時，錯誤不列其他 profile 的分頁；零分頁視窗與 profile 路徑上 `--tab-in-window` 越界的測試補上。驗證：`WindowIDRound2Tests`
 - [x] 6.5 spec：修正「目前分頁在開頭讀一次」「不讀其他視窗」兩句；以 MODIFIED delta 改主 spec 中與本變更衝突的 requirement（document-targeting 的旗標分組與 `--tab-in-window`、navigation 的 Open URL in current tab、tab-management 的兩個 requirement）；proposal 明列「`--window N` 一律在開頭解析成 id」與 focus-existing 的 raise 路徑不在範圍內。驗證：`spectra validate`
 - [x] 6.6 文件：`--help`、README、CHANGELOG、CLAUDE.md、`TargetOptions` 開頭註解、`save-pdf` 訊息不再宣稱 `close`／`screenshot`／`pdf`／`upload --native` 以 id 動作；CHANGELOG 寫明 #351 的修正尚未在真機多視窗下跑過，以及 `open --new-window`／`tab` 新增的拒絕。驗證：內容檢查
+
+## 7. verify 第二輪的修正（2026-11-05，維護者授權第 3 輪）
+
+- [x] 7.1 `--window-id W --tab-in-window T` 一律解析成 `.windowID`：`open` 沒有視窗時不建新視窗，`tab focus` 與 native 路徑檢查分頁範圍。驗證：`WindowIDRound3Tests` 的 open 與 tab focus 測試
+- [x] 7.2 `js`／`wait`／`save-pdf` 開頭以 id 確認視窗與分頁存在，不存在或越界 → `documentNotFound`，沒有送出 JavaScript。驗證：`testAMissingWindowOrTabIsATargetingMissForJSWaitAndSavePDF`
+- [x] 7.3 `--window-id W --profile P` 不把列舉當下的分頁序號固定下來，仍是視窗的目前分頁。驗證：`testAWindowIDWithAProfileStaysTheWindowsCurrentTab`
+- [x] 7.4 找不到 id 不列舉、不列別的視窗，提示指向 `documents --json`；檢查之後才關掉的視窗：`tab`、`tab new`、`open --new-tab` 回 `documentNotFound`，`--profile` 的翻譯只列該 profile。`open --window-id` 導航成功才 `activate`。驗證：`WindowIDRound3Tests`
+- [x] 7.5 spec：script-exec、pdf-cache、save-pdf、tab-management〈List all tabs〉的 MODIFIED delta；navigation 的 scenario 與 new-tab 文字；document-targeting 的「其他指令」與 native 上傳路徑的封閉列舉；design、proposal（含 #305）。驗證：`spectra validate`
+- [x] 7.6 文件：CHANGELOG（`tab --profile` 的舊行為寫錯、exec 句刪除）、README、CLAUDE.md（三處舊句）、`--help`、pdf-cache 與 save-pdf 的 help。驗證：內容檢查

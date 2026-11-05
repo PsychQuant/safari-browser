@@ -55,6 +55,10 @@ struct TabSwitchCommand: AsyncParsableCommand {
         do {
             try await SafariBridge.switchToTab(index, in: window)
         } catch {
+            // A window that closed since it was checked is not a bad tab number.
+            if case .id(let id, _) = window {
+                try SafariBridge.checkWindowID(id, profile: documentTarget.resolveProfile(), in: await SafariBridge.listAllWindows())
+            }
             throw SafariBrowserError.invalidTabIndex(index)
         }
     }
@@ -62,8 +66,8 @@ struct TabSwitchCommand: AsyncParsableCommand {
     /// The window `tab <N>` / `tab new` act on (#52, #352), as `open --new-tab` resolves it:
     /// - `--window-id W`: checked to exist (and to belong to `--profile`) before anything is sent, then
     ///   addressed by id; `tab new` does not activate Safari.
-    /// - `--profile P [--window k]`: the id the profile-scoped enumeration read (it used to fall to the front
-    ///   window whenever the resolver returned `.resolvedTab`).
+    /// - `--profile P [--window k]`: the id the profile-scoped enumeration read (it used to be a position looked
+    ///   up again in a later Apple event, the #351 class).
     /// - `--window N`: the position (`tab new` reads its id before `activate`); nothing: the front window.
     private func targetWindow() async throws -> SafariBridge.NewTabWindow {
         let profile = documentTarget.resolveProfile()

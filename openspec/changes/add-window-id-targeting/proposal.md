@@ -8,7 +8,7 @@
 
 - `TargetOptions` 新增 `--window-id <W>`：所有組合 `TargetOptions` 的指令都能用。
   - 單獨使用：目標是 `window id W` 的目前分頁（新的 `TargetDocument.windowID`，參照 `document of window id W`）；`js`、`wait` 的非同步錨定再以既有的 `SafariBridge.readWindowAnchor(windowID:)` 轉成 `.anchoredCurrentTab`。
-  - 配 `--tab-in-window T`：目標是 `tab T of window id W`（`.resolvedTab`）。
+  - 配 `--tab-in-window T`：目標是 `tab T of window id W`（同樣是 `.windowID`，驗證後才收斂成 `.resolvedTab`）。
   - 與 `--window`、`--url`／`--url-exact`／`--url-endswith`／`--url-regex`、`--tab`、`--document` 互斥。
   - 配 `--profile P`：視窗 W 必須屬於 P，否則失敗。
   - 視窗 W 不存在：失敗（`documentNotFound`），**絕不**退回 `front window`。
@@ -42,11 +42,14 @@
 - `document-targeting`: 新增「以視窗 id 指定視窗」的 requirement（`--window-id`、互斥、profile 檢查、fail closed）。
 - `navigation`: 「Open URL in new tab」改為以視窗 id 建分頁，並接受 `--window-id`、`--profile`。
 - `document-listing`: JSON 每列加 `window_id`。
-- `tab-management`: 「Switch to tab by index」與「Open new empty tab」接受 `--window-id`，`--profile` 以 id 指定。
+- `script-exec`: 目標旗標的封閉列舉加 `--window-id`。
+- `pdf-cache`、`save-pdf`: tab 旗標的列舉加 `--window-id`。
+- `tab-management`: 「List all tabs」「Switch to tab by index」「Open new empty tab」接受 `--window-id`，`--profile` 以 id 指定。
 
 ## Impact
 
-- Affected specs: `document-targeting`, `navigation`, `document-listing`, `tab-management`
+- Affected specs: `document-targeting`, `navigation`, `document-listing`, `tab-management`, `script-exec`, `pdf-cache`, `save-pdf`
+- Issues: 含 #351 與 #305（`open --new-tab --profile` 以列舉讀到的視窗 id 開分頁，視窗消失時 fail closed）
 - Affected code:
   - `Sources/SafariBrowser/Commands/TargetOptions.swift`
   - `Sources/SafariBrowser/SafariBridge.swift`

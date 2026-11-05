@@ -85,7 +85,7 @@ struct PDFCacheGet: AsyncParsableCommand {
         abstract: "Copy one cached PDF to a file; needs an explicit selection and never picks for you",
         discussion: """
             Select exactly one of: a tab flag (--url, --url-exact, --url-endswith, --url-regex, \
-            --window [--tab-in-window], --document, --tab), --key <prefix>, or --source webkit-pdfs --file <name>. \
+            --window [--tab-in-window], --window-id [--tab-in-window], --document, --tab), --key <prefix>, or --source webkit-pdfs --file <name>. \
             A tab is matched by its exact URL (fragment removed); several matches stop and list the candidates, no match stops and says so. Only the default profile's cache is read, so --profile is refused.
             """
     )

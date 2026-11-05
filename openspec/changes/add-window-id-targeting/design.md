@@ -24,14 +24,14 @@
 ### `--window-id` 的 `TargetDocument`：新增 `.windowID(Int)`，非同步錨定時轉成 `.anchoredCurrentTab`
 
 - 30 個指令檔直接呼叫同步的 `TargetOptions.resolve()`（`grep -rln "target.resolve()"`），單獨的 `--window-id` 需要讀 Safari 才知道目前分頁序號，同步的 `resolve()` 給不出 `.anchoredCurrentTab`。要它們全部改走非同步入口，等於改 30 個檔案。
-- **採用**：新增 `TargetDocument.windowID(Int)`，`resolveDocumentReference` 回 `document of window id W`——它本身就以 id 錨定，同步呼叫端不必改。`--window-id W --tab-in-window T` 則直接回 `.resolvedTab(windowID: W, tabInWindow: T, rematch: nil, profile: profile)`。
-- 非同步錨定入口 `resolveToAnchoredTarget`（`js`、`wait`）遇到 `.windowID(W)` 時以 `readWindowAnchor(windowID: W)` 轉成 `.anchoredCurrentTab`，套上 #180 的每步目前分頁檢查；讀不到 → `documentNotFound`。這是討論結論的做法，只用在已經是非同步錨定的那條路。
+- **採用**：新增 `TargetDocument.windowID(Int)`，`resolveDocumentReference` 回 `document of window id W`——它本身就以 id 錨定，同步呼叫端不必改。`--window-id W --tab-in-window T` 回 `.windowID(W, tabInWindow: T)`。`.resolvedTab` 在各處都被當成已驗證過，使用者的旗標不產生它：驗證之後才收斂（verify 第二輪：直接回 `.resolvedTab` 時，`open` 沒有視窗仍建新視窗，`js`／`wait`／`save-pdf` 把不存在的 id 報成 target changed）。
+- 非同步錨定入口 `resolveToAnchoredTarget`（`js`、`wait`、`save-pdf`）遇到 `.windowID(W)` 時以 `readWindowAnchor(windowID: W)` 轉成 `.anchoredCurrentTab`，套上 #180 的每步目前分頁檢查；遇到 `.windowID(W, T)` 時以 `readTabAnchor(windowID: W)` 確認視窗與分頁存在後轉成 `.resolvedTab`；讀不到或越界 → `documentNotFound`，之後的遺失才是真的 target changed。這是討論結論的做法，只用在已經是非同步錨定的那條路。
 - 其他 switch 處（共 9 處）照 `.windowIndex` 的寫法處理 `.windowID`，但參照一律是 `window id W`；native resolver（`pickNativeTarget`）以 id 找視窗，找不到 → `documentNotFound`，不退回 front window。
 - 取捨：多一個 case 要逐處處理；換來 30 個同步呼叫端不動，且每個參照都以 id 錨定。
 
 ### profile 檢查放在解析時
 
-`--window-id W --profile P`：以 `listAllWindows()` 的結果找 id W 的視窗，比對它的 `profile`；找不到 → `documentNotFound`，profile 不符 → `documentNotFound`（訊息說 window W 不屬於 P，不印別的 profile 的分頁）。原因：`resolveToConcreteTarget` 對 `.resolvedTab` 直接回傳、不檢查 profile（`SafariBridge.swift:337`），不能依賴它。
+`--window-id W --profile P`：以 `listAllWindows()` 的結果找 id W 的視窗，比對它的 `profile`；找不到 → `documentNotFound`，profile 不符 → `documentNotFound`（訊息說 window W 不屬於 P，不印別的 profile 的分頁；P 沒有開著的視窗時也一樣）。檢查之後目標仍是視窗的目前分頁（`document of window id W`），不把列舉當下的分頁序號固定下來，與 `--window N --profile` 相同。原因：`resolveToConcreteTarget` 對 `.resolvedTab` 直接回傳、不檢查 profile（`SafariBridge.swift:337`），不能依賴它。
 
 ### `open` 的三條路
 
@@ -49,7 +49,7 @@
 
 ## Implementation Contract
 
-- `safari-browser get url --window-id <W>`：W 存在 → 印那個視窗目前分頁的網址；不存在 → 非零結束、`No Safari document matches` 開頭的錯誤，且沒有讀任何視窗。舊版 binary 對這個旗標回 ArgumentParser 的 unknown option（結束碼 64）——呼叫端（Akashic `fetch`）拿它當唯讀的能力檢查。
+- `safari-browser get url --window-id <W>`：W 存在 → 印那個視窗目前分頁的網址；不存在 → 非零結束、`No Safari document matches` 開頭的錯誤，沒有列舉視窗，提示指向 `documents --json` 而不是 `--window N`。舊版 binary 對這個旗標回 ArgumentParser 的 unknown option（結束碼 64）——呼叫端（Akashic `fetch`）拿它當唯讀的能力檢查。
 - `open --new-tab --window-id <W> <url>`：腳本是一段 AppleScript，`tell window id W` 內 `make new tab` 並設為目前分頁，**不含** `activate`；W 不存在時腳本失敗，不建任何分頁。
 - `open --new-tab --window <N> <url>`：腳本先 `set _w to id of window N`，再 `activate`，再 `tell window id _w`。
 
