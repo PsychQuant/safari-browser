@@ -35,7 +35,7 @@
 
 ### 視窗層級的 `--profile` 解析保留 id（#351、#305）
 
-`concreteTarget` 對沒有分頁序號的解析原本回 `.windowIndex(<全域位置>)`，把列舉讀到的 id 丟掉，之後的 Apple event 再依位置查一次。這是 #351 更正後的病因，`open --profile P`、`get text`、`get html`、`save-image`、`upload` 都經過它。改成有 id 就回 `.windowID(id)`，舊列舉（沒有 id）才回 `.windowIndex`。`.windowID` 之後的 bridge 呼叫不必再列舉。
+`concreteTarget` 對沒有分頁序號的解析原本回 `.windowIndex(<全域位置>)`，把列舉讀到的 id 丟掉，之後的 Apple event 再依位置查一次。這是 #351 更正後的病因，`open --profile P`、`get text`、`get html`、`save-image`、`upload` 都經過它。改成有 id 就回 `.windowID(id)`，舊列舉（沒有 id）才回 `.windowIndex`。之後的 bridge 呼叫不再依位置重查；經解析器的指令（`save-image`、native `upload`）因此比 `.windowIndex` 多一次列舉，每個指令一次，與 `.resolvedTab` 相同。
 
 ### `open` 的三條路
 
