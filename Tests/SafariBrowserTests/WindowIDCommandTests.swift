@@ -69,7 +69,7 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
         }
 
         /// Measured on a real Safari: `set` on a missing object is -10006, not -1728 — so a script reaches it unless it
-        /// read the same reference first. Only `set URL` was measured; `set current tab` is assumed to behave the same.
+        /// read the same reference first. Measured on both verbs: `set URL`, and `set current tab` (2026-11-06, #356).
         static func setsOnTheMissingObject(_ script: String) -> Bool {
             (script.contains("set URL of") || script.contains("set current tab of")) && !script.contains("get name of ")
         }
