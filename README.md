@@ -633,6 +633,7 @@ safari-browser tabs --window 2         # list tabs of window 2
 safari-browser tab <n>                 # switch to tab
 safari-browser tab new                 # new tab
 safari-browser tab new --window 2      # new tab in window 2
+safari-browser tab new --window-id <id> # new tab in that window, without activating Safari (#352)
 ```
 
 ### Blocking Dialogs
@@ -980,12 +981,14 @@ already deleted.
 ### Multi-window Targeting (#17 #18 #21 #23 #79)
 
 When Safari has more than one window, every subcommand that reads from or
-drives a document accepts one of four mutually exclusive global flags:
+drives a document accepts one of these mutually exclusive global flags:
 
 ```bash
 safari-browser <cmd> --url <substring>  # tab whose URL CONTAINS this text (see below)
 safari-browser <cmd> --window <n>       # current document of the Nth window (1-indexed)
 safari-browser <cmd> --window <n> --tab-in-window <m>   # window N's Mth tab — "wN.tM"
+safari-browser <cmd> --window-id <id>   # current tab of the window with this stable id (#352)
+safari-browser <cmd> --window-id <id> --tab-in-window <m>
 safari-browser <cmd> --tab <n>          # document N (alias for --document)
 safari-browser <cmd> --document <n>     # document N in Safari's document collection
 safari-browser <cmd> --profile <name>   # restrict to windows of named Safari profile (#47)
@@ -1006,6 +1009,17 @@ can retarget positionally (#72).
 **To target "window 1, tab 3"** use `--window 1 --tab-in-window 3`. Run
 `safari-browser documents` first — its `wN.tM` column is exactly these two
 numbers.
+
+**To keep targeting the same window while others move** use `--window-id`
+(#352). `--window N` counts windows from the front, so a window raised in
+between (by you, or by Safari being activated) changes what N names.
+`--window-id` takes Safari's own window id, which does not change while the
+window is open: read it from `documents --json` (`window_id`). A missing id, or
+a window outside `--profile`, fails with `No Safari document matches`; it never
+falls back to the front window. `close`, `screenshot`, `pdf`, and `upload` on
+its native paths (`--native`, `--allow-hid`, or the default when Accessibility
+is granted) find the window by its id but still act on it by its position
+(#353).
 
 **Identity-anchored `--url` / `--document` resolution (#79)**: a `--url` or
 `--document` match resolves to the tab's *identity* (`tab T of window id W`,
@@ -1123,10 +1137,11 @@ same JSON encoder and observation; its explicit per-request probe setting
 takes precedence over the daemon process environment. Bare `tabs --daemon`
 continues to render in the client after its AppleScript requests.
 
-`tabs`, `tab <n>`, `tab new`, `open --new-tab`, and `open --new-window`
-only accept `--window` because they are window-level UI operations;
-supplying `--url`, `--tab`, or `--document` is rejected with a usage
-error.
+`tabs`, `tab <n>`, `tab new`, and `open --new-tab` only accept `--window`,
+`--window-id`, and `--profile` because they are window-level UI operations;
+`open --new-window` accepts no targeting flag. Supplying a flag that names a
+tab (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`,
+`--document`, `--tab-in-window`) is rejected with a usage error.
 
 `close`, `screenshot`, `pdf`, and `upload --native` **accept the full
 targeting surface** (`--url`, `--window`, `--tab`, `--document`) via

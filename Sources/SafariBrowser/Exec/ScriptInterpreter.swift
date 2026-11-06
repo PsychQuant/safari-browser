@@ -188,6 +188,8 @@ struct ScriptInterpreter {
         // sub-commands (e.g. get url) in both the subprocess and daemon paths.
         if let profile = options.profile { out.append(contentsOf: ["--profile", profile]) }
         if let window = options.window { out.append(contentsOf: ["--window", String(window)]) }
+        // #352: without it every subprocess step would fall back to the front window.
+        if let windowID = options.windowID { out.append(contentsOf: ["--window-id", String(windowID)]) }
         if let tab = options.tab { out.append(contentsOf: ["--tab", String(tab)]) }
         if let document = options.document { out.append(contentsOf: ["--document", String(document)]) }
         if let tabInWindow = options.tabInWindow {

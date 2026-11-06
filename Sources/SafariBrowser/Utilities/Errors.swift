@@ -182,7 +182,7 @@ enum SafariBrowserError: LocalizedError {
                 (The flag is supported and did run — this is a targeting miss, not an unknown option.)
                 Available documents:
                 \(listing)
-                \(availableDocuments.isEmpty ? "" : "(\(URLText.shortenedNote))\n")\(SafariBrowserError.targetingHint(for: pattern))
+                \(availableDocuments.allSatisfy { $0.hasPrefix("(") } ? "" : "(\(URLText.shortenedNote))\n")\(SafariBrowserError.targetingHint(for: pattern, listing: availableDocuments))
                 """
         case .elementNotScrollable(let selector):
             // #77: the element matched but carries no overflow, so scrollBy
@@ -703,7 +703,17 @@ extension SafariBrowserError {
     /// The advice differs by what was being matched: a URL substring miss is
     /// fixed by refining the substring, while a positional miss (`window 4`)
     /// is fixed by reading coordinates off the listing above.
-    static func targetingHint(for pattern: String) -> String {
+    static func targetingHint(for pattern: String, listing: [String] = []) -> String {
+        // #352: not positional — sending the reader to `--window N` would swap a
+        // stable name for the one that moves. A lost `.resolvedTab` reads
+        // `window id W tab T` too, but its listing has coordinates to copy.
+        if pattern.hasPrefix("window id "),
+           listing.allSatisfy({ $0.hasPrefix("(") || $0.hasPrefix("window id ") }) {
+            return """
+                Hint: read the open windows' ids from `safari-browser documents --json` (`window_id`)
+                      and target one with --window-id W. A window's id lasts only while it is open.
+                """
+        }
         let positional = pattern.hasPrefix("window ") || pattern.hasPrefix("document ")
         if positional {
             return """

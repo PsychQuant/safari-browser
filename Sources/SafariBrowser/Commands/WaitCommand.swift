@@ -108,7 +108,7 @@ struct WaitCommand: AsyncParsableCommand {
             // cryptic "Provide milliseconds..." error. If target.url is
             // the ONLY thing they set, they almost certainly meant the old
             // wait-for-URL semantic — point them at --for-url explicitly.
-            if target.url != nil && target.window == nil && target.tab == nil && target.document == nil {
+            if target.url != nil && target.window == nil && target.windowID == nil && target.tab == nil && target.document == nil {
                 throw ValidationError(
                     "`wait --url <pattern>` was renamed to `wait --for-url <pattern>` in #23 — `--url` is now a global targeting flag. Retry as `safari-browser wait --for-url \"\(target.url!)\"` (see CHANGELOG)."
                 )
@@ -360,7 +360,7 @@ struct WaitCommand: AsyncParsableCommand {
     }
 
     /// The target as the user named it, for a target-changed error.
-    private static func describe(_ original: SafariBridge.TargetDocument, _ anchored: SafariBridge.TargetDocument) -> String {
+    static func describe(_ original: SafariBridge.TargetDocument, _ anchored: SafariBridge.TargetDocument) -> String {
         let position: String
         if case .resolvedTab(let windowID, let tab, _, _) = anchored {
             position = "window id \(windowID) tab \(tab) at command start"
@@ -371,6 +371,7 @@ struct WaitCommand: AsyncParsableCommand {
         case .urlMatch(let matcher): return "the tab matching \(matcher.description) (\(position))"
         case .documentIndex(let n): return "document \(n) (\(position))"
         case .windowTab(let w, let t): return "window \(w) tab \(t) (\(position))"
+        case .windowID(let id, let t): return t.map { "window id \(id) tab \($0)" } ?? "the current tab of window id \(id) (\(position))"
         default: return "the target tab (\(position))"
         }
     }

@@ -59,7 +59,7 @@ enum PDFCacheFailure: Equatable, Sendable {
         case .selectionRequired:
             return """
                 pdf-cache get needs an explicit selection. Give exactly one of:
-                  1. a tab flag: --url, --url-exact, --url-endswith, --url-regex, --window (with optional --tab-in-window), --document, or --tab
+                  1. a tab flag: --url, --url-exact, --url-endswith, --url-regex, --window or --window-id (each with optional --tab-in-window), --document, or --tab
                   2. --key <prefix>            (8 or more characters, from `safari-browser pdf-cache list`)
                   3. --source webkit-pdfs --file <name>
                 It never picks a PDF on its own, not even when only one is cached.

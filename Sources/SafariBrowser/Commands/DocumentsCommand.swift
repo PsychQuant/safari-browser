@@ -150,6 +150,9 @@ struct DocumentsCommand: AsyncParsableCommand {
             [
                 "index": doc.index,
                 "window": doc.window,
+                // #352: the stable id `--window-id` takes (same value as
+                // `blocking_dialog.window_id`); null when it could not be read.
+                "window_id": doc.windowID as Any? ?? NSNull(),
                 "tab_in_window": doc.tabInWindow,
                 "is_current": doc.isCurrent,
                 "url": doc.url,

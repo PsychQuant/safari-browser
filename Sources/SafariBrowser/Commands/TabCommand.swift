@@ -30,33 +30,21 @@ struct TabSwitchCommand: AsyncParsableCommand {
     @OptionGroup var documentTarget: TargetOptions
 
     func validate() throws {
-        if documentTarget.url != nil || documentTarget.tab != nil || documentTarget.document != nil {
+        // `tab` names a window (#352: every flag that names a tab is rejected;
+        // the URL flags other than --url and --tab-in-window used to be ignored).
+        let t = documentTarget
+        if t.url != nil || t.urlExact != nil || t.urlEndswith != nil || t.urlRegex != nil
+            || t.tab != nil || t.document != nil || t.tabInWindow != nil {
             throw ValidationError(
-                "`tab` only supports --window for targeting; --url, --tab, and --document are not allowed."
+                "`tab` only supports --window, --window-id, and --profile for targeting; --url, --url-exact, --url-endswith, --url-regex, --tab, --document, and --tab-in-window are not allowed."
             )
         }
     }
 
     func run() async throws {
-        // #52: honor --profile by resolving the profile's window first, then
-        // switching/opening within it.
-        var window = documentTarget.window
-        if let profile = documentTarget.resolveProfile() {
-            let base: SafariBridge.TargetDocument = documentTarget.window.map { .windowIndex($0) } ?? .frontWindow
-            let concrete = try await SafariBridge.resolveToConcreteTarget(
-                base,
-                firstMatch: documentTarget.firstMatch,
-                warnWriter: TargetOptions.stderrWarnWriter,
-                profile: profile
-            )
-            switch concrete {
-            case .windowIndex(let n): window = n
-            case .windowTab(let n, _): window = n
-            default: break
-            }
-        }
+        let window = try await targetWindow()
         if tabArg.lowercased() == "new" {
-            try await SafariBridge.openNewTab(window: window)
+            try await SafariBridge.openNewTab(in: window)
             return
         }
 
@@ -65,10 +53,37 @@ struct TabSwitchCommand: AsyncParsableCommand {
         }
 
         do {
-            try await SafariBridge.switchToTab(index, window: window)
+            try await SafariBridge.switchToTab(index, in: window)
         } catch {
+            // A window that closed since it was checked is not a bad tab number.
+            if case .id(let id, _) = window {
+                try SafariBridge.checkWindowID(id, profile: documentTarget.resolveProfile(), in: await SafariBridge.listAllWindows())
+            }
             throw SafariBrowserError.invalidTabIndex(index)
         }
+    }
+
+    /// The window `tab <N>` / `tab new` act on (#52, #352), as `open --new-tab` resolves it:
+    /// - `--window-id W`: checked to exist (and to belong to `--profile`) before anything is sent, then
+    ///   addressed by id; `tab new` does not activate Safari.
+    /// - `--profile P [--window k]`: the id the profile-scoped enumeration read (it used to be a position looked
+    ///   up again in a later Apple event, the #351 class).
+    /// - `--window N`: the position (`tab new` reads its id before `activate`); nothing: the front window.
+    private func targetWindow() async throws -> SafariBridge.NewTabWindow {
+        let profile = documentTarget.resolveProfile()
+        if let windowID = documentTarget.windowID {
+            try SafariBridge.checkWindowID(windowID, profile: profile, in: await SafariBridge.listAllWindows())
+            return .id(windowID, activate: false)
+        }
+        guard let profile else { return documentTarget.window.map { .index($0) } ?? .front }
+        let base: SafariBridge.TargetDocument = documentTarget.window.map { .windowIndex($0) } ?? .frontWindow
+        let resolved = try await SafariBridge.resolveNativeTarget(
+            from: base,
+            firstMatch: documentTarget.firstMatch,
+            warnWriter: TargetOptions.stderrWarnWriter,
+            profile: profile
+        )
+        return resolved.windowID.map { .id($0) } ?? .index(resolved.windowIndex)
     }
 }
 
@@ -97,8 +112,18 @@ struct TabFocusCommand: AsyncParsableCommand {
         // resolveNativeTarget returns tabIndexInWindow = the tab to switch to,
         // or nil when the target IS already the current tab of its window
         // (idempotent no-op in that case).
+        // #352: by the window id the resolver read, not its position looked up again.
         if let tab = resolved.tabIndexInWindow {
-            try await SafariBridge.switchToTab(tab, window: resolved.windowIndex)
+            do {
+                try await SafariBridge.switchToTab(tab, in: resolved.windowID.map { .id($0) } ?? .index(resolved.windowIndex))
+            } catch {
+                // A window that closed since it was checked is a targeting miss,
+                // whichever code the `set` answers with.
+                if let id = target.windowID {
+                    try SafariBridge.checkWindowID(id, profile: target.resolveProfile(), in: await SafariBridge.listAllWindows())
+                }
+                throw error
+            }
         }
     }
 }

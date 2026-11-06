@@ -43,6 +43,7 @@ final class DialogListingRenderingTests: XCTestCase {
         let statuses = rows.compactMap { $0["blocking_dialog"] as? [String: Any] }
         XCTAssertEqual(statuses.compactMap { $0["state"] as? String }, ["present", "present", "clear"])
         XCTAssertEqual(statuses.compactMap { $0["window_id"] as? Int }, [72, 72, 71])
+        XCTAssertEqual(rows.compactMap { $0["window_id"] as? Int }, [72, 72, 71], "#352: top-level window_id")
         XCTAssertEqual(Set(statuses[0].keys), ["state", "window_id", "messages", "reason"])
         XCTAssertEqual(statuses[0]["messages"] as? [String], ["請確認"])
         XCTAssertNoThrow(try JSONSerialization.data(withJSONObject: rows))
@@ -81,6 +82,11 @@ final class DialogListingRenderingTests: XCTestCase {
         XCTAssertEqual(statuses.compactMap { $0["state"] as? String }, ["unknown", "unknown"])
         XCTAssertEqual(statuses.compactMap { $0["reason"] as? String }, ["missingID", "notobserved"])
         XCTAssertTrue(statuses[0]["window_id"] is NSNull)
+        // #352: the same id at the top level of each row, for `--window-id`; null when it could not be read.
+        XCTAssertTrue(rows[0]["window_id"] is NSNull)
+        XCTAssertEqual(rows[1]["window_id"] as? Int, 99)
+        XCTAssertEqual(Set(rows[1].keys), ["index", "window", "window_id", "tab_in_window", "is_current", "url", "title",
+                                           "profile", "blocking_dialog"])
         XCTAssertEqual(DocumentsCommand.formatText(documents, observation: captured),
                        DocumentsCommand.formatText(documents))
         let tabs = [SafariBridge.TabInfo(index: 1, title: "", url: "", windowID: nil)]

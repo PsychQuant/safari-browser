@@ -14,23 +14,41 @@ struct TabsCommand: AsyncParsableCommand {
 
     func validate() throws {
         // `tabs` lists tabs of a window — document-level targeting doesn't
-        // make sense, so reject everything except --window (and the no-flag
-        // default, which means front window).
-        if target.url != nil || target.tab != nil || target.document != nil {
+        // make sense, so reject everything except --window / --window-id (and
+        // the no-flag default, which means front window).
+        if target.url != nil || target.urlExact != nil || target.urlEndswith != nil || target.urlRegex != nil
+            || target.tab != nil || target.document != nil || target.tabInWindow != nil {
             throw ValidationError(
-                "`tabs` only supports --window for targeting; --url, --tab, and --document are not allowed."
+                "`tabs` only supports --window or --window-id for targeting; --url, --url-exact, --url-endswith, --url-regex, --tab, --document, and --tab-in-window are not allowed."
             )
         }
     }
 
+    /// #352: a window named by id that closed since it was checked is a targeting miss.
+    private func requireWindow() async throws {
+        guard let id = target.windowID else { return }
+        try SafariBridge.checkWindowID(id, profile: target.resolveProfile(), in: await SafariBridge.listAllWindows())
+    }
+
     func run() async throws {
         let tabs: [SafariBridge.TabInfo]
-        if let profile = target.resolveProfile() {
-            let base: SafariBridge.TargetDocument = target.window.map { .windowIndex($0) } ?? .frontWindow
+        // #352: `--window-id` goes through the resolver too, which finds the
+        // window by id (fails closed when it is missing or outside --profile);
+        // `listTabs(in:)` then reads it by that id.
+        if target.windowID != nil || target.resolveProfile() != nil {
+            let base: SafariBridge.TargetDocument = target.windowID.map { .windowID($0) }
+                ?? target.window.map { .windowIndex($0) } ?? .frontWindow
             let resolved = try await SafariBridge.resolveNativeTarget(
                 from: base, firstMatch: target.firstMatch,
-                warnWriter: TargetOptions.stderrWarnWriter, profile: profile, probeDialog: false)
-            tabs = try await SafariBridge.listTabs(in: resolved, probeDialog: false)
+                warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile(), probeDialog: false)
+            do {
+                tabs = try await SafariBridge.listTabs(in: resolved, probeDialog: false)
+            } catch where target.windowID != nil {
+                try await requireWindow()
+                throw error
+            }
+            // `readTabs` answers "no tabs" when no window is open at all.
+            if tabs.isEmpty, target.windowID != nil { try await requireWindow() }
         } else {
             tabs = try await SafariBridge.listTabs(window: target.window, probeDialog: false)
         }
@@ -39,7 +57,7 @@ struct TabsCommand: AsyncParsableCommand {
             return
         }
         let observation = WindowDialogObservation.capture()
-        if (target.window != nil || target.resolveProfile() != nil),
+        if (target.window != nil || target.windowID != nil || target.resolveProfile() != nil),
            let windowID = tabs.first?.windowID,
            let dialog = observation.singleDialog(for: windowID) {
             DocumentsCommand.emitDialogWarning(BlockingDialogWarning.firstLine(windowKey: .id(windowID), dialog: dialog) + "\n")
