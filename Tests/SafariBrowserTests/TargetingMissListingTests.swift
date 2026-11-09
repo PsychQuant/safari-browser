@@ -342,6 +342,7 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
         let message = flat(text(found))
         XCTAssertTrue(message.contains("target a listed window with --window N without --profile"), message)
         XCTAssertFalse(message.contains("--window-id"), message)
+        XCTAssertFalse(message.contains("lasts only while it is open"), message)
         XCTAssertFalse(message.contains("--url matches a *substring*"), message)
         let resolved = try SafariBridge.pickNativeTarget(.windowIndex(2), in: Self.windows(ids: false))
         XCTAssertEqual(resolved.windowIndex, 2)
@@ -358,12 +359,14 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
         ]
         let mixed = flat(text(miss(.frontWindow, profile: "Wrok", in: colon)))
         XCTAssertTrue(mixed.contains("An entry that says (no window id) is targeted with --window N without --profile"), mixed)
-        XCTAssertTrue(mixed.contains("--window-id W"), mixed)
+        // Verify r4 F5: in a mixed listing, --window-id is offered only for the entries that name an id.
+        XCTAssertTrue(mixed.contains("To target a listed window whose entry names its id, use --window-id W with that id"), mixed)
         let none = flat(text(miss(.frontWindow, profile: "Wrok", in: [colon[1]])))
         XCTAssertEqual(miss(.frontWindow, profile: "Wrok", in: [colon[1]]).entries,
                        ["window 2 [Work: Client] (no window id): https://client.example/1"])
         XCTAssertTrue(none.contains("target a listed window with --window N without --profile"), none)
         XCTAssertFalse(none.contains("--window-id"), none)
+        XCTAssertFalse(none.contains("lasts only while it is open"), none)
     }
 
     /// No window at all: there is nothing listed to point at.
