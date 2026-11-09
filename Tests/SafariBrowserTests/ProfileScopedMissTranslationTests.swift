@@ -74,6 +74,14 @@ final class ProfileScopedMissTranslationTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    /// Verify r3 (INFO 21): `getCurrentText` passes its profile like its three siblings. (The `get text` command
+    /// resolves its target first, so this is the bridge function called with a raw target and a profile.)
+    func testGetTextWithAWindowNumberUnderAProfile() async {
+        await assertScopedMiss("getCurrentText .windowIndex(2) --profile Work") { fake in
+            _ = try await fake.drive { try await SafariBridge.getCurrentText(target: .windowIndex(2), profile: "Work") }
+        }
+    }
+
     /// Without `--profile` the translation is unscoped, as before: every window's tabs, no ids.
     func testWithoutAProfileTheTranslationIsUnchanged() async throws {
         let fake = FakeSafari(windows: FakeSafari.workIsTwoAndThree)

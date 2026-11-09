@@ -139,7 +139,8 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
     func testAURLMissUnderAProfileKeepsItsSubstringAdvice() {
         let message = flat(text(miss(.urlMatch(.contains("nothing-matches")), profile: "Work")))
         XCTAssertTrue(message.contains("--url matches a *substring* of the URL"), message)
-        XCTAssertTrue(message.contains("--window-id W --tab-in-window M"), message)
+        // Verify r3 F17: like the other branches, it says the id works with or without --profile.
+        XCTAssertTrue(message.contains("--window-id W --tab-in-window M, with or without --profile"), message)
     }
 
     func testWithoutAProfileTheListingAndHintAreUnchanged() {
@@ -334,14 +335,35 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
     }
 
     /// Legacy records carry no id: the entry says so, and the hint gives the way that still works for them.
+    /// Verify r3 F1/F12: with no id to copy, the hint gives only the way that works, `--window N` without `--profile`.
     func testAProfileWithNoWindowOnLegacyRecordsSaysTheyHaveNoID() throws {
         let found = miss(.frontWindow, profile: "Wrok", in: Self.windows(ids: false))
         XCTAssertEqual(found.entries.first, "window 1 [Home] (no window id): https://home.example/1")
         let message = flat(text(found))
-        XCTAssertTrue(message.contains("An entry that says (no window id) is targeted with --window N without --profile"), message)
+        XCTAssertTrue(message.contains("target a listed window with --window N without --profile"), message)
+        XCTAssertFalse(message.contains("--window-id"), message)
         XCTAssertFalse(message.contains("--url matches a *substring*"), message)
         let resolved = try SafariBridge.pickNativeTarget(.windowIndex(2), in: Self.windows(ids: false))
         XCTAssertEqual(resolved.windowIndex, 2)
+    }
+
+    /// Verify r3 F27: an entry without an id is recognised on the whole entry, so a profile name (or a title that
+    /// became one) containing `: ` does not hide it.
+    func testANoIDEntryIsRecognisedWhenItsProfileNameHasAColon() throws {
+        let colon = [
+            SafariBridge.WindowInfo(windowIndex: 1, currentTabIndex: 1, tabs: [Self.tab(1, "https://home.example/1", current: true)],
+                                    profile: "Home", windowID: 101),
+            SafariBridge.WindowInfo(windowIndex: 2, currentTabIndex: 1, tabs: [Self.tab(1, "https://client.example/1", current: true)],
+                                    profile: "Work: Client", windowID: nil),
+        ]
+        let mixed = flat(text(miss(.frontWindow, profile: "Wrok", in: colon)))
+        XCTAssertTrue(mixed.contains("An entry that says (no window id) is targeted with --window N without --profile"), mixed)
+        XCTAssertTrue(mixed.contains("--window-id W"), mixed)
+        let none = flat(text(miss(.frontWindow, profile: "Wrok", in: [colon[1]])))
+        XCTAssertEqual(miss(.frontWindow, profile: "Wrok", in: [colon[1]]).entries,
+                       ["window 2 [Work: Client] (no window id): https://client.example/1"])
+        XCTAssertTrue(none.contains("target a listed window with --window N without --profile"), none)
+        XCTAssertFalse(none.contains("--window-id"), none)
     }
 
     /// No window at all: there is nothing listed to point at.

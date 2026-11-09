@@ -2388,7 +2388,8 @@ enum SafariBridge {
             tell application "Safari"
                 get text of \(scriptTarget.reference)
             end tell
-            """, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter)
+            """, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter,
+            profile: profile)
         // #89: this is the worst of the dialog symptoms — an empty string with
         // exit 0. A script reading it concludes "the page has no content",
         // which is the opposite of the truth: the page is fine and a dialog is
@@ -2809,7 +2810,7 @@ enum SafariBridge {
                 // `--profile`; `targetingHint` gives this miss its own hint, keyed on the pattern.
                 let available = windows.map { w -> String in
                     let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
-                    let p = w.profile ?? "(no profile)"
+                    let p = w.profile ?? SafariBrowserError.noProfileLabel
                     return "window \(w.windowIndex) [\(p)] \(windowIDNote(w.windowID)): \(cur)"
                 }
                 throw SafariBrowserError.documentNotFound(
