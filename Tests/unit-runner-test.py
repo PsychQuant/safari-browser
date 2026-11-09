@@ -61,6 +61,18 @@ class UnitRunnerTests(unittest.TestCase):
         result=self.run_fake(COMPLETE.replace('12 tests, with 0 failures','2407 tests, with 13 tests skipped and 0 failures'))
         self.assertIn('Verified XCTest completion: 2407 tests (13 skipped).',result.stdout)
 
+    def test_all_skipped_summary_passes(self):
+        # Maintainer's ruling on #357 (2026-11-09): a run where every test is skipped
+        # is not a failure. Pinned here so a later change has to decide it again.
+        output=COMPLETE.replace('12 tests, with 0 failures','13 tests, with 13 tests skipped and 0 failures')
+        self.assertEqual(self.run_fake(output).returncode,0)
+
+    def test_summaries_xctest_does_not_print_on_success_fail(self):
+        for old,new in (('with 0 failures','with 0 tests skipped and 0 failures'),
+                        ('(0 unexpected)','(3 unexpected)')):
+            with self.subTest(new=new):
+                self.assertNotEqual(self.run_fake(COMPLETE.replace(old,new)).returncode,0)
+
     def test_success_line_without_skips_is_unchanged(self):
         self.assertIn('Verified XCTest completion: 12 tests.\n',self.run_fake(COMPLETE).stdout)
 
