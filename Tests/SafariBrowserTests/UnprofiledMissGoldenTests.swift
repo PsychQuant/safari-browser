@@ -2,12 +2,12 @@ import XCTest
 @testable import SafariBrowser
 
 /// #362 verify F16: the change claims that a listing without `--profile`, and its hint, are byte-identical to what
-/// they were before it. These are the exact messages of three such misses; each was rendered on the commit before
-/// #362 (ef8cdf7) and on this branch and found identical, and this file passes on both. A change to them is a
-/// change to the unprofiled messages, and needs its own reason. The last test pins one message #362 changed on
-/// purpose (verify round 2, finding B): a URL miss with no tab listed, which on ef8cdf7 ended with the hint for a
-/// listing with entries ("coordinates are shown per entry"). The other unprofiled messages #362 changed on purpose
-/// are an empty or notes-only positional listing (verify F5/F7) and a failed enumeration after a miss.
+/// they were before it, apart from the changes it makes on purpose. The first three tests are the exact messages of
+/// three such misses; each was rendered on the commit before #362 (ef8cdf7) and on this branch and found identical,
+/// and those three tests pass on both. A change to them is a change to the unprofiled messages, and needs its own
+/// reason. The fourth test pins one message #362 changed on purpose (verify round 2, finding B), so it fails on
+/// ef8cdf7: a URL miss with no tab listed, which there ended with the hint for a listing with entries ("coordinates
+/// are shown per entry"). The CHANGELOG entry for #362 lists every unprofiled change.
 final class UnprofiledMissGoldenTests: XCTestCase {
     private static func tab(_ index: Int, _ url: String, current: Bool) -> SafariBridge.TabInWindow {
         SafariBridge.TabInWindow(tabIndex: index, url: url, title: "t", isCurrent: current)
