@@ -938,7 +938,18 @@ enum SafariBridge {
                         pattern: targetDescription(target),
                         availableDocuments: ["(no such window or tab)"])
                 }
-                var docs = (try? await listAllDocuments()) ?? []
+                // #362: an enumeration that failed says so. An empty list here
+                // would read as "nothing is open", a claim nobody checked.
+                var docs: [DocumentInfo]
+                do {
+                    docs = try await listAllDocuments()
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let failure {
+                    throw SafariBrowserError.documentNotFound(
+                        pattern: targetDescription(target),
+                        availableDocuments: [SafariBrowserError.enumerationFailureNote(failure)])
+                }
                 // #352: a target resolved within a profile reports within it.
                 if case .resolvedTab(_, _, _, let profile?) = target {
                     docs = docs.filter { $0.profile == profile }

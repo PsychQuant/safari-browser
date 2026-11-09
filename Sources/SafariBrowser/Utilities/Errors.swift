@@ -695,6 +695,27 @@ enum SafariBrowserError: LocalizedError {
 }
 
 extension SafariBrowserError {
+    /// #362: how every `documentNotFound` note about a failed enumeration begins.
+    static let enumerationFailurePrefix = "(the open tabs could not be listed"
+
+    /// #362: the one listing entry of a miss whose follow-up enumeration failed. It names the kind of
+    /// failure and its AppleScript error code, never the error's own text, which can quote a tab's URL
+    /// (#227), and it makes no claim about what is open.
+    static func enumerationFailureNote(_ error: Error) -> String {
+        let kind: String
+        switch error {
+        case SafariBrowserError.appleScriptFailed(let message):
+            kind = SafariBridge.appleScriptErrorCode(in: message).map { "AppleScript error \($0)" } ?? "an AppleScript error"
+        case SafariBrowserError.processTimedOut(_, let seconds):
+            kind = "timed out after \(seconds) s"
+        case SafariBrowserError.windowEnumerationCorrupt:
+            kind = "the list came back malformed"
+        default:
+            kind = "an unexpected \(type(of: error))"
+        }
+        return "\(enumerationFailurePrefix): \(kind); nothing is known about what is open)"
+    }
+
     /// #72: `No Safari document matches …` used to stop at the listing, which
     /// left the reader to guess whether the flag had been rejected or had
     /// simply not matched. The two look nothing alike to the tool and
@@ -704,6 +725,14 @@ extension SafariBrowserError {
     /// fixed by refining the substring, while a positional miss (`window 4`)
     /// is fixed by reading coordinates off the listing above.
     static func targetingHint(for pattern: String, listing: [String] = []) -> String {
+        // #362: nothing above says what is open, so no advice may lean on the listing.
+        if listing.contains(where: { $0.hasPrefix(enumerationFailurePrefix) }) {
+            return """
+                Hint: the target was not found, and the open tabs could not be listed afterwards, so the
+                      listing above says nothing about what is open. Run `safari-browser documents` to see
+                      the open tabs and their coordinates, then retarget.
+                """
+        }
         // #352: not positional — sending the reader to `--window N` would swap a
         // stable name for the one that moves. A lost `.resolvedTab` reads
         // `window id W tab T` too, but its listing has coordinates to copy.
@@ -715,6 +744,14 @@ extension SafariBrowserError {
                 """
         }
         let positional = pattern.hasPrefix("window ") || pattern.hasPrefix("document ")
+        if positional, !listing.isEmpty, listing.allSatisfy({ $0.hasPrefix("(") }) {
+            // #362: every entry is a note, so none has coordinates to copy.
+            return """
+                Hint: no tab is listed above. Run `safari-browser documents` to see the open tabs and their
+                      coordinates, then target one with --window N --tab-in-window M. (With --profile, N counts
+                      only that profile's windows.)
+                """
+        }
         if positional {
             return """
                 Hint: each entry above shows its own coordinates — target one with
