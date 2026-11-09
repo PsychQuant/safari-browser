@@ -13,8 +13,9 @@
 # is stable under this load, not that a race is absent.
 #
 # A run passes only if its log says "Executed 1 test, with 0 failures". A run
-# that matched no test, exited early, or was killed counts as a failure, the
-# same rule scripts/run-unit-tests.py applies. Prints the failure count and the
+# that matched no test, exited early, or was killed counts as a failure, as in
+# scripts/run-unit-tests.py. Unlike that script, a skipped run fails here: this
+# scenario has to actually run (#357). Prints the failure count and the
 # assertion text of each failure, and exits non-zero on any failure. The spawn
 # loops stop when the script does, including when it is killed.
 set -u

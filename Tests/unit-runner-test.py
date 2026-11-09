@@ -40,4 +40,40 @@ class UnitRunnerTests(unittest.TestCase):
     def test_selected_suite_is_complete(self):
         self.assertEqual(self.run_fake(COMPLETE.replace('All tests','Selected tests')).returncode,0)
 
+    # #357: XCTest puts the skip count between `with` and the failure count.
+    # A skipped test is not a failure, so these summaries are completion.
+    def test_plural_skip_summary_passes(self):
+        output=COMPLETE.replace('12 tests, with 0 failures','2407 tests, with 13 tests skipped and 0 failures')
+        self.assertEqual(self.run_fake(output).returncode,0)
+
+    def test_singular_skip_summary_passes(self):
+        output=COMPLETE.replace('with 0 failures','with 1 test skipped and 0 failures')
+        self.assertEqual(self.run_fake(output).returncode,0)
+
+    def test_skipped_summary_with_a_failure_still_fails(self):
+        # `10 failures` ends in `0 failures`: only the skip clause may be optional.
+        for failures in ('1 failure','10 failures'):
+            with self.subTest(failures=failures):
+                output=COMPLETE.replace('with 0 failures','with 2 tests skipped and '+failures)
+                self.assertNotEqual(self.run_fake(output).returncode,0)
+
+    def test_success_line_shows_the_skip_count(self):
+        result=self.run_fake(COMPLETE.replace('12 tests, with 0 failures','2407 tests, with 13 tests skipped and 0 failures'))
+        self.assertIn('Verified XCTest completion: 2407 tests (13 skipped).',result.stdout)
+
+    def test_all_skipped_summary_passes(self):
+        # Maintainer's ruling on #357 (2026-11-09): a run where every test is skipped
+        # is not a failure. Pinned here so a later change has to decide it again.
+        output=COMPLETE.replace('12 tests, with 0 failures','13 tests, with 13 tests skipped and 0 failures')
+        self.assertEqual(self.run_fake(output).returncode,0)
+
+    def test_summaries_xctest_does_not_print_on_success_fail(self):
+        for old,new in (('with 0 failures','with 0 tests skipped and 0 failures'),
+                        ('(0 unexpected)','(3 unexpected)')):
+            with self.subTest(new=new):
+                self.assertNotEqual(self.run_fake(COMPLETE.replace(old,new)).returncode,0)
+
+    def test_success_line_without_skips_is_unchanged(self):
+        self.assertIn('Verified XCTest completion: 12 tests.\n',self.run_fake(COMPLETE).stdout)
+
 if __name__=='__main__': unittest.main()
