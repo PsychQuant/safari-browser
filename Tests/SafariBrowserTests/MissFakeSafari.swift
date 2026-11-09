@@ -20,6 +20,9 @@ final class FakeSafari: @unchecked Sendable {
     var listingError: Error?
     /// The first listing that `listingError` fails (1 = every listing), so a resolver's own enumeration can succeed.
     var listingErrorFrom = 1
+    /// A window that closes once the listing numbered `after` has been answered: the resolver sees it, the read and
+    /// every later listing do not.
+    var closesAfterListing: (id: Int, after: Int)?
     var readError: Error?
 
     init(windows: [Window]) { all = windows }
@@ -54,6 +57,7 @@ final class FakeSafari: @unchecked Sendable {
                             "\(window.profile) — Tab 1", "\(window.id)"].joined(separator: gs) + rs
                 }
             }
+            if let closing = closesAfterListing, n == closing.after { lock.withLock { _ = closed.insert(closing.id) } }
             return out
         }
         if let n = WindowIDCommandTests.TwoProfileFake.int(after: "get id of window ", in: script) {

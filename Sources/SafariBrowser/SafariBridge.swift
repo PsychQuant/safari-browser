@@ -902,7 +902,8 @@ enum SafariBridge {
         timeout: TimeInterval = SafariBridge.defaultProcessTimeout,
         dialogKey: BlockingDialogGate.WindowKey? = nil,
         diagnosticTarget: BackgroundTabDiagnosticTarget? = nil,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         do {
             return try await runAppleScript(script, timeout: timeout)
@@ -950,13 +951,17 @@ enum SafariBridge {
                         pattern: targetDescription(target),
                         availableDocuments: [SafariBrowserError.enumerationFailureNote(failure)])
                 }
-                // #352: a target resolved within a profile reports within it.
-                if case .resolvedTab(_, _, _, let profile?) = target {
-                    docs = docs.filter { $0.profile == profile }
+                // #352: a target resolved within a profile reports within it. #362 verify r2 A: so does a
+                // raw target whose caller resolved it within `profile` and passed the profile separately
+                // (`get url`, `get title`, `get source`, `js` on a window, `close`).
+                let scope: String?
+                if case .resolvedTab(_, _, _, let carried?) = target { scope = carried } else { scope = profile }
+                if let scope {
+                    docs = docs.filter { $0.profile == scope }
                     if docs.isEmpty {
                         throw SafariBrowserError.documentNotFound(
                             pattern: targetDescription(target),
-                            availableDocuments: ["(no window of profile \"\(profile)\" is open)"])
+                            availableDocuments: ["(no window of profile \"\(scope)\" is open)"])
                     }
                 }
                 // #72: carry each tab's coordinates, not just its URL — the
@@ -964,8 +969,7 @@ enum SafariBridge {
                 // `--window N --tab-in-window M`, which is unusable advice
                 // when the listing does not say what N and M are. #362: a
                 // listing narrowed by a profile also names each window's id.
-                let scoped: Bool
-                if case .resolvedTab(_, _, _, _?) = target { scoped = true } else { scoped = false }
+                let scoped = scope != nil
                 throw SafariBrowserError.documentNotFound(
                     pattern: targetDescription(target),
                     availableDocuments: docs.map {
@@ -1189,7 +1193,8 @@ enum SafariBridge {
         """
     }
 
-    static func closeCurrentTab(window: Int? = nil) async throws {
+    /// `profile` is the `--profile` the window was resolved within, so a miss lists that profile's tabs (#362).
+    static func closeCurrentTab(window: Int? = nil, profile: String? = nil) async throws {
         let windowRef = window.map { "window \($0)" } ?? "front window"
         // #93: guard the tab count first. `close current tab of window N` on a
         // 0-tab window raises -1728, which runTargetedAppleScript translates to
@@ -1199,7 +1204,7 @@ enum SafariBridge {
         // Without `--window` the same call surfaces the raw -1728 instead.
         let script = closeCurrentTabScript(windowRef: windowRef)
         if let window {
-            _ = try await runTargetedAppleScript(script, target: .windowIndex(window))
+            _ = try await runTargetedAppleScript(script, target: .windowIndex(window), profile: profile)
         } else {
             try await runAppleScript(script)
         }
@@ -1992,7 +1997,7 @@ enum SafariBridge {
         // instead of letting osascript find out after its 30 s timeout (#108).
         try BlockingDialogGate.shared.throwIfBlocked(scriptTarget.key)
         do {
-            return try await dispatchJS(code, docRef: scriptTarget.reference, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter, captureURL: captureURL)
+            return try await dispatchJS(code, docRef: scriptTarget.reference, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter, captureURL: captureURL, profile: profile)
         } catch let error as SafariBrowserError {
             // #79 bounded retry: the identity-anchored ref dangled
             // (window closed / tab moved / guard tripped). Re-resolve the
@@ -2039,7 +2044,7 @@ enum SafariBridge {
             // evidence of a dialog; a spent JS allowance may leave it unprobed.
             try BlockingDialogGate.shared.throwIfBlocked(retry.key)
             do {
-                return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key, diagnosticTarget: retry.diagnosticTarget, warnWriter: warnWriter, captureURL: captureURL)
+                return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key, diagnosticTarget: retry.diagnosticTarget, warnWriter: warnWriter, captureURL: captureURL, profile: profile)
             } catch let retryError as SafariBrowserError where isTargetDangleError(retryError) {
                 throw SafariBrowserError.targetTabChanged(
                     expected: matcher.description,
@@ -2059,7 +2064,7 @@ enum SafariBridge {
         docRef: String,
         target: TargetDocument, dialogKey: BlockingDialogGate.WindowKey,
         diagnosticTarget: BackgroundTabDiagnosticTarget?, warnWriter: ((String) -> Void)?,
-        captureURL: Bool = false
+        captureURL: Bool = false, profile: String? = nil
     ) async throws -> String {
         // Regex matcher: Swift-side pre-check. The gap between check and
         // dispatch is far narrower than resolve-to-execute was, and a miss
@@ -2069,7 +2074,8 @@ enum SafariBridge {
                 tell application "Safari"
                     return URL of \(docRef)
                 end tell
-                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
+                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter,
+                profile: profile)
             guard matcher.matches(currentURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 throw SafariBrowserError.appleScriptFailed(
                     "SB_TARGET_CHANGED: URL of target tab no longer matches \(matcher.description)")
@@ -2077,7 +2083,8 @@ enum SafariBridge {
         }
         return try await runTargetedAppleScript(
             jsDispatchScript(code, docRef: docRef, target: target, captureURL: captureURL),
-            target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
+            target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter,
+            profile: profile)
     }
 
     /// The AppleScript for one JS dispatch (pure, so the four shapes can be pinned and compiled
@@ -2292,7 +2299,7 @@ enum SafariBridge {
             tell application "Safari"
                 get URL of \(docRef)
             end tell
-            """, target: target)
+            """, target: target, profile: profile)
     }
 
     /// #168 verify R2: a URL-pattern target resolved exactly as
@@ -2361,7 +2368,7 @@ enum SafariBridge {
             tell application "Safari"
                 get name of \(docRef)
             end tell
-            """, target: target)
+            """, target: target, profile: profile)
     }
 
     /// Read the plain-text content of the target document. Document-scoped for modal bypass (#21).
@@ -2556,7 +2563,7 @@ enum SafariBridge {
             tell application "Safari"
                 get source of \(docRef)
             end tell
-            """, target: target)
+            """, target: target, profile: profile)
     }
 
     // MARK: - Document / Tab Management
