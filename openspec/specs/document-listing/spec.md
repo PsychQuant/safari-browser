@@ -101,7 +101,7 @@ code:
 ---
 ### Requirement: Discovery aid for documentNotFound errors
 
-Every tab that a `documentNotFound` listing names by window and tab number SHALL be a tab that `safari-browser documents` lists, with the same window and tab numbers, so a user experiencing a not-found error can run `safari-browser documents` and find the tab they meant. A listing that is not scoped names every tab in the same order; a listing that names fewer tabs — scoped by its cause (a miss on one window's tab names that window's tabs; a window-level miss names each window's current tab, and a window without a tab as such) or narrowed by `--profile` — names only tabs that `documents` lists. The two are not formatted alike, and they differ in what they show of a URL: the error's listing shows each URL redacted as the requirement "URLs of tabs in targeting errors, warnings and navigation notes are shown without query or fragment" says, while `documents` prints URLs in full, because a person runs it on purpose to see them. A missing window named by `--window-id` is named by id instead: it lists no tab, or with `--profile` that profile's windows by their `window_id`, which `documents --json` reports.
+Every tab that a `documentNotFound` listing names by window and tab number SHALL be a tab that `safari-browser documents` lists, with the same window and tab numbers, so a user experiencing a not-found error can run `safari-browser documents` and find the tab they meant. A listing that is not scoped names every tab in the same order; a listing that names fewer tabs — scoped by its cause (a miss on one window's tab names that window's tabs; a window-level miss names each window's current tab, and a window without a tab as such) or narrowed by `--profile` — names only tabs that `documents` lists. The two are not formatted alike, and they differ in what they show of a URL: the error's listing shows each URL redacted as the requirement "URLs of tabs in targeting errors, warnings and navigation notes are shown without query or fragment" says, while `documents` prints URLs in full, because a person runs it on purpose to see them. A missing window named by `--window-id` is named by id instead: it lists no tab, or with `--profile` that profile's windows by their `window_id`, which `documents --json` reports (a window whose enumeration record has no id by Safari's number, marked `(no window id)`). When the target carries `--profile`, the listings in the closed list of the document-targeting requirement "Document not found surfaces discoverable error", and no others, keep these numbers and also name each window's id beside them (`window 3 tab 1 (window id 4711): …`), the `window_id` that `documents --json` reports, because with `--profile` `--window N` counts only that profile's windows and a number copied from the listing could select another window (#362). That list, not this sentence, says which listings these are.
 
 #### Scenario: Error listing matches documents output
 
@@ -114,6 +114,12 @@ Every tab that a `documentNotFound` listing names by window and tab number SHALL
 - **WHEN** a `documentNotFound` error is scoped (window 2 has two tabs, window 1 has one, and `--window 2 --tab-in-window 99` misses)
 - **THEN** the listing names window 2's two tabs, with their window and tab numbers, and each of them is a tab that `safari-browser documents` lists with the same numbers
 - **AND** the number in front of each entry is its position in this listing; it is not promised to be what `--document N` takes
+
+#### Scenario: a listing narrowed by a profile names window ids
+
+- **WHEN** the windows of the profile `Work` are Safari windows 2 and 3, and a `--url` target with `--profile Work` matches no tab
+- **THEN** each entry names Safari's window and tab numbers, the ones `safari-browser documents` lists, and its window's id, as in `window 3 tab 1 (window id 4711): …`
+- **AND** the window id and tab number of an entry, given as `--window-id W --tab-in-window M`, select the tab that entry names, with or without `--profile Work`
 
 #### Scenario: a query is elided in the error and complete in documents
 

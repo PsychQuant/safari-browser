@@ -902,7 +902,8 @@ enum SafariBridge {
         timeout: TimeInterval = SafariBridge.defaultProcessTimeout,
         dialogKey: BlockingDialogGate.WindowKey? = nil,
         diagnosticTarget: BackgroundTabDiagnosticTarget? = nil,
-        warnWriter: ((String) -> Void)? = nil
+        warnWriter: ((String) -> Void)? = nil,
+        profile: String? = nil
     ) async throws -> String {
         do {
             return try await runAppleScript(script, timeout: timeout)
@@ -938,23 +939,42 @@ enum SafariBridge {
                         pattern: targetDescription(target),
                         availableDocuments: ["(no such window or tab)"])
                 }
-                var docs = (try? await listAllDocuments()) ?? []
-                // #352: a target resolved within a profile reports within it.
-                if case .resolvedTab(_, _, _, let profile?) = target {
-                    docs = docs.filter { $0.profile == profile }
+                // #362: an enumeration that failed says so. An empty list here
+                // would read as "nothing is open", a claim nobody checked.
+                var docs: [DocumentInfo]
+                do {
+                    docs = try await listAllDocuments()
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let failure {
+                    throw SafariBrowserError.documentNotFound(
+                        pattern: targetDescription(target),
+                        availableDocuments: [SafariBrowserError.enumerationFailureNote(failure)])
+                }
+                // #352: a target resolved within a profile reports within it. #362 verify r2 A: so does a
+                // raw target whose caller resolved it within `profile` and passed the profile separately
+                // (`get url`, `get title`, `get source`, `js` on a window, `close`).
+                let scope: String?
+                if case .resolvedTab(_, _, _, let carried?) = target { scope = carried } else { scope = profile }
+                if let scope {
+                    docs = docs.filter { $0.profile == scope }
                     if docs.isEmpty {
                         throw SafariBrowserError.documentNotFound(
                             pattern: targetDescription(target),
-                            availableDocuments: ["(no window of profile \"\(profile)\" is open)"])
+                            availableDocuments: ["(no window of profile \"\(scope)\" is open)"])
                     }
                 }
                 // #72: carry each tab's coordinates, not just its URL — the
                 // error's hint tells the reader to retarget with
                 // `--window N --tab-in-window M`, which is unusable advice
-                // when the listing does not say what N and M are.
+                // when the listing does not say what N and M are. #362: a
+                // listing narrowed by a profile also names each window's id.
+                let scoped = scope != nil
                 throw SafariBrowserError.documentNotFound(
                     pattern: targetDescription(target),
-                    availableDocuments: docs.map { "window \($0.window) tab \($0.tabInWindow): \(URLText.redactURL($0.url))" }
+                    availableDocuments: docs.map {
+                        "\(entryLabel(window: $0.window, tab: $0.tabInWindow, windowID: $0.windowID, scoped: scoped)): \(URLText.redactURL($0.url))"
+                    }
                 )
             }
             throw error
@@ -1173,7 +1193,8 @@ enum SafariBridge {
         """
     }
 
-    static func closeCurrentTab(window: Int? = nil) async throws {
+    /// `profile` is the `--profile` the window was resolved within, so a miss lists that profile's tabs (#362).
+    static func closeCurrentTab(window: Int? = nil, profile: String? = nil) async throws {
         let windowRef = window.map { "window \($0)" } ?? "front window"
         // #93: guard the tab count first. `close current tab of window N` on a
         // 0-tab window raises -1728, which runTargetedAppleScript translates to
@@ -1183,7 +1204,7 @@ enum SafariBridge {
         // Without `--window` the same call surfaces the raw -1728 instead.
         let script = closeCurrentTabScript(windowRef: windowRef)
         if let window {
-            _ = try await runTargetedAppleScript(script, target: .windowIndex(window))
+            _ = try await runTargetedAppleScript(script, target: .windowIndex(window), profile: profile)
         } else {
             try await runAppleScript(script)
         }
@@ -1976,7 +1997,7 @@ enum SafariBridge {
         // instead of letting osascript find out after its 30 s timeout (#108).
         try BlockingDialogGate.shared.throwIfBlocked(scriptTarget.key)
         do {
-            return try await dispatchJS(code, docRef: scriptTarget.reference, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter, captureURL: captureURL)
+            return try await dispatchJS(code, docRef: scriptTarget.reference, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter, captureURL: captureURL, profile: profile)
         } catch let error as SafariBrowserError {
             // #79 bounded retry: the identity-anchored ref dangled
             // (window closed / tab moved / guard tripped). Re-resolve the
@@ -2023,7 +2044,7 @@ enum SafariBridge {
             // evidence of a dialog; a spent JS allowance may leave it unprobed.
             try BlockingDialogGate.shared.throwIfBlocked(retry.key)
             do {
-                return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key, diagnosticTarget: retry.diagnosticTarget, warnWriter: warnWriter, captureURL: captureURL)
+                return try await dispatchJS(code, docRef: retry.reference, target: retryTarget, dialogKey: retry.key, diagnosticTarget: retry.diagnosticTarget, warnWriter: warnWriter, captureURL: captureURL, profile: profile)
             } catch let retryError as SafariBrowserError where isTargetDangleError(retryError) {
                 throw SafariBrowserError.targetTabChanged(
                     expected: matcher.description,
@@ -2043,7 +2064,7 @@ enum SafariBridge {
         docRef: String,
         target: TargetDocument, dialogKey: BlockingDialogGate.WindowKey,
         diagnosticTarget: BackgroundTabDiagnosticTarget?, warnWriter: ((String) -> Void)?,
-        captureURL: Bool = false
+        captureURL: Bool = false, profile: String? = nil
     ) async throws -> String {
         // Regex matcher: Swift-side pre-check. The gap between check and
         // dispatch is far narrower than resolve-to-execute was, and a miss
@@ -2053,7 +2074,8 @@ enum SafariBridge {
                 tell application "Safari"
                     return URL of \(docRef)
                 end tell
-                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
+                """, target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter,
+                profile: profile)
             guard matcher.matches(currentURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 throw SafariBrowserError.appleScriptFailed(
                     "SB_TARGET_CHANGED: URL of target tab no longer matches \(matcher.description)")
@@ -2061,7 +2083,8 @@ enum SafariBridge {
         }
         return try await runTargetedAppleScript(
             jsDispatchScript(code, docRef: docRef, target: target, captureURL: captureURL),
-            target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter)
+            target: target, dialogKey: dialogKey, diagnosticTarget: diagnosticTarget, warnWriter: warnWriter,
+            profile: profile)
     }
 
     /// The AppleScript for one JS dispatch (pure, so the four shapes can be pinned and compiled
@@ -2276,7 +2299,7 @@ enum SafariBridge {
             tell application "Safari"
                 get URL of \(docRef)
             end tell
-            """, target: target)
+            """, target: target, profile: profile)
     }
 
     /// #168 verify R2: a URL-pattern target resolved exactly as
@@ -2345,7 +2368,7 @@ enum SafariBridge {
             tell application "Safari"
                 get name of \(docRef)
             end tell
-            """, target: target)
+            """, target: target, profile: profile)
     }
 
     /// Read the plain-text content of the target document. Document-scoped for modal bypass (#21).
@@ -2365,7 +2388,8 @@ enum SafariBridge {
             tell application "Safari"
                 get text of \(scriptTarget.reference)
             end tell
-            """, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter)
+            """, target: target, dialogKey: scriptTarget.key, diagnosticTarget: scriptTarget.diagnosticTarget, warnWriter: warnWriter,
+            profile: profile)
         // #89: this is the worst of the dialog symptoms — an empty string with
         // exit 0. A script reading it concludes "the page has no content",
         // which is the opposite of the truth: the page is fine and a dialog is
@@ -2540,7 +2564,7 @@ enum SafariBridge {
             tell application "Safari"
                 get source of \(docRef)
             end tell
-            """, target: target)
+            """, target: target, profile: profile)
     }
 
     // MARK: - Document / Tab Management
@@ -2780,20 +2804,24 @@ enum SafariBridge {
         if let profile = profile {
             candidates = windows.filter { $0.profile == profile }
             if candidates.isEmpty {
+                // #362 verify F2: every window listed belongs to another profile, so a Safari number copied
+                // into `--window N --profile <that profile>` counts that profile's windows and can select
+                // another one. Each entry also names its window's id, which selects it with or without
+                // `--profile`; `targetingHint` gives this miss its own hint, keyed on the pattern.
                 let available = windows.map { w -> String in
                     let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
-                    let p = w.profile ?? "(no profile)"
-                    return "window \(w.windowIndex) [\(p)]: \(cur)"
+                    let p = w.profile ?? SafariBrowserError.noProfileLabel
+                    return "window \(w.windowIndex) [\(p)] \(windowIDNote(w.windowID)): \(cur)"
                 }
                 throw SafariBrowserError.documentNotFound(
-                    pattern: "(profile: \"\(profile)\")",
+                    pattern: SafariBrowserError.profileMissPrefix + profile + "\")",
                     availableDocuments: available
                 )
             }
         } else {
             candidates = windows
         }
-        return try pickNativeTargetCore(target, in: candidates)
+        return try pickNativeTargetCore(target, in: candidates, scope: profile)
     }
 
     /// #352: the window whose stable AppleScript id is `windowID`, among the
@@ -2821,7 +2849,8 @@ enum SafariBridge {
         throw SafariBrowserError.documentNotFound(
             pattern: "window id \(windowID)\(scope)",
             availableDocuments: candidates.map { w -> String in
-                let id = w.windowID.map { "window id \($0)" } ?? "window \(w.windowIndex) (no id)"
+                // #362 verify F8: the same spelling as `entryLabel`, which `listingWindowIDs` recognises.
+                let id = w.windowID.map { "window id \($0)" } ?? "window \(w.windowIndex) (no window id)"
                 let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(0 tabs)"
                 return "\(id): \(cur)"
             }
@@ -2852,19 +2881,45 @@ enum SafariBridge {
         }
     }
 
-    /// Every tab of `windows`, or of `profile`'s windows when a resolved target carries one.
-    private static func listing(_ windows: [WindowInfo], within profile: String?) -> [String] {
+    /// Every tab of `windows`, or of `profile`'s windows when a resolved target carries one. `scope` is the
+    /// profile the resolver already narrowed `windows` to, if any.
+    private static func listing(_ windows: [WindowInfo], within profile: String?, scope: String?) -> [String] {
         let scoped = windows.filter { profile == nil || $0.profile == profile }
         if let profile, scoped.isEmpty { return ["(no window of profile \"\(profile)\" is open)"] }
+        let named = (profile ?? scope) != nil
         return scoped.flatMap { w in
-            w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
+            w.tabs.map {
+                "\(entryLabel(window: w.windowIndex, tab: $0.tabIndex, windowID: w.windowID, scoped: named)): \(URLText.redactURL($0.url))"
+            }
         }
+    }
+
+    /// #362: the label of an entry in a `documentNotFound` listing. The numbers stay Safari's own, the ones
+    /// `documents` prints (document-listing, "Discovery aid"). A listing narrowed by a profile also names
+    /// each window's id: with `--profile`, `--window N` counts only that profile's windows, so a Safari
+    /// number copied into it can select another window, while `--window-id W` selects the listed one with
+    /// or without `--profile`. A legacy record has no id, and its label says so. Built here, at the
+    /// producers, because a daemon prints the payload, not the rendered message (#227).
+    static func entryLabel(window: Int, tab: Int?, windowID: Int?, scoped: Bool) -> String {
+        let label = tab.map { "window \(window) tab \($0)" } ?? "window \(window)"
+        guard scoped else { return label }
+        return label + " " + windowIDNote(windowID)
+    }
+
+    /// #362: how a listing entry names its window's id, `(window id 4711)`, or says that the enumeration record
+    /// has none, `(no window id)`; `SafariBrowserError.listingWindowIDs` reads these two spellings.
+    static func windowIDNote(_ windowID: Int?) -> String {
+        guard let windowID, windowID > 0 else { return "(no window id)" }
+        return "(window id \(windowID))"
     }
 
     private static func pickNativeTargetCore(
         _ target: TargetDocument,
-        in windows: [WindowInfo]
+        in windows: [WindowInfo],
+        scope: String? = nil
     ) throws -> ResolvedWindowTarget {
+        // #362: `scope` is the profile `windows` was narrowed to; its listings name window ids.
+        let scoped = scope != nil
         switch target {
         case .frontWindow:
             // Trivial case — skipped by the async orchestrator anyway,
@@ -2895,7 +2950,7 @@ enum SafariBridge {
             guard let window = windows.first(where: { $0.windowID == windowID }) else {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window id \(windowID) tab \(tab)",
-                    availableDocuments: listing(windows, within: carried)
+                    availableDocuments: listing(windows, within: carried, scope: scope)
                 )
             }
             return ResolvedWindowTarget(
@@ -2958,7 +3013,9 @@ enum SafariBridge {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "document \(n)",
                     availableDocuments: windows.flatMap { w in
-                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
+                        w.tabs.map {
+                            "\(entryLabel(window: w.windowIndex, tab: $0.tabIndex, windowID: w.windowID, scoped: scoped)): \(URLText.redactURL($0.url))"
+                        }
                     }
                 )
             }
@@ -2986,7 +3043,7 @@ enum SafariBridge {
             let totalTabs = windows.reduce(0) { $0 + $1.tabs.count }
             let availableSummary = windows.map { w -> String in
                 let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
-                return "window \(w.windowIndex): \(cur) (\(w.tabs.count) tab(s))"
+                return "\(entryLabel(window: w.windowIndex, tab: nil, windowID: w.windowID, scoped: scoped)): \(cur) (\(w.tabs.count) tab(s))"
             }
             throw SafariBrowserError.documentNotFound(
                 pattern: "document \(n) (only \(totalTabs) tab(s) available)",
@@ -3008,7 +3065,9 @@ enum SafariBridge {
 
             if matches.isEmpty {
                 let allUrls = windows.flatMap { w in
-                    w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
+                    w.tabs.map {
+                        "\(entryLabel(window: w.windowIndex, tab: $0.tabIndex, windowID: w.windowID, scoped: scoped)): \(URLText.redactURL($0.url))"
+                    }
                 }
                 throw SafariBrowserError.documentNotFound(
                     pattern: matcher.description,
@@ -3046,7 +3105,7 @@ enum SafariBridge {
             let window = windows[w - 1]
             if t < 1 || t > window.tabs.count {
                 let availableSummary = window.tabs.map { tab in
-                    "window \(window.windowIndex) tab \(tab.tabIndex): \(URLText.redactURL(tab.url))"
+                    "\(entryLabel(window: window.windowIndex, tab: tab.tabIndex, windowID: window.windowID, scoped: scoped)): \(URLText.redactURL(tab.url))"
                 }
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window \(w) tab \(t) (window has \(window.tabs.count) tab(s))",

@@ -17,11 +17,12 @@ struct CloseCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
+        let profile = target.resolveProfile()
+        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
         try await SafariBridge.performTabSwitchIfNeeded(
             window: resolved.windowIndex,
             tab: resolved.tabIndexInWindow
         )
-        try await SafariBridge.closeCurrentTab(window: resolved.windowIndex)
+        try await SafariBridge.closeCurrentTab(window: resolved.windowIndex, profile: profile)
     }
 }
