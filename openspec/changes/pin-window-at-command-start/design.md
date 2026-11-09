@@ -63,7 +63,7 @@
 
 `resolveToConcreteTarget` 的 `--profile` 分支收斂成 `.windowID` 時保留 `pinnedFrom`。
 
-`--pinned-from-window N` 是 `TargetOptions` 的 `@Option`，可見度 `.private`（不在 `--help`、不在 MCP 的工具 schema），只在有 `--window-id` 時有效、值須 ≥ 1。用選項而不是不經命令列的屬性，是因為 `exec` 把目標重新編成命令列參數（`ScriptInterpreter.encodeTargetArgs`）交給子行程與 daemon，屬性會在那裡遺失。它只影響訊息文字，使用者自行傳入也只會改變訊息。它列入 `TargetOptions.targetFlagNames`，讓 exec 的步驟參數處理把它當成目標旗標。
+`--pinned-from-window N` 是 `TargetOptions` 的 `@Option`，可見度 `.private`（不在 `--help`、不在 MCP 的工具 schema），只在有 `--window-id` 時有效、值須 ≥ 1。用選項而不是不經命令列的屬性，是因為 `exec` 把目標重新編成命令列參數（`ScriptInterpreter.encodeTargetArgs`）交給子行程與 daemon，屬性會在那裡遺失。它只影響訊息文字，使用者自行傳入也只會改變訊息。它**不**列入 `TargetOptions.targetFlagNames`：script-exec 的目標旗標是十個的封閉列舉，而這個選項只由 `encodeTargetArgs` 寫進共用參數，不會出現在使用者寫的步驟參數裡（ASSUMPTION：使用者自己在步驟裡寫它，該步驟不會在 in-process 執行，交給子行程照常解析）。
 
 不採用「訊息只寫 window id W」：使用者打的是 `--window 2`，只看到 4711 無法知道是哪個視窗關了；這正是診斷列出的風險。
 

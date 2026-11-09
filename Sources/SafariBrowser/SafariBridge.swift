@@ -117,7 +117,10 @@ enum SafariBridge {
         /// `.resolvedTab` as already validated, so `--window-id` never starts
         /// as one (the anchoring entry and the profile branch of
         /// `resolveToConcreteTarget` collapse it after checking).
-        case windowID(Int, tabInWindow: Int? = nil)
+        /// `pinnedFrom` (#354) is the `--window N` the id was read from at
+        /// command start (`TargetOptions.pinWindowAtStart`); it changes only
+        /// how a miss is worded, never which window is addressed.
+        case windowID(Int, tabInWindow: Int? = nil, pinnedFrom: Int? = nil)
         /// Composite target: the tab-in-window-th tab of the window-th
         /// window. Addresses same-URL duplicate tabs that `.urlMatch`
         /// cannot disambiguate (issue #28 gap #2). Always requires both
@@ -176,7 +179,7 @@ enum SafariBridge {
             return "tab \(tab) of window id \(windowID)"
         case .anchoredCurrentTab(let windowID, let tab, _):
             return "tab \(tab) of window id \(windowID)"
-        case .windowID(let windowID, let tab):
+        case .windowID(let windowID, let tab, _):
             // #352: the window by its stable id — never a z-order position.
             if let tab { return "tab \(tab) of window id \(windowID)" }
             return "document of window id \(windowID)"
@@ -267,7 +270,7 @@ enum SafariBridge {
                 BlockingDialogGate.shared.check(key)
                 return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key)
             }
-            if case .windowID(let id, let tab) = target, (profile ?? "").isEmpty {
+            if case .windowID(let id, let tab, _) = target, (profile ?? "").isEmpty {
                 // #352: the reference names the window by id, so no
                 // enumeration is needed; a missing id raises in the script and
                 // `runTargetedAppleScript` reports it as `documentNotFound`.
@@ -373,8 +376,9 @@ enum SafariBridge {
             // #352: the profile filter has checked that window id W belongs
             // to the profile. Keep the id — `concreteTarget` would turn a
             // window without a known tab into `.windowIndex(<position>)`.
-            if case .windowID(let windowID, _) = target {
-                guard let tab = resolved.anchorTabIndex else { return .windowID(windowID) }
+            if case .windowID(let windowID, _, let pinnedFrom) = target {
+                // #354: the `--window N` a pinned id came from is kept for the wording of a miss.
+                guard let tab = resolved.anchorTabIndex else { return .windowID(windowID, pinnedFrom: pinnedFrom) }
                 return .resolvedTab(windowID: windowID, tabInWindow: tab, rematch: nil, profile: profile)
             }
             return concreteTarget(from: resolved, original: target, profile: profile)
@@ -631,7 +635,7 @@ enum SafariBridge {
                                                profile: profile)
                 }
                 return concreteTarget(from: resolved, original: target, profile: profile)
-            case .windowID(let windowID, nil):
+            case .windowID(let windowID, nil, _):
                 // #352: the enumeration checks that window id W belongs to the
                 // profile; the anchor is then read by that same id. No anchor
                 // fails closed — there is no position to fall back to.
@@ -676,7 +680,7 @@ enum SafariBridge {
             return anchoredTarget(concrete, anchor: await readWindowAnchor(index: 1), profile: profile)
         case .windowIndex(let n):
             return anchoredTarget(concrete, anchor: await readWindowAnchor(index: n), profile: profile)
-        case .windowID(let windowID, let tab):
+        case .windowID(let windowID, let tab, _):
             // #352: `--window-id W` names no position, so there is no
             // positional target to fall back to: no anchor (no such window,
             // a window with no tabs, a timeout) fails closed here, before any
@@ -934,10 +938,10 @@ enum SafariBridge {
             if case .appleScriptFailed(let msg) = error, isObjectNotFound(msg) {
                 // #352: a window id names one window, so no other window's tabs
                 // are listed (or read) when it is not there.
-                if case .windowID = target {
+                if case .windowID(_, _, let pinnedFrom) = target {
                     throw SafariBrowserError.documentNotFound(
                         pattern: targetDescription(target),
-                        availableDocuments: ["(no such window or tab)"])
+                        availableDocuments: [windowIDMissNote(pinnedFrom: pinnedFrom, tabs: true)])
                 }
                 // #362: an enumeration that failed says so. An empty list here
                 // would read as "nothing is open", a claim nobody checked.
@@ -994,9 +998,28 @@ enum SafariBridge {
             return "window id \(windowID) tab \(tab)\(suffix)"
         case .anchoredCurrentTab(let windowID, let tab, _):
             return "window id \(windowID) tab \(tab) (current tab at command start)"
-        case .windowID(let windowID, let tab):
-            return tab.map { "window id \(windowID) tab \($0)" } ?? "window id \(windowID)"
+        case .windowID(let windowID, let tab, let pinnedFrom):
+            return windowIDDescription(windowID, tab: tab, pinnedFrom: pinnedFrom)
         }
+    }
+
+    /// #354: a window id names itself, or — when `TargetOptions.pinWindowAtStart` read it from
+    /// `--window N` — the number the user typed first, so a miss says which of their windows closed:
+    /// `window 2 (window id 4711 at command start)`. Built where the error is built, because a daemon
+    /// prints the payload, not the rendered message (#227).
+    static func windowIDDescription(_ windowID: Int, tab: Int?, pinnedFrom: Int?) -> String {
+        let tabPart = tab.map { " tab \($0)" } ?? ""
+        guard let pinnedFrom else { return "window id \(windowID)\(tabPart)" }
+        return "window \(pinnedFrom)\(tabPart) (window id \(windowID) at command start)"
+    }
+
+    /// #354: the one-line listing of a miss on a window id. For a pinned `--window N` it says the window
+    /// read at command start is gone and that no other window takes its place.
+    static func windowIDMissNote(pinnedFrom: Int?, tabs: Bool) -> String {
+        guard let pinnedFrom else { return tabs ? "(no such window or tab)" : "(no such window)" }
+        let what = tabs ? "is no longer open or has no such tab" : "is no longer open"
+        return "(the window that was window \(pinnedFrom) at command start \(what); "
+            + "the command does not move on to the window now in that position)"
     }
 
     // MARK: - Navigation
@@ -1019,7 +1042,7 @@ enum SafariBridge {
         // `.resolvedTab` is that id once `--profile` collapsed the target.
         var windowID: Int?
         switch target {
-        case .windowID(let id, _), .resolvedTab(let id, _, _, _): windowID = id
+        case .windowID(let id, _, _), .resolvedTab(let id, _, _, _): windowID = id
         default: break
         }
         let docRef = try await resolveToAppleScript(
@@ -2797,8 +2820,8 @@ enum SafariBridge {
         // resolution logic. nil = legacy behavior (all windows count).
         // #352: a window id is checked against the profile by `checkWindowID`,
         // whose miss names only that profile's windows.
-        if case .windowID(let windowID, _) = target, let profile {
-            try checkWindowID(windowID, profile: profile, in: windows)
+        if case .windowID(let windowID, _, let pinnedFrom) = target, let profile {
+            try checkWindowID(windowID, profile: profile, in: windows, pinnedFrom: pinnedFrom)
         }
         let candidates: [WindowInfo]
         if let profile = profile {
@@ -2830,24 +2853,28 @@ enum SafariBridge {
     /// profile; the listing names only the windows that were candidates, so a
     /// profile mismatch never prints another profile's tab URLs.
     @discardableResult
-    static func checkWindowID(_ windowID: Int, profile: String?, in windows: [WindowInfo]) throws -> WindowInfo {
+    static func checkWindowID(
+        _ windowID: Int, profile: String?, in windows: [WindowInfo], pinnedFrom: Int? = nil
+    ) throws -> WindowInfo {
         let candidates = profile.map { p in windows.filter { $0.profile == p } } ?? windows
         if let window = candidates.first(where: { $0.windowID == windowID }) { return window }
         let scope = profile.map { " (profile: \"\($0)\")" } ?? ""
+        // #354: a window id read from `--window N` at command start is named by that N.
+        let named = windowIDDescription(windowID, tab: nil, pinnedFrom: pinnedFrom)
         if let profile, candidates.isEmpty {
             // Not the generic profile-miss listing, which names every other
             // profile's windows and tabs.
             throw SafariBrowserError.documentNotFound(
-                pattern: "window id \(windowID)\(scope)",
+                pattern: "\(named)\(scope)",
                 availableDocuments: ["(no window of profile \"\(profile)\" is open)"])
         }
         guard profile != nil else {
             // An id names one window: no other window's tab is listed for it.
             throw SafariBrowserError.documentNotFound(
-                pattern: "window id \(windowID)", availableDocuments: ["(no such window)"])
+                pattern: named, availableDocuments: [windowIDMissNote(pinnedFrom: pinnedFrom, tabs: false)])
         }
         throw SafariBrowserError.documentNotFound(
-            pattern: "window id \(windowID)\(scope)",
+            pattern: "\(named)\(scope)",
             availableDocuments: candidates.map { w -> String in
                 // #362 verify F8: the same spelling as `entryLabel`, which `listingWindowIDs` recognises.
                 let id = w.windowID.map { "window id \($0)" } ?? "window \(w.windowIndex) (no window id)"
@@ -2960,13 +2987,13 @@ enum SafariBridge {
                 anchorTabIndex: tab
             )
 
-        case .windowID(let windowID, let tab):
+        case .windowID(let windowID, let tab, let pinnedFrom):
             // #352: by stable id only — a missing id is an error, never the
             // front window. `windows` is already the profile's candidates.
-            let window = try checkWindowID(windowID, profile: nil, in: windows)
+            let window = try checkWindowID(windowID, profile: nil, in: windows, pinnedFrom: pinnedFrom)
             if let tab, tab < 1 || tab > window.tabs.count {
                 throw SafariBrowserError.documentNotFound(
-                    pattern: "window id \(windowID) tab \(tab)",
+                    pattern: windowIDDescription(windowID, tab: tab, pinnedFrom: pinnedFrom),
                     availableDocuments: window.tabs.map {
                         "window id \(windowID) tab \($0.tabIndex): \(URLText.redactURL($0.url))"
                     }
@@ -3919,7 +3946,7 @@ enum SafariBridge {
         case .windowTab(let window, _): return .index(window)
         case .resolvedTab(let windowID, _, _, _): return .id(windowID)
         case .anchoredCurrentTab(let windowID, _, _): return .id(windowID)
-        case .windowID(let windowID, _): return .id(windowID)
+        case .windowID(let windowID, _, _): return .id(windowID)
         case .urlMatch, .documentIndex: return nil
         }
     }

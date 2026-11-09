@@ -81,6 +81,17 @@ struct TargetOptions: ParsableArguments {
     )
     var windowID: Int?
 
+    /// #354: the `--window N` a `--window-id` was read from by `pinWindowAtStart()` at command start.
+    /// Private (not in `--help` or the MCP tool schema): it exists so `exec`, which hands its target to
+    /// each step as command-line arguments (`ScriptInterpreter.encodeTargetArgs`), keeps naming the
+    /// user's `--window N` in a miss. It changes only the wording of an error, never the target.
+    @Option(
+        name: .customLong("pinned-from-window"),
+        help: ArgumentHelp("The --window number a --window-id was read from at command start (internal).",
+                           visibility: .private)
+    )
+    var pinnedFromWindow: Int?
+
     @Option(
         name: .long,
         help: "Target document N (1-indexed). Alias for --document; kept for browser-automation familiarity."
@@ -278,6 +289,15 @@ struct TargetOptions: ParsableArguments {
         if let id = windowID, id < 1 {
             throw ValidationError("--window-id must be a Safari window id (>= 1), got \(id)")
         }
+        // #354: only meaningful next to the id it describes.
+        if let n = pinnedFromWindow {
+            if windowID == nil {
+                throw ValidationError("--pinned-from-window requires --window-id")
+            }
+            if n < 1 {
+                throw ValidationError("--pinned-from-window must be >= 1 (1-indexed), got \(n)")
+            }
+        }
         if let t = tab, t < 1 {
             throw ValidationError("--tab must be >= 1 (1-indexed), got \(t)")
         }
@@ -347,7 +367,7 @@ struct TargetOptions: ParsableArguments {
         // one: nothing would notice a missing window or tab before the first
         // action, and `open` would still make a new window.
         if let id = windowID {
-            return .windowID(id, tabInWindow: tabInWindow)
+            return .windowID(id, tabInWindow: tabInWindow, pinnedFrom: pinnedFromWindow)
         }
         if let w = window, let m = tabInWindow {
             return .windowTab(window: w, tabInWindow: m)
@@ -379,6 +399,56 @@ struct TargetOptions: ParsableArguments {
             return .documentIndex(document)
         }
         return .frontWindow
+    }
+
+    /// #354: the command-start step. `--window N` (and `--window N --tab-in-window M`) counts windows from
+    /// the front, and every Apple event that names `window N` looks the position up again, so a window raised
+    /// between two steps of one command redirected the later steps. This reads the id of the window that is
+    /// N now, once, and returns a copy in which `--window N` has become `--window-id W` (`--tab-in-window M`,
+    /// `--profile` and every other flag kept, `pinnedFromWindow` = N for the wording of a miss). Every later
+    /// `resolve()` / `resolveProfileScoped()` / `resolveFirstMatchOnce()` / `resolveWithFirstMatch()` on the
+    /// copy therefore behaves exactly as `--window-id W` does.
+    ///
+    /// - Without `--profile`: one small query, the one `js` anchors with (#180, #255) — `readWindowAnchor`
+    ///   for `--window N`, `readTabAnchor` plus `1 <= M <= tab count` for `--tab-in-window M`.
+    /// - With `--profile`: N counts that profile's windows, which only the enumeration knows, so the id is
+    ///   the one one profile-scoped enumeration reads.
+    /// - The id cannot be read (no N-th window, a window with no tab, tab M outside the window, a legacy
+    ///   record without an id, any failure): `self` unchanged, so the first step fails — or runs — exactly
+    ///   as before (#87 / #97, the js/wait precedent). Only cancellation is thrown.
+    /// - Any other flag set: `self` unchanged, nothing sent.
+    ///
+    /// Call it first in `run()`, before anything else reaches Safari (including the `--mark-tab` wrap):
+    /// `let target = try await self.target.pinWindowAtStart()`. `close`, `screenshot`, `pdf` and the native
+    /// upload paths are to use the same line (#353).
+    func pinWindowAtStart() async throws -> TargetOptions {
+        guard let n = window, windowID == nil else { return self }
+        let id: Int?
+        if let profile, !profile.isEmpty {
+            let positional: SafariBridge.TargetDocument = tabInWindow.map { .windowTab(window: n, tabInWindow: $0) }
+                ?? .windowIndex(n)
+            do {
+                id = try await SafariBridge.resolveNativeTarget(
+                    from: positional, firstMatch: firstMatch, warnWriter: nil, profile: profile).windowID
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // The first step enumerates again and reports this miss in its own words.
+                id = nil
+            }
+        } else if let m = tabInWindow {
+            let anchor = await SafariBridge.readTabAnchor(windowIndex: n)
+            id = anchor.flatMap { m >= 1 && m <= $0.tabCount ? $0.windowID : nil }
+        } else {
+            id = await SafariBridge.readWindowAnchor(index: n)?.windowID
+        }
+        try Task.checkCancellation()
+        guard let id, id > 0 else { return self }
+        var pinned = self
+        pinned.window = nil
+        pinned.windowID = id
+        pinned.pinnedFromWindow = n
+        return pinned
     }
 
     /// Default warn-writer shared by every command that wires

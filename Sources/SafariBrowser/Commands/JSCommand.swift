@@ -124,7 +124,7 @@ struct JSCommand: AsyncParsableCommand {
             switch original {
             case .windowIndex(let n):
                 return .anchoredTargetChanged(target: "the current tab of window \(n) (\(anchor))")
-            case .windowID(let id, _):
+            case .windowID(let id, _, _):
                 return .anchoredTargetChanged(target: "the current tab of window id \(id) (\(anchor))")
             default:
                 return .anchoredTargetChanged(target: "the front window's current tab (\(anchor))")
@@ -139,7 +139,7 @@ struct JSCommand: AsyncParsableCommand {
                 return .anchoredTargetChanged(target: "window \(w) tab \(t) (window id \(windowID))")
             case .documentIndex(let n):
                 return .anchoredTargetChanged(target: "document \(n) (window id \(windowID) tab \(tab) at command start)")
-            case .windowID(let w, let t?):
+            case .windowID(let w, let t?, _):
                 // #352: `--window-id W --tab-in-window T`, checked at command
                 // start by `resolveToAnchoredTarget`.
                 return .anchoredTargetChanged(target: "window id \(w) tab \(t)")
