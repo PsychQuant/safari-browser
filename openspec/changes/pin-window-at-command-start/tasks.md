@@ -21,7 +21,7 @@
 涵蓋 script-exec 的 MODIFIED〈Shared target resolution〉；design「exec 在分派路線之前釘住一次」。
 
 - [x] 3.1 `ExecCommand.execute` 一開始釘住（requirement「Shared target resolution」）；`viaDaemon` 改收 `(ExecCommand, [ScriptStep])`，`daemonEnvelope` 編出釘住的 `targetArgs`；子行程路線把釘住的目標交給 `ScriptInterpreter`，`execute` 新增 `stepDispatcher` 參數；三個既有測試照著改。驗證：daemon 路線測試斷言 envelope 的 `targetArgs` 是 `--window-id W --pinned-from-window N`；子行程路線以記錄用 dispatcher 斷言每一步的共用參數相同、整段只讀一次 id
-- [x] 3.2 `InProcessStepDispatcher` 的 `resolveConcrete` 先釘住：步驟自己的 `--window N` 在那一步開頭釘住，共用參數已是 `--window-id` 時不送 Apple event。驗證：in-process 測試（步驟自帶 `--window 2`、共用 `--window-id`）
+- [x] 3.2 `InProcessStepDispatcher` 對有自己目標旗標的步驟先釘住：步驟自己的 `--window N` 在那一步開頭釘住；共用參數不在 dispatcher 裡釘（`ExecCommand.execute` 已釘成 `--window-id`）。驗證：in-process 測試（步驟自帶 `--window 2`、共用 `--window-id`）
 
 - ASSUMPTION（實作時決定，verify 時請挑戰）：
   - `--pinned-from-window` 不列入 `targetFlagNames`：script-exec 的目標旗標是十個的封閉列舉，這個私有選項只由 `encodeTargetArgs` 寫進共用參數。

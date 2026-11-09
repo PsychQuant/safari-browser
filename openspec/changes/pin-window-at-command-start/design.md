@@ -77,7 +77,7 @@
 
 - daemon 路線：`viaDaemon` 收到釘住的指令，`daemonEnvelope` 編出的 `targetArgs` 是 `--window-id W [--tab-in-window M] --pinned-from-window N`。
 - 子行程路線：`ScriptInterpreter.run(source:target:)` 收到釘住的目標，每一步的共用參數是同一組。`execute` 新增 `stepDispatcher` 參數（預設 `SubprocessStepDispatcher()`），讓測試不必真的開子行程。
-- in-process 步驟自己帶的 `--window N`：`InProcessStepDispatcher` 的 `resolveConcrete` 先釘住再 `resolveToConcreteTarget`；共用參數已是 `--window-id`，釘住不送 Apple event。
+- in-process 步驟自己帶的 `--window N`：`InProcessStepDispatcher` 對有自己目標旗標的步驟先釘住再 `resolveToConcreteTarget`；共用參數不在 dispatcher 裡釘（已由 `ExecCommand.execute` 釘成 `--window-id`），以免直接收到未釘參數的呼叫者每步多一次列舉。
 
 `viaDaemon` 的型別改為 `(ExecCommand, [ScriptStep])`，三個既有測試照著改。
 

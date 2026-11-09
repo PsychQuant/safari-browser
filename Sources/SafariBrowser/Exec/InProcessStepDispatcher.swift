@@ -205,18 +205,17 @@ struct InProcessStepDispatcher: StepDispatcher {
         // bounded retry, #79). Steps without their own target flags share one
         // resolution per exec run. The resolution now also honours `--profile`,
         // which this path parsed but never handed to the bridge (#60 intent).
-        // #354: a step's own `--window N` is resolved to its window id at the start of that step; the
-        // exec-level arguments already carry `--window-id W` (pinned by `ExecCommand.execute` before the run
-        // was routed), so pinning them sends nothing.
-        let resolveConcrete = {
-            let pinned = try await target.pinWindowAtStart()
-            return try await SafariBridge.resolveToConcreteTarget(
-                pinned.resolve(), firstMatch: pinned.firstMatch,
-                warnWriter: nil, profile: pinned.resolveProfile())
+        // #354: a step's own `--window N` is resolved to its window id at the start of that step. The
+        // exec-level arguments are not pinned here: `ExecCommand.execute` pinned them once, before the run was
+        // routed, so they already read `--window-id W`.
+        let resolveConcrete = { (options: TargetOptions) in
+            try await SafariBridge.resolveToConcreteTarget(
+                options.resolve(), firstMatch: options.firstMatch,
+                warnWriter: nil, profile: options.resolveProfile())
         }
         let resolved = cmd == "documents" ? target.resolve()
-            : stepHasTargetFlag ? try await resolveConcrete()
-            : try await sharedResolution.resolve(args: effectiveTargetArgs, resolveConcrete)
+            : stepHasTargetFlag ? try await resolveConcrete(target.pinWindowAtStart())
+            : try await sharedResolution.resolve(args: effectiveTargetArgs, { try await resolveConcrete(target) })
         // A step with its own target flags resolves outside the shared object, and a resolver that
         // finishes after the request was cancelled still returns a target: check again before the
         // command runs, so no command's AppleScript follows a cancellation.
