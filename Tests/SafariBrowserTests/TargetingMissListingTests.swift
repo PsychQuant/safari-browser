@@ -86,22 +86,44 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
     }
 
     /// The issue's case: Work's windows are Safari windows 2 and 3. Copying an entry into the flags the hint
-    /// names, with `--profile Work` still set, must select the tab that entry describes.
-    func testEveryListedIDAndTabSelectsTheListedTabUnderTheProfile() throws {
-        let pattern = try NSRegularExpression(pattern: #"^window (\d+) tab (\d+) \(window id (\d+)\): "#)
-        var checked = 0
+    /// names must select the tab that entry shows, with `--profile Work` still set and without it (verify F11).
+    /// A tab entry gives `--window-id W --tab-in-window M`; a window-level entry (`--document N` overflow) names
+    /// no tab, so it gives `--window-id W` alone, which selects the window's current tab, the URL it shows.
+    /// The selected tab is read from what the resolver returned, and its URL compared with the entry's.
+    func testEveryListedIDAndTabSelectsTheListedTab() throws {
+        let tabEntry = try NSRegularExpression(pattern: #"^window (\d+) tab (\d+) \(window id (\d+)\): (\S+)$"#)
+        let windowEntry = try NSRegularExpression(pattern: #"^window (\d+) \(window id (\d+)\): (\S+) \(\d+ tab\(s\)\)$"#)
+        let windows = Self.windows()
+        var tabs = 0, windowLevel = 0
         for (target, profile) in Self.scopedMisses {
             for entry in miss(target, profile: profile).entries {
-                guard let m = pattern.firstMatch(in: entry, range: NSRange(entry.startIndex..., in: entry)) else { continue }
-                func group(_ i: Int) -> Int { Int((entry as NSString).substring(with: m.range(at: i)))! }
-                let resolved = try SafariBridge.pickNativeTarget(.windowID(group(3), tabInWindow: group(2)),
-                                                                in: Self.windows(), profile: "Work")
-                XCTAssertEqual(resolved.windowIndex, group(1), entry)
-                XCTAssertEqual(resolved.anchorTabIndex, group(2), entry)
-                checked += 1
+                let range = NSRange(entry.startIndex..., in: entry)
+                let copied: (window: Int, id: Int, tab: Int?, url: String)
+                if let m = tabEntry.firstMatch(in: entry, range: range) {
+                    func group(_ i: Int) -> String { (entry as NSString).substring(with: m.range(at: i)) }
+                    copied = (Int(group(1))!, Int(group(3))!, Int(group(2))!, group(4))
+                    tabs += 1
+                } else if let m = windowEntry.firstMatch(in: entry, range: range) {
+                    func group(_ i: Int) -> String { (entry as NSString).substring(with: m.range(at: i)) }
+                    copied = (Int(group(1))!, Int(group(2))!, nil, group(3))
+                    windowLevel += 1
+                } else {
+                    XCTFail("\(target): an entry the hint's flags cannot be copied from: \(entry)")
+                    continue
+                }
+                for scope in ["Work", nil] as [String?] {
+                    let resolved = try SafariBridge.pickNativeTarget(.windowID(copied.id, tabInWindow: copied.tab),
+                                                                    in: windows, profile: scope)
+                    let label = "\(entry), profile \(scope ?? "none")"
+                    XCTAssertEqual(resolved.windowIndex, copied.window, label)
+                    let window = try XCTUnwrap(windows.first { $0.windowIndex == resolved.windowIndex }, label)
+                    let selected = resolved.tabIndexInWindow ?? window.currentTabIndex
+                    XCTAssertEqual(window.tabs.first { $0.tabIndex == selected }?.url, copied.url, label)
+                }
             }
         }
-        XCTAssertGreaterThan(checked, 10)
+        XCTAssertGreaterThan(tabs, 10)
+        XCTAssertEqual(windowLevel, 2)
     }
 
     func testTheHintPointsAtWindowIDWhenTheEntriesCarryIDs() {
@@ -235,6 +257,65 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(message.contains("no window of another profile is listed either"), message)
         XCTAssertFalse(message.contains("--window-id W"), message)
         XCTAssertFalse(message.contains("--url matches a *substring*"), message)
+    }
+
+    // MARK: verify F12 — the labelled listings redact the URLs they show
+
+    /// Every URL here carries something the redaction removes. The fragment is `fragZ9`, not `frag`, because the
+    /// hints themselves say "fragment".
+    private static let secretWindows: [FakeSafari.Window] = [
+        (101, "Home", ["https://user:pw@home.example/1?token=SECRET#fragZ9"]),
+        (303, "Work", ["https://work.example/a1?token=SECRET#fragZ9", "https://user:pw@work.example/a2?token=SECRET"]),
+        (404, "Work", ["https://work.example/b1#fragZ9"]),
+    ]
+
+    private static func info(_ windows: [FakeSafari.Window]) -> [SafariBridge.WindowInfo] {
+        windows.enumerated().map { offset, window in
+            SafariBridge.WindowInfo(windowIndex: offset + 1, currentTabIndex: 1,
+                                    tabs: window.tabs.enumerated().map { tab($0.offset + 1, $0.element, current: $0.offset == 0) },
+                                    profile: window.profile, windowID: window.id)
+        }
+    }
+
+    private func assertRedacted(_ error: Error, _ what: String, file: StaticString = #filePath, line: UInt = #line) {
+        let renderings = ["\(error)", error.localizedDescription, (error as? LocalizedError)?.errorDescription ?? ""]
+        for rendering in renderings {
+            for secret in ["SECRET", "fragZ9", "user:pw"] {
+                XCTAssertFalse(rendering.contains(secret), "\(what): \(rendering)", file: file, line: line)
+            }
+        }
+    }
+
+    /// The producers whose listings name window ids under `--profile` (the five in the resolver, the listing of a
+    /// profile with no window, and the miss translation through a fake Safari), plus `checkWindowID` and
+    /// `candidateSummary` for good measure: no rendering of the error, payload included (a daemon prints the
+    /// payload), shows a query, a fragment or credentials.
+    func testEveryLabelledListingRedactsItsURLs() async throws {
+        let windows = Self.info(Self.secretWindows)
+        let producers = Self.scopedMisses + [(.windowIndex(1), "Wrok"), (.windowID(999), "Work"), (.windowIndex(9), "Work")]
+        for (target, profile) in producers {
+            do {
+                _ = try SafariBridge.pickNativeTarget(target, in: windows, profile: profile)
+                XCTFail("\(target) must miss")
+            } catch {
+                guard case SafariBrowserError.documentNotFound(_, let entries) = error else { return XCTFail("\(target): \(error)") }
+                XCTAssertFalse(entries.isEmpty, "\(target)")
+                XCTAssertTrue(entries.allSatisfy { $0.contains("example/") }, "\(target): \(entries)")
+                assertRedacted(error, "\(target)")
+            }
+        }
+        let fake = FakeSafari(windows: Self.secretWindows)
+        do {
+            _ = try await fake.drive {
+                try await SafariBridge.getCurrentTitle(target: .resolvedTab(windowID: 202, tabInWindow: 1, rematch: nil, profile: "Work"))
+            }
+            XCTFail("must miss")
+        } catch {
+            guard case SafariBrowserError.documentNotFound(_, let entries) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(entries.count, 3, "\(entries)")
+            XCTAssertTrue(entries.allSatisfy { $0.contains("(window id ") }, "\(entries)")
+            assertRedacted(error, "miss translation")
+        }
     }
 
     /// The miss translation in `runTargetedAppleScript`: a resolved tab carrying a profile whose window is gone.
