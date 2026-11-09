@@ -29,15 +29,22 @@ def main():
         return 130
     if code != 0:
         return code if code > 0 else 1
+    # #357: XCTest writes skips between `with` and the failure count
+    # ("with 13 tests skipped and 0 failures"). A skip is not a failure, so the
+    # clause is optional, and only there; the failure count must still be 0.
     summary = re.search(
         r"^Test Suite '(?:All tests|Selected tests)' passed at [^\n]+\n"
-        r"\s*Executed ([1-9][0-9]*) tests?, with 0 failures \(0 unexpected\)",
+        r"\s*Executed ([1-9][0-9]*) tests?, with (?:([1-9][0-9]*) tests? skipped and )?0 failures \(0 unexpected\)",
         ''.join(lines), re.MULTILINE,
     )
     if summary is None:
         print('FAIL: XCTest completion summary missing or invalid; exit 0 alone is insufficient.', file=sys.stderr)
         return 1
-    print(f'Verified XCTest completion: {summary.group(1)} tests.')
+    executed, skipped = summary.group(1), summary.group(2)
+    if skipped is None:
+        print(f'Verified XCTest completion: {executed} tests.')
+    else:
+        print(f'Verified XCTest completion: {executed} tests ({skipped} skipped).')
     return 0
 
 

@@ -51,8 +51,11 @@ class UnitRunnerTests(unittest.TestCase):
         self.assertEqual(self.run_fake(output).returncode,0)
 
     def test_skipped_summary_with_a_failure_still_fails(self):
-        output=COMPLETE.replace('with 0 failures','with 2 tests skipped and 1 failure')
-        self.assertNotEqual(self.run_fake(output).returncode,0)
+        # `10 failures` ends in `0 failures`: only the skip clause may be optional.
+        for failures in ('1 failure','10 failures'):
+            with self.subTest(failures=failures):
+                output=COMPLETE.replace('with 0 failures','with 2 tests skipped and '+failures)
+                self.assertNotEqual(self.run_fake(output).returncode,0)
 
     def test_success_line_shows_the_skip_count(self):
         result=self.run_fake(COMPLETE.replace('12 tests, with 0 failures','2407 tests, with 13 tests skipped and 0 failures'))
