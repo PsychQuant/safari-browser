@@ -42,6 +42,23 @@ final class TabsClosedWindowTests: XCTestCase, @unchecked Sendable {
         try await tabs([], on: fake)
     }
 
+    /// Verify F5/F7: with no Safari window, `tabs --window 1` is a miss whose listing is empty, and the hint does
+    /// not describe entries that are not there.
+    func testTabsWithAWindowNumberAndNoWindowIsAMissThatListsNothing() async throws {
+        let fake = FakeSafari(windows: [])
+        do {
+            try await tabs(["--window", "1", "--json"], on: fake)
+            XCTFail("no window is open")
+        } catch let error as SafariBrowserError {
+            guard case .documentNotFound(let pattern, let entries) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(pattern, "window 1")
+            XCTAssertEqual(entries, [])
+            let message = error.localizedDescription
+            XCTAssertFalse(message.contains("each entry above"), message)
+            XCTAssertTrue(message.contains("no Safari documents are currently open"), message)
+        }
+    }
+
     func testTabsWithAWindowNumberThatIsNotOpenIsATargetingMiss() async throws {
         let fake = FakeSafari(windows: FakeSafari.workIsTwoAndThree)
         do {

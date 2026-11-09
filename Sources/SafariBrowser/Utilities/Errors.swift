@@ -770,8 +770,8 @@ extension SafariBrowserError {
                 """
         }
         let positional = pattern.hasPrefix("window ") || pattern.hasPrefix("document ")
-        if positional, !listing.isEmpty, listing.allSatisfy({ $0.hasPrefix("(") }) {
-            // #362: every entry is a note, so none has coordinates to copy.
+        if positional, listing.allSatisfy({ $0.hasPrefix("(") }) {
+            // #362: every entry is a note, or there is none (verify F5/F7), so none has coordinates to copy.
             return """
                 Hint: no tab is listed above. Run `safari-browser documents` to see the open tabs and their
                       coordinates, then target one with --window N --tab-in-window M. (With --profile, N counts
@@ -781,20 +781,24 @@ extension SafariBrowserError {
         let windowIDs = listingWindowIDs(listing)
         if positional {
             switch windowIDs {
+            // Verify F10: an entry of a window-level miss names a window and its current tab's URL, no tab
+            // number, so the advice covers both kinds of entry. F13: the miss line repeats what was typed,
+            // which can be a profile's ordinal; only the numbers in the entries are Safari's.
             case .named:
                 return """
-                    Hint: each entry above names its window's id — target one with
-                          --window-id W --tab-in-window M, which selects that tab with or without --profile.
-                          The window numbers shown are Safari's own, as `safari-browser documents` prints them;
-                          with --profile, --window N counts only that profile's windows, so do not copy them
-                          into --window. A window's id lasts only while it is open.
+                    Hint: each entry above names its window's id — target that window with --window-id W,
+                          adding --tab-in-window M where the entry names a tab; this selects the tab the entry
+                          shows, with or without --profile. The window numbers in the entries are Safari's
+                          own, as `safari-browser documents` prints them; with --profile, --window N counts
+                          only that profile's windows, so do not copy them into --window. A window's id lasts
+                          only while it is open.
                     """
             case .missing:
                 return """
-                    Hint: each entry above shows Safari's own window and tab numbers, as
-                          `safari-browser documents` prints them — target one with --window N --tab-in-window M
-                          without --profile (with --profile, N counts only that profile's windows). These
-                          entries carry no window id to use with --window-id.
+                    Hint: each entry above shows Safari's own window number, as `safari-browser documents`
+                          prints it — target that window with --window N without --profile, adding
+                          --tab-in-window M where the entry names a tab (with --profile, N counts only that
+                          profile's windows). These entries carry no window id to use with --window-id.
                     """
             case .none:
                 return """
@@ -812,8 +816,8 @@ extension SafariBrowserError {
             retarget = """
                 Or target
                       one listed tab with --window-id W --tab-in-window M (each entry names its window's id;
-                      the window numbers shown are Safari's own, and with --profile, --window N counts only
-                      that profile's windows, so do not copy them into --window).
+                      the window numbers in the entries are Safari's own, and with --profile, --window N counts
+                      only that profile's windows, so do not copy them into --window).
                 """
         case .missing:
             retarget = """

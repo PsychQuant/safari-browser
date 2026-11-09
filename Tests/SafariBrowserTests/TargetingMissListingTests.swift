@@ -107,7 +107,7 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
     func testTheHintPointsAtWindowIDWhenTheEntriesCarryIDs() {
         for (target, profile) in Self.scopedMisses {
             let message = flat(text(miss(target, profile: profile)))
-            XCTAssertTrue(message.contains("--window-id W --tab-in-window M"), "\(target): \(message)")
+            XCTAssertTrue(message.contains("--window-id W") && message.contains("--tab-in-window M"), "\(target): \(message)")
             XCTAssertFalse(message.contains("target one with --window N --tab-in-window M"), "\(target): \(message)")
             XCTAssertFalse(message.contains("Or target positionally with --window N --tab-in-window M"), "\(target): \(message)")
         }
@@ -149,6 +149,42 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
         let message = flat(SafariBrowserError.documentNotFound(pattern: "window 1 tab 9",
             availableDocuments: ["window 1 tab 1: https://a.example/(window%20id%20)/(window id 5)"]).localizedDescription)
         XCTAssertTrue(message.contains("target one with --window N --tab-in-window M"), message)
+    }
+
+    // MARK: verify F8, F10, F13 — what the hint says about the entries it points at
+
+    /// Verify F8: `checkWindowID` labels a record without an id the way `entryLabel` does, so a `--window-id`
+    /// miss under `--profile` on legacy records gets the no-id hint, not `--window N` with the profile still set.
+    func testAWindowIDMissOnLegacyRecordsUnderAProfileSaysTheyHaveNoID() throws {
+        let found = miss(.windowID(999), profile: "Work", in: Self.windows(ids: false))
+        XCTAssertEqual(found.entries, [
+            "window 2 (no window id): https://work.example/a1",
+            "window 3 (no window id): https://work.example/b1",
+        ])
+        let message = flat(text(found))
+        XCTAssertTrue(message.contains("--window N without --profile"), message)
+        XCTAssertTrue(message.contains("carry no window id"), message)
+        XCTAssertFalse(message.contains("each entry above shows its own coordinates"), message)
+        // Copied as the hint says, without --profile, the number selects the window listed.
+        XCTAssertEqual(try SafariBridge.pickNativeTarget(.windowIndex(3), in: Self.windows(ids: false)).windowIndex, 3)
+    }
+
+    /// Verify F10: a window-level entry names no tab, so the hint does not ask for one it cannot supply.
+    func testAWindowLevelListingIsTargetedByWindowIDAlone() {
+        for ids in [true, false] {
+            let message = flat(text(miss(.documentIndex(99), profile: "Work", in: Self.windows(ids: ids))))
+            XCTAssertTrue(message.contains("adding --tab-in-window M where the entry names a tab"), message)
+            XCTAssertFalse(message.contains("--window-id W --tab-in-window M,"), message)
+            XCTAssertFalse(message.contains("target one with --window N --tab-in-window M"), message)
+        }
+    }
+
+    /// Verify F13: the miss line repeats what was typed (here the profile's own ordinal, `window 1`); only the
+    /// numbers in the entries are Safari's.
+    func testTheHintSaysWhichNumbersAreSafarisOwn() {
+        let message = flat(text(miss(.windowTab(window: 1, tabInWindow: 99), profile: "Work")))
+        XCTAssertTrue(message.contains("The window numbers in the entries are Safari's own"), message)
+        XCTAssertFalse(message.contains("The window numbers shown are Safari's own"), message)
     }
 
     // MARK: verify F2 — no window of the profile is open
@@ -216,7 +252,7 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
                 "window 3 tab 1 (window id 404): https://work.example/b1",
             ])
             let message = flat(SafariBrowserError.documentNotFound(pattern: "window id 202 tab 1", availableDocuments: entries).localizedDescription)
-            XCTAssertTrue(message.contains("--window-id W --tab-in-window M"), message)
+            XCTAssertTrue(message.contains("--window-id W") && message.contains("--tab-in-window M"), message)
         }
     }
 }

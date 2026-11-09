@@ -2841,7 +2841,8 @@ enum SafariBridge {
         throw SafariBrowserError.documentNotFound(
             pattern: "window id \(windowID)\(scope)",
             availableDocuments: candidates.map { w -> String in
-                let id = w.windowID.map { "window id \($0)" } ?? "window \(w.windowIndex) (no id)"
+                // #362 verify F8: the same spelling as `entryLabel`, which `listingWindowIDs` recognises.
+                let id = w.windowID.map { "window id \($0)" } ?? "window \(w.windowIndex) (no window id)"
                 let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(0 tabs)"
                 return "\(id): \(cur)"
             }

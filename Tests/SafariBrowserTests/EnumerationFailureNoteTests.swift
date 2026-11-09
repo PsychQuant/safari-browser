@@ -9,11 +9,15 @@ final class EnumerationFailureNoteTests: XCTestCase, @unchecked Sendable {
 
     // MARK: item 2 and the notes-only listing
 
-    /// No entry has coordinates, so the hint does not say each one does.
+    /// No entry has coordinates, so the hint does not say each one does. An empty listing has no entry at all
+    /// (verify F5/F7): `tabs --window 1` with no Safari window reaches it.
     func testANotesOnlyListingDoesNotClaimCoordinates() {
-        for listing in [["(no window of profile \"Work\" is open)"], ["(no such window)"]] {
-            let message = flat(SafariBrowserError.documentNotFound(pattern: "window 5", availableDocuments: listing).localizedDescription)
-            XCTAssertFalse(message.contains("each entry above shows its own coordinates"), message)
+        for listing in [["(no window of profile \"Work\" is open)"], ["(no such window)"], []] {
+            for pattern in ["window 5", "document 3"] {
+                let message = flat(SafariBrowserError.documentNotFound(pattern: pattern, availableDocuments: listing).localizedDescription)
+                XCTAssertFalse(message.contains("each entry above"), "\(listing): \(message)")
+                XCTAssertTrue(message.contains("no tab is listed above"), "\(listing): \(message)")
+            }
         }
     }
 

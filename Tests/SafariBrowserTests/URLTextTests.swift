@@ -537,10 +537,13 @@ final class URLTextTests: XCTestCase {
     }
 
     /// A listing can be scoped to one window, and `--document N` numbers the tabs as `documents`
-    /// does, so the hints do not promise that `[N]` is a document number.
+    /// does, so the hints do not promise that `[N]` is a document number. (#362 verify F5/F7: a
+    /// positional miss with an empty listing shows no `[N]` and gets the hint for a listing without
+    /// entries, so the listing here has one entry.)
     func testTheHintsDoNotPromiseThatTheListedNumberIsADocumentNumber() {
         for pattern in ["some-substring", "window 9", "document 9"] {
-            let flat = SafariBrowserError.targetingHint(for: pattern).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            let hint = SafariBrowserError.targetingHint(for: pattern, listing: ["window 1 tab 1: https://a.example/"])
+            let flat = hint.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             XCTAssertFalse(flat.contains("for the [N] index"), "\(pattern): \(flat)")
             XCTAssertTrue(flat.contains("can differ from the [N] shown above"), "\(pattern): \(flat)")
         }
