@@ -151,6 +151,56 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(message.contains("target one with --window N --tab-in-window M"), message)
     }
 
+    // MARK: verify F2 — no window of the profile is open
+
+    /// The listing names every other profile's windows by Safari's number and profile, and now by id too; the
+    /// hint says what happened and points at the ids, not at the `--url` substring advice or at `--window N`.
+    func testAProfileWithNoWindowListsTheOtherProfilesWindowsWithTheirIDs() throws {
+        let found = miss(.windowIndex(2), profile: "Wrok")
+        XCTAssertEqual(found.pattern, "(profile: \"Wrok\")")
+        XCTAssertEqual(found.entries, [
+            "window 1 [Home] (window id 101): https://home.example/1",
+            "window 2 [Work] (window id 303): https://work.example/a1",
+            "window 3 [Work] (window id 404): https://work.example/b1",
+        ])
+        let message = flat(text(found))
+        XCTAssertTrue(message.contains("no window of the profile named in --profile is open"), message)
+        XCTAssertTrue(message.contains("--window-id W"), message)
+        XCTAssertFalse(message.contains("--url matches a *substring*"), message)
+        XCTAssertFalse(message.contains("target one with --window N"), message)
+        XCTAssertFalse(message.contains("Or target positionally"), message)
+        XCTAssertFalse(message.contains("(no window id)"), message)
+        // Copied as the hint says, each id selects the window its entry names, without --profile and with the
+        // profile shown in brackets.
+        for (id, window, profile) in [(101, 1, "Home"), (303, 2, "Work"), (404, 3, "Work")] {
+            for scope in [nil, profile] {
+                let resolved = try SafariBridge.pickNativeTarget(.windowID(id), in: Self.windows(), profile: scope)
+                XCTAssertEqual(resolved.windowIndex, window, "window id \(id), profile \(scope ?? "none")")
+            }
+        }
+    }
+
+    /// Legacy records carry no id: the entry says so, and the hint gives the way that still works for them.
+    func testAProfileWithNoWindowOnLegacyRecordsSaysTheyHaveNoID() throws {
+        let found = miss(.frontWindow, profile: "Wrok", in: Self.windows(ids: false))
+        XCTAssertEqual(found.entries.first, "window 1 [Home] (no window id): https://home.example/1")
+        let message = flat(text(found))
+        XCTAssertTrue(message.contains("An entry that says (no window id) is targeted with --window N without --profile"), message)
+        XCTAssertFalse(message.contains("--url matches a *substring*"), message)
+        let resolved = try SafariBridge.pickNativeTarget(.windowIndex(2), in: Self.windows(ids: false))
+        XCTAssertEqual(resolved.windowIndex, 2)
+    }
+
+    /// No window at all: there is nothing listed to point at.
+    func testAProfileWithNoWindowAndNothingElseOpenListsNothingToCopy() {
+        let found = miss(.frontWindow, profile: "Work", in: [])
+        XCTAssertEqual(found.entries, [])
+        let message = flat(text(found))
+        XCTAssertTrue(message.contains("no window of another profile is listed either"), message)
+        XCTAssertFalse(message.contains("--window-id W"), message)
+        XCTAssertFalse(message.contains("--url matches a *substring*"), message)
+    }
+
     /// The miss translation in `runTargetedAppleScript`: a resolved tab carrying a profile whose window is gone.
     func testTheMissTranslationListsTheProfilesTabsWithTheirIDs() async throws {
         let fake = FakeSafari(windows: FakeSafari.workIsTwoAndThree)

@@ -698,6 +698,10 @@ extension SafariBrowserError {
     /// #362: how every `documentNotFound` note about a failed enumeration begins.
     static let enumerationFailurePrefix = "(the open tabs could not be listed"
 
+    /// #362 verify F2: the pattern of the miss `SafariBridge.pickNativeTarget` throws when no window of the
+    /// profile given is open, `(profile: "X")`; no other producer's pattern begins this way.
+    static let profileMissPrefix = "(profile: \""
+
     /// #362: the one listing entry of a miss whose follow-up enumeration failed. It names the kind of
     /// failure and its AppleScript error code, never the error's own text, which can quote a tab's URL
     /// (#227), and it makes no claim about what is open.
@@ -729,6 +733,30 @@ extension SafariBrowserError {
                 Hint: the target was not found, and the open tabs could not be listed afterwards, so the
                       listing above says nothing about what is open. Run `safari-browser documents` to see
                       the open tabs and their coordinates, then retarget.
+                """
+        }
+        // #362 verify F2: no window of the profile given is open, so the listing names the windows of other
+        // profiles (`window 2 [Work] (window id 303): …`). The `--url` substring advice does not apply, and a
+        // number copied into `--window N` with `--profile` counts only that profile's windows.
+        if pattern.hasPrefix(profileMissPrefix) {
+            if listing.isEmpty {
+                return """
+                    Hint: no window of the profile named in --profile is open, and no window of another profile
+                          is listed either. Run `safari-browser documents` to see what is open.
+                    """
+            }
+            let legacy = listingWindowIDs(listing) == .missing ? """
+
+                      An entry that says (no window id) is targeted with --window N without --profile, using
+                      the number shown.
+                """ : ""
+            return """
+                Hint: no window of the profile named in --profile is open. The windows listed above belong to
+                      other profiles, each one's profile shown in brackets: check the --profile name against
+                      them. To target a listed window, use --window-id W with the id its entry names, without
+                      --profile or with the profile shown beside it. The window numbers in the entries are
+                      Safari's own; with --profile, --window N counts only that profile's windows, so do not
+                      copy them into --window with --profile. A window's id lasts only while it is open.\(legacy)
                 """
         }
         // #352: not positional — sending the reader to `--window N` would swap a

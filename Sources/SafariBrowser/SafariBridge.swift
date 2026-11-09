@@ -2796,13 +2796,17 @@ enum SafariBridge {
         if let profile = profile {
             candidates = windows.filter { $0.profile == profile }
             if candidates.isEmpty {
+                // #362 verify F2: every window listed belongs to another profile, so a Safari number copied
+                // into `--window N --profile <that profile>` counts that profile's windows and can select
+                // another one. Each entry also names its window's id, which selects it with or without
+                // `--profile`; `targetingHint` gives this miss its own hint, keyed on the pattern.
                 let available = windows.map { w -> String in
                     let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
                     let p = w.profile ?? "(no profile)"
-                    return "window \(w.windowIndex) [\(p)]: \(cur)"
+                    return "window \(w.windowIndex) [\(p)] \(windowIDNote(w.windowID)): \(cur)"
                 }
                 throw SafariBrowserError.documentNotFound(
-                    pattern: "(profile: \"\(profile)\")",
+                    pattern: SafariBrowserError.profileMissPrefix + profile + "\")",
                     availableDocuments: available
                 )
             }
@@ -2890,8 +2894,14 @@ enum SafariBridge {
     static func entryLabel(window: Int, tab: Int?, windowID: Int?, scoped: Bool) -> String {
         let label = tab.map { "window \(window) tab \($0)" } ?? "window \(window)"
         guard scoped else { return label }
-        guard let windowID, windowID > 0 else { return label + " (no window id)" }
-        return label + " (window id \(windowID))"
+        return label + " " + windowIDNote(windowID)
+    }
+
+    /// #362: how a listing entry names its window's id, `(window id 4711)`, or says that the enumeration record
+    /// has none, `(no window id)`; `SafariBrowserError.listingWindowIDs` reads these two spellings.
+    static func windowIDNote(_ windowID: Int?) -> String {
+        guard let windowID, windowID > 0 else { return "(no window id)" }
+        return "(window id \(windowID))"
     }
 
     private static func pickNativeTargetCore(
