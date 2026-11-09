@@ -708,8 +708,6 @@ extension SafariBrowserError {
             kind = SafariBridge.appleScriptErrorCode(in: message).map { "AppleScript error \($0)" } ?? "an AppleScript error"
         case SafariBrowserError.processTimedOut(_, let seconds):
             kind = "timed out after \(seconds) s"
-        case SafariBrowserError.windowEnumerationCorrupt:
-            kind = "the list came back malformed"
         default:
             kind = "an unexpected \(type(of: error))"
         }
