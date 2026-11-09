@@ -23,8 +23,14 @@
 - [x] 3.1 `ExecCommand.execute` 一開始釘住（requirement「Shared target resolution」）；`viaDaemon` 改收 `(ExecCommand, [ScriptStep])`，`daemonEnvelope` 編出釘住的 `targetArgs`；子行程路線把釘住的目標交給 `ScriptInterpreter`，`execute` 新增 `stepDispatcher` 參數；三個既有測試照著改。驗證：daemon 路線測試斷言 envelope 的 `targetArgs` 是 `--window-id W --pinned-from-window N`；子行程路線以記錄用 dispatcher 斷言每一步的共用參數相同、整段只讀一次 id
 - [x] 3.2 `InProcessStepDispatcher` 的 `resolveConcrete` 先釘住：步驟自己的 `--window N` 在那一步開頭釘住，共用參數已是 `--window-id` 時不送 Apple event。驗證：in-process 測試（步驟自帶 `--window 2`、共用 `--window-id`）
 
+- ASSUMPTION（實作時決定，verify 時請挑戰）：
+  - `--pinned-from-window` 不列入 `targetFlagNames`：script-exec 的目標旗標是十個的封閉列舉，這個私有選項只由 `encodeTargetArgs` 寫進共用參數。
+  - `pdf-cache get` 只讀一次分頁網址，仍在讀之前釘住：讀網址前還有 dialog probe，兩者原本各查一次 `window N`。
+  - 標 `[P]` 的任務依序完成，未分派平行 agent：每個都要改 `TargetOptions` 與 `SafariBridge` 已定下的介面，平行改同一批呼叫點容易互相覆蓋。
+  - `spectra` CLI 以 git 的共用目錄定位專案（會寫到另一個 checkout），本變更的 `spectra analyze`／`validate` 在只含 `openspec/` 的暫存鏡像中執行，產出只寫在這個 worktree。
+
 ## 4. 規格、文件與驗收
 
-- [ ] 4.1 [P] `--window` 的 `--help` 說明「在指令開頭解析成視窗 id」；`CHANGELOG.md`（Unreleased）與 `CLAUDE.md` 的 multi-window 段落寫明語意、範圍、例外、`open --window N` 的行為改變與已知限制。驗證：內容檢查
+- [x] 4.1 [P] `--window` 的 `--help` 說明「在指令開頭解析成視窗 id」；`CHANGELOG.md`（Unreleased）與 `CLAUDE.md` 的 multi-window 段落寫明語意、範圍、例外、`open --window N` 的行為改變與已知限制。驗證：內容檢查
 - [ ] 4.2 全套 `swift test` 通過；mutation 各做一次並有具名測試抓到：拿掉釘住、釘住移到 `--mark-tab` 包上之後、`exec` 不釘、拿掉「讀不到維持位置」。驗證：`swift test` 計數與 mutation 紀錄
 - [ ] 4.3 真機驗收（需維護者）：多個視窗、Safari 不在前景時，在 `click --mark-tab --window 2` 的步驟之間把另一個視窗拉到前面，確認仍在原視窗；途中關掉視窗得到寫出 `--window 2` 的 `documentNotFound`；`open --window 2 <url>` 最後才 `activate`。驗證：真機紀錄寫進 issue；未做時照實標示
