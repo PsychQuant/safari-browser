@@ -36,6 +36,22 @@ final class TabsClosedWindowTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    /// #362 verify r2 F (finding 20): a window named by id that closes keeps the miss `--window-id` gives (#352),
+    /// which names the id; the rewording for a window resolved from `--window N` or `--profile` does not apply.
+    func testTabsWithAWindowIDThatClosesNamesThatID() async throws {
+        for (args, expected) in [(["--window-id", "303"], "window id 303"),
+                                 (["--window-id", "303", "--profile", "Work"], "window id 303 (profile: \"Work\")")] {
+            let fake = FakeSafari(windows: FakeSafari.workIsTwoAndThree)
+            fake.closesOnRead = 303
+            do {
+                try await tabs(args, on: fake)
+                XCTFail("\(args): window 303 closed")
+            } catch SafariBrowserError.documentNotFound(let pattern, _) {
+                XCTAssertEqual(pattern, expected, "\(args)")
+            }
+        }
+    }
+
     /// No window was named: the front window's list is what was asked for, and an empty Safari has none.
     func testTabsWithNoFlagAndNoWindowsStillPrintsNothing() async throws {
         let fake = FakeSafari(windows: [])

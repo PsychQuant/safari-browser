@@ -73,6 +73,29 @@ final class EnumerationFailureNoteTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    /// #362 verify r2 F (finding 16): a URL target whose tab disappeared, and whose follow-up enumeration failed, gets
+    /// the failure hint, not the URL hint's advice about entries and coordinates.
+    func testAURLTargetWhoseEnumerationFailsGetsTheFailureHint() async throws {
+        let fake = FakeSafari(windows: FakeSafari.workIsTwoAndThree)
+        fake.closesAfterListing = (404, 1)
+        fake.listingError = SafariBrowserError.processTimedOut(command: "osascript", seconds: 9)
+        fake.listingErrorFrom = 2
+        do {
+            var command = try GetTitle.parse(["--url", "b1"])
+            try await fake.drive { try await command.run() }
+            XCTFail("the tab closed")
+        } catch let error as SafariBrowserError {
+            guard case .documentNotFound(let pattern, let entries) = error else { return XCTFail("\(error)") }
+            XCTAssertEqual(pattern, "b1")
+            XCTAssertEqual(entries.count, 1, "\(entries)")
+            let message = flat(error.localizedDescription)
+            XCTAssertTrue(message.contains("the open tabs could not be listed afterwards"), message)
+            XCTAssertFalse(message.contains("coordinates are shown per entry"), message)
+            XCTAssertFalse(message.contains("Refine it against the URLs above"), message)
+        }
+        XCTAssertEqual(fake.listings, 2)
+    }
+
     func testACancelledEnumerationIsNotReportedAsAMiss() async throws {
         let fake = FakeSafari(windows: FakeSafari.workIsTwoAndThree)
         fake.listingError = CancellationError()
