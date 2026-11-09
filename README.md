@@ -1011,8 +1011,15 @@ can retarget positionally (#72).
 numbers.
 
 **To keep targeting the same window while others move** use `--window-id`
-(#352). `--window N` counts windows from the front, so a window raised in
-between (by you, or by Safari being activated) changes what N names.
+(#352). `--window N` counts windows from the front when a command starts, so a
+window raised between two commands (by you, or by Safari being activated)
+changes what N names. Within one command it does not (#354): a command that
+reads or acts on a tab reads the id of the window that is N when it starts and
+addresses that id from then on, failing with
+`No Safari document matches window N (window id W at command start)` if the
+window closes mid-command; when the id cannot be read at start, N stays a
+position. `close`, `screenshot`, `pdf` and native `upload` still look the
+position up (#353).
 `--window-id` takes Safari's own window id, which does not change while the
 window is open: read it from `documents --json` (`window_id`). A missing id, or
 a window outside `--profile`, fails with `No Safari document matches`; it never
@@ -1031,7 +1038,8 @@ miss (window closed, tab moved, or navigated to a non-matching URL) the
 command re-resolves once **within the same window and profile** and
 otherwise fails closed with `targetTabChanged` — never a silent wrong-tab
 dispatch. Explicit `--window N` / `--tab-in-window M` stay positional
-**by design**: those flags mean "whatever sits at this position right now".
+**by design**: those flags mean "whatever sits at this position when the
+command starts" (#354).
 
 Known boundaries: a same-tab navigation to a URL that *still matches* your
 pattern resets the page's JS context between round-trips — the guard cannot
