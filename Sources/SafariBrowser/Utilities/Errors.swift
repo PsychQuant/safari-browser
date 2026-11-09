@@ -752,12 +752,55 @@ extension SafariBrowserError {
                       only that profile's windows.)
                 """
         }
+        let windowIDs = listingWindowIDs(listing)
         if positional {
-            return """
-                Hint: each entry above shows its own coordinates — target one with
-                      --window N --tab-in-window M. (With --profile, N counts only that
-                      profile's windows. --document N numbers the tabs as `safari-browser documents`
-                      does, which can differ from the [N] shown above.)
+            switch windowIDs {
+            case .named:
+                return """
+                    Hint: each entry above names its window's id — target one with
+                          --window-id W --tab-in-window M, which selects that tab with or without --profile.
+                          The window numbers shown are Safari's own, as `safari-browser documents` prints them;
+                          with --profile, --window N counts only that profile's windows, so do not copy them
+                          into --window. A window's id lasts only while it is open.
+                    """
+            case .missing:
+                return """
+                    Hint: each entry above shows Safari's own window and tab numbers, as
+                          `safari-browser documents` prints them — target one with --window N --tab-in-window M
+                          without --profile (with --profile, N counts only that profile's windows). These
+                          entries carry no window id to use with --window-id.
+                    """
+            case .none:
+                return """
+                    Hint: each entry above shows its own coordinates — target one with
+                          --window N --tab-in-window M. (With --profile, N counts only that
+                          profile's windows. --document N numbers the tabs as `safari-browser documents`
+                          does, which can differ from the [N] shown above.)
+                    """
+            }
+        }
+        // Continuation lines carry the hint's own six-space indent: the interpolation below does not add it.
+        let retarget: String
+        switch windowIDs {
+        case .named:
+            retarget = """
+                Or target
+                      one listed tab with --window-id W --tab-in-window M (each entry names its window's id;
+                      the window numbers shown are Safari's own, and with --profile, --window N counts only
+                      that profile's windows, so do not copy them into --window).
+                """
+        case .missing:
+            retarget = """
+                Or target
+                      positionally with --window N --tab-in-window M without --profile (the numbers shown
+                      are Safari's own; with --profile, N counts only that profile's windows).
+                """
+        case .none:
+            retarget = """
+                Or target
+                      positionally with --window N --tab-in-window M (coordinates are shown per entry;
+                      with --profile, N counts only that profile's windows; --document N numbers the
+                      tabs as `safari-browser documents` does, which can differ from the [N] shown above).
                 """
         }
         return """
@@ -767,11 +810,23 @@ extension SafariBrowserError {
                   full). An entry with a `…` marker (`?…`, `#…`, `…@`, `;…`) shows less than the URL
                   and is not itself part of any URL: copy only what precedes its first marker (it can
                   be short, as in `https://…@host`) into --url, and take the whole URL from
-                  `safari-browser documents` for --url-exact or --url-endswith. Or target
-                  positionally with --window N --tab-in-window M (coordinates are shown per entry;
-                  with --profile, N counts only that profile's windows; --document N numbers the
-                  tabs as `safari-browser documents` does, which can differ from the [N] shown above).
+                  `safari-browser documents` for --url-exact or --url-endswith. \(retarget)
                   For stricter matching see --url-exact / --url-endswith / --url-regex.
             """
+    }
+
+    /// #362: whether a listing's entries name their windows' ids, read from each entry's label (the text
+    /// before its first `: `), never from the URL after it. `SafariBridge.entryLabel` builds the labels.
+    enum ListingWindowIDs { case none, named, missing }
+
+    static func listingWindowIDs(_ listing: [String]) -> ListingWindowIDs {
+        let labels = listing.filter { !$0.hasPrefix("(") }
+            .map { entry in entry.range(of: ": ").map { String(entry[..<$0.lowerBound]) } ?? entry }
+        if labels.contains(where: { $0.hasSuffix(" (no window id)") }) { return .missing }
+        let named = #"^window \d+( tab \d+)? \(window id \d+\)$"#
+        if !labels.isEmpty, labels.allSatisfy({ $0.range(of: named, options: .regularExpression) != nil }) {
+            return .named
+        }
+        return .none
     }
 }

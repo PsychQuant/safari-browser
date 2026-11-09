@@ -962,10 +962,15 @@ enum SafariBridge {
                 // #72: carry each tab's coordinates, not just its URL — the
                 // error's hint tells the reader to retarget with
                 // `--window N --tab-in-window M`, which is unusable advice
-                // when the listing does not say what N and M are.
+                // when the listing does not say what N and M are. #362: a
+                // listing narrowed by a profile also names each window's id.
+                let scoped: Bool
+                if case .resolvedTab(_, _, _, _?) = target { scoped = true } else { scoped = false }
                 throw SafariBrowserError.documentNotFound(
                     pattern: targetDescription(target),
-                    availableDocuments: docs.map { "window \($0.window) tab \($0.tabInWindow): \(URLText.redactURL($0.url))" }
+                    availableDocuments: docs.map {
+                        "\(entryLabel(window: $0.window, tab: $0.tabInWindow, windowID: $0.windowID, scoped: scoped)): \(URLText.redactURL($0.url))"
+                    }
                 )
             }
             throw error
@@ -2804,7 +2809,7 @@ enum SafariBridge {
         } else {
             candidates = windows
         }
-        return try pickNativeTargetCore(target, in: candidates)
+        return try pickNativeTargetCore(target, in: candidates, scope: profile)
     }
 
     /// #352: the window whose stable AppleScript id is `windowID`, among the
@@ -2863,19 +2868,39 @@ enum SafariBridge {
         }
     }
 
-    /// Every tab of `windows`, or of `profile`'s windows when a resolved target carries one.
-    private static func listing(_ windows: [WindowInfo], within profile: String?) -> [String] {
+    /// Every tab of `windows`, or of `profile`'s windows when a resolved target carries one. `scope` is the
+    /// profile the resolver already narrowed `windows` to, if any.
+    private static func listing(_ windows: [WindowInfo], within profile: String?, scope: String?) -> [String] {
         let scoped = windows.filter { profile == nil || $0.profile == profile }
         if let profile, scoped.isEmpty { return ["(no window of profile \"\(profile)\" is open)"] }
+        let named = (profile ?? scope) != nil
         return scoped.flatMap { w in
-            w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
+            w.tabs.map {
+                "\(entryLabel(window: w.windowIndex, tab: $0.tabIndex, windowID: w.windowID, scoped: named)): \(URLText.redactURL($0.url))"
+            }
         }
+    }
+
+    /// #362: the label of an entry in a `documentNotFound` listing. The numbers stay Safari's own, the ones
+    /// `documents` prints (document-listing, "Discovery aid"). A listing narrowed by a profile also names
+    /// each window's id: with `--profile`, `--window N` counts only that profile's windows, so a Safari
+    /// number copied into it can select another window, while `--window-id W` selects the listed one with
+    /// or without `--profile`. A legacy record has no id, and its label says so. Built here, at the
+    /// producers, because a daemon prints the payload, not the rendered message (#227).
+    static func entryLabel(window: Int, tab: Int?, windowID: Int?, scoped: Bool) -> String {
+        let label = tab.map { "window \(window) tab \($0)" } ?? "window \(window)"
+        guard scoped else { return label }
+        guard let windowID, windowID > 0 else { return label + " (no window id)" }
+        return label + " (window id \(windowID))"
     }
 
     private static func pickNativeTargetCore(
         _ target: TargetDocument,
-        in windows: [WindowInfo]
+        in windows: [WindowInfo],
+        scope: String? = nil
     ) throws -> ResolvedWindowTarget {
+        // #362: `scope` is the profile `windows` was narrowed to; its listings name window ids.
+        let scoped = scope != nil
         switch target {
         case .frontWindow:
             // Trivial case — skipped by the async orchestrator anyway,
@@ -2906,7 +2931,7 @@ enum SafariBridge {
             guard let window = windows.first(where: { $0.windowID == windowID }) else {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window id \(windowID) tab \(tab)",
-                    availableDocuments: listing(windows, within: carried)
+                    availableDocuments: listing(windows, within: carried, scope: scope)
                 )
             }
             return ResolvedWindowTarget(
@@ -2969,7 +2994,9 @@ enum SafariBridge {
                 throw SafariBrowserError.documentNotFound(
                     pattern: "document \(n)",
                     availableDocuments: windows.flatMap { w in
-                        w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
+                        w.tabs.map {
+                            "\(entryLabel(window: w.windowIndex, tab: $0.tabIndex, windowID: w.windowID, scoped: scoped)): \(URLText.redactURL($0.url))"
+                        }
                     }
                 )
             }
@@ -2997,7 +3024,7 @@ enum SafariBridge {
             let totalTabs = windows.reduce(0) { $0 + $1.tabs.count }
             let availableSummary = windows.map { w -> String in
                 let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(unknown)"
-                return "window \(w.windowIndex): \(cur) (\(w.tabs.count) tab(s))"
+                return "\(entryLabel(window: w.windowIndex, tab: nil, windowID: w.windowID, scoped: scoped)): \(cur) (\(w.tabs.count) tab(s))"
             }
             throw SafariBrowserError.documentNotFound(
                 pattern: "document \(n) (only \(totalTabs) tab(s) available)",
@@ -3019,7 +3046,9 @@ enum SafariBridge {
 
             if matches.isEmpty {
                 let allUrls = windows.flatMap { w in
-                    w.tabs.map { "window \(w.windowIndex) tab \($0.tabIndex): \(URLText.redactURL($0.url))" }
+                    w.tabs.map {
+                        "\(entryLabel(window: w.windowIndex, tab: $0.tabIndex, windowID: w.windowID, scoped: scoped)): \(URLText.redactURL($0.url))"
+                    }
                 }
                 throw SafariBrowserError.documentNotFound(
                     pattern: matcher.description,
@@ -3057,7 +3086,7 @@ enum SafariBridge {
             let window = windows[w - 1]
             if t < 1 || t > window.tabs.count {
                 let availableSummary = window.tabs.map { tab in
-                    "window \(window.windowIndex) tab \(tab.tabIndex): \(URLText.redactURL(tab.url))"
+                    "\(entryLabel(window: window.windowIndex, tab: tab.tabIndex, windowID: window.windowID, scoped: scoped)): \(URLText.redactURL(tab.url))"
                 }
                 throw SafariBrowserError.documentNotFound(
                     pattern: "window \(w) tab \(t) (window has \(window.tabs.count) tab(s))",
