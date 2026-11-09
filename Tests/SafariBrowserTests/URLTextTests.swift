@@ -509,8 +509,10 @@ final class URLTextTests: XCTestCase {
         XCTAssertEqual(rows.first?["url"] as? String, "https://cdn.example.org/f.pdf?X-Signature=\(secret)#frag")
     }
 
+    /// (#362 verify r2 B: a URL miss with no tab listed gets a hint without the marker advice, so the listing here
+    /// has one marked entry.)
     func testTheHintsSayThatEntriesAreShortenedAndWhereTheFullURLsAre() {
-        let hint = SafariBrowserError.targetingHint(for: "some-substring")
+        let hint = SafariBrowserError.targetingHint(for: "some-substring", listing: ["window 1 tab 1: https://a.example/p?…"])
         XCTAssertTrue(hint.contains("safari-browser documents"), hint)
         XCTAssertTrue(hint.contains("without"), hint)
         let flat = hint.split(whereSeparator: \.isWhitespace).joined(separator: " ")
@@ -555,9 +557,35 @@ final class URLTextTests: XCTestCase {
         func flat(_ text: String) -> String { text.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased() }
         let ambiguous = SafariBrowserError.ambiguousWindowMatch(pattern: "cdn", matches: [(windowIndex: 3, tabIndex: 1, url: "https://a.example/")]).errorDescription ?? ""
         XCTAssertTrue(flat(ambiguous).contains("with --profile, n counts only that profile's windows"), ambiguous)
+        // #362 verify r2 F (finding 8): a listing whose numbers are Safari's own, as the test was written for; an
+        // empty listing now gets the hint for a listing without entries.
         for pattern in ["some-substring", "window 9"] {
-            let hint = SafariBrowserError.targetingHint(for: pattern)
+            let hint = SafariBrowserError.targetingHint(for: pattern, listing: ["window 1 tab 1: https://a.example/"])
             XCTAssertTrue(flat(hint).contains("with --profile, n counts only that profile's windows"), "\(pattern): \(hint)")
+        }
+    }
+
+    /// #362 verify r2 F (finding 9): every hint, for every kind of listing #362 added, keeps the promise above: a hint
+    /// that names `--document N` says it numbers the tabs differently from `[N]`, and none calls `[N]` an index.
+    func testNoHintPromisesThatTheListedNumberIsADocumentNumber() {
+        let listings: [[String]] = [
+            [], ["(no such window)"], [SafariBrowserError.enumerationFailurePrefix + ": a timeout; nothing is known about what is open)"],
+            ["window 1 tab 1: https://a.example/"],
+            ["window 1 tab 1 (window id 101): https://a.example/"],
+            ["window 1 tab 1 (no window id): https://a.example/"],
+            ["window 1 tab 1 (window id 101): https://a.example/", "window 2 tab 1 (no window id): https://b.example/"],
+            ["window id 101: https://a.example/", "window 2 (no window id): https://b.example/"],
+            ["window 1 [Home] (window id 101): https://a.example/", "window 2 [(no profile)] (no window id): https://b.example/"],
+        ]
+        for pattern in ["some-substring", "window 9", "document 9", "window id 9", "(profile: \"P\")"] {
+            for listing in listings {
+                let hint = SafariBrowserError.targetingHint(for: pattern, listing: listing)
+                let flat = hint.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                XCTAssertFalse(flat.contains("for the [N] index"), "\(pattern) \(listing): \(flat)")
+                if flat.contains("--document") {
+                    XCTAssertTrue(flat.contains("can differ from the [N] shown above"), "\(pattern) \(listing): \(flat)")
+                }
+            }
         }
     }
 

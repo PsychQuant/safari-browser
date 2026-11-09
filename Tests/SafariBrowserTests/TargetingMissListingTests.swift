@@ -209,6 +209,101 @@ final class TargetingMissListingTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(message.contains("The window numbers shown are Safari's own"), message)
     }
 
+    // MARK: verify r2 C — a listing mixing entries with and without a window id
+
+    /// Work's window 2 has id 303, window 3 has none (a record whose id could not be read).
+    private static func mixedWindows() -> [SafariBridge.WindowInfo] {
+        windows().map { w in
+            w.windowIndex == 3
+                ? SafariBridge.WindowInfo(windowIndex: 3, currentTabIndex: 1, tabs: w.tabs, profile: w.profile, windowID: nil)
+                : w
+        }
+    }
+
+    /// Each kind of entry is told how it is targeted, and nothing says that no entry carries an id.
+    func testAMixedListingTellsEachKindOfEntryHowItIsTargeted() throws {
+        let misses: [(SafariBridge.TargetDocument, [String])] = [
+            (.documentIndex(99), ["window 2 (window id 303): https://work.example/a1 (2 tab(s))",
+                                  "window 3 (no window id): https://work.example/b1 (1 tab(s))"]),
+            (.urlMatch(.contains("nothing-matches")), ["window 2 tab 1 (window id 303): https://work.example/a1",
+                                                      "window 2 tab 2 (window id 303): https://work.example/a2",
+                                                      "window 3 tab 1 (no window id): https://work.example/b1"]),
+            (.windowID(999), ["window id 303: https://work.example/a1",
+                              "window 3 (no window id): https://work.example/b1"]),
+        ]
+        for (target, entries) in misses {
+            let found = miss(target, profile: "Work", in: Self.mixedWindows())
+            XCTAssertEqual(found.entries, entries, "\(target)")
+            XCTAssertEqual(SafariBrowserError.listingWindowIDs(found.entries), .mixed, "\(target)")
+            let message = flat(text(found))
+            XCTAssertTrue(message.contains("--window-id W"), "\(target): \(message)")
+            XCTAssertTrue(message.contains("marked (no window id)"), "\(target): \(message)")
+            XCTAssertTrue(message.contains("without --profile"), "\(target): \(message)")
+            XCTAssertFalse(message.contains("carry no window id"), "\(target): \(message)")
+            XCTAssertFalse(message.contains("each entry above"), "\(target): \(message)")
+        }
+        // Copied as the hint says: the id with or without --profile, the number without it.
+        for scope in ["Work", nil] as [String?] {
+            XCTAssertEqual(try SafariBridge.pickNativeTarget(.windowID(303), in: Self.mixedWindows(), profile: scope).windowIndex, 2)
+        }
+        XCTAssertEqual(try SafariBridge.pickNativeTarget(.windowIndex(3), in: Self.mixedWindows()).windowIndex, 3)
+    }
+
+    // MARK: verify r2 D — windows without a profile in the listing of a profile with no window
+
+    /// A window without a profile is shown `[(no profile)]`, and no `--profile` selects it: it is reached by its
+    /// id without `--profile`, and the hint does not offer it the bracketed profile.
+    func testAWindowWithoutAProfileIsReachedWithoutTheFlag() throws {
+        let windows = Self.windows().map { w in
+            w.windowIndex == 1
+                ? SafariBridge.WindowInfo(windowIndex: 1, currentTabIndex: 1, tabs: w.tabs, profile: nil, windowID: 101)
+                : w
+        }
+        let found = miss(.frontWindow, profile: "Wrok", in: windows)
+        XCTAssertEqual(found.entries.first, "window 1 [(no profile)] (window id 101): https://home.example/1")
+        let message = flat(text(found))
+        XCTAssertTrue(message.contains("belong to other profiles"), message)
+        XCTAssertTrue(message.contains("A window shown as [(no profile)] has none, and no --profile selects it"), message)
+        XCTAssertTrue(message.contains("or, where its brackets name a profile, with that profile"), message)
+        XCTAssertFalse(message.contains("or with the profile shown beside it"), message)
+        XCTAssertEqual(try SafariBridge.pickNativeTarget(.windowID(101), in: windows).windowIndex, 1)
+        XCTAssertThrowsError(try SafariBridge.pickNativeTarget(.windowID(101), in: windows, profile: "(no profile)"))
+        for (id, window) in [(303, 2), (404, 3)] {
+            XCTAssertEqual(try SafariBridge.pickNativeTarget(.windowID(id), in: windows, profile: "Work").windowIndex, window)
+        }
+    }
+
+    /// No listed window has a profile (a Safari without profiles): the hint does not say they belong to other
+    /// profiles, and does not offer a bracketed profile.
+    func testWhenNoListedWindowHasAProfileTheHintSaysSo() throws {
+        let windows = Self.windows().map {
+            SafariBridge.WindowInfo(windowIndex: $0.windowIndex, currentTabIndex: 1, tabs: $0.tabs, profile: nil, windowID: $0.windowID)
+        }
+        let found = miss(.frontWindow, profile: "Work", in: windows)
+        let message = flat(text(found))
+        XCTAssertFalse(message.contains("belong to other profiles"), message)
+        XCTAssertFalse(message.contains("brackets name a profile"), message)
+        XCTAssertTrue(message.contains("None of the windows listed above has a profile"), message)
+        XCTAssertTrue(message.contains("--window-id W"), message)
+        XCTAssertEqual(try SafariBridge.pickNativeTarget(.windowID(404), in: windows).windowIndex, 3)
+    }
+
+    // MARK: verify r2 B — a URL miss with no tab listed
+
+    /// An empty or notes-only listing has no entry: the URL hint neither refers to listed URLs or coordinates nor
+    /// points at `--window N` (under `--profile` that would be the #362 failure), and keeps the substring advice.
+    func testAURLMissWithNoTabListedClaimsNoEntries() {
+        for listing in [[], ["(no window of profile \"Work\" is open)"]] {
+            let message = flat(SafariBrowserError.documentNotFound(pattern: "nothing-matches", availableDocuments: listing).localizedDescription)
+            XCTAssertTrue(message.contains("--url matches a *substring* of the URL"), "\(listing): \(message)")
+            XCTAssertTrue(message.contains("no tab is listed above"), "\(listing): \(message)")
+            XCTAssertFalse(message.contains("coordinates are shown per entry"), "\(listing): \(message)")
+            XCTAssertFalse(message.contains("Refine it against the URLs above"), "\(listing): \(message)")
+            XCTAssertFalse(message.contains("--window N"), "\(listing): \(message)")
+            XCTAssertFalse(message.contains("[N] shown above"), "\(listing): \(message)")
+        }
+    }
+
     // MARK: verify F2 — no window of the profile is open
 
     /// The listing names every other profile's windows by Safari's number and profile, and now by id too; the

@@ -699,8 +699,15 @@ extension SafariBrowserError {
     static let enumerationFailurePrefix = "(the open tabs could not be listed"
 
     /// #362 verify F2: the pattern of the miss `SafariBridge.pickNativeTarget` throws when no window of the
-    /// profile given is open, `(profile: "X")`; no other producer's pattern begins this way.
+    /// profile given is open, `(profile: "X")`. No other producer builds a pattern that begins this way, but a
+    /// URL miss repeats the text the person typed, so `--url '(profile: "x'` begins the same way and gets this
+    /// miss's hint (verify r2, finding 7). The `window ` and `document ` prefixes that pick the positional hints
+    /// have the same limitation (`--url 'window 3'`).
     static let profileMissPrefix = "(profile: \""
+
+    /// #362 verify r2 D: how the listing of a profile with no window shows a window that has no profile, which
+    /// no `--profile` selects.
+    static let noProfileLabel = "(no profile)"
 
     /// #362: the one listing entry of a miss whose follow-up enumeration failed. It names the kind of
     /// failure and its AppleScript error code, never the error's own text, which can quote a tab's URL
@@ -739,25 +746,7 @@ extension SafariBrowserError {
         // profiles (`window 2 [Work] (window id 303): …`). The `--url` substring advice does not apply, and a
         // number copied into `--window N` with `--profile` counts only that profile's windows.
         if pattern.hasPrefix(profileMissPrefix) {
-            if listing.isEmpty {
-                return """
-                    Hint: no window of the profile named in --profile is open, and no window of another profile
-                          is listed either. Run `safari-browser documents` to see what is open.
-                    """
-            }
-            let legacy = listingWindowIDs(listing) == .missing ? """
-
-                      An entry that says (no window id) is targeted with --window N without --profile, using
-                      the number shown.
-                """ : ""
-            return """
-                Hint: no window of the profile named in --profile is open. The windows listed above belong to
-                      other profiles, each one's profile shown in brackets: check the --profile name against
-                      them. To target a listed window, use --window-id W with the id its entry names, without
-                      --profile or with the profile shown beside it. The window numbers in the entries are
-                      Safari's own; with --profile, --window N counts only that profile's windows, so do not
-                      copy them into --window with --profile. A window's id lasts only while it is open.\(legacy)
-                """
+            return profileMissHint(listing)
         }
         // #352: not positional — sending the reader to `--window N` would swap a
         // stable name for the one that moves. A lost `.resolvedTab` reads
@@ -776,6 +765,17 @@ extension SafariBrowserError {
                 Hint: no tab is listed above. Run `safari-browser documents` to see the open tabs and their
                       coordinates, then target one with --window N --tab-in-window M. (With --profile, N counts
                       only that profile's windows.)
+                """
+        }
+        // #362 verify r2 B: a URL miss with no tab listed (an empty listing, or notes only) has no entry to refine
+        // the substring against or to copy coordinates from; under --profile it is the listing of the third miss
+        // in the spec's closed list, whose hint does not point at --window N.
+        if !positional, listing.allSatisfy({ $0.hasPrefix("(") }) {
+            return """
+                Hint: --url matches a *substring* of the URL, not the whole URL, and not the title —
+                      no tab's URL contained this text, and no tab is listed above. Run
+                      `safari-browser documents` to see the open tabs and their URLs in full, then refine
+                      the substring. For stricter matching see --url-exact / --url-endswith / --url-regex.
                 """
         }
         let windowIDs = listingWindowIDs(listing)
@@ -799,6 +799,16 @@ extension SafariBrowserError {
                           prints it — target that window with --window N without --profile, adding
                           --tab-in-window M where the entry names a tab (with --profile, N counts only that
                           profile's windows). These entries carry no window id to use with --window-id.
+                    """
+            case .mixed:
+                // #362 verify r2 C: some entries name a window id and some say they have none.
+                return """
+                    Hint: an entry that names a window id is targeted with --window-id W, adding
+                          --tab-in-window M where the entry names a tab, with or without --profile. An entry
+                          marked (no window id) is targeted with --window N, adding --tab-in-window M where the
+                          entry names a tab, without --profile: its numbers are Safari's own, as
+                          `safari-browser documents` prints them, and with --profile, --window N counts only
+                          that profile's windows. A window's id lasts only while it is open.
                     """
             case .none:
                 return """
@@ -825,6 +835,14 @@ extension SafariBrowserError {
                       positionally with --window N --tab-in-window M without --profile (the numbers shown
                       are Safari's own; with --profile, N counts only that profile's windows).
                 """
+        case .mixed:
+            retarget = """
+                Or target
+                      one listed tab by its window: an entry that names a window id with --window-id W
+                      --tab-in-window M, with or without --profile; an entry marked (no window id) with
+                      --window N --tab-in-window M without --profile (its numbers are Safari's own; with
+                      --profile, N counts only that profile's windows).
+                """
         case .none:
             retarget = """
                 Or target
@@ -846,17 +864,83 @@ extension SafariBrowserError {
     }
 
     /// #362: whether a listing's entries name their windows' ids, read from each entry's label (the text
-    /// before its first `: `), never from the URL after it. `SafariBridge.entryLabel` builds the labels.
-    enum ListingWindowIDs { case none, named, missing }
+    /// before its first `: `), never from the URL after it. `SafariBridge.entryLabel` and
+    /// `SafariBridge.checkWindowID` build the labels. `.named`: every entry names an id beside Safari's number;
+    /// `.missing`: some entry says `(no window id)` and none names an id; `.mixed` (verify r2 C): some entries
+    /// name an id (either label form) and the others say `(no window id)`; `.none`: anything else.
+    enum ListingWindowIDs { case none, named, missing, mixed }
 
     static func listingWindowIDs(_ listing: [String]) -> ListingWindowIDs {
-        let labels = listing.filter { !$0.hasPrefix("(") }
-            .map { entry in entry.range(of: ": ").map { String(entry[..<$0.lowerBound]) } ?? entry }
-        if labels.contains(where: { $0.hasSuffix(" (no window id)") }) { return .missing }
+        let labels = entryLabels(listing)
         let named = #"^window \d+( tab \d+)? \(window id \d+\)$"#
+        let withID = labels.filter {
+            $0.range(of: named, options: .regularExpression) != nil || $0.hasPrefix("window id ")
+        }.count
+        let withoutID = labels.filter { $0.hasSuffix(" (no window id)") }.count
+        if withoutID > 0 {
+            return withID > 0 && withID + withoutID == labels.count ? .mixed : .missing
+        }
         if !labels.isEmpty, labels.allSatisfy({ $0.range(of: named, options: .regularExpression) != nil }) {
             return .named
         }
         return .none
+    }
+
+    /// The label of each entry that is not a note: the text before its first `: `.
+    private static func entryLabels(_ listing: [String]) -> [String] {
+        listing.filter { !$0.hasPrefix("(") }
+            .map { entry in entry.range(of: ": ").map { String(entry[..<$0.lowerBound]) } ?? entry }
+    }
+
+    /// #362 verify F2, r2 D: the hint of the miss whose pattern is `(profile: "X")`. Its listing names every open
+    /// window as `window N [P] (window id W)`, where `P` is the window's profile, or `(no profile)` for a window
+    /// that has none, which no `--profile` selects.
+    private static func profileMissHint(_ listing: [String]) -> String {
+        if listing.isEmpty {
+            return """
+                Hint: no window of the profile named in --profile is open, and no window of another profile
+                      is listed either. Run `safari-browser documents` to see what is open.
+                """
+        }
+        let labels = entryLabels(listing)
+        let withoutProfile = labels.filter { $0.contains("[\(noProfileLabel)]") }.count
+        let withProfile = labels.count - withoutProfile
+        var sentences = ["no window of the profile named in --profile is open."]
+        if withProfile > 0 {
+            sentences.append("The windows listed above belong to other profiles, each one's profile shown in brackets: check the --profile name against them.")
+            if withoutProfile > 0 {
+                sentences.append("A window shown as [\(noProfileLabel)] has none, and no --profile selects it.")
+            }
+            sentences.append("To target a listed window, use --window-id W with the id its entry names, without --profile or, where its brackets name a profile, with that profile.")
+        } else {
+            sentences.append("None of the windows listed above has a profile (each is shown as [\(noProfileLabel)]), and no --profile selects them: check the --profile name, or leave --profile out.")
+            sentences.append("To target a listed window, use --window-id W with the id its entry names, without --profile.")
+        }
+        sentences.append("The window numbers in the entries are Safari's own; with --profile, --window N counts only that profile's windows, so do not copy them into --window with --profile. A window's id lasts only while it is open.")
+        if labels.contains(where: { $0.hasSuffix(" (no window id)") }) {
+            sentences.append("An entry that says (no window id) is targeted with --window N without --profile, using the number shown.")
+        }
+        return wrapHint(sentences.joined(separator: " "))
+    }
+
+    /// Wraps a hint assembled from parts at word boundaries, `Hint: ` before the first line and the hint's six-space
+    /// indent before the others, as the fixed hints are written by hand. The bracketed markers a listing shows,
+    /// `(no window id)` and `[(no profile)]`, stay on one line.
+    private static func wrapHint(_ text: String, width: Int = 98) -> String {
+        let kept = ["(no window id)", "[\(noProfileLabel)]"]
+        let joiner = "\u{1}"
+        var protected = text
+        for phrase in kept { protected = protected.replacingOccurrences(of: phrase, with: phrase.replacingOccurrences(of: " ", with: joiner)) }
+        var lines: [String] = []
+        var line = "Hint:"
+        for word in protected.split(separator: " ") {
+            if line.count + 1 + word.count > width, line.count > 6 {
+                lines.append(line)
+                line = "     "
+            }
+            line += " " + word
+        }
+        lines.append(line)
+        return lines.joined(separator: "\n").replacingOccurrences(of: joiner, with: " ")
     }
 }
