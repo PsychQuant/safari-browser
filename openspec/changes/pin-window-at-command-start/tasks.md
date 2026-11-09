@@ -32,5 +32,7 @@
 ## 4. 規格、文件與驗收
 
 - [x] 4.1 [P] `--window` 的 `--help` 說明「在指令開頭解析成視窗 id」；`CHANGELOG.md`（Unreleased）與 `CLAUDE.md` 的 multi-window 段落寫明語意、範圍、例外、`open --window N` 的行為改變與已知限制。驗證：內容檢查
-- [ ] 4.2 全套 `swift test` 通過；mutation 各做一次並有具名測試抓到：拿掉釘住、釘住移到 `--mark-tab` 包上之後、`exec` 不釘、拿掉「讀不到維持位置」。驗證：`swift test` 計數與 mutation 紀錄
+- [x] 4.2 全套 `swift test` 通過；mutation 各做一次並有具名測試抓到：拿掉釘住、釘住移到 `--mark-tab` 包上之後、`exec` 不釘、拿掉「讀不到維持位置」。驗證：`swift test` 計數與 mutation 紀錄
+  - 2026-11-09：`swift test` 2488 個 XCTest（13 個略過）與 38 個 Swift Testing 全過。mutation（各在本機改一次、跑 `WindowPinTests`／`WindowPinCommandTests`、還原）：拿掉 `get url` 的釘住 → `testReadCommandsFollowTheWindowThatWasNNotThePosition`、`testAMissOnAPinnedWindowNamesTheWindowNumberTheUserTyped` 等 6 個失敗；`--mark-tab` 包標題改用未釘住的目標 → `testClickMarkTabPinsBeforeTheWrap`；`exec` 不釘 → `testExecSendsTheDaemonTheWindowIDReadOnceBeforeRouting`、`testExecGivesEveryLocalStepTheWindowIDReadOnce`（與形狀檢查）；讀不到 id 時改為報錯 → `testAnUnreadableIDKeepsThePosition`、`testAnUnreadableIDLeavesTheOldPositionalScripts`、`testOpenWithAWindowNumberAndNoWindowStillMakesANewDocument` 等 4 個。
 - [ ] 4.3 真機驗收（需維護者）：多個視窗、Safari 不在前景時，在 `click --mark-tab --window 2` 的步驟之間把另一個視窗拉到前面，確認仍在原視窗；途中關掉視窗得到寫出 `--window 2` 的 `documentNotFound`；`open --window 2 <url>` 最後才 `activate`。驗證：真機紀錄寫進 issue；未做時照實標示
+  - 2026-11-09 狀態：**未做**。需要真的 Safari（多個視窗、不在前景），本次無人值守的執行不碰真機；腳本形狀由 fake Safari 涵蓋，實際行為仍未證明。
