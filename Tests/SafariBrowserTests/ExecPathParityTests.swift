@@ -168,7 +168,7 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         do {
             _ = try await printed {
                 try await ExecCommand.parse(["--max-steps", "1"]).execute(source: two, pacingEnabled: false, daemonOptedIn: true,
-                                                                          viaDaemon: { _ in sent.add(); return "X" })
+                                                                          viaDaemon: { _, _ in sent.add(); return "X" })
             }
             XCTFail("two steps with a limit of one must fail")
         } catch ScriptParseError.maxStepsExceeded(let actual, let cap) {
@@ -189,7 +189,7 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
         func run(_ source: String, pacing: Bool = false, daemon: Bool = true, answer: String? = "FROM-DAEMON") async throws -> (printed: String, sent: [[ScriptStep]]) {
             let sent = Sent()
             let out = try await printed {
-                try await ExecCommand.parse([]).execute(source: source, pacingEnabled: pacing, daemonOptedIn: daemon) { steps in
+                try await ExecCommand.parse([]).execute(source: source, pacingEnabled: pacing, daemonOptedIn: daemon) { _, steps in
                     sent.add(steps); return answer
                 }
             }
@@ -235,7 +235,7 @@ final class ExecPathParityTests: XCTestCase, @unchecked Sendable {
             let notes = Notes()
             _ = try? await printed {
                 try await ExecCommand.parse(args).execute(source: source ?? skipped, pacingEnabled: false, daemonOptedIn: daemon,
-                                                          viaDaemon: { _ in daemonAnswer }, note: { notes.add($0) },
+                                                          viaDaemon: { _, _ in daemonAnswer }, note: { notes.add($0) },
                                                           environment: environment)
             }
             return notes.all

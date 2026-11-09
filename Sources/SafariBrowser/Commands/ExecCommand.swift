@@ -42,7 +42,7 @@ struct ExecCommand: AsyncParsableCommand {
 
             try await execute(
                 source: source, pacingEnabled: pacingEnabled, daemonOptedIn: SafariBridge.shouldUseDaemonAuto(),
-                viaDaemon: { try await runViaDaemon(steps: $0) })
+                viaDaemon: { pinned, steps in try await pinned.runViaDaemon(steps: steps) })
         }
     }
 
@@ -57,15 +57,25 @@ struct ExecCommand: AsyncParsableCommand {
     /// to the local interpreter which uses the SubprocessStepDispatcher.
     /// An older daemon cannot pace in-process steps. Choose the known per-step CLI boundary before
     /// sending any batch; each child can still use the ordinary daemon router and its compiled cache.
+    ///
+    /// #354: `--window N` is resolved to its window id once, here, before the script is routed, so the run
+    /// starts from `--window-id W` on both paths: `viaDaemon` receives the pinned command (its envelope
+    /// carries the id) and the local interpreter hands the id to every step. `stepDispatcher` is a seam so a
+    /// test can see what the local path gives each step without starting a process.
     func execute(
         source: String, pacingEnabled: Bool, daemonOptedIn: Bool,
-        viaDaemon: ([ScriptStep]) async throws -> String?,
+        viaDaemon: (ExecCommand, [ScriptStep]) async throws -> String?,
         note: (String) -> Void = { FileHandle.standardError.write(Data($0.utf8)) },
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        stepDispatcher: any StepDispatcher = SubprocessStepDispatcher()
     ) async throws {
+        var pinned = self
+        pinned.target = try await target.pinWindowAtStart()
+        let command = pinned
+        let target = command.target
         if case .daemon(let parsed) = Self.route(
             source: source, maxSteps: maxSteps, pacingEnabled: pacingEnabled, daemonOptedIn: daemonOptedIn),
-           let results = try await viaDaemon(parsed) {
+           let results = try await viaDaemon(command, parsed) {
             print(results)
             return
         }
@@ -80,7 +90,7 @@ struct ExecCommand: AsyncParsableCommand {
            (try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps)) != nil {
             note("note: the tab-ownership marker (--mark-tab, --mark-tab-persist or SAFARI_BROWSER_MARK_TAB) is applied around a whole run only when the daemon runs the whole script; this script runs each step as its own command (a step is outside the shapes the daemon runs in-process, pacing is on, or the daemon is not in use), so no marker is applied around the run.\n")
         }
-        let interpreter = ScriptInterpreter(maxSteps: maxSteps)
+        let interpreter = ScriptInterpreter(maxSteps: maxSteps, dispatcher: stepDispatcher)
         let results = try await interpreter.run(source: source, target: target)
         printResults(results)
     }

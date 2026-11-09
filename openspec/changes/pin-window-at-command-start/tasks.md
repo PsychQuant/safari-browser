@@ -14,14 +14,14 @@
 - [x] 2.2 `click --mark-tab` 先釘住再 `markTabIfRequested`：包上、點擊、拆下都是 `window id W`。驗證：fake Safari 在第一個腳本之後把另一個視窗換到第 2 位，斷言讀 id 的腳本在第一個 `set name`／標題寫入之前，之後沒有 `window 2`
 - [x] 2.3 [P] `open`（requirement「Open URL in current tab」）：`--replace-tab` 與有目標旗標的導航路徑先釘住再 `resolveProfileScoped()`；`--new-tab`、`--new-window` 與 focus-existing 不變。驗證：fake Safari 斷言 `open --window 2 <url>` 送出 `get name of document of window id W`、導航、最後 `activate`；零視窗時仍是 `make new document`；`open --new-tab --window 2` 的腳本不變
 - [x] 2.4 [P] `upload`：只有 JavaScript 路徑在解析目標前釘住，native 路徑不動（#353）。驗證：`upload --js` 的 fake Safari 測試斷言 `window id W`；native 路徑的既有測試不變
-- [ ] 2.5 形狀檢查防止新指令退回位置：組合 `TargetOptions` 的每個指令 struct 都呼叫 `pinWindowAtStart()`，或在已知清單上（寫明原因與 issue）。驗證：`WindowPinShapeTests`；把任一指令的釘住拿掉時它失敗
+- [x] 2.5 形狀檢查防止新指令退回位置：組合 `TargetOptions` 的每個指令 struct 都呼叫 `pinWindowAtStart()`，或在已知清單上（寫明原因與 issue）。驗證：`WindowPinShapeTests`；把任一指令的釘住拿掉時它失敗
 
 ## 3. exec
 
 涵蓋 script-exec 的 MODIFIED〈Shared target resolution〉；design「exec 在分派路線之前釘住一次」。
 
-- [ ] 3.1 `ExecCommand.execute` 一開始釘住（requirement「Shared target resolution」）；`viaDaemon` 改收 `(ExecCommand, [ScriptStep])`，`daemonEnvelope` 編出釘住的 `targetArgs`；子行程路線把釘住的目標交給 `ScriptInterpreter`，`execute` 新增 `stepDispatcher` 參數；三個既有測試照著改。驗證：daemon 路線測試斷言 envelope 的 `targetArgs` 是 `--window-id W --pinned-from-window N`；子行程路線以記錄用 dispatcher 斷言每一步的共用參數相同、整段只讀一次 id
-- [ ] 3.2 `InProcessStepDispatcher` 的 `resolveConcrete` 先釘住：步驟自己的 `--window N` 在那一步開頭釘住，共用參數已是 `--window-id` 時不送 Apple event。驗證：in-process 測試（步驟自帶 `--window 2`、共用 `--window-id`）
+- [x] 3.1 `ExecCommand.execute` 一開始釘住（requirement「Shared target resolution」）；`viaDaemon` 改收 `(ExecCommand, [ScriptStep])`，`daemonEnvelope` 編出釘住的 `targetArgs`；子行程路線把釘住的目標交給 `ScriptInterpreter`，`execute` 新增 `stepDispatcher` 參數；三個既有測試照著改。驗證：daemon 路線測試斷言 envelope 的 `targetArgs` 是 `--window-id W --pinned-from-window N`；子行程路線以記錄用 dispatcher 斷言每一步的共用參數相同、整段只讀一次 id
+- [x] 3.2 `InProcessStepDispatcher` 的 `resolveConcrete` 先釘住：步驟自己的 `--window N` 在那一步開頭釘住，共用參數已是 `--window-id` 時不送 Apple event。驗證：in-process 測試（步驟自帶 `--window 2`、共用 `--window-id`）
 
 ## 4. 規格、文件與驗收
 

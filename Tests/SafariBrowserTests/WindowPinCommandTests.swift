@@ -142,4 +142,137 @@ final class WindowPinCommandTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: file) }
         await runRaised(UploadCommand.self, ["--js", "input[type=file]", file.path, "--window", "2"])
     }
+
+    // MARK: 3 exec
+
+    private final class Recorder: StepDispatcher, @unchecked Sendable {
+        private let lock = NSLock()
+        private var calls: [[String]] = []
+        var shared: [[String]] { lock.withLock { calls } }
+        func dispatch(cmd: String, args: [String], sharedTargetArgs: [String]) async throws -> String {
+            lock.withLock { calls.append(sharedTargetArgs) }
+            return "x"
+        }
+    }
+
+    /// The daemon route: the request carries `--window-id W`, read once before the script is sent.
+    func testExecSendsTheDaemonTheWindowIDReadOnceBeforeRouting() async throws {
+        let fake = PinFakeSafari()
+        final class Box: @unchecked Sendable { var args: [String]? }
+        let box = Box()
+        try await fake.drive {
+            try await ExecCommand.parse(["--window", "2"]).execute(
+                source: ##"[{"cmd":"get url"},{"cmd":"js","args":["1"]}]"##, pacingEnabled: false, daemonOptedIn: true
+            ) { command, steps in
+                box.args = command.daemonEnvelope(steps: steps)["targetArgs"] as? [String]
+                return "[]"
+            }
+        }
+        XCTAssertEqual(box.args, ["--window-id", "5822", "--pinned-from-window", "2"])
+        XCTAssertEqual(fake.scripts.count, 1, fake.transcript)
+        XCTAssertTrue(fake.scripts.first.map(PinFakeSafari.isIndexAnchor) == true, fake.transcript)
+    }
+
+    /// The step-by-step route: every step gets the same `--window-id W`, and windows are counted once.
+    func testExecGivesEveryLocalStepTheWindowIDReadOnce() async throws {
+        let fake = PinFakeSafari()
+        fake.raiseAfterScripts = 1
+        let recorder = Recorder()
+        try await fake.drive {
+            try await ExecCommand.parse(["--window", "2", "--tab-in-window", "1"]).execute(
+                source: ##"[{"cmd":"get url"},{"cmd":"get title"},{"cmd":"js","args":["1"]}]"##,
+                pacingEnabled: false, daemonOptedIn: false, viaDaemon: { _, _ in XCTFail("not sent"); return nil },
+                stepDispatcher: recorder)
+        }
+        XCTAssertEqual(recorder.shared.count, 3)
+        for args in recorder.shared {
+            XCTAssertEqual(args, ["--window-id", "5822", "--pinned-from-window", "2", "--tab-in-window", "1"])
+        }
+        XCTAssertEqual(fake.scripts.count, 1, "one read for the whole run:\n\(fake.transcript)")
+    }
+
+    /// In the daemon: a step's own `--window N` is pinned at the start of that step; the shared `--window-id`
+    /// is used as it is, without another read.
+    func testAnInProcessStepPinsItsOwnWindowNumber() async throws {
+        let fake = PinFakeSafari()
+        fake.raiseAfterScripts = 1
+        let dispatcher = InProcessStepDispatcher()
+        _ = try? await fake.drive {
+            try await dispatcher.dispatch(cmd: "get url", args: ["--window", "2"], sharedTargetArgs: ["--window-id", "4711"])
+        }
+        XCTAssertTrue(fake.scripts.first.map(PinFakeSafari.isIndexAnchor) == true, fake.transcript)
+        let after = fake.scripts(afterFirst: PinFakeSafari.isIndexAnchor)
+        XCTAssertTrue(after.contains { $0.contains("window id 5822") }, fake.transcript)
+        XCTAssertFalse(after.contains(where: namesAPosition), fake.transcript)
+
+        let shared = PinFakeSafari()
+        _ = try? await shared.drive {
+            try await InProcessStepDispatcher().dispatch(
+                cmd: "get url", args: [], sharedTargetArgs: ["--window-id", "5822", "--pinned-from-window", "2"])
+        }
+        XCTAssertFalse(shared.scripts.contains(where: PinFakeSafari.isIndexAnchor), shared.transcript)
+        XCTAssertTrue(shared.scripts.allSatisfy { $0.contains("window id 5822") }, shared.transcript)
+    }
+
+    /// A pinned window that closes between two steps: the next step fails naming `--window 2`, not the window
+    /// now at position 2.
+    func testAnExecStepAfterThePinnedWindowClosedNamesTheWindowNumber() async throws {
+        let fake = PinFakeSafari()
+        fake.closeAfterScripts = (1, 5822)
+        let dispatcher = InProcessStepDispatcher()
+        do {
+            _ = try await fake.drive {
+                try await dispatcher.dispatch(cmd: "get url", args: [],
+                                              sharedTargetArgs: ["--window-id", "5822", "--pinned-from-window", "2"])
+            }
+            _ = try await fake.drive {
+                try await dispatcher.dispatch(cmd: "get url", args: [],
+                                              sharedTargetArgs: ["--window-id", "5822", "--pinned-from-window", "2"])
+            }
+            XCTFail("the second step must miss:\n\(fake.transcript)")
+        } catch SafariBrowserError.documentNotFound(let pattern, _) {
+            XCTAssertEqual(pattern, "window 2 (window id 5822 at command start)")
+        }
+    }
+
+    // MARK: 2.5 tripwire
+
+    /// Every command STRUCT that composes `TargetOptions` calls `pinWindowAtStart()`, or is a known exception
+    /// with its reason, so a new command cannot go back to counting `--window N` at every Apple event unnoticed.
+    /// A shape check, not a proof: it cannot see a command that pins and then reads `self.target` again (the
+    /// driven tests above are what catch that).
+    func testEveryCommandStructWithATargetPinsTheWindowExceptTheKnownOnes() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/SafariBrowser/Commands")
+        let known: [String: String] = [
+            "JSCommand": "anchors --window N itself (resolveToAnchoredTarget, #180), with the current-tab check",
+            "WaitCommand": "anchors --window N itself (resolveToAnchoredTarget, #168)",
+            "SavePDFCommand": "anchors --window N itself (resolveToAnchoredTarget, #344)",
+            "CloseCommand": "window-level primitive: #353",
+            "ScreenshotCommand": "window-level primitive: #353",
+            "PdfCommand": "window-level primitive: #353",
+            "TabsCommand": "lists the window's tabs by the id one enumeration read",
+            "TabSwitchCommand": "names the window by id itself (#351, #352)",
+            "TabFocusCommand": "resolves once and switches by the id the resolver read (#352)",
+            "DocumentsCommand": "lists every tab and reads no single target",
+        ]
+        let optionGroup = try NSRegularExpression(pattern: #"@OptionGroup var \w+: TargetOptions"#)
+        var missing: [String] = []
+        var seen: Set<String> = []
+        for file in try FileManager.default.contentsOfDirectory(atPath: root.path).sorted() where file.hasSuffix(".swift") {
+            let text = try String(contentsOf: root.appendingPathComponent(file), encoding: .utf8)
+            var structs = text.components(separatedBy: "\nstruct ")
+            structs.removeFirst()
+            for block in structs {
+                let name = String(block.prefix { $0.isLetter || $0.isNumber || $0 == "_" })
+                guard optionGroup.firstMatch(in: block, range: NSRange(block.startIndex..., in: block)) != nil else { continue }
+                seen.insert(name)
+                if block.contains("pinWindowAtStart()") { continue }
+                if known[name] == nil { missing.append("\(file): \(name)") }
+            }
+        }
+        XCTAssertEqual(missing, [], "a command struct with a target that never pins --window N")
+        XCTAssertEqual(Set(known.keys).subtracting(seen), [], "a known exception that no longer exists")
+    }
 }

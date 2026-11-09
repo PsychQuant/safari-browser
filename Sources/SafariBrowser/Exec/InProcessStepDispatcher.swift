@@ -205,10 +205,14 @@ struct InProcessStepDispatcher: StepDispatcher {
         // bounded retry, #79). Steps without their own target flags share one
         // resolution per exec run. The resolution now also honours `--profile`,
         // which this path parsed but never handed to the bridge (#60 intent).
+        // #354: a step's own `--window N` is resolved to its window id at the start of that step; the
+        // exec-level arguments already carry `--window-id W` (pinned by `ExecCommand.execute` before the run
+        // was routed), so pinning them sends nothing.
         let resolveConcrete = {
-            try await SafariBridge.resolveToConcreteTarget(
-                target.resolve(), firstMatch: target.firstMatch,
-                warnWriter: nil, profile: target.resolveProfile())
+            let pinned = try await target.pinWindowAtStart()
+            return try await SafariBridge.resolveToConcreteTarget(
+                pinned.resolve(), firstMatch: pinned.firstMatch,
+                warnWriter: nil, profile: pinned.resolveProfile())
         }
         let resolved = cmd == "documents" ? target.resolve()
             : stepHasTargetFlag ? try await resolveConcrete()

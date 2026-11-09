@@ -475,7 +475,7 @@ final class ExecMoreStepsInProcessTests: XCTestCase, @unchecked Sendable {
         func route(_ source: String, pacing: Bool = false) async throws -> [[String]] {
             let sent = Sent()
             _ = try await printed {
-                try await ExecCommand.parse([]).execute(source: source, pacingEnabled: pacing, daemonOptedIn: true) { steps in
+                try await ExecCommand.parse([]).execute(source: source, pacingEnabled: pacing, daemonOptedIn: true) { _, steps in
                     sent.add(steps); return "[]"
                 }
             }
