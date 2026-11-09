@@ -24,33 +24,54 @@ struct TabsCommand: AsyncParsableCommand {
         }
     }
 
-    /// #352: a window named by id that closed since it was checked is a targeting miss.
-    private func requireWindow() async throws {
-        guard let id = target.windowID else { return }
-        try SafariBridge.checkWindowID(id, profile: target.resolveProfile(), in: await SafariBridge.listAllWindows())
+    /// #362: the window the resolver produced must still be open. The check is keyed on the id it resolved
+    /// to, not on the flag typed, so `--profile` and `--window N` report a window that closed during the
+    /// command as a targeting miss, as `--window-id` does (#352), instead of a raw -1728 or an empty list.
+    private func requireOpen(_ resolved: SafariBridge.ResolvedWindowTarget, typed base: SafariBridge.TargetDocument,
+                             profile: String?) async throws {
+        let windows = try await SafariBridge.listAllWindows()
+        guard let id = resolved.windowID else {
+            // No id was read: resolving what was typed again fails when that window is not open.
+            _ = try SafariBridge.pickNativeTarget(base, in: windows, profile: profile)
+            return
+        }
+        do {
+            try SafariBridge.checkWindowID(id, profile: profile, in: windows)
+        } catch SafariBrowserError.documentNotFound(_, let available) where target.windowID == nil {
+            let typed = [target.window.map { "--window \($0)" }, profile.map { "--profile \"\($0)\"" }]
+                .compactMap { $0 }.joined(separator: " ")
+            throw SafariBrowserError.documentNotFound(
+                pattern: "window id \(id) (\(typed)), closed during the command", availableDocuments: available)
+        }
+    }
+
+    private static func isObjectNotFound(_ error: Error) -> Bool {
+        if case SafariBrowserError.appleScriptFailed(let message) = error { return SafariBridge.isObjectNotFound(message) }
+        return false
     }
 
     func run() async throws {
         let tabs: [SafariBridge.TabInfo]
-        // #352: `--window-id` goes through the resolver too, which finds the
-        // window by id (fails closed when it is missing or outside --profile);
-        // `listTabs(in:)` then reads it by that id.
-        if target.windowID != nil || target.resolveProfile() != nil {
+        let profile = target.resolveProfile()
+        // #352 / #362: a named window (`--window-id`, `--window N`, `--profile`) goes through the resolver, which
+        // finds the window (by id it fails closed when it is missing or outside --profile); `listTabs(in:)` then
+        // reads it by the id it resolved to. No flag reads the front window, and no window at all is no tabs.
+        if target.windowID != nil || target.window != nil || profile != nil {
             let base: SafariBridge.TargetDocument = target.windowID.map { .windowID($0) }
                 ?? target.window.map { .windowIndex($0) } ?? .frontWindow
             let resolved = try await SafariBridge.resolveNativeTarget(
                 from: base, firstMatch: target.firstMatch,
-                warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile(), probeDialog: false)
+                warnWriter: TargetOptions.stderrWarnWriter, profile: profile, probeDialog: false)
             do {
                 tabs = try await SafariBridge.listTabs(in: resolved, probeDialog: false)
-            } catch where target.windowID != nil {
-                try await requireWindow()
+            } catch where Self.isObjectNotFound(error) {
+                try await requireOpen(resolved, typed: base, profile: profile)
                 throw error
             }
             // `readTabs` answers "no tabs" when no window is open at all.
-            if tabs.isEmpty, target.windowID != nil { try await requireWindow() }
+            if tabs.isEmpty { try await requireOpen(resolved, typed: base, profile: profile) }
         } else {
-            tabs = try await SafariBridge.listTabs(window: target.window, probeDialog: false)
+            tabs = try await SafariBridge.listTabs(probeDialog: false)
         }
         guard !tabs.isEmpty else {
             if json { print("[]") }
