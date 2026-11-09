@@ -8,7 +8,7 @@ TBD - created by archiving change 'phase1-core-cli'. Update Purpose after archiv
 
 ### Requirement: List all tabs
 
-The system SHALL list the open tabs of the target Safari window, printing each tab's index, title, and URL to stdout. The default target SHALL be the front window. When `--window <n>` is provided, the system SHALL list the tabs of window `n` instead. When `--window-id <id>` is provided, the system SHALL list the tabs of the window with that id, and SHALL fail with a document-not-found error when it does not exist or does not belong to `--profile`. When the window that `--window`, `--window-id` or `--profile` selected is not open, or closes before its tabs are read, the system SHALL fail with a document-not-found error, whether or not another window is still open, and SHALL NOT print an empty list for it (#362). When the system had resolved the window to an id, the error SHALL name that id and the flags given; a `--window <n>` for which no id could be read (no window `n` is open) gets the ordinary miss for window `n`. Without a target flag, Safari having no window is not an error (scenario "No tabs open"). Other targeting flags (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`, `--document`, `--tab-in-window`) SHALL be rejected because "listing tabs" only makes sense at window granularity.
+The system SHALL list the open tabs of the target Safari window, printing each tab's index, title, and URL to stdout. The default target SHALL be the front window. When `--window <n>` is provided, the system SHALL list the tabs of window `n` instead. When `--window-id <id>` is provided, the system SHALL list the tabs of the window with that id, and SHALL fail with a document-not-found error when it does not exist or does not belong to `--profile`. When the window that `--window`, `--window-id` or `--profile` selected is not open, or is found to have closed before its tabs were read, the system SHALL fail with a document-not-found error, whether or not another window is still open, and SHALL NOT print an empty list for it (#362). The system looks for a closed window in two cases only: reading its tabs fails with an object-not-found error (-1719 or -1728), or the read finds no tabs; in either case it lists the windows again, and the window is found to have closed when it is not among them. A read that fails with any other error (a timeout, or a message without an error number) SHALL be reported as that error, because it is no evidence that the window closed, even if it did. When listing the windows again fails after a read that failed with object-not-found, the read's error SHALL be reported as it is, not the listing's; after a read that found no tabs there is no read error, and the listing's error is reported. A cancellation is reported as a cancellation. When the system had resolved the window to an id, the error SHALL name that id and the flags given; a `--window <n>` for which no id could be read (no window `n` is open) gets the ordinary miss for window `n`. Without a target flag, Safari having no window is not an error (scenario "No tabs open"). Other targeting flags (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`, `--document`, `--tab-in-window`) SHALL be rejected because "listing tabs" only makes sense at window granularity.
 
 #### Scenario: List tabs of front window
 
@@ -33,6 +33,12 @@ The system SHALL list the open tabs of the target Safari window, printing each t
 - **AND** the window it selected, whose id is 4711, closes before its tabs are read
 - **THEN** the command fails with a document-not-found error naming `window id 4711` and the flags given, whether that window was the last one open or another window is still open
 - **AND** it does not print an empty list or exit with zero status
+
+#### Scenario: a read that times out is not a closed window
+
+- **WHEN** user runs `safari-browser tabs --window-id 4711` (or `tabs --window 2`)
+- **AND** reading the window's tabs times out
+- **THEN** the command fails with the timeout, not with a document-not-found error, whether or not the window closed
 
 #### Scenario: tabs rejects document-level targeting
 

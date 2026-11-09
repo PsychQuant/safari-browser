@@ -52,14 +52,70 @@ final class TabsClosedWindowTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    /// An error that is not "object not found" is not a closed window: it reaches the caller unchanged.
+    /// An error that is not "object not found" is not a closed window: it reaches the caller unchanged, for a window
+    /// named by number and by id (verify F1), even when the window did close before the read. Only the resolver
+    /// enumerates: `--window N` reads the id it names and lists nothing, `--window-id` resolves through one
+    /// enumeration.
     func testTabsPassesOtherReadErrorsThrough() async throws {
+        let errors: [SafariBrowserError] = [
+            .processTimedOut(command: "osascript", seconds: 3),
+            .appleScriptFailed("execution error: something went wrong"),
+        ]
+        for (args, listings) in [(["--window", "2"], 0), (["--window-id", "303"], 1)] {
+            for readError in errors {
+                let fake = FakeSafari(windows: FakeSafari.workIsTwoAndThree)
+                fake.closesOnRead = 303
+                fake.readError = readError
+                do {
+                    try await tabs(args, on: fake)
+                    XCTFail("\(args): the read failed")
+                } catch let error as SafariBrowserError {
+                    XCTAssertEqual("\(error)", "\(readError)", "\(args)")
+                }
+                XCTAssertEqual(fake.listings, listings, "\(args): \(readError)")
+            }
+        }
+    }
+
+    /// Verify F4: the read failed with object-not-found, and the enumeration that would check whether the window
+    /// closed failed too. Nothing then says the window closed, so the caller gets the read error, not the
+    /// enumeration's. Each shape lets the resolver's own enumeration succeed and fails the re-check's.
+    func testTabsKeepsTheReadErrorWhenTheRecheckCannotListTheWindows() async throws {
+        let readError = SafariBrowserError.appleScriptFailed("execution error: Can’t get window id 303. (-1728)")
+        for (args, recheck) in [(["--window", "2"], 1), (["--window-id", "303"], 2), (["--profile", "Work"], 2)] {
+            let fake = FakeSafari(windows: FakeSafari.workIsTwoAndThree)
+            fake.readError = readError
+            fake.listingError = SafariBrowserError.processTimedOut(command: "osascript", seconds: 9)
+            fake.listingErrorFrom = recheck
+            do {
+                try await tabs(args, on: fake)
+                XCTFail("\(args): the read failed")
+            } catch let error as SafariBrowserError {
+                XCTAssertEqual("\(error)", "\(readError)", "\(args)")
+            }
+            XCTAssertEqual(fake.listings, recheck, "\(args)")
+        }
+    }
+
+    /// A cancelled re-check is a cancellation, not the read error.
+    func testACancelledRecheckIsACancellation() async throws {
         let fake = FakeSafari(windows: FakeSafari.workIsTwoAndThree)
-        fake.readError = SafariBrowserError.processTimedOut(command: "osascript", seconds: 3)
+        fake.readError = SafariBrowserError.appleScriptFailed("execution error: Can’t get window id 303. (-1728)")
+        fake.listingError = CancellationError()
         do {
             try await tabs(["--window", "2"], on: fake)
-            XCTFail("the read timed out")
+            XCTFail("the re-check was cancelled")
+        } catch is CancellationError {}
+    }
+
+    /// After a read that found no tabs there is no read error: a re-check that cannot list the windows reports
+    /// its own error.
+    func testAnEmptyReadWhoseRecheckFailsReportsTheRecheckError() async throws {
+        let fake = FakeSafari(windows: [])
+        fake.listingError = SafariBrowserError.processTimedOut(command: "osascript", seconds: 9)
+        do {
+            try await tabs(["--window", "1"], on: fake)
+            XCTFail("the re-check failed")
         } catch SafariBrowserError.processTimedOut {}
-        XCTAssertEqual(fake.listings, 0)
     }
 }

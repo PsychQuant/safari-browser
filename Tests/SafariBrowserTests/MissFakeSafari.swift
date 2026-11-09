@@ -18,6 +18,8 @@ final class FakeSafari: @unchecked Sendable {
     private var listingCount = 0
     var closesOnRead: Int?
     var listingError: Error?
+    /// The first listing that `listingError` fails (1 = every listing), so a resolver's own enumeration can succeed.
+    var listingErrorFrom = 1
     var readError: Error?
 
     init(windows: [Window]) { all = windows }
@@ -42,8 +44,8 @@ final class FakeSafari: @unchecked Sendable {
 
     func respond(_ script: String) throws -> String {
         if script.contains("set windowCount to count of windows") {
-            lock.withLock { listingCount += 1 }
-            if let listingError { throw listingError }
+            let n = lock.withLock { listingCount += 1; return listingCount }
+            if let listingError, n >= listingErrorFrom { throw listingError }
             let gs = "\u{1D}", rs = "\u{1E}"
             var out = ""
             for (i, window) in open.enumerated() {
@@ -62,8 +64,8 @@ final class FakeSafari: @unchecked Sendable {
             return open.first.map { "\($0.tabs.count)" } ?? "0"
         }
         if let id = WindowIDCommandTests.TwoProfileFake.int(after: "count of tabs of window id ", in: script) {
-            if let readError { throw readError }
             if id == closesOnRead { lock.withLock { _ = closed.insert(id) } }
+            if let readError { throw readError }
             guard let window = open.first(where: { $0.id == id }) else {
                 // `readTabs` answers "0" when no window is open at all.
                 if open.isEmpty { return "0" }

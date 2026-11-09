@@ -27,9 +27,18 @@ struct TabsCommand: AsyncParsableCommand {
     /// #362: the window the resolver produced must still be open. The check is keyed on the id it resolved
     /// to, not on the flag typed, so `--profile` and `--window N` report a window that closed during the
     /// command as a targeting miss, as `--window-id` does (#352), instead of a raw -1728 or an empty list.
+    /// `readError` is the object-not-found error that made the read fail, if one did.
     private func requireOpen(_ resolved: SafariBridge.ResolvedWindowTarget, typed base: SafariBridge.TargetDocument,
-                             profile: String?) async throws {
-        let windows = try await SafariBridge.listAllWindows()
+                             profile: String?, after readError: Error? = nil) async throws {
+        let windows: [SafariBridge.WindowInfo]
+        do {
+            windows = try await SafariBridge.listAllWindows()
+        } catch {
+            // #362 verify F4: the check could not run, so nothing says the window closed. What is known is
+            // that the read failed: report that. A cancellation stays a cancellation.
+            if let readError, !(error is CancellationError) { throw readError }
+            throw error
+        }
         guard let id = resolved.windowID else {
             // No id was read: resolving what was typed again fails when that window is not open.
             _ = try SafariBridge.pickNativeTarget(base, in: windows, profile: profile)
@@ -65,7 +74,7 @@ struct TabsCommand: AsyncParsableCommand {
             do {
                 tabs = try await SafariBridge.listTabs(in: resolved, probeDialog: false)
             } catch where Self.isObjectNotFound(error) {
-                try await requireOpen(resolved, typed: base, profile: profile)
+                try await requireOpen(resolved, typed: base, profile: profile, after: error)
                 throw error
             }
             // `readTabs` answers "no tabs" when no window is open at all.
