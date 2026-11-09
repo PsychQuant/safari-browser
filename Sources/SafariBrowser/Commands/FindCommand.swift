@@ -21,6 +21,8 @@ struct FindCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
         let profile = target.resolveProfile()
         let findJS: String = switch locator.lowercased() {

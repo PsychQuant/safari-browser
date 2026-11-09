@@ -18,6 +18,8 @@ struct DragCommand: AsyncParsableCommand {
     @OptionGroup var documentTarget: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let documentTarget = try await self.documentTarget.pinWindowAtStart()
         let result = try await SafariBridge.doJavaScript("""
             (function(){
                 var src = \(source.resolveRefJS);

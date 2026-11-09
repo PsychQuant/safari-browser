@@ -57,6 +57,8 @@ final class PinFakeSafari: @unchecked Sendable {
         }
     }
 
+    private static let positional = try! NSRegularExpression(pattern: #"of window ([0-9]+)"#)
+
     private static func int(after marker: String, in text: String) -> Int? {
         guard let range = text.range(of: marker) else { return nil }
         let digits = text[range.upperBound...].prefix { $0.isNumber }
@@ -105,6 +107,11 @@ final class PinFakeSafari: @unchecked Sendable {
             }
             if script.contains("URL of") { return window.tabs.first ?? "" }
             return answer
+        }
+        // A window named by its position: `document of window N`, `tab M of window N`.
+        if let match = Self.positional.firstMatch(in: script, range: NSRange(script.startIndex..., in: script)),
+           let range = Range(match.range(at: 1), in: script), let n = Int(script[range]), n > windows.count {
+            throw SafariBrowserError.appleScriptFailed("execution error: Can’t get window \(n). Invalid index. (-1719)")
         }
         if script.contains("count of windows") && !script.contains("of window ") {
             return "\(windows.count)"

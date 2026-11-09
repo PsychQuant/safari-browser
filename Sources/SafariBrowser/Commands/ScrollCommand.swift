@@ -23,6 +23,8 @@ struct ScrollCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         let (x, y): (Int, Int) = switch direction.lowercased() {
         case "down": (0, pixels)
         case "up": (0, -pixels)

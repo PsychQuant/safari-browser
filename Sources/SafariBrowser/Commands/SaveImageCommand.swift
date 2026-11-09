@@ -39,6 +39,8 @@ struct SaveImageCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         let trackEnum = SafariBridge.ResourceTrack(rawValue: track) ?? .currentSrc
         // #51: scope to --profile up front so the concrete target carries the
         // profile resolution into resolveElementResource / fetchResourceWithCookies

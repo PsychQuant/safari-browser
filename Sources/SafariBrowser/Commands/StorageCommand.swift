@@ -56,6 +56,8 @@ struct StorageLocalGet: AsyncParsableCommand {
     @Argument(help: "Key") var key: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         print(try await SafariBridge.doJavaScript(
             StorageScripts.get("localStorage", key: key),
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -69,6 +71,8 @@ struct StorageLocalSet: AsyncParsableCommand {
     @Argument(help: "Value") var value: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             StorageScripts.set("localStorage", key: key, value: value),
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -81,6 +85,8 @@ struct StorageLocalRemove: AsyncParsableCommand {
     @Argument(help: "Key") var key: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             StorageScripts.remove("localStorage", key: key),
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -92,6 +98,8 @@ struct StorageLocalClear: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "clear", abstract: "Clear all localStorage")
     @OptionGroup var target: TargetOptions
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(StorageScripts.clear("localStorage"), target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
     }
 }
@@ -103,6 +111,8 @@ struct StorageSessionGet: AsyncParsableCommand {
     @Argument(help: "Key") var key: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         print(try await SafariBridge.doJavaScript(
             StorageScripts.get("sessionStorage", key: key),
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -116,6 +126,8 @@ struct StorageSessionSet: AsyncParsableCommand {
     @Argument(help: "Value") var value: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             StorageScripts.set("sessionStorage", key: key, value: value),
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -128,6 +140,8 @@ struct StorageSessionRemove: AsyncParsableCommand {
     @Argument(help: "Key") var key: String
     @OptionGroup var target: TargetOptions
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             StorageScripts.remove("sessionStorage", key: key),
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -139,6 +153,8 @@ struct StorageSessionClear: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "clear", abstract: "Clear all sessionStorage")
     @OptionGroup var target: TargetOptions
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(StorageScripts.clear("sessionStorage"), target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
     }
 }

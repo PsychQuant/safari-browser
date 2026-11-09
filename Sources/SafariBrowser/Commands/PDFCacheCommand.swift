@@ -152,6 +152,8 @@ struct PDFCacheGet: AsyncParsableCommand {
         let form = try selectionForm()
         var tabURL: String?
         if case .tab = form {
+            // #354: --window N becomes the id of that window, once, before the tab is read.
+            let target = try await self.target.pinWindowAtStart()
             tabURL = try await readTabURL(target.resolve(), target.firstMatch)
         }
         let retrieved = try PDFCacheService.retrieve(

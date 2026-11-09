@@ -25,6 +25,8 @@ struct MouseMove: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             "document.elementFromPoint(\(x),\(y)).dispatchEvent(new MouseEvent('mousemove',{clientX:\(x),clientY:\(y),bubbles:true}))",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -41,6 +43,8 @@ struct MouseDown: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mousedown',{bubbles:true}))",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -57,6 +61,8 @@ struct MouseUp: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             "(document.activeElement||document.body).dispatchEvent(new MouseEvent('mouseup',{bubbles:true}))",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -75,6 +81,8 @@ struct MouseWheel: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             "document.dispatchEvent(new WheelEvent('wheel',{deltaY:\(deltaY),bubbles:true}))",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()

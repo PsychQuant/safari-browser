@@ -155,7 +155,8 @@ struct UploadCommand: AsyncParsableCommand {
         if js {
             // #51: scope to --profile via a concrete target (10 MB JS path); #231: and honour
             // --first-match, once, instead of once per chunk.
-            let scoped = try await target.resolveFirstMatchOnce()
+            // #354: the JavaScript path resolves --window N to the window's id once; the native paths are #353.
+            let scoped = try await target.pinWindowAtStart().resolveFirstMatchOnce()
             try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
@@ -186,7 +187,8 @@ struct UploadCommand: AsyncParsableCommand {
                 Grant Accessibility permission in System Settings → Privacy & Security → Accessibility
                 to enable fast native file dialog upload.\n
             """.utf8))
-        let scoped = try await target.resolveFirstMatchOnce()
+        // #354: as for --js above.
+        let scoped = try await target.pinWindowAtStart().resolveFirstMatchOnce()
         try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 

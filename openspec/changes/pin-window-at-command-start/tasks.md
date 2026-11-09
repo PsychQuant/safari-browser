@@ -4,16 +4,16 @@
 
 - [x] 1.1 `TargetDocument.windowID` 加第三個可選值 `pinnedFrom`（預設 nil），逐一更新所有比對處；`TargetOptions` 加私有選項 `--pinned-from-window`（`.private`，需要 `--window-id`、值 ≥ 1），`resolve()` 把它帶進 `.windowID`，`ScriptInterpreter.encodeTargetArgs` 含它（`targetFlagNames` 不含，見 design）。驗證：`WindowPinTests` 的解析與驗證測試（`--window-id 4711 --pinned-from-window 2` → `.windowID(4711, nil, pinnedFrom: 2)`；沒有 `--window-id`、0 → 驗證錯誤；`--help` 不列出）
 - [x] 1.2 `TargetOptions.pinWindowAtStart()`（requirement「Window number resolved to its id at command start」）：沒有 `--profile` 時 `--window N` 以 `readWindowAnchor(index:)`、`--window N --tab-in-window M` 以 `readTabAnchor(windowIndex:)` 加範圍檢查讀 id；有 `--profile` 時以 `resolveNativeTarget` 列舉一次；回傳 `window` 清空、`windowID`／`pinnedFromWindow` 設定好的副本；讀不到（含越界、零分頁、無 id 的舊式列舉、任何錯誤）回傳原副本；取消往外拋；其他旗標不送 Apple event。驗證：以 fake `appleScriptRunner` 的單元測試逐一涵蓋上述每一種輸入，並斷言送出的腳本數
-- [ ] 1.3 失敗訊息寫出 `--window N`：`runTargetedAppleScript` 的 `.windowID` 分支、`checkWindowID`（新增 `pinnedFrom` 參數，預設 nil）、`pickNativeTargetCore` 的分頁越界；`resolveToConcreteTarget` 的 `--profile` 分支收斂成 `.windowID` 時保留 `pinnedFrom`。驗證：fake Safari 讓釘住的視窗在第二步消失，斷言 pattern 為 `window 2 (window id 4711 at command start)`（`--profile` 時加 `(profile: …)`，分頁時 `window 2 tab 3 (…)`），且不列其他視窗的分頁
+- [x] 1.3 失敗訊息寫出 `--window N`：`runTargetedAppleScript` 的 `.windowID` 分支、`checkWindowID`（新增 `pinnedFrom` 參數，預設 nil）、`pickNativeTargetCore` 的分頁越界；`resolveToConcreteTarget` 的 `--profile` 分支收斂成 `.windowID` 時保留 `pinnedFrom`。驗證：fake Safari 讓釘住的視窗在第二步消失，斷言 pattern 為 `window 2 (window id 4711 at command start)`（`--profile` 時加 `(profile: …)`，分頁時 `window 2 tab 3 (…)`），且不列其他視窗的分頁
 
 ## 2. 指令接上釘住步驟
 
 涵蓋 requirement「Window number resolved to its id at command start」的封閉列舉與 `--mark-tab`；design「`--mark-tab` 先釘住再包標題」「`open` 只在導航路徑釘住」「`upload` 只在 JavaScript 路徑釘住」。
 
-- [ ] 2.1 [P] 每個範圍內指令的 `run()` 第一行 `let target = try await self.target.pinWindowAtStart()`（`TabUnmarkCommand`、`TabIsMarkedCommand` 用自己的屬性名）：back、check／uncheck、click、console、cookies 三個子指令、dblclick、drag、errors、fill、find、focus、forward、get 所有子指令、highlight、hover、is 所有子指令、mouse 所有子指令、pdf-cache get、press、reload、save-image、scroll、scrollintoview、select、set media、snapshot、storage 所有子指令、tab is-marked、tab unmark、type。驗證：fake Safari 測試對 `get url`、`get text`、`click`、`storage local get`、`snapshot`、`tab is-marked` 斷言讀 id 之後沒有腳本含 `window 2`、途中換順序後仍打 `window id W`
-- [ ] 2.2 `click --mark-tab` 先釘住再 `markTabIfRequested`：包上、點擊、拆下都是 `window id W`。驗證：fake Safari 在第一個腳本之後把另一個視窗換到第 2 位，斷言讀 id 的腳本在第一個 `set name`／標題寫入之前，之後沒有 `window 2`
-- [ ] 2.3 [P] `open`（requirement「Open URL in current tab」）：`--replace-tab` 與有目標旗標的導航路徑先釘住再 `resolveProfileScoped()`；`--new-tab`、`--new-window` 與 focus-existing 不變。驗證：fake Safari 斷言 `open --window 2 <url>` 送出 `get name of document of window id W`、導航、最後 `activate`；零視窗時仍是 `make new document`；`open --new-tab --window 2` 的腳本不變
-- [ ] 2.4 [P] `upload`：只有 JavaScript 路徑在解析目標前釘住，native 路徑不動（#353）。驗證：`upload --js` 的 fake Safari 測試斷言 `window id W`；native 路徑的既有測試不變
+- [x] 2.1 [P] 每個範圍內指令的 `run()` 第一行 `let target = try await self.target.pinWindowAtStart()`（`TabUnmarkCommand`、`TabIsMarkedCommand` 用自己的屬性名）：back、check／uncheck、click、console、cookies 三個子指令、dblclick、drag、errors、fill、find、focus、forward、get 所有子指令、highlight、hover、is 所有子指令、mouse 所有子指令、pdf-cache get、press、reload、save-image、scroll、scrollintoview、select、set media、snapshot、storage 所有子指令、tab is-marked、tab unmark、type。驗證：fake Safari 測試對 `get url`、`get text`、`click`、`storage local get`、`snapshot`、`tab is-marked` 斷言讀 id 之後沒有腳本含 `window 2`、途中換順序後仍打 `window id W`
+- [x] 2.2 `click --mark-tab` 先釘住再 `markTabIfRequested`：包上、點擊、拆下都是 `window id W`。驗證：fake Safari 在第一個腳本之後把另一個視窗換到第 2 位，斷言讀 id 的腳本在第一個 `set name`／標題寫入之前，之後沒有 `window 2`
+- [x] 2.3 [P] `open`（requirement「Open URL in current tab」）：`--replace-tab` 與有目標旗標的導航路徑先釘住再 `resolveProfileScoped()`；`--new-tab`、`--new-window` 與 focus-existing 不變。驗證：fake Safari 斷言 `open --window 2 <url>` 送出 `get name of document of window id W`、導航、最後 `activate`；零視窗時仍是 `make new document`；`open --new-tab --window 2` 的腳本不變
+- [x] 2.4 [P] `upload`：只有 JavaScript 路徑在解析目標前釘住，native 路徑不動（#353）。驗證：`upload --js` 的 fake Safari 測試斷言 `window id W`；native 路徑的既有測試不變
 - [ ] 2.5 形狀檢查防止新指令退回位置：組合 `TargetOptions` 的每個指令 struct 都呼叫 `pinWindowAtStart()`，或在已知清單上（寫明原因與 issue）。驗證：`WindowPinShapeTests`；把任一指令的釘住拿掉時它失敗
 
 ## 3. exec

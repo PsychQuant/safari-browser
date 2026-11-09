@@ -28,8 +28,10 @@ struct SnapshotCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         if page {
-            try await runPageScan()
+            try await runPageScan(target: target)
             return
         }
         let scopeJS = if let selector {
@@ -142,7 +144,7 @@ struct SnapshotCommand: AsyncParsableCommand {
 
     // MARK: - --page: Full page state scan (#13)
 
-    private func runPageScan() async throws {
+    private func runPageScan(target: TargetOptions) async throws {
         let scopeJS = if let selector {
             "document.querySelector('\(selector.escapedForJS)')"
         } else {
