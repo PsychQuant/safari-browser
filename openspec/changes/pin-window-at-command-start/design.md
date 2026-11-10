@@ -26,7 +26,8 @@
 
 - `close`、`screenshot`、`pdf`、`upload --native`／`--allow-hid` 這些視窗層級的動作（#353；它們之後呼叫同一個步驟）。
 - `js`、`wait`、`save-pdf`：已經釘住，而且多了「目前分頁不能換」的檢查，不改成本變更的語意。
-- `tabs`、`tab <N>`／`tab new`、`tab focus`、`open --new-tab`、`open --new-window`、`documents`、`wait <ms>`：已經釘住，或只命名視窗、不讀分頁。
+- `tabs`、`tab new`、`tab focus`、`open --new-tab`：自己先讀視窗 id 再動作；`tab <N> --window N`（沒有 `--profile`）在單一 Apple event 裡以位置指定視窗；`open --new-window`、`documents`、`wait <ms>` 不讀分頁。
+- `pdf-cache get`：只透過測試可注入的 seam 讀一次分頁網址，之後不再指定視窗（verify 第一輪：釘住會繞過 seam 讀 Safari）。
 - 不帶旗標的預設目標（#287）：把 `.frontWindow` 也釘住會改變 `open` 在零視窗時建立新文件的路徑。
 - 兩個指令之間：第二個指令開始時 `--window N` 仍指當下排第 N 的視窗。
 - 分頁的穩定身分（#188）：`--tab-in-window M` 在釘住的視窗內仍是位置。
@@ -51,14 +52,15 @@
 
 ### 讀不到 id 時維持位置語意
 
-除了取消（`CancellationError` 往外拋），任何失敗都回傳原本的 `TargetOptions`。`--profile` 的列舉失敗（找不到第 N 個視窗、列舉本身失敗）也一樣：第一步重新列舉，拋出與現在相同的錯誤。這多花一次列舉，換來「錯誤與現在逐字相同」不需要另外維護兩份訊息。
+讀不到 id 時回傳原本的 `TargetOptions`，並印一行 note 說 `--window N` 會在每一步依位置查：沒有 `--profile` 時是錨點查詢沒有回答（沒有這個視窗、零分頁、越界、逾時）；有 `--profile` 時是列舉回答 not found（找不到第 N 個視窗或第 M 個分頁）或舊式紀錄沒有 id，第一步重新列舉，拋出與現在相同的錯誤。verify 第一輪：`--profile` 下列舉逾時或失敗直接拋出（不讓第一步再等一次 30 秒），取消也拋出。
 
 ### `.windowID` 多帶 `pinnedFrom`，以私有選項 `--pinned-from-window` 傳遞
 
 `TargetDocument.windowID(Int, tabInWindow: Int? = nil, pinnedFrom: Int? = nil)`。`TargetOptions.resolve()` 對 `--window-id W` 把 `pinnedFromWindow` 帶進去。會產生 `.windowID` 失敗訊息的三處以它改寫 pattern：
 
 - `runTargetedAppleScript` 對 `.windowID` 的 object-not-found：`window 2 (window id 4711 at command start)`，清單說視窗已不在、不改用其他視窗。
-- `checkWindowID`（`--profile` 的歸屬檢查與 native resolver）：同一個 pattern 加上 `(profile: "P")`。
+- `checkWindowID`（native resolver 與已釘住 id 在指令開頭的 profile 檢查）：同一個 pattern 加上 `(profile: "P")`。
+- verify 第一輪：`runTargetedAppleScript` 對釘住的 id 另外列出清單——分頁不見而視窗還在時列那個視窗的分頁；視窗不見且呼叫者旁帶 profile 時列那個 profile 的分頁（#362 的格式與 `--window-id` 提示）；其餘只有一則說視窗已不在的 note。`js`／`wait`／`save-pdf` 的錨定失敗也寫出 N。
 - `pickNativeTargetCore` 的分頁越界：`window 2 tab 5 (window id 4711 at command start)`。
 
 `resolveToConcreteTarget` 的 `--profile` 分支收斂成 `.windowID` 時保留 `pinnedFrom`。
@@ -91,13 +93,13 @@
 
 ### 形狀檢查防止新指令退回位置
 
-測試讀 `Sources/SafariBrowser/Commands` 中每個組合 `TargetOptions` 的指令 struct，要求它呼叫 `pinWindowAtStart()`，或是已知清單上的例外（各自寫明原因：`js`／`wait`／`save-pdf` 自己錨定、#353 的四個、`tabs`／`tab switch`／`tab focus`、`documents`、`open --new-tab` 的部分以 struct 層級不分）。它是形狀檢查，不是證明；行為由 fake Safari 的測試保證。
+測試讀 `Sources/SafariBrowser/Commands` 中每個組合 `TargetOptions` 的指令 struct，要求它呼叫 `pinWindowAtStart()`，或是已知清單上的例外（各自寫明原因：`js`／`wait`／`save-pdf` 自己錨定、#353 的三個 struct（`close`、`screenshot`、`pdf`；`upload` 在 JavaScript 路徑有釘住，所以以 struct 層級通過）、`tabs`／`tab switch`／`tab focus`、`documents`、`pdf-cache get`；`tab new` 與 `open --new-tab` 是同一個 struct 的另一條路，以 struct 層級看不出來）。它是形狀檢查，不是證明；行為由 fake Safari 的測試保證。
 
 ## Implementation Contract
 
 **Behavior**
 
-- 範圍內的指令帶 `--window N`：開頭送一個小查詢讀 id（有 `--profile` 時是一次列舉），之後送出的每一段 AppleScript 都以 `window id W` 指定視窗，不再出現 `window N`。
+- 範圍內的指令帶 `--window N`：在自己的參數檢查之後、送出任何東西之前，送一個小查詢讀 id（有 `--profile` 時是一次列舉，也是整個指令的 profile 檢查），之後送出的每一段 AppleScript 都以 `window id W` 指定目標視窗，不再以位置指定它。
 - 帶 `--window N --tab-in-window M`：之後的參照是 `tab M of window id W`。
 - 途中把另一個視窗拉到前面：後續步驟仍在視窗 W。
 - 途中視窗 W 關掉：`documentNotFound`，pattern 為 `window N (window id W at command start)`（有分頁時 `window N tab M (window id W at command start)`，有 `--profile` 時加 `(profile: "P")`）；沒有任何步驟打到現在排第 N 的視窗，也不出現 `front window`。
@@ -115,7 +117,8 @@
 **Failure modes**
 
 - 取消：釘住步驟往外拋 `CancellationError`。
-- 讀 id 的任何其他失敗：不報錯，維持位置。
+- 讀不到 id（見〈讀不到 id 時維持位置語意〉）：不報錯，維持位置，stderr 一行 note。
+- `--profile` 下的列舉逾時或失敗：拋出。
 - `--pinned-from-window` 沒有 `--window-id`、或值 < 1：驗證錯誤。
 
 **Acceptance**
@@ -132,9 +135,11 @@
 
 ## Risks / Trade-offs
 
-- [單一 Apple event 的指令多一次 round trip（約 0.1–0.15 秒）] → 一致的規則比依步數分類簡單；`js` 已量過錨定加執行 0.286 秒（#255）。不另行量測，記為已知成本。
+- [成本（verify 第一輪更正）] 沒有 `--profile`：釘住前每次 bridge 呼叫都先讀一次 `get id of window N`（`readWindowID`），釘住後只在開頭讀一次，單一呼叫的指令不多也不少，多次呼叫的指令變便宜，`--tab-in-window` 從每次列舉變成一次小查詢。有 `--profile`：釘住的列舉取代第一步的列舉，之後不再逐次列舉，所以不比釘住前多；只有讀不到 id（not found）時第一步會再列舉一次。`save-image` 以一次 `index of window id` 小查詢檢查釘住的視窗，不列舉。
 - [`open --window N <url>` 的行為改變：`activate` 移到導航之後；開頭與導航之間視窗關掉會失敗而不是建立新文件] → 寫進 navigation 的 MODIFIED requirement 與 CHANGELOG。
 - [未來新指令忘了呼叫釘住步驟，安靜退回位置] → 形狀檢查。
-- [`--profile` 配 `--tab-in-window` 經 `resolveProfileScoped` 收斂成 `.resolvedTab`，訊息只能寫 window id] → 與本變更之前相同的既有訊息；記為已知限制。
+- [只解析一次 profile 的指令（`get text`、`get html`、`save-image`、`upload --js`、`open`）之後的呼叫不帶 profile，釘住的視窗不見時只列一則 note，不列 profile 的分頁] → 記為已知限制。
 - [真正的失敗只在真機多視窗、Safari 不在前景時出現] → fake Safari 測試涵蓋腳本形狀；真機驗收列為維護者的任務，未做時照實標示。
-- [`--pinned-from-window` 可被使用者自行傳入] → 只影響訊息文字，且要求 `--window-id`；不出現在 `--help` 與 MCP schema。
+- [`--pinned-from-window` 可被使用者自行傳入，而釘住的 id 在 `--profile` 下不再逐次檢查歸屬] → 帶著它的 `--window-id W --profile P` 在指令開頭由 `pinWindowAtStart()` 檢查一次歸屬；`js`／`wait`／`save-pdf` 的錨定也照舊檢查；它要求 `--window-id`，不出現在 `--help` 與 MCP schema。
+- [`exec` 的子行程 `js`／`wait` 步驟收到釘住的 `--window-id W` 後，錨點讀取逾時會直接失敗，而不是像 `--window N` 那樣退回位置] → 失敗關閉，寫進 CHANGELOG 的行為改變。
+- [讀不到 id 時安靜退回位置] → 印一行 note；daemon 上的 exec 在第一個需要的步驟再試一次。

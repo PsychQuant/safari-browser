@@ -70,7 +70,7 @@ struct TargetOptions: ParsableArguments {
         name: .long,
         help: ArgumentHelp(
             "Target the document of the Nth Safari window (1-indexed). Pair with --tab-in-window to select a specific tab.",
-            discussion: "N counts windows from the front when the command starts. Commands that read or act on a tab resolve it to that window's stable id once, before anything else, and then address the window by id (as --window-id does), so a window raised mid-command does not redirect later steps; if that window closes mid-command the command fails instead of using the window now in position N. If the id cannot be read at start, N stays a position. `close`, `screenshot`, `pdf` and `upload` on its native paths still look the position up (#353)."
+            discussion: "N counts windows from the front when the command starts. Most commands that read or act on a tab resolve it to that window's stable id once, before anything else, and then address the window by id (as --window-id does), so a window raised mid-command does not redirect later steps; if that window closes mid-command the command fails instead of using the window now in position N. --tab-in-window M stays a position inside that window. If the id cannot be read at start, a note says so and N stays a position. `close`, `screenshot`, `pdf` and `upload` on its native paths (#353), and `tab <N>`, still look the position up."
         )
     )
     var window: Int?
