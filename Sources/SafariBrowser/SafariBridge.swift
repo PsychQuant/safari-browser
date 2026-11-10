@@ -45,6 +45,9 @@ private func CGSGetWindowWorkspace(_ cid: Int32, _ wid: CGWindowID, _ space: Uns
 enum SafariBridge {
     // MARK: - Document Targeting (#17/#18/#21)
 
+    /// #354: see `TargetDocument.PinnedFrom`.
+    typealias PinnedFrom = TargetDocument.PinnedFrom
+
     /// Selects which Safari document a command should operate on. Every case
     /// resolves to a concrete AppleScript document reference via
     /// `resolveDocumentReference(_:)`, which is safe to interpolate into a
@@ -117,10 +120,39 @@ enum SafariBridge {
         /// `.resolvedTab` as already validated, so `--window-id` never starts
         /// as one (the anchoring entry and the profile branch of
         /// `resolveToConcreteTarget` collapse it after checking).
-        /// `pinnedFrom` (#354) is the `--window N` the id was read from at
-        /// command start (`TargetOptions.pinWindowAtStart`); it changes only
-        /// how a miss is worded, never which window is addressed.
-        case windowID(Int, tabInWindow: Int? = nil, pinnedFrom: Int? = nil)
+        /// `pinnedFrom` (#354) is where the id came from when
+        /// `TargetOptions.pinWindowAtStart` read it from `--window N`: the N
+        /// (how a miss is worded) and, separately, the profile the id was
+        /// checked against in this process (see `PinnedFrom`). It never
+        /// changes which window is addressed.
+        case windowID(Int, tabInWindow: Int? = nil, pinnedFrom: PinnedFrom? = nil)
+        /// #354: the origin of a window id that `TargetOptions.pinWindowAtStart` read from `--window N`.
+        ///
+        /// Two facts, deliberately apart. `window` is the N the user typed; it only words a miss, and it is
+        /// what the private `--pinned-from-window` flag carries to an `exec` step. `checkedProfile` is the
+        /// profile the id was checked against IN THIS PROCESS, and it is the only thing that lets a call skip
+        /// its own `--profile` check. It is never read from a flag or from a daemon request: an id that
+        /// arrives from another process, or typed by hand, has `checkedProfile == nil` and is checked
+        /// against `--profile` like any `--window-id W` (verify round 2: the skip used to key on `window`
+        /// alone, so the flag by itself switched the profile check off).
+        struct PinnedFrom: Sendable, Equatable, ExpressibleByIntegerLiteral {
+            let window: Int
+            let checkedProfile: String?
+
+            init(window: Int, checkedProfile: String? = nil) {
+                self.window = window
+                self.checkedProfile = checkedProfile
+            }
+
+            init(integerLiteral value: Int) { self.init(window: value) }
+
+            /// Whether a call under `profile` may address the id without checking the profile again.
+            func wasChecked(against profile: String?) -> Bool {
+                guard let profile, !profile.isEmpty else { return false }
+                return checkedProfile == profile
+            }
+        }
+
         /// Composite target: the tab-in-window-th tab of the window-th
         /// window. Addresses same-URL duplicate tabs that `.urlMatch`
         /// cannot disambiguate (issue #28 gap #2). Always requires both
@@ -270,15 +302,17 @@ enum SafariBridge {
                 BlockingDialogGate.shared.check(key)
                 return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key)
             }
-            if case .windowID(let id, let tab, let pinnedFrom) = target, (profile ?? "").isEmpty || pinnedFrom != nil {
+            if case .windowID(let id, let tab, let pinnedFrom) = target,
+               (profile ?? "").isEmpty || pinnedFrom?.wasChecked(against: profile) == true {
                 // #352: the reference names the window by id, so no
                 // enumeration is needed; a missing id raises in the script and
                 // `runTargetedAppleScript` reports it as `documentNotFound`.
                 // With `--profile` the enumeration below checks membership —
-                // except for an id `TargetOptions.pinWindowAtStart` read (#354):
-                // it was picked from that profile's windows at command start, and
-                // a window's profile does not change while it is open, so a
-                // second enumeration per call would only cost (verify F5).
+                // except for an id `TargetOptions.pinWindowAtStart` checked
+                // against that profile in this process (#354): a window's
+                // profile does not change while it is open, so a second
+                // enumeration per call would only cost (verify F5). The N the
+                // id was pinned from is not that proof: it arrives in a flag.
                 let key = BlockingDialogGate.WindowKey.id(id)
                 BlockingDialogGate.shared.check(key)
                 return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key,
@@ -322,7 +356,7 @@ enum SafariBridge {
 
     /// #354: the current position of the window whose id `pinWindowAtStart` read. A window that is gone is the
     /// pinned miss (`window N (window id W at command start)`); any other failure is thrown as it is.
-    private static func readWindowIndex(windowID: Int, pinnedFrom: Int) async throws -> Int {
+    private static func readWindowIndex(windowID: Int, pinnedFrom: PinnedFrom) async throws -> Int {
         do {
             let raw = try await runAppleScript("tell application \"Safari\" to get index of window id \(windowID)", timeout: 2)
             if let index = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)), index > 0 { return index }
@@ -385,8 +419,8 @@ enum SafariBridge {
             // every internal round-trip would add an enumeration per call.
             if case .resolvedTab = target { return target }
             if case .anchoredCurrentTab = target { return target }
-            // #354: an id `pinWindowAtStart` read was picked from the profile's windows at command start.
-            if case .windowID(_, _, _?) = target { return target }
+            // #354: an id `pinWindowAtStart` checked against this profile, in this process, at command start.
+            if case .windowID(_, _, let pinnedFrom?) = target, pinnedFrom.wasChecked(against: profile) { return target }
             let resolved = try await resolveNativeTarget(
                 from: target,
                 firstMatch: firstMatch,
@@ -1036,18 +1070,18 @@ enum SafariBridge {
     /// `--window N` — the number the user typed first, so a miss says which of their windows closed:
     /// `window 2 (window id 4711 at command start)`. Built where the error is built, because a daemon
     /// prints the payload, not the rendered message (#227).
-    static func windowIDDescription(_ windowID: Int, tab: Int?, pinnedFrom: Int?) -> String {
+    static func windowIDDescription(_ windowID: Int, tab: Int?, pinnedFrom: PinnedFrom?) -> String {
         let tabPart = tab.map { " tab \($0)" } ?? ""
         guard let pinnedFrom else { return "window id \(windowID)\(tabPart)" }
-        return "window \(pinnedFrom)\(tabPart) (window id \(windowID) at command start)"
+        return "window \(pinnedFrom.window)\(tabPart) (window id \(windowID) at command start)"
     }
 
     /// #354: the one-line listing of a miss on a window id. For a pinned `--window N` it says the window
     /// read at command start is gone and that no other window takes its place.
-    static func windowIDMissNote(pinnedFrom: Int?, tabs: Bool) -> String {
+    static func windowIDMissNote(pinnedFrom: PinnedFrom?, tabs: Bool) -> String {
         guard let pinnedFrom else { return tabs ? "(no such window or tab)" : "(no such window)" }
         let what = tabs ? "is no longer open or has no such tab" : "is no longer open"
-        return "(the window that was window \(pinnedFrom) at command start \(what); "
+        return "(the window that was window \(pinnedFrom.window) at command start \(what); "
             + "the command does not move on to the window now in that position)"
     }
 
@@ -1056,7 +1090,7 @@ enum SafariBridge {
     /// miss on one window's tab lists that window's tabs); a window that is gone lists, under `--profile`, that
     /// profile's tabs labelled with their window ids (#362), and otherwise only a note — never another window's
     /// tabs as if it were the target. Only these cases enumerate; a failed enumeration says so (#362).
-    private static func pinnedWindowMiss(windowID: Int, tab: Int?, pinnedFrom: Int, profile: String?) async throws -> SafariBrowserError {
+    private static func pinnedWindowMiss(windowID: Int, tab: Int?, pinnedFrom: PinnedFrom, profile: String?) async throws -> SafariBrowserError {
         let pattern = windowIDDescription(windowID, tab: tab, pinnedFrom: pinnedFrom)
         let scope = (profile ?? "").isEmpty ? nil : profile
         guard tab != nil || scope != nil else {
@@ -2924,7 +2958,7 @@ enum SafariBridge {
     /// profile mismatch never prints another profile's tab URLs.
     @discardableResult
     static func checkWindowID(
-        _ windowID: Int, profile: String?, in windows: [WindowInfo], pinnedFrom: Int? = nil
+        _ windowID: Int, profile: String?, in windows: [WindowInfo], pinnedFrom: PinnedFrom? = nil
     ) throws -> WindowInfo {
         let candidates = profile.map { p in windows.filter { $0.profile == p } } ?? windows
         if let window = candidates.first(where: { $0.windowID == windowID }) { return window }

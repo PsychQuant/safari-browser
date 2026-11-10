@@ -181,16 +181,14 @@ enum DaemonDispatch {
                 let context = DaemonRequestContext.current ?? DaemonRequestContext()
                 try context.configureDialogProbe(probeOptions)
 
-                // #354: the whole-run marker reads and rewrites the title before the first step. An exec-level
-                // `--window N` that arrives unpinned (the client's pin could not read the id) is pinned below,
-                // before the wrap, and the dispatcher is told not to try again: the wrap, every step and the
-                // unwrap then name what that one attempt returned, the id or, if it could not be read here
-                // either, the position. Without a marker the first step that needs the target makes the attempt.
+                // #354: the whole-run marker reads and rewrites the title before the first step, so a marked
+                // request settles the exec-level target below, before the wrap, and hands the result to the
+                // dispatcher so no step tries again: a `--window N` that arrives unpinned (the client's pin could
+                // not read the id) gets its one more attempt, and an id that arrives pinned under `--profile` is
+                // checked against it (the arguments are text from the client, not proof). The wrap, every step
+                // and the unwrap then address the same thing: the id, or the position if it could not be read
+                // here either. Without a marker the first step that needs the target does this.
                 let marked = markTabMode != .off
-                let interpreter = ScriptInterpreter(
-                    maxSteps: maxSteps,
-                    dispatcher: InProcessStepDispatcher(pinsSharedWindowOnFirstNeed: !marked)
-                )
 
                 // Section 7 of tab-ownership-marker v2: wrap the ENTIRE script
                 // execution in `SafariBridge.markTabIfRequested` when the
@@ -201,9 +199,11 @@ enum DaemonDispatch {
                 // body runs directly, so the daemon path stays zero-overhead
                 // when no marker is requested.
                 let results: [StepResult] = try await DaemonRequestContext.$current.withValue(context) {
-                    // An id that arrives pinned was checked against `--profile` by the client; only a position
-                    // is read here.
-                    let runTarget = marked && target.window != nil ? try await target.pinWindowAtStart() : target
+                    let runTarget = marked ? try await target.pinWindowAtStart() : target
+                    let interpreter = ScriptInterpreter(
+                        maxSteps: maxSteps,
+                        dispatcher: InProcessStepDispatcher(sharedTarget: marked ? runTarget : nil)
+                    )
                     return try await SafariBridge.markTabIfRequested(
                         target: runTarget.resolve(),
                         mode: markTabMode,

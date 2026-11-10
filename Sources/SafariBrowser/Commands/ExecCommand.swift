@@ -74,8 +74,12 @@ struct ExecCommand: AsyncParsableCommand {
     ) async throws {
         let steps = try ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps)
         var pinned = self
+        // The note of a read that failed is held back: on the daemon path the daemon makes one more attempt and
+        // speaks for itself (the note of a read that then succeeds would be untrue, and two notes would say one
+        // thing twice). It is written below, once, when the script runs step by step (verify round 2).
+        var pinNotes: [String] = []
         if Self.usesExecLevelTarget(steps, marked: target.markTabResolved(env: environment) != .off) {
-            pinned.target = try await target.pinWindowAtStart()
+            pinned.target = try await target.pinWindowAtStart(note: { pinNotes.append($0) })
         }
         let command = pinned
         let target = command.target
@@ -85,6 +89,7 @@ struct ExecCommand: AsyncParsableCommand {
             print(results)
             return
         }
+        pinNotes.forEach(note)
 
         // Only the daemon wraps a whole run in the tab-ownership marker. A script that runs step by
         // step gets none around the run (the flags are not forwarded to a step's command; the

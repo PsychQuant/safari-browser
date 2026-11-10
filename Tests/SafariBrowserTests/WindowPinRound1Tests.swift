@@ -65,6 +65,8 @@ final class WindowPinRound1Tests: XCTestCase {
         _ = try await pin(["--window", "9"], on: fake)
         XCTAssertEqual(fake.diagnostics, [TargetOptions.pinFallbackNote(window: 9)])
         XCTAssertTrue(TargetOptions.pinFallbackNote(window: 9).contains("--window 9 is looked up by its position"))
+        XCTAssertTrue(TargetOptions.pinFallbackNote(window: 9).contains("no such window or tab, or Safari did not answer in time"),
+                      "a plain out-of-range number must not read as a Safari failure")
 
         let pinnedFake = PinFakeSafari()
         _ = try await pin(["--window", "2"], on: pinnedFake)
@@ -112,8 +114,53 @@ final class WindowPinRound1Tests: XCTestCase {
         XCTAssertEqual(available.count, 1)
         XCTAssertFalse(available[0].contains("no such tab"), available[0])
         let message = flat(error.localizedDescription)
-        XCTAssertTrue(message.contains("the window that --window N named when the command started is no longer open"), message)
+        XCTAssertTrue(message.contains("the window that --window N named when the command started is no longer open, and the command did not move on"), message)
+        XCTAssertFalse(message.contains("that tab"), "no tab was named: \(message)")
         XCTAssertFalse(message.contains("target one with --window N --tab-in-window M"), message)
+    }
+
+    /// The same miss when a tab was named and its window is gone: the hint allows for the tab, the listing is the
+    /// one note (no other window's tabs).
+    func testAPinnedTabWhoseWindowClosedSaysSo() async throws {
+        let fake = PinFakeSafari()
+        fake.closeAfterScripts = (1, 4711)
+        let error = await fake.run(GetURL.self, ["--window", "1", "--tab-in-window", "3"])
+        guard let error = error as? SafariBrowserError, case .documentNotFound(let pattern, let available) = error else {
+            return XCTFail("expected a targeting miss, got \(String(describing: error))\n\(fake.transcript)")
+        }
+        XCTAssertEqual(pattern, "window 1 tab 3 (window id 4711 at command start)")
+        XCTAssertEqual(available, [SafariBridge.windowIDMissNote(pinnedFrom: 1, tabs: false)])
+        let message = flat(error.localizedDescription)
+        XCTAssertTrue(message.contains("is no longer open, or no longer has that tab, and the command did not move on"), message)
+    }
+
+    /// The listing that follows a pinned miss can fail too. The miss then carries one note naming the kind of
+    /// failure, never the error's own text (it can quote a URL, #227) and never a claim about what is open (#362).
+    func testAPinnedMissWhoseListingFailsSaysSo() async throws {
+        let fake = PinFakeSafari()
+        fake.closeAfterScripts = (1, 6933)
+        let failure = SafariBrowserError.appleScriptFailed(
+            "execution error: Safari got an error: AppleEvent timed out reading https://secret.example/?token=1. (-1712)")
+        fake.enumerationError = failure
+        fake.enumerationErrorFrom = 2
+        let error = await fake.run(GetURL.self, ["--window", "2", "--profile", "Work"])
+        guard case SafariBrowserError.documentNotFound(let pattern, let available)? = error else {
+            return XCTFail("expected a targeting miss, got \(String(describing: error))\n\(fake.transcript)")
+        }
+        XCTAssertEqual(pattern, "window 2 (window id 6933 at command start)")
+        XCTAssertEqual(available, [SafariBrowserError.enumerationFailureNote(failure)])
+        XCTAssertFalse("\(error!)".contains("secret.example"), "\(error!)")
+        XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isEnumeration).count, 2, fake.transcript)
+    }
+
+    /// A cancellation during that listing ends the command as a cancellation, not as a miss with an empty listing.
+    func testAPinnedMissWhoseListingIsCancelledIsACancellation() async throws {
+        let fake = PinFakeSafari()
+        fake.closeAfterScripts = (1, 6933)
+        fake.enumerationError = CancellationError()
+        fake.enumerationErrorFrom = 2
+        let error = await fake.run(GetURL.self, ["--window", "2", "--profile", "Work"])
+        XCTAssertTrue(error is CancellationError, "\(String(describing: error))\n\(fake.transcript)")
     }
 
     /// A pinned tab that disappeared while its window stayed open: that window's tabs are listed, by id.
@@ -150,6 +197,75 @@ final class WindowPinRound1Tests: XCTestCase {
             return XCTFail("wait: \(String(describing: error))")
         }
         XCTAssertEqual(pattern, "window 2 (window id 5999 at command start)")
+
+        let pdf = PinFakeSafari()
+        let destination = NSTemporaryDirectory() + "sb354-\(UUID().uuidString).pdf"
+        let pdfError = await pdf.run(SavePDFCommand.self, [destination, "--window-id", "5999", "--pinned-from-window", "2"])
+        guard case SafariBrowserError.documentNotFound(let pdfPattern, _)? = pdfError else {
+            return XCTFail("save-pdf: \(String(describing: pdfError))")
+        }
+        XCTAssertEqual(pdfPattern, "window 2 (window id 5999 at command start)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination))
+    }
+
+    /// The same N when the target is lost AFTER the anchor was read (`js`, and `save-pdf` through the same function;
+    /// `wait` words it itself). The anchor already names the id, so `js` names the window once.
+    func testATargetLostAfterTheAnchorNamesTheWindowNumber() {
+        let gone = SafariBrowserError.appleScriptFailed("execution error: Safari got an error: Can’t get window id 5822. (-1728)")
+        let anchored = SafariBridge.TargetDocument.anchoredCurrentTab(windowID: 5822, tabInWindow: 1, profile: nil)
+        func changed(_ error: SafariBrowserError) -> String? {
+            if case .anchoredTargetChanged(let target) = error { return target }
+            return nil
+        }
+        XCTAssertEqual(changed(JSCommand.anchoredFailure(gone, original: .windowID(5822, pinnedFrom: 2), anchored: anchored)),
+                       "the current tab of window 2 (window id 5822 tab 1 at command start)")
+        XCTAssertEqual(changed(JSCommand.anchoredFailure(gone, original: .windowID(5822), anchored: anchored)),
+                       "the current tab of window id 5822 (window id 5822 tab 1 at command start)")
+        let resolved = SafariBridge.TargetDocument.resolvedTab(windowID: 5822, tabInWindow: 2, rematch: nil, profile: nil)
+        let tabGone = SafariBrowserError.documentNotFound(pattern: "window id 5822 tab 2", availableDocuments: [])
+        XCTAssertEqual(changed(JSCommand.anchoredFailure(tabGone, original: .windowID(5822, tabInWindow: 2, pinnedFrom: 2), anchored: resolved)),
+                       "window 2 tab 2 (window id 5822 at command start)")
+        XCTAssertEqual(WaitCommand.describe(.windowID(5822, pinnedFrom: 2), anchored),
+                       "the current tab of window 2 (window id 5822 at command start) (its position at command start)")
+        XCTAssertEqual(WaitCommand.describe(.windowID(5822, tabInWindow: 2, pinnedFrom: 2), resolved),
+                       "window 2 tab 2 (window id 5822 at command start)")
+    }
+
+    /// A pinned target whose current tab cannot be read (no answer in time) is not called closed: the hint says it
+    /// could not be read. The pattern carries the profile because this is the anchor's own miss under `--profile`.
+    func testAPinnedTargetWhoseTabCannotBeReadIsNotCalledClosed() async {
+        let fake = PinFakeSafari()
+        fake.anchorError = SafariBrowserError.appleScriptFailed("execution error: Safari got an error: AppleEvent timed out. (-1712)")
+        let error = await fake.run(JSCommand.self, ["1", "--window-id", "5822", "--pinned-from-window", "1", "--profile", "Work"])
+        guard let error = error as? SafariBrowserError, case .documentNotFound(let pattern, let available) = error else {
+            return XCTFail("expected a targeting miss, got \(String(describing: error))\n\(fake.transcript)")
+        }
+        XCTAssertEqual(pattern, "window 1 (window id 5822 at command start) (profile: \"Work\")")
+        XCTAssertEqual(available.count, 1)
+        let message = flat(error.localizedDescription)
+        XCTAssertTrue(message.contains("could not be read just now"), message)
+        XCTAssertFalse(message.contains("is no longer open"), message)
+    }
+
+    /// Native `upload` resolves through `resolveProfileScoped()` and then types into the window it gets. It does not
+    /// pin (#353), so an id that arrives with `--pinned-from-window` carries no check, and the resolution refuses a
+    /// window of another profile before any keystroke. (Verify round 2: it passed, and the keystrokes went there.)
+    /// Tested at the resolution, never through the command: a regression must not type into anything.
+    func testTheResolutionNativeUploadUsesRefusesAnUncheckedIDOfAnotherProfile() async throws {
+        let fake = PinFakeSafari()
+        let options = try TargetOptions.parse(["--window-id", "4711", "--pinned-from-window", "1", "--profile", "Work"])
+        do {
+            let scoped = try await fake.drive { try await options.resolveProfileScoped() }
+            XCTFail("another profile's window must be refused, got \(scoped)\n\(fake.transcript)")
+        } catch SafariBrowserError.documentNotFound(let pattern, _) {
+            XCTAssertEqual(pattern, "window 1 (window id 4711 at command start) (profile: \"Work\")")
+        }
+        XCTAssertEqual(touches(fake), [], fake.transcript)
+
+        let right = PinFakeSafari()
+        let ok = try TargetOptions.parse(["--window-id", "5822", "--pinned-from-window", "1", "--profile", "Work"])
+        _ = try await right.drive { try await ok.resolveProfileScoped() }
+        XCTAssertEqual(right.scripts.filter(PinFakeSafari.isEnumeration).count, 1, "the check:\n\(right.transcript)")
     }
 
     // MARK: pinned paths the shape check cannot see (F10)
@@ -277,20 +393,167 @@ final class WindowPinRound1Tests: XCTestCase {
         XCTAssertEqual(fake.diagnostics, [TargetOptions.pinFallbackNote(window: 2)])
     }
 
-    /// The usual case: the client pinned, so the arguments arrive as an id. The handler reads nothing before the
-    /// wrap (under `--profile` the client's enumeration was the check), and every script names that id.
+    /// The usual case: the client pinned, so the arguments arrive as an id. Without `--profile` there is nothing
+    /// to check: the handler reads nothing before the wrap, and every script names that id.
     func testAMarkedDaemonRunWithAnIDThatArrivesPinnedReadsNothingMore() async throws {
         let fake = PinFakeSafari()
-        let envelope: [String: Any] = [
-            "steps": [["cmd": "get url"]], "markTab": "ephemeral",
-            "targetArgs": ["--window-id", "5822", "--pinned-from-window", "1", "--profile", "Work"],
-        ]
-        let data = try JSONSerialization.data(withJSONObject: envelope)
-        _ = try await fake.drive { try await DaemonDispatch.Handlers.execRunScript(paramsData: data) }
+        _ = try await daemonRun(on: fake, targetArgs: ["--window-id", "5822", "--pinned-from-window", "2"], markTab: "ephemeral")
         XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isEnumeration).count, 0, fake.transcript)
         XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isIndexAnchor).count, 0, fake.transcript)
         XCTAssertTrue(fake.scripts.contains { $0.contains("document.title") }, fake.transcript)
         XCTAssertTrue(fake.scripts.allSatisfy { $0.contains("window id 5822") }, fake.transcript)
+    }
+
+    // MARK: arguments from another process are not proof of the profile (verify round 2)
+
+    private func daemonRun(on fake: PinFakeSafari, targetArgs: [String], markTab: String? = nil,
+                           steps: [[String: Any]] = [["cmd": "get url"], ["cmd": "get title"]]) async throws -> String {
+        var envelope: [String: Any] = ["steps": steps, "targetArgs": targetArgs]
+        if let markTab { envelope["markTab"] = markTab }
+        let data = try JSONSerialization.data(withJSONObject: envelope)
+        let reply = try await fake.drive { try await DaemonDispatch.Handlers.execRunScript(paramsData: data) }
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: reply) as? [String: Any])
+        return try XCTUnwrap(object["results"] as? String)
+    }
+
+    /// Every script that is not the enumeration: what was read from, or written to, a window.
+    private func touches(_ fake: PinFakeSafari) -> [String] { fake.scripts.filter { !PinFakeSafari.isEnumeration($0) } }
+
+    /// Under `--profile`, an id that arrives pinned is checked against the profile by the daemon itself, once per
+    /// request: one enumeration, before the wrap, and none for the steps after it.
+    func testADaemonRunChecksAnArrivingIDAgainstTheProfileOncePerRequest() async throws {
+        for markTab in ["ephemeral", nil] as [String?] {
+            let fake = PinFakeSafari()
+            let results = try await daemonRun(on: fake, targetArgs: ["--window-id", "5822", "--pinned-from-window", "1", "--profile", "Work"],
+                                              markTab: markTab)
+            XCTAssertFalse(results.contains("\"error\""), "marked \(markTab ?? "off"): \(results)")
+            XCTAssertTrue(fake.scripts.first.map(PinFakeSafari.isEnumeration) == true, "the check comes first:\n\(fake.transcript)")
+            XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isEnumeration).count, 1, "marked \(markTab ?? "off"):\n\(fake.transcript)")
+            XCTAssertGreaterThanOrEqual(touches(fake).count, 2, fake.transcript)
+            XCTAssertTrue(touches(fake).allSatisfy { $0.contains("window id 5822") }, fake.transcript)
+        }
+    }
+
+    /// The same request naming a window of ANOTHER profile (4711 is Home's): `--pinned-from-window` is text from the
+    /// client, so it does not stand for a check. Nothing is read from window 4711 and its title is not rewritten;
+    /// a marked run fails as a whole, an unmarked one reports each step's miss.
+    func testADaemonRunRefusesAnArrivingIDOfAnotherProfile() async throws {
+        let args = ["--window-id", "4711", "--pinned-from-window", "1", "--profile", "Work"]
+
+        let marked = PinFakeSafari()
+        do {
+            let results = try await daemonRun(on: marked, targetArgs: args, markTab: "ephemeral")
+            XCTFail("a marked run on another profile's window must fail: \(results)\n\(marked.transcript)")
+        } catch SafariBrowserError.documentNotFound(let pattern, _) {
+            XCTAssertEqual(pattern, "window 1 (window id 4711 at command start) (profile: \"Work\")")
+        }
+        XCTAssertEqual(touches(marked), [], "nothing reaches window 4711:\n\(marked.transcript)")
+
+        let unmarked = PinFakeSafari()
+        let results = try await daemonRun(on: unmarked, targetArgs: args, steps: [
+            ["cmd": "get url", "onError": "continue"], ["cmd": "get title", "onError": "continue"],
+        ])
+        XCTAssertEqual(results.components(separatedBy: "documentNotFound").count - 1, 2, "both steps miss: \(results)")
+        XCTAssertFalse(results.contains("home.example"), "no URL of the other profile is returned: \(results)")
+        XCTAssertEqual(touches(unmarked), [], "nothing reaches window 4711:\n\(unmarked.transcript)")
+    }
+
+    /// The dispatcher on its own (a direct caller, no handler in front): the same refusal, and the same single check
+    /// for an id of the right profile.
+    func testTheDispatcherChecksAnArrivingIDAgainstTheProfile() async throws {
+        let wrong = PinFakeSafari()
+        do {
+            _ = try await wrong.drive {
+                try await InProcessStepDispatcher().dispatch(
+                    cmd: "get url", args: [], sharedTargetArgs: ["--window-id", "4711", "--pinned-from-window", "1", "--profile", "Work"])
+            }
+            XCTFail("another profile's window must be refused\n\(wrong.transcript)")
+        } catch SafariBrowserError.documentNotFound {}
+        XCTAssertEqual(touches(wrong), [], wrong.transcript)
+
+        let right = PinFakeSafari()
+        let dispatcher = InProcessStepDispatcher()
+        for _ in 0..<2 {
+            _ = try await right.drive {
+                try await dispatcher.dispatch(
+                    cmd: "get url", args: [], sharedTargetArgs: ["--window-id", "5822", "--pinned-from-window", "1", "--profile", "Work"])
+            }
+        }
+        XCTAssertEqual(right.scripts.filter(PinFakeSafari.isEnumeration).count, 1, right.transcript)
+        XCTAssertEqual(touches(right).count, 2, right.transcript)
+    }
+
+    /// The bridge: only the check made in this process lets a call skip its own. The N a pin came from, alone, never
+    /// does, on either of the two entries that honour the skip.
+    func testOnlyACheckMadeInThisProcessSkipsTheProfileCheck() async throws {
+        typealias Pin = SafariBridge.PinnedFrom
+        XCTAssertFalse(Pin(window: 1).wasChecked(against: "Work"))
+        XCTAssertFalse(Pin(window: 1, checkedProfile: "Home").wasChecked(against: "Work"))
+        XCTAssertFalse(Pin(window: 1, checkedProfile: "Work").wasChecked(against: nil))
+        XCTAssertFalse(Pin(window: 1, checkedProfile: "").wasChecked(against: ""))
+        XCTAssertTrue(Pin(window: 1, checkedProfile: "Work").wasChecked(against: "Work"))
+
+        // No proof, another profile's window: both entries refuse before anything is read.
+        let unproven = SafariBridge.TargetDocument.windowID(4711, pinnedFrom: 1)
+        let read = PinFakeSafari()
+        do {
+            _ = try await read.drive { try await SafariBridge.getCurrentURL(target: unproven, profile: "Work") }
+            XCTFail("the read must be refused\n\(read.transcript)")
+        } catch SafariBrowserError.documentNotFound {}
+        XCTAssertEqual(touches(read), [], read.transcript)
+
+        let concrete = PinFakeSafari()
+        do {
+            _ = try await concrete.drive { try await SafariBridge.resolveToConcreteTarget(unproven, profile: "Work") }
+            XCTFail("the resolution must be refused\n\(concrete.transcript)")
+        } catch SafariBrowserError.documentNotFound {}
+
+        // No proof, the right profile: the call checks for itself (one enumeration), as `--window-id W` does.
+        let checksItself = PinFakeSafari()
+        _ = try await checksItself.drive {
+            try await SafariBridge.getCurrentURL(target: .windowID(5822, pinnedFrom: 1), profile: "Work")
+        }
+        XCTAssertEqual(checksItself.scripts.filter(PinFakeSafari.isEnumeration).count, 1, checksItself.transcript)
+
+        // Proof for this profile: no enumeration. Proof for another profile: checked, and refused.
+        let proven = PinFakeSafari()
+        _ = try await proven.drive {
+            try await SafariBridge.getCurrentURL(target: .windowID(5822, pinnedFrom: Pin(window: 1, checkedProfile: "Work")), profile: "Work")
+        }
+        XCTAssertEqual(proven.scripts.filter(PinFakeSafari.isEnumeration).count, 0, proven.transcript)
+
+        let otherProof = PinFakeSafari()
+        do {
+            _ = try await otherProof.drive {
+                try await SafariBridge.getCurrentURL(target: .windowID(4711, pinnedFrom: Pin(window: 1, checkedProfile: "Home")), profile: "Work")
+            }
+            XCTFail("a check against Home is not a check against Work\n\(otherProof.transcript)")
+        } catch SafariBrowserError.documentNotFound {}
+        XCTAssertEqual(touches(otherProof), [], otherProof.transcript)
+    }
+
+    /// The proof is not an option: no flag sets it, a pin under `--profile` does, and re-encoding the target for an
+    /// `exec` step drops it.
+    func testTheProfileCheckIsNotCarriedByAnyFlag() async throws {
+        let typed = try TargetOptions.parse(["--window-id", "5822", "--pinned-from-window", "1", "--profile", "Work"])
+        XCTAssertNil(typed.profileCheckedAtStart)
+        XCTAssertTrue(typed.awaitsProfileCheckAtStart)
+        XCTAssertThrowsError(try TargetOptions.parse(["--window-id", "5822", "--profile-checked-at-start", "Work"]))
+
+        let fake = PinFakeSafari()
+        let pinned = try await pin(["--window", "1", "--profile", "Work"], on: fake)
+        XCTAssertEqual(pinned.windowID, 5822)
+        XCTAssertEqual(pinned.profileCheckedAtStart, "Work")
+        XCTAssertFalse(pinned.awaitsProfileCheckAtStart)
+
+        let encoded = ScriptInterpreter.encodeTargetArgs(pinned)
+        XCTAssertEqual(encoded, ["--profile", "Work", "--window-id", "5822", "--pinned-from-window", "1"])
+        let received = try TargetOptions.parse(encoded)
+        XCTAssertNil(received.profileCheckedAtStart, "the step's process checks again")
+        XCTAssertTrue(received.awaitsProfileCheckAtStart)
+
+        let noProfile = try await pin(["--window", "2"], on: PinFakeSafari())
+        XCTAssertNil(noProfile.profileCheckedAtStart, "no profile, nothing to check")
     }
 
     // MARK: an id that arrives pinned is still checked against the profile

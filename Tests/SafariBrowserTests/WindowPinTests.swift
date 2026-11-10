@@ -35,6 +35,20 @@ final class WindowPinTests: XCTestCase {
         XCTAssertTrue(GetURL.helpMessage().contains("--window-id"))
     }
 
+    /// The MCP tool schemas are built from the parser's own metadata, which does know the option; the catalog keeps
+    /// only what `--help` displays.
+    func testThePinnedFromWindowIsNotInTheMCPToolSchemas() throws {
+        let metadata = SafariBrowser._dumpHelp()
+        XCTAssertTrue(metadata.contains("pinned-from-window"), "the metadata lists the option, so the catalog is what hides it")
+        let catalog = try MCPToolCatalog(metadata: Data(metadata.utf8))
+        XCTAssertFalse(catalog.tools.isEmpty)
+        for tool in catalog.tools {
+            let schema = String(decoding: try tool.descriptor.encoded(), as: UTF8.self)
+            XCTAssertFalse(schema.contains("pinned"), "\(tool.name): \(schema)")
+            XCTAssertFalse(schema.contains("profileChecked"), "\(tool.name): \(schema)")
+        }
+    }
+
     // MARK: 1.2 the pin
 
     func testAWindowNumberBecomesItsIDInOneQuery() async throws {
@@ -180,11 +194,14 @@ final class WindowPinTests: XCTestCase {
         }
     }
 
-    /// `resolveProfileScoped` collapses a pinned window without a tab to `.windowID` and keeps where it came from.
+    /// `resolveProfileScoped` collapses a pinned window without a tab to `.windowID` and keeps where it came from:
+    /// the N, and the profile the pin checked the id against (the pin's enumeration is the only one).
     func testTheProfileScopedResolutionKeepsThePinnedFromWindow() async throws {
         let fake = PinFakeSafari()
         let pinned = try await pin(["--window", "1", "--profile", "Work"], on: fake)
         let scoped = try await fake.drive { try await pinned.resolveProfileScoped() }
-        guard case .windowID(5822, nil, pinnedFrom: 1) = scoped else { return XCTFail("\(scoped)") }
+        guard case .windowID(5822, nil, let from?) = scoped else { return XCTFail("\(scoped)") }
+        XCTAssertEqual(from, SafariBridge.PinnedFrom(window: 1, checkedProfile: "Work"))
+        XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isEnumeration).count, 1, fake.transcript)
     }
 }

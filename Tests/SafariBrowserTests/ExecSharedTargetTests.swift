@@ -483,7 +483,9 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
             Form(args: ["--tab", "2"], enumerations: 3, answersWithURL: true),
             Form(args: ["--window", "1"], enumerations: 0, answersWithURL: false),
             Form(args: ["--window", "1", "--tab-in-window", "2"], enumerations: 3, answersWithURL: true),
-            // #354: `--window N` under a profile is pinned to its window id on the first step that needs it
+            // This fake does not answer the anchor reads, so the two `--window` rows without a profile show the
+            // positional fallback (the id could not be read); `WindowPinRound1Tests` pins what a successful pin
+            // sends. #354: `--window N` under a profile is pinned to its window id on the first step that needs it
             // (one enumeration); later steps address that id without counting windows again.
             Form(args: ["--window", "1", "--profile", "個人"], enumerations: 1, answersWithURL: false),
             Form(args: ["--profile", "個人"], enumerations: 3, answersWithURL: false),

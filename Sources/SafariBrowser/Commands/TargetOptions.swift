@@ -70,7 +70,7 @@ struct TargetOptions: ParsableArguments {
         name: .long,
         help: ArgumentHelp(
             "Target the document of the Nth Safari window (1-indexed). Pair with --tab-in-window to select a specific tab.",
-            discussion: "N counts windows from the front when the command starts. Most commands that read or act on a tab resolve it to that window's stable id once, before anything else, and then address the window by id (as --window-id does), so a window raised mid-command does not redirect later steps; if that window closes mid-command the command fails instead of using the window now in position N. --tab-in-window M stays a position inside that window. If the id cannot be read at start, a note says so and N stays a position. `close`, `screenshot`, `pdf` and `upload` on its native paths (#353), and `tab <N>`, still look the position up."
+            discussion: "N counts windows from the front when the command starts. Most commands that read or act on a tab resolve it to that window's stable id once, before anything else, and then address the window by id (as --window-id does), so a window raised mid-command does not redirect later steps; if that window closes mid-command the command fails instead of using the window now in position N. --tab-in-window M stays a position inside that window. If the id cannot be read at start, a note says so and N stays a position. `close`, `screenshot`, `pdf` and `upload` on its native paths (#353), and `tab <N>` without --profile, still look the position up."
         )
     )
     var window: Int?
@@ -94,6 +94,13 @@ struct TargetOptions: ParsableArguments {
                            visibility: .private)
     )
     var pinnedFromWindow: Int?
+
+    /// #354 (verify round 2): the profile `pinWindowAtStart()` checked `windowID` against, in this process.
+    /// Not an option: no flag, environment variable or daemon request can set it, and
+    /// `ScriptInterpreter.encodeTargetArgs` does not carry it, so the check is made again by whichever process
+    /// receives the arguments. It is the only thing that lets a call skip its `--profile` check
+    /// (`SafariBridge.PinnedFrom.checkedProfile`); `--pinned-from-window` alone never does.
+    var profileCheckedAtStart: String?
 
     @Option(
         name: .long,
@@ -370,7 +377,9 @@ struct TargetOptions: ParsableArguments {
         // one: nothing would notice a missing window or tab before the first
         // action, and `open` would still make a new window.
         if let id = windowID {
-            return .windowID(id, tabInWindow: tabInWindow, pinnedFrom: pinnedFromWindow)
+            return .windowID(id, tabInWindow: tabInWindow, pinnedFrom: pinnedFromWindow.map {
+                SafariBridge.PinnedFrom(window: $0, checkedProfile: profileCheckedAtStart)
+            })
         }
         if let w = window, let m = tabInWindow {
             return .windowTab(window: w, tabInWindow: m)
@@ -419,9 +428,12 @@ struct TargetOptions: ParsableArguments {
     ///   the one one profile-scoped enumeration reads (no dialog probe: the command's own first step probes).
     ///   That enumeration is the profile check for the whole command: a pinned id is not checked again per
     ///   Apple event (a window's profile does not change while it is open), so the pin costs no enumeration
-    ///   beyond the one the first step made before (verify F5).
+    ///   beyond the one the first step made before (verify F5). The copy records the check in
+    ///   `profileCheckedAtStart`, which no flag can set; that record, not `--pinned-from-window`, is what the
+    ///   bridge accepts in place of its own check.
     /// - An id that arrived pinned (`--window-id W --pinned-from-window N`, as `exec` hands it to a step) under
-    ///   `--profile`: checked against the profile once, here, for the same reason.
+    ///   `--profile`: the arguments prove nothing about W, so it is checked against the profile once, here,
+    ///   and only then recorded the same way. An id of another profile is refused before anything reads it.
     /// - The id cannot be read — no N-th window, a window with no tab, tab M outside the window (the anchor
     ///   query, or the profile enumeration's not-found answer), a legacy record without an id, and, without
     ///   `--profile`, an anchor query that did not answer: `self` unchanged, so the first step fails — or runs —
@@ -434,10 +446,13 @@ struct TargetOptions: ParsableArguments {
     /// (including the `--mark-tab` wrap): `let target = try await self.target.pinWindowAtStart()`. `close`,
     /// `screenshot`, `pdf` and the native upload paths are to use the same line (#353).
     func pinWindowAtStart(note: ((String) -> Void)? = nil) async throws -> TargetOptions {
-        if window == nil, windowID != nil, pinnedFromWindow != nil, let profile, !profile.isEmpty {
+        if awaitsProfileCheckAtStart, let profile {
+            // The enumeration refuses an id of another profile. Only after it does the copy carry the proof.
             _ = try await SafariBridge.resolveNativeTarget(
                 from: resolve(), firstMatch: firstMatch, warnWriter: nil, profile: profile, probeDialog: false)
-            return self
+            var checked = self
+            checked.profileCheckedAtStart = profile
+            return checked
         }
         guard let n = window, windowID == nil else { return self }
         let id: Int?
@@ -466,13 +481,23 @@ struct TargetOptions: ParsableArguments {
         pinned.window = nil
         pinned.windowID = id
         pinned.pinnedFromWindow = n
+        // Under `--profile` the id came from that profile's windows in the enumeration just made.
+        if let profile, !profile.isEmpty { pinned.profileCheckedAtStart = profile }
         return pinned
+    }
+
+    /// #354 (verify round 2): an id that arrived pinned (`--window-id W --pinned-from-window N`, from `exec` or
+    /// typed by hand) under a `--profile` it has not been checked against in this process.
+    var awaitsProfileCheckAtStart: Bool {
+        guard window == nil, windowID != nil, pinnedFromWindow != nil, let profile, !profile.isEmpty else { return false }
+        return profileCheckedAtStart != profile
     }
 
     /// #354 verify F20: the one line a command prints when `--window N` stays a position.
     static func pinFallbackNote(window n: Int) -> String {
-        "note: the id of window \(n) could not be read when the command started, so --window \(n) is looked up "
-            + "by its position at each step (a window raised mid-command can take its place).\n"
+        "note: the id of window \(n) could not be read when the command started (no such window or tab, or Safari "
+            + "did not answer in time), so --window \(n) is looked up by its position at each step; a window raised "
+            + "mid-command can take its place.\n"
     }
 
     private static func emitPinNote(_ line: String, to note: ((String) -> Void)?) {

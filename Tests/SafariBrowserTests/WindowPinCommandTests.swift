@@ -213,26 +213,66 @@ final class WindowPinCommandTests: XCTestCase {
         XCTAssertEqual(fake.scripts.count, 1, "one read for the whole run:\n\(fake.transcript)")
     }
 
+    /// `exec`'s own read failed. Step by step, `exec` says so once, through its `note` seam, and every step gets
+    /// `--window N` to read again at its own start. When the daemon takes the whole script, `exec` says nothing:
+    /// the daemon makes the one more attempt and speaks for itself, so a note that the daemon's read would make
+    /// untrue is never printed, and nothing is said twice.
+    func testExecWritesItsFallbackNoteOnlyWhenItRunsStepByStep() async throws {
+        let source = ##"[{"cmd":"get url"}]"##
+        let silent = SafariBrowserError.appleScriptFailed("execution error: Safari got an error: AppleEvent timed out. (-1712)")
+
+        let local = PinFakeSafari()
+        local.anchorError = silent
+        let recorder = Recorder()
+        var localNotes: [String] = []
+        try await local.drive {
+            try await ExecCommand.parse(["--window", "2"]).execute(
+                source: source, pacingEnabled: false, daemonOptedIn: false,
+                viaDaemon: { _, _ in XCTFail("not sent"); return nil },
+                note: { localNotes.append($0) }, environment: [:], stepDispatcher: recorder)
+        }
+        XCTAssertEqual(localNotes, [TargetOptions.pinFallbackNote(window: 2)])
+        XCTAssertEqual(recorder.shared, [["--window", "2"]])
+        XCTAssertEqual(local.diagnostics, [], "through the seam, not the request context")
+
+        let remote = PinFakeSafari()
+        remote.anchorError = silent
+        var remoteNotes: [String] = []
+        var sent: [String] = []
+        try await remote.drive {
+            try await ExecCommand.parse(["--window", "2"]).execute(
+                source: source, pacingEnabled: false, daemonOptedIn: true,
+                viaDaemon: { command, _ in sent = ScriptInterpreter.encodeTargetArgs(command.target); return "[]" },
+                note: { remoteNotes.append($0) }, environment: [:])
+        }
+        XCTAssertEqual(sent, ["--window", "2"], "the daemon receives the position and makes its own attempt")
+        XCTAssertEqual(remoteNotes, [])
+        XCTAssertEqual(remote.diagnostics, [])
+    }
+
     /// In the daemon: a step's own `--window N` is pinned at the start of that step; the shared `--window-id`
     /// is used as it is, without another read.
     func testAnInProcessStepPinsItsOwnWindowNumber() async throws {
         let fake = PinFakeSafari()
         fake.raiseAfterScripts = 1
         let dispatcher = InProcessStepDispatcher()
-        _ = try? await fake.drive {
+        let own = try await fake.drive {
             try await dispatcher.dispatch(cmd: "get url", args: ["--window", "2"], sharedTargetArgs: ["--window-id", "4711"])
         }
+        XCTAssertEqual(own, "https://work.example/a1", "the step read window 5822, which was window 2 when it started")
         XCTAssertTrue(fake.scripts.first.map(PinFakeSafari.isIndexAnchor) == true, fake.transcript)
         let after = fake.scripts(afterFirst: PinFakeSafari.isIndexAnchor)
-        XCTAssertTrue(after.contains { $0.contains("window id 5822") }, fake.transcript)
+        XCTAssertTrue(after.contains { $0.contains("URL of") && $0.contains("window id 5822") }, fake.transcript)
         XCTAssertFalse(after.contains(where: namesAPosition), fake.transcript)
 
         let shared = PinFakeSafari()
-        _ = try? await shared.drive {
+        let viaShared = try await shared.drive {
             try await InProcessStepDispatcher().dispatch(
                 cmd: "get url", args: [], sharedTargetArgs: ["--window-id", "5822", "--pinned-from-window", "2"])
         }
+        XCTAssertEqual(viaShared, "https://work.example/a1")
         XCTAssertFalse(shared.scripts.contains(where: PinFakeSafari.isIndexAnchor), shared.transcript)
+        XCTAssertTrue(shared.scripts.contains { $0.contains("URL of") }, "the step did read:\n\(shared.transcript)")
         XCTAssertTrue(shared.scripts.allSatisfy { $0.contains("window id 5822") }, shared.transcript)
     }
 
@@ -275,7 +315,7 @@ final class WindowPinCommandTests: XCTestCase {
             "ScreenshotCommand": "window-level primitive: #353",
             "PdfCommand": "window-level primitive: #353",
             "TabsCommand": "lists the window's tabs by the id one enumeration read",
-            "TabSwitchCommand": "names the window by id itself (#351, #352)",
+            "TabSwitchCommand": "`tab <N>` is one Apple event (by position without --profile, by the enumeration's id with it); `tab new` reads the id itself (#351, #352)",
             "TabFocusCommand": "resolves once and switches by the id the resolver read (#352)",
             "DocumentsCommand": "lists every tab and reads no single target",
             "PDFCacheGet": "reads one tab URL through its injected seam; nothing after it addresses the window",
@@ -291,7 +331,8 @@ final class WindowPinCommandTests: XCTestCase {
                 let name = String(block.prefix { $0.isLetter || $0.isNumber || $0 == "_" })
                 guard optionGroup.firstMatch(in: block, range: NSRange(block.startIndex..., in: block)) != nil else { continue }
                 seen.insert(name)
-                if block.contains("pinWindowAtStart()") { continue }
+                // A call, with or without the `note:` argument `exec` passes.
+                if block.contains(".pinWindowAtStart(") { continue }
                 if known[name] == nil { missing.append("\(file): \(name)") }
             }
         }

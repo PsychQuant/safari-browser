@@ -25,6 +25,9 @@ final class PinFakeSafari: @unchecked Sendable {
     var dropLastTabAfterScripts: (count: Int, id: Int)?
     /// Thrown by every enumeration (a stuck or failing Safari).
     var enumerationError: Error?
+    /// When set, enumerations before the k-th answer and `enumerationError` is thrown from the k-th on.
+    var enumerationErrorFrom: Int?
+    private var enumerations = 0
     /// Scripts that `isAnchor`-style reads answer with this error instead (an anchor query that does not answer).
     var anchorError: Error?
     /// When set, only the first k anchor reads fail with `anchorError`; later ones answer.
@@ -96,7 +99,8 @@ final class PinFakeSafari: @unchecked Sendable {
         defer { afterScript(count) }
 
         if script.contains("set windowCount to count of windows") {
-            if let enumerationError { throw enumerationError }
+            let nth = lock.withLock { () -> Int in enumerations += 1; return enumerations }
+            if let enumerationError, nth >= (enumerationErrorFrom ?? 1) { throw enumerationError }
             let gs = "\u{1D}", rs = "\u{1E}"
             var out = ""
             for (i, window) in windows.enumerated() {

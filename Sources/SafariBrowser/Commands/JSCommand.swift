@@ -125,8 +125,9 @@ struct JSCommand: AsyncParsableCommand {
             case .windowIndex(let n):
                 return .anchoredTargetChanged(target: "the current tab of window \(n) (\(anchor))")
             case .windowID(let id, _, let pinnedFrom):
-                // #354 verify F4: an id an `exec --window N` step received names that N.
-                let window = SafariBridge.windowIDDescription(id, tab: nil, pinnedFrom: pinnedFrom)
+                // #354 verify F4: an id an `exec --window N` step received names that N. The anchor already
+                // names the id, so the window is `window N` or `window id W`, not both forms.
+                let window = pinnedFrom.map { "window \($0.window)" } ?? "window id \(id)"
                 return .anchoredTargetChanged(target: "the current tab of \(window) (\(anchor))")
             default:
                 return .anchoredTargetChanged(target: "the front window's current tab (\(anchor))")
