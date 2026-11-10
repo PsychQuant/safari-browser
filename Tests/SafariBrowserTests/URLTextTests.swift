@@ -621,7 +621,9 @@ final class URLTextTests: XCTestCase {
     func testTheNumberOfRedactionSitesIsWhatWasReviewed() throws {
         // 13 (#352): `checkWindowID`'s candidate listing and the `--window-id W --tab-in-window T` out-of-range
         // listing both show tab URLs in a `documentNotFound`; both redact.
-        let counts = [("SafariBridge.swift", 13), ("Commands/JSCommand.swift", 1), ("Commands/UploadCommand.swift", 2), ("Utilities/Errors.swift", 1)]
+        // 14 (#354 verify round 1): `pinnedWindowMiss` lists the tabs of a pinned window, or of the profile, after a
+        // miss; it redacts.
+        let counts = [("SafariBridge.swift", 14), ("Commands/JSCommand.swift", 1), ("Commands/UploadCommand.swift", 2), ("Utilities/Errors.swift", 1)]
         for (file, expected) in counts {
             let found = try source(file).components(separatedBy: "URLText.redactURL(").count - 1
             XCTAssertEqual(found, expected, "\(file): a redaction site was added or removed — decide it, then update this count")
