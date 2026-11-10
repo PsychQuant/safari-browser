@@ -1016,12 +1016,20 @@ window raised between two commands (by you, or by Safari being activated)
 changes what N names. Within one command it does not, in most commands (#354):
 a command that reads or acts on a tab reads the id of the window that is N when
 it starts and addresses that id from then on, failing with
-`No Safari document matches window N (window id W at command start)` if the
+`No Safari document matches "window N (window id W at command start)"` if the
 window closes mid-command. `--tab-in-window M` stays a position inside that
-window. When the id cannot be read at start, the command says so on stderr and
-N stays a position. `close`, `screenshot`, `pdf` and native `upload` still
-look the position up (#353), as do `tab <N> --window N` (one Apple event) and
-a command given no targeting flag (the front window, #287).
+window. When the id cannot be read at start, the command prints one note on
+stderr (the id of window N could not be read when the command started, so
+`--window N` is looked up by its position at each step; a window raised
+mid-command can take its place) and N stays a position. Some commands handle
+the window themselves and are not pinned; the list is closed: `js`, `wait` and
+`save-pdf` (anchored at command start, with a current-tab check); `tabs`,
+`tab focus`, `tab new` and `open --new-tab` (they read the window's id
+themselves); `tab <N> --window N` without `--profile` (one Apple event that
+names the window by position); `open --new-window`, `documents` and
+`wait <ms>` (no existing tab); `pdf-cache get`; a command given no targeting
+flag (the front window, #287); and `close`, `screenshot`, `pdf` and `upload`
+on its native path (#353). `upload` is pinned on its JavaScript path.
 `--window-id` takes Safari's own window id, which does not change while the
 window is open: read it from `documents --json` (`window_id`). A missing id, or
 a window outside `--profile`, fails with `No Safari document matches`; it never
@@ -1042,7 +1050,7 @@ otherwise fails closed with `targetTabChanged` — never a silent wrong-tab
 dispatch. Explicit `--window N` / `--tab-in-window M` stay positional
 **by design**: `--window N` means "whatever window sits at this position when
 the command starts" (#354; at each step when its id cannot be read, and in the
-commands listed above), and `--tab-in-window M` means "whatever tab sits at
+commands the list above excepts), and `--tab-in-window M` means "whatever tab sits at
 this position in that window" at each step.
 
 Known boundaries: a same-tab navigation to a URL that *still matches* your
