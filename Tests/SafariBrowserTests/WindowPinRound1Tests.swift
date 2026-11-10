@@ -243,6 +243,56 @@ final class WindowPinRound1Tests: XCTestCase {
         XCTAssertEqual(fake.scripts, [], fake.transcript)
     }
 
+    /// The daemon's whole-run marker reads and rewrites the title before the first step: when the exec-level
+    /// `--window N` arrives unpinned, the handler pins it first, and the wrap, the step and the unwrap all name
+    /// the id.
+    func testTheDaemonRunMarkerPinsAnUnpinnedWindowFirst() async throws {
+        let fake = PinFakeSafari()
+        fake.raiseAfterScripts = 1
+        let envelope: [String: Any] = ["steps": [["cmd": "get url"]], "targetArgs": ["--window", "2"], "markTab": "ephemeral"]
+        let data = try JSONSerialization.data(withJSONObject: envelope)
+        _ = try await fake.drive { try await DaemonDispatch.Handlers.execRunScript(paramsData: data) }
+        XCTAssertTrue(fake.scripts.first.map(PinFakeSafari.isIndexAnchor) == true, fake.transcript)
+        XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isIndexAnchor).count, 1, fake.transcript)
+        let after = fake.scripts.dropFirst()
+        XCTAssertTrue(after.contains { $0.contains("document.title") }, fake.transcript)
+        XCTAssertTrue(after.allSatisfy { $0.contains("window id 5822") }, fake.transcript)
+    }
+
+    /// If the handler's attempt cannot read the id either, the run stays on the position for the wrap, the step
+    /// and the unwrap: no step tries again, so a read that would succeed later cannot move the steps to an id the
+    /// marker was not wrapped on. One note says the position is in use.
+    func testAMarkedDaemonRunThatCannotReadTheIDStaysOnThePosition() async throws {
+        let fake = PinFakeSafari()
+        fake.anchorError = SafariBrowserError.appleScriptFailed("execution error: Safari got an error: AppleEvent timed out. (-1712)")
+        fake.anchorErrorCount = 1
+        let envelope: [String: Any] = ["steps": [["cmd": "get url"]], "targetArgs": ["--window", "2"], "markTab": "ephemeral"]
+        let data = try JSONSerialization.data(withJSONObject: envelope)
+        _ = try await fake.drive { try await DaemonDispatch.Handlers.execRunScript(paramsData: data) }
+        XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isIndexAnchor).count, 1, fake.transcript)
+        XCTAssertTrue(fake.scripts.contains { $0.contains("document.title") }, fake.transcript)
+        let namesAnID = try NSRegularExpression(pattern: #"window id [0-9]"#)
+        XCTAssertFalse(fake.scripts.contains { namesAnID.firstMatch(in: $0, range: NSRange($0.startIndex..., in: $0)) != nil },
+                       "no script names an id the marker was not wrapped on:\n\(fake.transcript)")
+        XCTAssertEqual(fake.diagnostics, [TargetOptions.pinFallbackNote(window: 2)])
+    }
+
+    /// The usual case: the client pinned, so the arguments arrive as an id. The handler reads nothing before the
+    /// wrap (under `--profile` the client's enumeration was the check), and every script names that id.
+    func testAMarkedDaemonRunWithAnIDThatArrivesPinnedReadsNothingMore() async throws {
+        let fake = PinFakeSafari()
+        let envelope: [String: Any] = [
+            "steps": [["cmd": "get url"]], "markTab": "ephemeral",
+            "targetArgs": ["--window-id", "5822", "--pinned-from-window", "1", "--profile", "Work"],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: envelope)
+        _ = try await fake.drive { try await DaemonDispatch.Handlers.execRunScript(paramsData: data) }
+        XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isEnumeration).count, 0, fake.transcript)
+        XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isIndexAnchor).count, 0, fake.transcript)
+        XCTAssertTrue(fake.scripts.contains { $0.contains("document.title") }, fake.transcript)
+        XCTAssertTrue(fake.scripts.allSatisfy { $0.contains("window id 5822") }, fake.transcript)
+    }
+
     // MARK: an id that arrives pinned is still checked against the profile
 
     /// A pinned id is not checked against `--profile` at every call, so one given with `--pinned-from-window` (by

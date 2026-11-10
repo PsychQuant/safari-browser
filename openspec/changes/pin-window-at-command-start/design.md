@@ -75,10 +75,11 @@
 
 ### exec 在分派路線之前釘住一次
 
-`ExecCommand.execute` 一開始呼叫 `pinWindowAtStart()`，得到一份釘住的 `ExecCommand`：
+`ExecCommand.execute` 先解析腳本（含 `--max-steps`），有步驟用到共用目標（沒有自己的目標旗標、不是 `documents`）或要標記分頁時才呼叫 `pinWindowAtStart()`，得到一份釘住的 `ExecCommand`（verify 第一輪）：
 
 - daemon 路線：`viaDaemon` 收到釘住的指令，`daemonEnvelope` 編出的 `targetArgs` 是 `--window-id W [--tab-in-window M] --pinned-from-window N`。
 - 子行程路線：`ScriptInterpreter.run(source:target:)` 收到釘住的目標，每一步的共用參數是同一組。`execute` 新增 `stepDispatcher` 參數（預設 `SubprocessStepDispatcher()`），讓測試不必真的開子行程。
+- client 端讀不到 id 時：daemon 的 `exec.runScript` 若要標記分頁，在包標題之前再釘一次，並以 `InProcessStepDispatcher(pinsSharedWindowOnFirstNeed: false)` 讓步驟不再嘗試（否則包在位置上的標記會與後來讀到 id 的步驟分岔）；否則由 `SharedWindowPin` 在第一個需要共用目標的步驟再試一次，整個 request 共用結果。已釘住的 id 到 daemon 時不再讀（`--profile` 的檢查由 client 的列舉完成）。
 - in-process 步驟自己帶的 `--window N`：`InProcessStepDispatcher` 對有自己目標旗標的步驟先釘住再 `resolveToConcreteTarget`；共用參數不在 dispatcher 裡釘（已由 `ExecCommand.execute` 釘成 `--window-id`），以免直接收到未釘參數的呼叫者每步多一次列舉。
 
 `viaDaemon` 的型別改為 `(ExecCommand, [ScriptStep])`，三個既有測試照著改。

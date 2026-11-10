@@ -27,6 +27,9 @@ final class PinFakeSafari: @unchecked Sendable {
     var enumerationError: Error?
     /// Scripts that `isAnchor`-style reads answer with this error instead (an anchor query that does not answer).
     var anchorError: Error?
+    /// When set, only the first k anchor reads fail with `anchorError`; later ones answer.
+    var anchorErrorCount: Int?
+    private var anchorFailures = 0
 
     /// Window 1 = id 4711 (Home, three tabs), window 2 = id 5822 (Work, two tabs), window 3 = id 6933 (Work, one tab).
     static let threeWindows: [Window] = [
@@ -104,7 +107,13 @@ final class PinFakeSafari: @unchecked Sendable {
             }
             return out
         }
-        if script.contains("set _id to "), let anchorError { throw anchorError }
+        if script.contains("set _id to "), let anchorError {
+            let fails = lock.withLock { () -> Bool in
+                anchorFailures += 1
+                return anchorErrorCount.map { anchorFailures <= $0 } ?? true
+            }
+            if fails { throw anchorError }
+        }
         // `readWindowIndex(windowID:)`.
         if let id = Self.int(after: "get index of window id ", in: script) {
             guard let i = windows.firstIndex(where: { $0.id == id }) else { throw Self.notFound("window id \(id)") }

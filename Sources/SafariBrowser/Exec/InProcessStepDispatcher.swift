@@ -22,6 +22,14 @@ struct InProcessStepDispatcher: StepDispatcher {
     private let sharedResolution = SharedTargetResolution()
     /// #354 verify F20: the exec-level `--window N`, pinned on the first step that needs it (see `SharedWindowPin`).
     private let sharedWindowPin = SharedWindowPin()
+    /// #354: `false` when the request made its one attempt before the run (the daemon's whole-run marker pins
+    /// before it wraps the title). The steps then take the exec-level arguments as they arrive, so a read that
+    /// succeeds later cannot move them to an id the marker was not wrapped on.
+    private let pinsSharedWindowOnFirstNeed: Bool
+
+    init(pinsSharedWindowOnFirstNeed: Bool = true) {
+        self.pinsSharedWindowOnFirstNeed = pinsSharedWindowOnFirstNeed
+    }
 
     /// Only a `--url` target (any matcher form) is effectively reused: it
     /// resolves to a tab that can be re-checked by its URL, while
@@ -227,8 +235,9 @@ struct InProcessStepDispatcher: StepDispatcher {
         // resolution per exec run. The resolution now also honours `--profile`,
         // which this path parsed but never handed to the bridge (#60 intent).
         // #354: a step's own `--window N` is resolved to its window id at the start of that step. The
-        // exec-level arguments are not pinned here: `ExecCommand.execute` pinned them once, before the run was
-        // routed, so they already read `--window-id W`.
+        // exec-level arguments usually arrive pinned: `ExecCommand.execute` read the id once, before the run
+        // was routed, so they read `--window-id W`. When they arrive as `--window N`, `sharedWindowPin` makes
+        // one more attempt on the first step that needs them, unless the request already made it.
         let resolveConcrete = { (options: TargetOptions) in
             try await SafariBridge.resolveToConcreteTarget(
                 options.resolve(), firstMatch: options.firstMatch,
@@ -237,7 +246,8 @@ struct InProcessStepDispatcher: StepDispatcher {
         let resolved = cmd == "documents" ? target.resolve()
             : stepHasTargetFlag ? try await resolveConcrete(target.pinWindowAtStart())
             : try await sharedResolution.resolve(args: effectiveTargetArgs, {
-                try await resolveConcrete(sharedWindowPin.options(for: effectiveTargetArgs, target))
+                try await resolveConcrete(
+                    pinsSharedWindowOnFirstNeed ? sharedWindowPin.options(for: effectiveTargetArgs, target) : target)
             })
         // A step with its own target flags resolves outside the shared object, and a resolver that
         // finishes after the request was cancelled still returns a target: check again before the
