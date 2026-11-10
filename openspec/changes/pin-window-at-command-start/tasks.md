@@ -44,4 +44,5 @@
 - [x] 5.3 `runRaised()` 斷言指令完成（`is-marked` 斷言 exit 1），`--profile` 的測試改用多次呼叫的 `click --mark-tab` 並計算列舉次數。驗證：拿掉 `get url` 的釘住、或在 `--profile` 下逐次列舉時測試失敗
 - [x] 5.4 `js`／`wait`／`save-pdf` 的錨定失敗保留 `pinnedFrom`；`save-image` 以一次小查詢檢查釘住的視窗；`scroll`／`set media`／`press`／`find` 先檢查參數、`exec` 先解析腳本再釘、沒有步驟用到共用目標時不釘；`--profile` 下列舉逾時直接拋出，只有 not found 退回；退回時印一行 note，daemon 上的 exec 在第一個需要的步驟再試一次；釘住不做 dialog probe；`pdf-cache get` 不釘。驗證：`WindowPinRound1Tests`
 - [x] 5.5 文件：CHANGELOG 的成本、行為改變（含 exec 子行程 `js`／`wait` 錨點逾時直接失敗）、已知限制；README／CLAUDE.md：`--tab-in-window M` 在釘住的視窗內仍逐次是位置、讀不到 id 時 `--window N` 仍是位置、`tab <n>` 與預設目標（#287）不在範圍內。驗證：內容檢查
+- [x] 5.6 驗證：`swift test` 2501 個 XCTest（13 個略過，0 失敗）與 38 個 Swift Testing 全過（第一次全跑時 `URLTextTests.testTheNumberOfRedactionSitesIsWhatWasReviewed` 因新增的清單多一處 `URLText.redactURL(` 而失敗，已更新審過的處數）；MCP 計時測試沒有失敗。mutation（每個新保護各改一次、跑 `WindowPin|ProfileScopedMissTranslationTests|ExecSharedTargetTests`、還原）：M1–M16 與上一輪存活的 S1–S5 全部有具名測試失敗；第一輪的四個 mutant 重跑也全部被抓到。
 
