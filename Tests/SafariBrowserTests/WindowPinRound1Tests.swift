@@ -242,4 +242,36 @@ final class WindowPinRound1Tests: XCTestCase {
         }
         XCTAssertEqual(fake.scripts, [], fake.transcript)
     }
+
+    // MARK: an id that arrives pinned is still checked against the profile
+
+    /// A pinned id is not checked against `--profile` at every call, so one given with `--pinned-from-window` (by
+    /// `exec`, or by hand) is checked once at command start: window 4711 is Home's, not Work's.
+    func testAnIDThatArrivesPinnedIsCheckedAgainstTheProfileOnce() async {
+        for (label, type, args) in [
+            ("get url", GetURL.self as any AsyncParsableCommand.Type,
+             ["--window-id", "4711", "--pinned-from-window", "1", "--profile", "Work"]),
+            ("js with a tab", JSCommand.self as any AsyncParsableCommand.Type,
+             ["1", "--window-id", "4711", "--tab-in-window", "1", "--pinned-from-window", "1", "--profile", "Work"]),
+        ] {
+            let fake = PinFakeSafari()
+            let error = await run(type, args, on: fake)
+            guard case SafariBrowserError.documentNotFound? = error else {
+                XCTFail("\(label): a window of another profile must be refused, got \(String(describing: error))\n\(fake.transcript)")
+                continue
+            }
+            XCTAssertFalse(fake.scripts.contains { !PinFakeSafari.isEnumeration($0) && ($0.contains("URL of") || $0.contains("do JavaScript")) },
+                           "\(label): nothing is read from window 4711:\n\(fake.transcript)")
+        }
+    }
+
+    private func run(_ type: any AsyncParsableCommand.Type, _ args: [String], on fake: PinFakeSafari) async -> Error? {
+        do {
+            var command = try type.parseAsRoot(args) as! any AsyncParsableCommand
+            try await fake.drive { try await command.run() }
+            return nil
+        } catch {
+            return error
+        }
+    }
 }
