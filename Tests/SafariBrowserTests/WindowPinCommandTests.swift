@@ -14,12 +14,19 @@ final class WindowPinCommandTests: XCTestCase {
         Self.positional.firstMatch(in: script, range: NSRange(script.startIndex..., in: script)) != nil
     }
 
-    /// Runs `args` with `--window 2` while the last window is raised to the front after the first script.
-    private func runRaised<C: AsyncParsableCommand>(_ type: C.Type, _ args: [String],
-                                                    file: StaticString = #filePath, line: UInt = #line) async -> PinFakeSafari {
+    /// Runs `args` with `--window 2` while the last window is raised to the front after the first script, and
+    /// requires the command to finish: `expect` checks the error it returned (none, by default).
+    @discardableResult
+    private func runRaised<C: AsyncParsableCommand>(
+        _ type: C.Type, _ args: [String], answer: String = "OK",
+        expect: (Error?) -> Bool = { $0 == nil },
+        file: StaticString = #filePath, line: UInt = #line
+    ) async -> PinFakeSafari {
         let fake = PinFakeSafari()
         fake.raiseAfterScripts = 1
-        await fake.run(type, args)
+        fake.answer = answer
+        let error = await fake.run(type, args)
+        XCTAssertTrue(expect(error), "\(C.self) \(args): \(String(describing: error))\n\(fake.transcript)", file: file, line: line)
         XCTAssertTrue(fake.scripts.first.map(PinFakeSafari.isIndexAnchor) == true,
                       "the id is read first:\n\(fake.transcript)", file: file, line: line)
         let after = fake.scripts(afterFirst: PinFakeSafari.isIndexAnchor)
@@ -31,6 +38,8 @@ final class WindowPinCommandTests: XCTestCase {
         return fake
     }
 
+    private static let snapshotJSON = #"{"refs":["@e1 button \"Go\""],"json":[]}"#
+
     // MARK: 2.1 the commands
 
     func testReadCommandsFollowTheWindowThatWasNNotThePosition() async {
@@ -39,12 +48,13 @@ final class WindowPinCommandTests: XCTestCase {
         await runRaised(GetText.self, ["#log", "--window", "2"])
         await runRaised(GetSource.self, ["--window", "2"])
         await runRaised(IsVisible.self, ["#a", "--window", "2"])
-        await runRaised(SnapshotCommand.self, ["--window", "2"])
+        await runRaised(SnapshotCommand.self, ["--window", "2"], answer: Self.snapshotJSON)
         await runRaised(SnapshotCommand.self, ["--page", "--window", "2"])
         await runRaised(StorageLocalGet.self, ["k", "--window", "2"])
         await runRaised(CookiesGet.self, ["--window", "2"])
         await runRaised(ConsoleCommand.self, ["--window", "2"])
-        await runRaised(TabIsMarkedCommand.self, ["--window", "2"])
+        // The fake's title carries no marker: "unmarked" is exit 1, the answer this probe gives.
+        await runRaised(TabIsMarkedCommand.self, ["--window", "2"], expect: { ($0 as? ExitCode)?.rawValue == 1 })
     }
 
     func testActionCommandsFollowTheWindowThatWasNNotThePosition() async {
@@ -67,17 +77,29 @@ final class WindowPinCommandTests: XCTestCase {
         XCTAssertFalse(after.contains(where: namesAPosition), fake.transcript)
     }
 
-    /// With `--profile` the id comes from one enumeration; later steps check the id against the profile, as
-    /// `--window-id W --profile P` does, and never count windows.
-    func testWithAProfileEveryLaterStepNamesTheID() async {
+    /// With `--profile` the id comes from one enumeration, which is the profile check for the whole command: the
+    /// wrap, the click and the unwrap of `click --mark-tab` address that id and never count windows again. Before
+    /// #354 each of those calls enumerated, and the window raised after the first one became the profile's
+    /// window 1 for the later calls.
+    func testWithAProfileEveryLaterStepNamesTheIDWithoutCountingAgain() async {
         let fake = PinFakeSafari()
         fake.raiseAfterScripts = 1
-        await fake.run(GetURL.self, ["--window", "1", "--profile", "Work"])
+        let error = await fake.run(ClickCommand.self, ["#go", "--mark-tab", "--window", "1", "--profile", "Work"])
+        XCTAssertNil(error, fake.transcript)
         XCTAssertTrue(fake.scripts.first.map(PinFakeSafari.isEnumeration) == true, fake.transcript)
+        XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isEnumeration).count, 1, fake.transcript)
         let targeted = fake.scripts.filter { !PinFakeSafari.isEnumeration($0) }
-        XCTAssertFalse(targeted.isEmpty, fake.transcript)
+        XCTAssertGreaterThanOrEqual(targeted.count, 3, "title read, click, title read back:\n\(fake.transcript)")
         XCTAssertTrue(targeted.allSatisfy { $0.contains("window id 5822") }, fake.transcript)
         XCTAssertFalse(targeted.contains(where: namesAPosition), fake.transcript)
+    }
+
+    /// The pin under `--profile` reads no dialog state; the command's own first step does (verify F31).
+    func testThePinItselfDoesNotProbeForDialogs() async throws {
+        let fake = PinFakeSafari()
+        let options = try TargetOptions.parse(["--window", "1", "--profile", "Work"])
+        _ = try await fake.drive { try await options.pinWindowAtStart() }
+        XCTAssertEqual(fake.probes, 0)
     }
 
     /// The id cannot be read: the scripts are the positional ones they always were.
@@ -256,6 +278,7 @@ final class WindowPinCommandTests: XCTestCase {
             "TabSwitchCommand": "names the window by id itself (#351, #352)",
             "TabFocusCommand": "resolves once and switches by the id the resolver read (#352)",
             "DocumentsCommand": "lists every tab and reads no single target",
+            "PDFCacheGet": "reads one tab URL through its injected seam; nothing after it addresses the window",
         ]
         let optionGroup = try NSRegularExpression(pattern: #"@OptionGroup var \w+: TargetOptions"#)
         var missing: [String] = []

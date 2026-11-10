@@ -22,11 +22,13 @@ struct SetMedia: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
-        let target = try await self.target.pinWindowAtStart()
         guard scheme == "dark" || scheme == "light" else {
             throw ValidationError("Scheme must be 'dark' or 'light'")
         }
+
+        // #354: --window N becomes the id of that window, once — after the arguments are checked (verify F12),
+        // before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
 
         _ = try await SafariBridge.doJavaScript("""
             (function(){

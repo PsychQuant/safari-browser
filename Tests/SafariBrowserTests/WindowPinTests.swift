@@ -145,15 +145,23 @@ final class WindowPinTests: XCTestCase {
         XCTAssertEqual(pattern, "window 1 tab 3 (window id 4711 at command start)")
     }
 
-    func testAMissOnAPinnedWindowWithAProfileNamesTheNumberAndTheProfile() async throws {
+    /// Under `--profile` the pin's enumeration is the profile check; the window closing afterwards is found by the
+    /// id-addressed read, and the miss lists that profile's tabs labelled with their window ids (#362's listing),
+    /// with the `--window-id` hint. One enumeration before the read, one for the listing — as before #354.
+    func testAMissOnAPinnedWindowWithAProfileListsTheProfilesTabsByID() async throws {
         let fake = PinFakeSafari()
         fake.closeAfterScripts = (1, 6933)
         let error = await fake.run(GetURL.self, ["--window", "2", "--profile", "Work"])
         guard case SafariBrowserError.documentNotFound(let pattern, let available)? = error else {
             return XCTFail("expected a targeting miss, got \(String(describing: error))\n\(fake.transcript)")
         }
-        XCTAssertEqual(pattern, "window 2 (window id 6933 at command start) (profile: \"Work\")")
-        XCTAssertFalse(available.joined().contains("home.example"), "only the profile's windows: \(available)")
+        XCTAssertEqual(pattern, "window 2 (window id 6933 at command start)")
+        XCTAssertEqual(available, ["window 2 tab 1 (window id 5822): https://work.example/a1",
+                                   "window 2 tab 2 (window id 5822): https://work.example/a2"])
+        let message = (error as? SafariBrowserError)?.localizedDescription ?? ""
+        XCTAssertTrue(message.contains("--window-id W"), message)
+        XCTAssertFalse(message.contains("target one with --window N"), message)
+        XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isEnumeration).count, 2, fake.transcript)
     }
 
     /// The pure producers: a `--window-id` the user typed keeps its own wording.

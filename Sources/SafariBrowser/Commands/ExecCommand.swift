@@ -60,8 +60,11 @@ struct ExecCommand: AsyncParsableCommand {
     ///
     /// #354: `--window N` is resolved to its window id once, here, before the script is routed, so the run
     /// starts from `--window-id W` on both paths: `viaDaemon` receives the pinned command (its envelope
-    /// carries the id) and the local interpreter hands the id to every step. `stepDispatcher` is a seam so a
-    /// test can see what the local path gives each step without starting a process.
+    /// carries the id) and the local interpreter hands the id to every step. The script is parsed (and its
+    /// step limit checked) first, so a script that cannot run never reaches Safari, and a script none of whose
+    /// steps uses the exec-level target (each names its own, or is `documents`) is not pinned (verify F12,
+    /// F25). `stepDispatcher` is a seam so a test can see what the local path gives each step without
+    /// starting a process.
     func execute(
         source: String, pacingEnabled: Bool, daemonOptedIn: Bool,
         viaDaemon: (ExecCommand, [ScriptStep]) async throws -> String?,
@@ -69,8 +72,11 @@ struct ExecCommand: AsyncParsableCommand {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         stepDispatcher: any StepDispatcher = SubprocessStepDispatcher()
     ) async throws {
+        let steps = try ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps)
         var pinned = self
-        pinned.target = try await target.pinWindowAtStart()
+        if Self.usesExecLevelTarget(steps, marked: target.markTabResolved(env: environment) != .off) {
+            pinned.target = try await target.pinWindowAtStart()
+        }
         let command = pinned
         let target = command.target
         if case .daemon(let parsed) = Self.route(
@@ -93,6 +99,14 @@ struct ExecCommand: AsyncParsableCommand {
         let interpreter = ScriptInterpreter(maxSteps: maxSteps, dispatcher: stepDispatcher)
         let results = try await interpreter.run(source: source, target: target)
         printResults(results)
+    }
+
+    /// #354: whether anything in the run reads the exec-level target — the marker around a daemon run, or a step
+    /// that names no target flag of its own and is not `documents` (which lists every tab).
+    static func usesExecLevelTarget(_ steps: [ScriptStep], marked: Bool) -> Bool {
+        marked || steps.contains { step in
+            step.cmd != "documents" && !step.args.contains { TargetOptions.targetFlagNames.contains($0) }
+        }
     }
 
     /// Where a script runs (#220). Pure, so the decision `run()` makes is testable: the whole

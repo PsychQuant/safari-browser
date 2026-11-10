@@ -410,21 +410,35 @@ struct TargetOptions: ParsableArguments {
     /// N now, once, and returns a copy in which `--window N` has become `--window-id W` (`--tab-in-window M`,
     /// `--profile` and every other flag kept, `pinnedFromWindow` = N for the wording of a miss). Every later
     /// `resolve()` / `resolveProfileScoped()` / `resolveFirstMatchOnce()` / `resolveWithFirstMatch()` on the
-    /// copy therefore behaves exactly as `--window-id W` does.
+    /// copy therefore addresses the window as `--window-id W` does. `--tab-in-window M` stays a position inside
+    /// that window (#188).
     ///
     /// - Without `--profile`: one small query, the one `js` anchors with (#180, #255) — `readWindowAnchor`
     ///   for `--window N`, `readTabAnchor` plus `1 <= M <= tab count` for `--tab-in-window M`.
     /// - With `--profile`: N counts that profile's windows, which only the enumeration knows, so the id is
-    ///   the one one profile-scoped enumeration reads.
-    /// - The id cannot be read (no N-th window, a window with no tab, tab M outside the window, a legacy
-    ///   record without an id, any failure): `self` unchanged, so the first step fails — or runs — exactly
-    ///   as before (#87 / #97, the js/wait precedent). Only cancellation is thrown.
+    ///   the one one profile-scoped enumeration reads (no dialog probe: the command's own first step probes).
+    ///   That enumeration is the profile check for the whole command: a pinned id is not checked again per
+    ///   Apple event (a window's profile does not change while it is open), so the pin costs no enumeration
+    ///   beyond the one the first step made before (verify F5).
+    /// - An id that arrived pinned (`--window-id W --pinned-from-window N`, as `exec` hands it to a step) under
+    ///   `--profile`: checked against the profile once, here, for the same reason.
+    /// - The id cannot be read — no N-th window, a window with no tab, tab M outside the window (the anchor
+    ///   query, or the profile enumeration's not-found answer), a legacy record without an id, and, without
+    ///   `--profile`, an anchor query that did not answer: `self` unchanged, so the first step fails — or runs —
+    ///   exactly as before (#87 / #97, the js/wait precedent), and `note` gets one line saying the position is
+    ///   used. Under `--profile`, an enumeration that times out or fails is thrown, not retried by the first
+    ///   step (verify F18), and so is cancellation.
     /// - Any other flag set: `self` unchanged, nothing sent.
     ///
-    /// Call it first in `run()`, before anything else reaches Safari (including the `--mark-tab` wrap):
-    /// `let target = try await self.target.pinWindowAtStart()`. `close`, `screenshot`, `pdf` and the native
-    /// upload paths are to use the same line (#353).
-    func pinWindowAtStart() async throws -> TargetOptions {
+    /// Call it in `run()` after the command's own argument checks and before anything else reaches Safari
+    /// (including the `--mark-tab` wrap): `let target = try await self.target.pinWindowAtStart()`. `close`,
+    /// `screenshot`, `pdf` and the native upload paths are to use the same line (#353).
+    func pinWindowAtStart(note: ((String) -> Void)? = nil) async throws -> TargetOptions {
+        if window == nil, windowID != nil, pinnedFromWindow != nil, let profile, !profile.isEmpty {
+            _ = try await SafariBridge.resolveNativeTarget(
+                from: resolve(), firstMatch: firstMatch, warnWriter: nil, profile: profile, probeDialog: false)
+            return self
+        }
         guard let n = window, windowID == nil else { return self }
         let id: Int?
         if let profile, !profile.isEmpty {
@@ -432,11 +446,9 @@ struct TargetOptions: ParsableArguments {
                 ?? .windowIndex(n)
             do {
                 id = try await SafariBridge.resolveNativeTarget(
-                    from: positional, firstMatch: firstMatch, warnWriter: nil, profile: profile).windowID
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                // The first step enumerates again and reports this miss in its own words.
+                    from: positional, firstMatch: firstMatch, warnWriter: nil, profile: profile, probeDialog: false).windowID
+            } catch SafariBrowserError.documentNotFound {
+                // No N-th window of the profile, or no tab M in it: the first step reports it in its own words.
                 id = nil
             }
         } else if let m = tabInWindow {
@@ -446,12 +458,27 @@ struct TargetOptions: ParsableArguments {
             id = await SafariBridge.readWindowAnchor(index: n)?.windowID
         }
         try Task.checkCancellation()
-        guard let id, id > 0 else { return self }
+        guard let id, id > 0 else {
+            Self.emitPinNote(Self.pinFallbackNote(window: n), to: note)
+            return self
+        }
         var pinned = self
         pinned.window = nil
         pinned.windowID = id
         pinned.pinnedFromWindow = n
         return pinned
+    }
+
+    /// #354 verify F20: the one line a command prints when `--window N` stays a position.
+    static func pinFallbackNote(window n: Int) -> String {
+        "note: the id of window \(n) could not be read when the command started, so --window \(n) is looked up "
+            + "by its position at each step (a window raised mid-command can take its place).\n"
+    }
+
+    private static func emitPinNote(_ line: String, to note: ((String) -> Void)?) {
+        if let note { note(line) }
+        else if let context = DaemonRequestContext.current { context.emit(line) }
+        else { FileHandle.standardError.write(Data(line.utf8)) }
     }
 
     /// Default warn-writer shared by every command that wires

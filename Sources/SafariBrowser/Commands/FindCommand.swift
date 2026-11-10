@@ -21,10 +21,6 @@ struct FindCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
-        let target = try await self.target.pinWindowAtStart()
-        let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
-        let profile = target.resolveProfile()
         let findJS: String = switch locator.lowercased() {
         case "text":
             """
@@ -72,6 +68,12 @@ struct FindCommand: AsyncParsableCommand {
         default:
             throw ValidationError("Locator must be text, role, label, or placeholder")
         }
+
+        // #354: --window N becomes the id of that window, once — after the arguments are checked (verify F12),
+        // before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
+        let (documentTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+        let profile = target.resolveProfile()
 
         // #59: thread firstMatch/warnWriter through. Previously both were
         // destructured but dropped, so `find` silently skipped the multi-match

@@ -20,6 +20,8 @@ struct InProcessStepDispatcher: StepDispatcher {
     /// requests. Before, every step rebuilt and re-resolved the shared target —
     /// one full window/tab enumeration per step for a `--url` target.
     private let sharedResolution = SharedTargetResolution()
+    /// #354 verify F20: the exec-level `--window N`, pinned on the first step that needs it (see `SharedWindowPin`).
+    private let sharedWindowPin = SharedWindowPin()
 
     /// Only a `--url` target (any matcher form) is effectively reused: it
     /// resolves to a tab that can be re-checked by its URL, while
@@ -34,6 +36,25 @@ struct InProcessStepDispatcher: StepDispatcher {
     /// cached. A change between the check and the step itself is not
     /// detected; the subprocess path has the same gap between its resolution
     /// and its read.
+    /// #354 verify F20: `ExecCommand.execute` pins the exec-level `--window N` before the run is routed, so the
+    /// arguments usually arrive as `--window-id W`. When that pin could not read the id, they arrive as
+    /// `--window N`: the first step that needs them tries once more, and every later step of this request uses
+    /// what that one attempt returned (the id, or — if it could not be read again — the position), so a run
+    /// is not left counting windows at every step just because Safari was slow once.
+    final class SharedWindowPin: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cached: (key: [UInt8], options: TargetOptions)?
+
+        func options(for args: [String], _ target: TargetOptions) async throws -> TargetOptions {
+            guard target.window != nil else { return target }
+            let key = Array(args.joined(separator: "\u{0}").utf8)
+            if let hit = lock.withLock({ cached.flatMap { $0.key == key ? $0.options : nil } }) { return hit }
+            let result = try await target.pinWindowAtStart()
+            lock.withLock { cached = (key, result) }
+            return result
+        }
+    }
+
     final class SharedTargetResolution: @unchecked Sendable {
         private let lock = NSLock()
         /// Keyed by the target arguments' UTF-8 bytes, not by `String` equality: Swift treats canonically
@@ -215,7 +236,9 @@ struct InProcessStepDispatcher: StepDispatcher {
         }
         let resolved = cmd == "documents" ? target.resolve()
             : stepHasTargetFlag ? try await resolveConcrete(target.pinWindowAtStart())
-            : try await sharedResolution.resolve(args: effectiveTargetArgs, { try await resolveConcrete(target) })
+            : try await sharedResolution.resolve(args: effectiveTargetArgs, {
+                try await resolveConcrete(sharedWindowPin.options(for: effectiveTargetArgs, target))
+            })
         // A step with its own target flags resolves outside the shared object, and a resolver that
         // finishes after the request was cancelled still returns a target: check again before the
         // command runs, so no command's AppleScript follows a cancellation.

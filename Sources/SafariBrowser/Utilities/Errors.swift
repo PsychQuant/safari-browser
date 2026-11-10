@@ -748,10 +748,23 @@ extension SafariBrowserError {
         if pattern.hasPrefix(profileMissPrefix) {
             return profileMissHint(listing)
         }
+        // #354: `--window N` read as window id W at command start, and W is gone. Nothing listed has coordinates to
+        // copy, and N may now name another window, which the command deliberately did not use.
+        let pinned = pattern.range(of: #"^window \d+( tab \d+)? \(window id \d+ at command start\)"#,
+                                   options: .regularExpression) != nil
+        if pinned, listing.allSatisfy({ $0.hasPrefix("(") }) {
+            return """
+                Hint: the window that --window N named when the command started is no longer open (or has no such
+                      tab), and the command did not move on to the window now in that position. Run
+                      `safari-browser documents` to see the open windows (`--json` gives the ids --window-id W
+                      takes), then retarget.
+                """
+        }
         // #352: not positional — sending the reader to `--window N` would swap a
         // stable name for the one that moves. A lost `.resolvedTab` reads
         // `window id W tab T` too, but its listing has coordinates to copy.
-        if pattern.hasPrefix("window id "),
+        // #354 verify F9: a pinned `--window N` miss whose listing names windows by id only gets this hint too.
+        if pattern.hasPrefix("window id ") || pinned,
            listing.allSatisfy({ $0.hasPrefix("(") || $0.hasPrefix("window id ") }) {
             return """
                 Hint: read the open windows' ids from `safari-browser documents --json` (`window_id`)

@@ -21,6 +21,12 @@ final class PinFakeSafari: @unchecked Sendable {
     var closeAfterScripts: (count: Int, id: Int)?
     var withoutIDs = false
     var answer = "OK"
+    /// After the k-th script, the last tab of window `id` closes (the window stays open).
+    var dropLastTabAfterScripts: (count: Int, id: Int)?
+    /// Thrown by every enumeration (a stuck or failing Safari).
+    var enumerationError: Error?
+    /// Scripts that `isAnchor`-style reads answer with this error instead (an anchor query that does not answer).
+    var anchorError: Error?
 
     /// Window 1 = id 4711 (Home, three tabs), window 2 = id 5822 (Work, two tabs), window 3 = id 6933 (Work, one tab).
     static let threeWindows: [Window] = [
@@ -34,8 +40,18 @@ final class PinFakeSafari: @unchecked Sendable {
     var scripts: [String] { lock.withLock { sent } }
     var transcript: String { scripts.joined(separator: "\n---\n") }
 
+    private var probeCount = 0
+    /// How many dialog probes the commands asked for.
+    var probes: Int { lock.withLock { probeCount } }
+    /// What the commands wrote to stderr through the request context (notes, warnings).
+    var diagnostics: [String] { context.diagnostics }
+    private lazy var context = DaemonRequestContext(probe: { [unowned self] _ in
+        self.lock.withLock { self.probeCount += 1 }
+        return .clear
+    }, environment: [:])
+
     func drive<T>(_ body: () async throws -> T) async throws -> T {
-        let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
+        let context = lock.withLock { self.context }
         return try await DaemonRequestContext.$current.withValue(context) {
             try await WindowDialogObservation.$provider.withValue({ WindowDialogObservation.unavailable(reason: "test") }) {
                 try await DaemonRequestContext.$appleScriptRunner.withValue({ try self.respond($0) }) {
@@ -77,6 +93,7 @@ final class PinFakeSafari: @unchecked Sendable {
         defer { afterScript(count) }
 
         if script.contains("set windowCount to count of windows") {
+            if let enumerationError { throw enumerationError }
             let gs = "\u{1D}", rs = "\u{1E}"
             var out = ""
             for (i, window) in windows.enumerated() {
@@ -86,6 +103,12 @@ final class PinFakeSafari: @unchecked Sendable {
                 }
             }
             return out
+        }
+        if script.contains("set _id to "), let anchorError { throw anchorError }
+        // `readWindowIndex(windowID:)`.
+        if let id = Self.int(after: "get index of window id ", in: script) {
+            guard let i = windows.firstIndex(where: { $0.id == id }) else { throw Self.notFound("window id \(id)") }
+            return "\(i + 1)"
         }
         // `windowAnchorScript(index:)` / `tabAnchorScript(windowIndex:)`.
         if let n = Self.int(after: "set _id to id of window ", in: script) {
@@ -132,6 +155,9 @@ final class PinFakeSafari: @unchecked Sendable {
         lock.withLock {
             if raiseAfterScripts == count, let last = order.popLast() { order.insert(last, at: 0) }
             if let close = closeAfterScripts, close.count == count { order.removeAll { $0.id == close.id } }
+            if let drop = dropLastTabAfterScripts, drop.count == count, let i = order.firstIndex(where: { $0.id == drop.id }) {
+                order[i].tabs.removeLast()
+            }
         }
     }
 
