@@ -142,7 +142,9 @@ final class WindowPinTests: XCTestCase {
         }
         XCTAssertEqual(pattern, "window 2 (window id 5822 at command start)")
         XCTAssertEqual(available.count, 1)
-        XCTAssertTrue(available[0].contains("no longer open"), "\(available)")
+        // The failed step named the window's current tab and nothing is looked up afterwards (gate round 1).
+        XCTAssertEqual(available, [SafariBridge.windowIDMissNote(pinnedFrom: 2, tabs: false, checked: false)])
+        XCTAssertTrue(available[0].contains("does not move on to the window now in that position"), "\(available)")
         XCTAssertFalse(available.joined().contains("https://"), "no other window's tab is listed: \(available)")
         let after = fake.scripts(afterFirst: PinFakeSafari.isIndexAnchor)
         XCTAssertFalse(after.contains { $0.contains("window 2") }, fake.transcript)

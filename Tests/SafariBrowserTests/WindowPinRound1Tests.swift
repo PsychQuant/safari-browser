@@ -103,8 +103,10 @@ final class WindowPinRound1Tests: XCTestCase {
     }
 
     /// A pinned window that closed without `--profile`: one note, worded for a window (no tab was named), and the
-    /// hint says what happened instead of pointing at coordinates nothing listed.
-    func testAPinnedWindowMissWithoutAProfileSaysTheWindowClosed() async throws {
+    /// hint says what happened instead of pointing at coordinates nothing listed. Nothing is looked up after the
+    /// failed step, so neither says more than that step shows (gate round 1; `WindowPinGateRound1Tests` has the
+    /// note's text).
+    func testAPinnedWindowMissWithoutAProfileSaysWhatTheFailedStepShows() async throws {
         let fake = PinFakeSafari()
         fake.closeAfterScripts = (1, 5822)
         let error = await fake.run(GetURL.self, ["--window", "2"])
@@ -114,7 +116,7 @@ final class WindowPinRound1Tests: XCTestCase {
         XCTAssertEqual(available.count, 1)
         XCTAssertFalse(available[0].contains("no such tab"), available[0])
         let message = flat(error.localizedDescription)
-        XCTAssertTrue(message.contains("the window that --window N named when the command started is no longer open, and the command did not move on"), message)
+        XCTAssertTrue(message.contains("the window that --window N named when the command started is no longer open, or its current tab could not be found, and the command did not move on"), message)
         XCTAssertFalse(message.contains("that tab"), "no tab was named: \(message)")
         XCTAssertFalse(message.contains("target one with --window N --tab-in-window M"), message)
     }

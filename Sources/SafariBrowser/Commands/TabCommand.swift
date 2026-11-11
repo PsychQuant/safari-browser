@@ -139,11 +139,13 @@ struct TabIsMarkedCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
-        let target = try await self.target.pinWindowAtStart()
-        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
-        let profile = target.resolveProfile()
         do {
+            // #354: --window N becomes the id of that window, once, before anything reaches Safari. Inside the
+            // `do`: under --profile the pin itself can fail (an enumeration that times out, an id of another
+            // profile), and that is exit 2 like any other error, never exit 1, which means "unmarked".
+            let target = try await self.target.pinWindowAtStart()
+            let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+            let profile = target.resolveProfile()
             // Read document.title (NOT window title) so the marker
             // detection matches what setTabTitle wrote. Safari's window
             // title prepends the macOS username, which would mask the
@@ -182,11 +184,12 @@ struct TabUnmarkCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
-        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
-        let target = try await self.target.pinWindowAtStart()
-        let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
-        let profile = target.resolveProfile()
         do {
+            // #354: --window N becomes the id of that window, once, before anything reaches Safari. Inside the
+            // `do`, so a pin that fails under --profile is exit 2 like any other error of this command.
+            let target = try await self.target.pinWindowAtStart()
+            let (resolvedTarget, firstMatch, warnWriter) = target.resolveWithFirstMatch()
+            let profile = target.resolveProfile()
             // Read via document.title to match how setTabTitle wrote it.
             let title = try await SafariBridge.getDocumentTitle(
                 target: resolvedTarget,

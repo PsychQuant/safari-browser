@@ -27,7 +27,11 @@ final class PinFakeSafari: @unchecked Sendable {
     var enumerationError: Error?
     /// When set, enumerations before the k-th answer and `enumerationError` is thrown from the k-th on.
     var enumerationErrorFrom: Int?
+    /// When set, only the first k enumerations throw `enumerationError`; later ones answer.
+    var enumerationErrorCount: Int?
     private var enumerations = 0
+    /// Thrown by the position read of a window id (`get index of window id W`): a Safari that does not answer it.
+    var indexReadError: Error?
     /// Scripts that `isAnchor`-style reads answer with this error instead (an anchor query that does not answer).
     var anchorError: Error?
     /// When set, only the first k anchor reads fail with `anchorError`; later ones answer.
@@ -100,7 +104,9 @@ final class PinFakeSafari: @unchecked Sendable {
 
         if script.contains("set windowCount to count of windows") {
             let nth = lock.withLock { () -> Int in enumerations += 1; return enumerations }
-            if let enumerationError, nth >= (enumerationErrorFrom ?? 1) { throw enumerationError }
+            if let enumerationError, nth >= (enumerationErrorFrom ?? 1), enumerationErrorCount.map({ nth <= $0 }) ?? true {
+                throw enumerationError
+            }
             let gs = "\u{1D}", rs = "\u{1E}"
             var out = ""
             for (i, window) in windows.enumerated() {
@@ -120,6 +126,7 @@ final class PinFakeSafari: @unchecked Sendable {
         }
         // `readWindowIndex(windowID:)`.
         if let id = Self.int(after: "get index of window id ", in: script) {
+            if let indexReadError { throw indexReadError }
             guard let i = windows.firstIndex(where: { $0.id == id }) else { throw Self.notFound("window id \(id)") }
             return "\(i + 1)"
         }

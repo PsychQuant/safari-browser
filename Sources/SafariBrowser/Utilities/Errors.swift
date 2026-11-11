@@ -762,9 +762,12 @@ extension SafariBrowserError {
                 """
         }
         if pinned, listing.allSatisfy({ $0.hasPrefix("(") }) {
-            // A missing tab can be the reason only when the pattern names one (verify round 2).
+            // A missing tab can be the reason only when the pattern names one (verify round 2). A window-level
+            // miss can come from a step that named the window's current tab, so the hint names both; the note
+            // above says which of the two is known (gate round 1).
             let namesTab = pattern.range(of: #"^window \d+ tab \d+ "#, options: .regularExpression) != nil
-            let what = namesTab ? "is no longer open, or no longer has that tab," : "is no longer open,"
+            let what = namesTab ? "is no longer open, or no longer has that tab,"
+                : "is no longer open, or its current tab could not be found,"
             return """
                 Hint: the window that --window N named when the command started \(what) and the command did
                       not move on to the window now in that position. Run `safari-browser documents` to see the

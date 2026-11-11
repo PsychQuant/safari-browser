@@ -712,12 +712,11 @@ enum SafariBridge {
                 }
                 return .anchoredCurrentTab(windowID: windowID, tabInWindow: anchor.currentTabIndex,
                                            profile: profile)
-            case .windowID(_, .some, .some):
-                // #354: `resolveToConcreteTarget` passes a pinned id through without enumerating, so the
-                // profile check of `--window-id W --tab-in-window T --pinned-from-window N` is made here.
-                _ = try await resolveNativeTarget(
-                    from: target, firstMatch: firstMatch, warnWriter: warnWriter, profile: profile)
             default:
+                // `--window-id W --tab-in-window T`, with or without the record of the N it was read from, is
+                // checked against the profile by the one enumeration `resolveToConcreteTarget` makes below.
+                // Its skip needs a check made in this process, which `js`, `wait` and `save-pdf` never have:
+                // they anchor instead of pinning (#354).
                 break
             }
         }
@@ -1085,11 +1084,19 @@ enum SafariBridge {
 
     /// #354: the one-line listing of a miss on a window id. For a pinned `--window N` it says the window
     /// read at command start is gone and that no other window takes its place.
-    static func windowIDMissNote(pinnedFrom: PinnedFrom?, tabs: Bool) -> String {
+    ///
+    /// `checked: false` is for the one miss nothing looked into: a step that named `current tab of window id W`
+    /// got "object not found", which a window with no tab answers too, and without `--profile` no enumeration
+    /// follows. That note names both. The other callers say "is no longer open" because a query that names only
+    /// the window (its position, or an enumeration) did not find it.
+    static func windowIDMissNote(pinnedFrom: PinnedFrom?, tabs: Bool, checked: Bool = true) -> String {
         guard let pinnedFrom else { return tabs ? "(no such window or tab)" : "(no such window)" }
+        let moved = "the command does not move on to the window now in that position)"
+        guard checked else {
+            return "(the window that was window \(pinnedFrom.window) at command start, or its current tab, could not be found; \(moved)"
+        }
         let what = tabs ? "is no longer open or has no such tab" : "is no longer open"
-        return "(the window that was window \(pinnedFrom.window) at command start \(what); "
-            + "the command does not move on to the window now in that position)"
+        return "(the window that was window \(pinnedFrom.window) at command start \(what); \(moved)"
     }
 
     /// #354 verify F1/F13: what a miss on an id `pinWindowAtStart` read from `--window N` lists. The pattern names
@@ -1101,8 +1108,10 @@ enum SafariBridge {
         let pattern = windowIDDescription(windowID, tab: tab, pinnedFrom: pinnedFrom)
         let scope = (profile ?? "").isEmpty ? nil : profile
         guard tab != nil || scope != nil else {
-            return .documentNotFound(pattern: pattern,
-                                     availableDocuments: [windowIDMissNote(pinnedFrom: pinnedFrom, tabs: false)])
+            // Nothing is looked up for this miss, so the note does not say the window closed (gate round 1).
+            return .documentNotFound(
+                pattern: pattern,
+                availableDocuments: [windowIDMissNote(pinnedFrom: pinnedFrom, tabs: false, checked: false)])
         }
         let windows: [WindowInfo]
         do {
