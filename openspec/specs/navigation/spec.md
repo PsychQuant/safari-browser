@@ -12,7 +12,7 @@ The system SHALL open a given URL in Safari. The default behavior SHALL be focus
 
 When the caller supplies `--replace-tab`, the command SHALL instead navigate the front window's current tab to the requested URL via `do JavaScript "window.location.href=..."`, ignoring any matching existing tab. When the caller supplies any of the targeting flags (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--window`, `--window-id`, `--tab`, `--document`, `--tab-in-window`) or `--profile`, the command SHALL navigate the resolved target tab via `do JavaScript "window.location.href=..."` regardless of focus-existing considerations; the targeting flags explicitly select which tab to modify.
 
-When no Safari window exists, the system SHALL create a new document with no target flag, with `--replace-tab`, and with `--window <n>`. With any other target flag (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--window-id`, `--tab`, `--document`, `--window <n> --tab-in-window <m>`) or `--profile`, the command SHALL fail with a document-not-found error and no window SHALL be created. A target named by `--window-id`, or resolved to a window id through `--profile`, SHALL be read before navigating, and Safari SHALL be activated only after navigating.
+When no Safari window exists, the system SHALL create a new document with no target flag, with `--replace-tab`, and with `--window <n>`. With any other target flag (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--window-id`, `--tab`, `--document`, `--window <n> --tab-in-window <m>`) or `--profile`, the command SHALL fail with a document-not-found error and no window SHALL be created. A target named by `--window-id`, resolved to a window id through `--profile`, or `--window <n>` (with or without `--tab-in-window <m>`) resolved to its window id at command start, SHALL be read before navigating, and Safari SHALL be activated only after navigating. `--window <n>` resolves to an id only when window `n` exists when the command starts (see document-targeting, "Window number resolved to its id at command start"); when no Safari window exists then, it keeps its position and the system SHALL create a new document as above. A window that existed at command start and closed before the navigation SHALL make the command fail with a document-not-found error, and no window SHALL be created.
 
 When `--url <substring>` is used with `open` and more than one tab matches, the command SHALL fail-closed with `ambiguousWindowMatch` unless `--first-match` is supplied (per the unified fail-closed policy in `document-targeting`).
 
@@ -90,6 +90,20 @@ This requirement supersedes the earlier default of "navigate the front window's 
 
 - **WHEN** user runs `safari-browser open https://new.example/ --window-id 4711` and Safari has no window
 - **THEN** the command fails with a document-not-found error and no window is created
+
+#### Scenario: Window number is read by id before navigating
+
+- **WHEN** user runs `safari-browser open --window 2 https://example.com/b`
+- **AND** window 2 exists when the command starts and has id 4711
+- **THEN** the system reads `window id 4711` before navigating, navigates the current tab of that window, and activates Safari only after navigating
+- **AND** no AppleScript sent after the id was read names `window 2`
+
+#### Scenario: Window number whose window closes before the navigation
+
+- **WHEN** user runs `safari-browser open --window 2 https://example.com/b`
+- **AND** the window that was window 2 at command start closes before the navigation
+- **THEN** the command fails with a document-not-found error naming window 2 and its window id
+- **AND** no tab of the window now in position 2 is navigated and no window is created
 
 ---
 ### Requirement: Open URL in new tab
