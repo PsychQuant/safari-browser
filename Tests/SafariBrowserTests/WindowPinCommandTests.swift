@@ -248,6 +248,21 @@ final class WindowPinCommandTests: XCTestCase {
         XCTAssertEqual(sent, ["--window", "2"], "the daemon receives the position and makes its own attempt")
         XCTAssertEqual(remoteNotes, [])
         XCTAssertEqual(remote.diagnostics, [])
+
+        // The daemon was tried and declined (no socket, an older daemon): the script runs step by step after
+        // all, and the note held back for the daemon is written then, once.
+        let declined = PinFakeSafari()
+        declined.anchorError = silent
+        let declinedRecorder = Recorder()
+        var declinedNotes: [String] = []
+        try await declined.drive {
+            try await ExecCommand.parse(["--window", "2"]).execute(
+                source: source, pacingEnabled: false, daemonOptedIn: true,
+                viaDaemon: { _, _ in nil },
+                note: { declinedNotes.append($0) }, environment: [:], stepDispatcher: declinedRecorder)
+        }
+        XCTAssertEqual(declinedNotes, [TargetOptions.pinFallbackNote(window: 2)])
+        XCTAssertEqual(declinedRecorder.shared, [["--window", "2"]])
     }
 
     /// In the daemon: a step's own `--window N` is pinned at the start of that step; the shared `--window-id`

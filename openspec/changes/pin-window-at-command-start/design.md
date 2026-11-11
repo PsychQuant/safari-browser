@@ -56,7 +56,7 @@
 
 ### `.windowID` 多帶 `pinnedFrom`，以私有選項 `--pinned-from-window` 傳遞
 
-`TargetDocument.windowID(Int, tabInWindow: Int? = nil, pinnedFrom: Int? = nil)`。`TargetOptions.resolve()` 對 `--window-id W` 把 `pinnedFromWindow` 帶進去。會產生 `.windowID` 失敗訊息的三處以它改寫 pattern：
+`TargetDocument.windowID(Int, tabInWindow: Int? = nil, pinnedFrom: PinnedFrom? = nil)`（原本是 `Int?`，verify 第二輪改成帶檢查紀錄的 `PinnedFrom`，見下方 Interface）。`TargetOptions.resolve()` 對 `--window-id W` 把 `pinnedFromWindow` 帶進去。會產生 `.windowID` 失敗訊息的三處以它改寫 pattern：
 
 - `runTargetedAppleScript` 對 `.windowID` 的 object-not-found：`window 2 (window id 4711 at command start)`，清單說視窗已不在、不改用其他視窗。
 - `checkWindowID`（native resolver 與已釘住 id 在指令開頭的 profile 檢查）：同一個 pattern 加上 `(profile: "P")`。
@@ -79,7 +79,7 @@
 
 - daemon 路線：`viaDaemon` 收到釘住的指令，`daemonEnvelope` 編出的 `targetArgs` 是 `--window-id W [--tab-in-window M] --pinned-from-window N`。
 - 子行程路線：`ScriptInterpreter.run(source:target:)` 收到釘住的目標，每一步的共用參數是同一組。`execute` 新增 `stepDispatcher` 參數（預設 `SubprocessStepDispatcher()`），讓測試不必真的開子行程。
-- client 端讀不到 id 時：daemon 的 `exec.runScript` 若要標記分頁，在包標題之前再釘一次，並以 `InProcessStepDispatcher(pinsSharedWindowOnFirstNeed: false)` 讓步驟不再嘗試（否則包在位置上的標記會與後來讀到 id 的步驟分岔）；否則由 `SharedWindowPin` 在第一個需要共用目標的步驟再試一次，整個 request 共用結果。已釘住的 id 到 daemon 時不再讀（`--profile` 的檢查由 client 的列舉完成）。
+- client 端讀不到 id 時：daemon 的 `exec.runScript` 若要標記分頁，在包標題之前再釘一次，並以 `InProcessStepDispatcher(sharedTarget:)` 把結果交給步驟、讓步驟不再嘗試（否則包在位置上的標記會與後來讀到 id 的步驟分岔）；否則由 `SharedWindowPin` 在第一個需要共用目標的步驟再試一次，整個 request 共用結果。已釘住的 id 到 daemon 時：沒有 `--profile` 就不再讀；有 `--profile` 時 daemon 自己對 profile 檢查一次（verify 第二輪：client 送來的文字不是檢查的證明）。
 - in-process 步驟自己帶的 `--window N`：`InProcessStepDispatcher` 對有自己目標旗標的步驟先釘住再 `resolveToConcreteTarget`；共用參數不在 dispatcher 裡釘（已由 `ExecCommand.execute` 釘成 `--window-id`），以免直接收到未釘參數的呼叫者每步多一次列舉。
 
 `viaDaemon` 的型別改為 `(ExecCommand, [ScriptStep])`，三個既有測試照著改。
@@ -94,7 +94,7 @@
 
 ### 形狀檢查防止新指令退回位置
 
-測試讀 `Sources/SafariBrowser/Commands` 中每個組合 `TargetOptions` 的指令 struct，要求它呼叫 `pinWindowAtStart()`，或是已知清單上的例外（各自寫明原因：`js`／`wait`／`save-pdf` 自己錨定、#353 的三個 struct（`close`、`screenshot`、`pdf`；`upload` 在 JavaScript 路徑有釘住，所以以 struct 層級通過）、`tabs`／`tab switch`／`tab focus`、`documents`、`pdf-cache get`；`tab <N>` 與 `tab new` 同在 `TabSwitchCommand`，該 struct 本身在已知清單上；與有釘住的路徑共用 struct（`OpenCommand`）的是 `open --new-tab`，以 struct 層級看不出來）。它是形狀檢查，不是證明；行為由 fake Safari 的測試保證。
+測試讀 `Sources/SafariBrowser/Commands` 中每個組合 `TargetOptions` 的指令 struct，要求它的原始碼含有 `.pinWindowAtStart(` 的呼叫（`exec` 的呼叫帶 `note:` 參數；這是文字比對，註解或沒被呼叫的 helper 也會通過），或是已知清單上的例外（各自寫明原因：`js`／`wait`／`save-pdf` 自己錨定、#353 的三個 struct（`close`、`screenshot`、`pdf`；`upload` 在 JavaScript 路徑有釘住，所以以 struct 層級通過）、`tabs`／`tab switch`／`tab focus`、`documents`、`pdf-cache get`；`tab <N>` 與 `tab new` 同在 `TabSwitchCommand`，該 struct 本身在已知清單上；與有釘住的路徑共用 struct 的有三條：`open --new-tab` 與 `open --new-window`（`OpenCommand`）、`upload` 的 native 路徑（`UploadCommand`），以 struct 層級看不出來）。它是形狀檢查，不是證明；行為由 fake Safari 的測試保證。
 
 ## Implementation Contract
 
