@@ -150,6 +150,9 @@ final class WindowPinRound1Tests: XCTestCase {
         XCTAssertEqual(pattern, "window 2 (window id 6933 at command start)")
         XCTAssertEqual(available, [SafariBrowserError.enumerationFailureNote(failure)])
         XCTAssertFalse("\(error!)".contains("secret.example"), "\(error!)")
+        let message = flat((error as? SafariBrowserError)?.localizedDescription ?? "")
+        XCTAssertTrue(message.contains("the open tabs could not be listed afterwards"), message)
+        XCTAssertFalse(message.contains("is no longer open"), "a failed listing does not show the window is gone: \(message)")
         XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isEnumeration).count, 2, fake.transcript)
     }
 
@@ -487,11 +490,13 @@ final class WindowPinRound1Tests: XCTestCase {
     /// does, on either of the two entries that honour the skip.
     func testOnlyACheckMadeInThisProcessSkipsTheProfileCheck() async throws {
         typealias Pin = SafariBridge.PinnedFrom
-        XCTAssertFalse(Pin(window: 1).wasChecked(against: "Work"))
-        XCTAssertFalse(Pin(window: 1, checkedProfile: "Home").wasChecked(against: "Work"))
-        XCTAssertFalse(Pin(window: 1, checkedProfile: "Work").wasChecked(against: nil))
-        XCTAssertFalse(Pin(window: 1, checkedProfile: "").wasChecked(against: ""))
-        XCTAssertTrue(Pin(window: 1, checkedProfile: "Work").wasChecked(against: "Work"))
+        func checked(_ profile: String, _ id: Int) -> Pin { Pin(window: 1, check: .init(profile: profile, windowID: id)) }
+        XCTAssertFalse(Pin(window: 1).wasChecked(windowID: 5822, against: "Work"))
+        XCTAssertFalse(checked("Home", 5822).wasChecked(windowID: 5822, against: "Work"))
+        XCTAssertFalse(checked("Work", 5822).wasChecked(windowID: 5822, against: nil))
+        XCTAssertFalse(checked("", 5822).wasChecked(windowID: 5822, against: ""))
+        XCTAssertFalse(checked("Work", 5822).wasChecked(windowID: 4711, against: "Work"), "a check of one window is not a check of another")
+        XCTAssertTrue(checked("Work", 5822).wasChecked(windowID: 5822, against: "Work"))
 
         // No proof, another profile's window: both entries refuse before anything is read.
         let unproven = SafariBridge.TargetDocument.windowID(4711, pinnedFrom: 1)
@@ -518,18 +523,53 @@ final class WindowPinRound1Tests: XCTestCase {
         // Proof for this profile: no enumeration. Proof for another profile: checked, and refused.
         let proven = PinFakeSafari()
         _ = try await proven.drive {
-            try await SafariBridge.getCurrentURL(target: .windowID(5822, pinnedFrom: Pin(window: 1, checkedProfile: "Work")), profile: "Work")
+            try await SafariBridge.getCurrentURL(target: .windowID(5822, pinnedFrom: checked("Work", 5822)), profile: "Work")
         }
         XCTAssertEqual(proven.scripts.filter(PinFakeSafari.isEnumeration).count, 0, proven.transcript)
 
         let otherProof = PinFakeSafari()
         do {
             _ = try await otherProof.drive {
-                try await SafariBridge.getCurrentURL(target: .windowID(4711, pinnedFrom: Pin(window: 1, checkedProfile: "Home")), profile: "Work")
+                try await SafariBridge.getCurrentURL(target: .windowID(4711, pinnedFrom: checked("Home", 4711)), profile: "Work")
             }
             XCTFail("a check against Home is not a check against Work\n\(otherProof.transcript)")
         } catch SafariBrowserError.documentNotFound {}
         XCTAssertEqual(touches(otherProof), [], otherProof.transcript)
+    }
+
+    /// The check names the window it was made for. A copy of checked options whose id (or profile) is changed
+    /// afterwards has no check: it is checked again at command start, and the bridge refuses it on both entries
+    /// that honour the skip. Nothing in the tool makes such a copy today; this keeps a later one from carrying
+    /// one window's check to another (verify round 3).
+    func testACheckDoesNotFollowAChangedWindowID() async throws {
+        let pinned = try await pin(["--window", "1", "--profile", "Work"], on: PinFakeSafari())
+        XCTAssertEqual(pinned.profileCheckedAtStart, .init(profile: "Work", windowID: 5822))
+
+        var moved = pinned
+        moved.windowID = 4711
+        XCTAssertTrue(moved.awaitsProfileCheckAtStart, "the check was for 5822")
+        var renamed = pinned
+        renamed.profile = "Home"
+        XCTAssertTrue(renamed.awaitsProfileCheckAtStart, "the check was against Work")
+
+        let read = PinFakeSafari()
+        do {
+            _ = try await read.drive { try await SafariBridge.getCurrentURL(target: moved.resolve(), profile: "Work") }
+            XCTFail("window 4711 is Home's\n\(read.transcript)")
+        } catch SafariBrowserError.documentNotFound {}
+        XCTAssertEqual(touches(read), [], read.transcript)
+
+        let concrete = PinFakeSafari()
+        do {
+            _ = try await concrete.drive { try await SafariBridge.resolveToConcreteTarget(moved.resolve(), profile: "Work") }
+            XCTFail("window 4711 is Home's\n\(concrete.transcript)")
+        } catch SafariBrowserError.documentNotFound {}
+
+        let again = PinFakeSafari()
+        do {
+            _ = try await again.drive { try await moved.pinWindowAtStart() }
+            XCTFail("the check at command start refuses it\n\(again.transcript)")
+        } catch SafariBrowserError.documentNotFound {}
     }
 
     /// The proof is not an option: no flag sets it, a pin under `--profile` does, and re-encoding the target for an
@@ -543,7 +583,7 @@ final class WindowPinRound1Tests: XCTestCase {
         let fake = PinFakeSafari()
         let pinned = try await pin(["--window", "1", "--profile", "Work"], on: fake)
         XCTAssertEqual(pinned.windowID, 5822)
-        XCTAssertEqual(pinned.profileCheckedAtStart, "Work")
+        XCTAssertEqual(pinned.profileCheckedAtStart, .init(profile: "Work", windowID: 5822))
         XCTAssertFalse(pinned.awaitsProfileCheckAtStart)
 
         let encoded = ScriptInterpreter.encodeTargetArgs(pinned)

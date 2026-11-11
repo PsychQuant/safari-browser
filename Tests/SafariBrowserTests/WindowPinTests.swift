@@ -201,7 +201,7 @@ final class WindowPinTests: XCTestCase {
         let pinned = try await pin(["--window", "1", "--profile", "Work"], on: fake)
         let scoped = try await fake.drive { try await pinned.resolveProfileScoped() }
         guard case .windowID(5822, nil, let from?) = scoped else { return XCTFail("\(scoped)") }
-        XCTAssertEqual(from, SafariBridge.PinnedFrom(window: 1, checkedProfile: "Work"))
+        XCTAssertEqual(from, SafariBridge.PinnedFrom(window: 1, check: .init(profile: "Work", windowID: 5822)))
         XCTAssertEqual(fake.scripts.filter(PinFakeSafari.isEnumeration).count, 1, fake.transcript)
     }
 }

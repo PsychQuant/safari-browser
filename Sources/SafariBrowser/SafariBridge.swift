@@ -129,27 +129,34 @@ enum SafariBridge {
         /// #354: the origin of a window id that `TargetOptions.pinWindowAtStart` read from `--window N`.
         ///
         /// Two facts, deliberately apart. `window` is the N the user typed; it only words a miss, and it is
-        /// what the private `--pinned-from-window` flag carries to an `exec` step. `checkedProfile` is the
-        /// profile the id was checked against IN THIS PROCESS, and it is the only thing that lets a call skip
+        /// what the private `--pinned-from-window` flag carries to an `exec` step. `check` records the
+        /// window id and the profile it was checked against IN THIS PROCESS, and it is the only thing that lets a call skip
         /// its own `--profile` check. It is never read from a flag or from a daemon request: an id that
-        /// arrives from another process, or typed by hand, has `checkedProfile == nil` and is checked
+        /// arrives from another process, or typed by hand, has `check == nil` and is checked
         /// against `--profile` like any `--window-id W` (verify round 2: the skip used to key on `window`
         /// alone, so the flag by itself switched the profile check off).
         struct PinnedFrom: Sendable, Equatable, ExpressibleByIntegerLiteral {
-            let window: Int
-            let checkedProfile: String?
+            /// What was checked: this window id, against this profile. The id is part of the record so that a
+            /// copy whose id is changed afterwards does not carry the check to another window (verify round 3).
+            struct ProfileCheck: Sendable, Equatable, Codable {
+                let profile: String
+                let windowID: Int
+            }
 
-            init(window: Int, checkedProfile: String? = nil) {
+            let window: Int
+            let check: ProfileCheck?
+
+            init(window: Int, check: ProfileCheck? = nil) {
                 self.window = window
-                self.checkedProfile = checkedProfile
+                self.check = check
             }
 
             init(integerLiteral value: Int) { self.init(window: value) }
 
-            /// Whether a call under `profile` may address the id without checking the profile again.
-            func wasChecked(against profile: String?) -> Bool {
-                guard let profile, !profile.isEmpty else { return false }
-                return checkedProfile == profile
+            /// Whether a call under `profile` may address `windowID` without checking the profile again.
+            func wasChecked(windowID: Int, against profile: String?) -> Bool {
+                guard let profile, !profile.isEmpty, let check else { return false }
+                return check.profile == profile && check.windowID == windowID
             }
         }
 
@@ -303,7 +310,7 @@ enum SafariBridge {
                 return ResolvedScriptTarget(reference: resolveDocumentReference(target), key: key)
             }
             if case .windowID(let id, let tab, let pinnedFrom) = target,
-               (profile ?? "").isEmpty || pinnedFrom?.wasChecked(against: profile) == true {
+               (profile ?? "").isEmpty || pinnedFrom?.wasChecked(windowID: id, against: profile) == true {
                 // #352: the reference names the window by id, so no
                 // enumeration is needed; a missing id raises in the script and
                 // `runTargetedAppleScript` reports it as `documentNotFound`.
@@ -420,7 +427,7 @@ enum SafariBridge {
             if case .resolvedTab = target { return target }
             if case .anchoredCurrentTab = target { return target }
             // #354: an id `pinWindowAtStart` checked against this profile, in this process, at command start.
-            if case .windowID(_, _, let pinnedFrom?) = target, pinnedFrom.wasChecked(against: profile) { return target }
+            if case .windowID(let id, _, let pinnedFrom?) = target, pinnedFrom.wasChecked(windowID: id, against: profile) { return target }
             let resolved = try await resolveNativeTarget(
                 from: target,
                 firstMatch: firstMatch,

@@ -95,12 +95,13 @@ struct TargetOptions: ParsableArguments {
     )
     var pinnedFromWindow: Int?
 
-    /// #354 (verify round 2): the profile `pinWindowAtStart()` checked `windowID` against, in this process.
-    /// Not an option: no flag, environment variable or daemon request can set it, and
+    /// #354 (verify round 2): the window id and the profile `pinWindowAtStart()` checked it against, in this
+    /// process. Not an option: no flag, environment variable or daemon request can set it, and
     /// `ScriptInterpreter.encodeTargetArgs` does not carry it, so the check is made again by whichever process
     /// receives the arguments. It is the only thing that lets a call skip its `--profile` check
-    /// (`SafariBridge.PinnedFrom.checkedProfile`); `--pinned-from-window` alone never does.
-    var profileCheckedAtStart: String?
+    /// (`SafariBridge.PinnedFrom.check`); `--pinned-from-window` alone never does. It names the id it was made
+    /// for, so a copy whose `windowID` or `profile` is changed afterwards no longer has it (verify round 3).
+    var profileCheckedAtStart: SafariBridge.PinnedFrom.ProfileCheck?
 
     @Option(
         name: .long,
@@ -378,7 +379,7 @@ struct TargetOptions: ParsableArguments {
         // action, and `open` would still make a new window.
         if let id = windowID {
             return .windowID(id, tabInWindow: tabInWindow, pinnedFrom: pinnedFromWindow.map {
-                SafariBridge.PinnedFrom(window: $0, checkedProfile: profileCheckedAtStart)
+                SafariBridge.PinnedFrom(window: $0, check: profileCheckedAtStart)
             })
         }
         if let w = window, let m = tabInWindow {
@@ -446,12 +447,12 @@ struct TargetOptions: ParsableArguments {
     /// (including the `--mark-tab` wrap): `let target = try await self.target.pinWindowAtStart()`. `close`,
     /// `screenshot`, `pdf` and the native upload paths are to use the same line (#353).
     func pinWindowAtStart(note: ((String) -> Void)? = nil) async throws -> TargetOptions {
-        if awaitsProfileCheckAtStart, let profile {
+        if awaitsProfileCheckAtStart, let profile, let windowID {
             // The enumeration refuses an id of another profile. Only after it does the copy carry the proof.
             _ = try await SafariBridge.resolveNativeTarget(
                 from: resolve(), firstMatch: firstMatch, warnWriter: nil, profile: profile, probeDialog: false)
             var checked = self
-            checked.profileCheckedAtStart = profile
+            checked.profileCheckedAtStart = .init(profile: profile, windowID: windowID)
             return checked
         }
         guard let n = window, windowID == nil else { return self }
@@ -482,15 +483,15 @@ struct TargetOptions: ParsableArguments {
         pinned.windowID = id
         pinned.pinnedFromWindow = n
         // Under `--profile` the id came from that profile's windows in the enumeration just made.
-        if let profile, !profile.isEmpty { pinned.profileCheckedAtStart = profile }
+        if let profile, !profile.isEmpty { pinned.profileCheckedAtStart = .init(profile: profile, windowID: id) }
         return pinned
     }
 
     /// #354 (verify round 2): an id that arrived pinned (`--window-id W --pinned-from-window N`, from `exec` or
     /// typed by hand) under a `--profile` it has not been checked against in this process.
     var awaitsProfileCheckAtStart: Bool {
-        guard window == nil, windowID != nil, pinnedFromWindow != nil, let profile, !profile.isEmpty else { return false }
-        return profileCheckedAtStart != profile
+        guard window == nil, let windowID, pinnedFromWindow != nil, let profile, !profile.isEmpty else { return false }
+        return profileCheckedAtStart != .init(profile: profile, windowID: windowID)
     }
 
     /// #354 verify F20: the one line a command prints when `--window N` stays a position.

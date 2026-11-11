@@ -65,7 +65,7 @@
 
 `resolveToConcreteTarget` 的 `--profile` 分支收斂成 `.windowID` 時保留 `pinnedFrom`。
 
-`--pinned-from-window N` 是 `TargetOptions` 的 `@Option`，可見度 `.private`（不在 `--help`、不在 MCP 的工具 schema），只在有 `--window-id` 時有效、值須 ≥ 1。用選項而不是不經命令列的屬性，是因為 `exec` 把目標重新編成命令列參數（`ScriptInterpreter.encodeTargetArgs`）交給子行程與 daemon，屬性會在那裡遺失。它只影響訊息文字，使用者自行傳入也只會改變訊息。「這個 id 已對過 profile」則反過來，刻意放在不經命令列的屬性 `TargetOptions.profileCheckedAtStart`（進 `TargetDocument` 後是 `PinnedFrom.checkedProfile`）：它在重新編碼時遺失，接手的行程因此必須自己再檢查一次，而不是相信送來的文字（verify 第二輪：第一輪把跳過逐次檢查的條件寫成「`pinnedFrom` 不是 nil」，於是這個選項本身就關掉了 profile 檢查，直接送給 daemon 的 `exec.runScript` 可以讀到別的 profile 的視窗）。它**不**列入 `TargetOptions.targetFlagNames`：script-exec 的目標旗標是十個的封閉列舉，而這個選項只由 `encodeTargetArgs` 寫進共用參數，不會出現在使用者寫的步驟參數裡（ASSUMPTION：使用者自己在步驟裡寫它，該步驟不會在 in-process 執行，交給子行程照常解析）。
+`--pinned-from-window N` 是 `TargetOptions` 的 `@Option`，可見度 `.private`（不在 `--help`、不在 MCP 的工具 schema），只在有 `--window-id` 時有效、值須 ≥ 1。用選項而不是不經命令列的屬性，是因為 `exec` 把目標重新編成命令列參數（`ScriptInterpreter.encodeTargetArgs`）交給子行程與 daemon，屬性會在那裡遺失。它只影響訊息文字，使用者自行傳入也只會改變訊息。「這個 id 已對過 profile」則反過來，刻意放在不經命令列的屬性 `TargetOptions.profileCheckedAtStart`（進 `TargetDocument` 後是 `PinnedFrom.check`，內含被檢查的視窗 id 與 profile，改了其中之一的副本就沒有這份紀錄）：它在重新編碼時遺失，接手的行程因此必須自己再檢查一次，而不是相信送來的文字（verify 第二輪：第一輪把跳過逐次檢查的條件寫成「`pinnedFrom` 不是 nil」，於是這個選項本身就關掉了 profile 檢查，直接送給 daemon 的 `exec.runScript` 可以讀到別的 profile 的視窗）。它**不**列入 `TargetOptions.targetFlagNames`：script-exec 的目標旗標是十個的封閉列舉，而這個選項只由 `encodeTargetArgs` 寫進共用參數，不會出現在使用者寫的步驟參數裡（ASSUMPTION：使用者自己在步驟裡寫它，該步驟不會在 in-process 執行，交給子行程照常解析）。
 
 不採用「訊息只寫 window id W」：使用者打的是 `--window 2`，只看到 4711 無法知道是哪個視窗關了；這正是診斷列出的風險。
 
@@ -111,8 +111,8 @@
 
 - `TargetOptions.pinWindowAtStart() async throws -> TargetOptions`
 - `TargetOptions.pinnedFromWindow: Int?`（CLI `--pinned-from-window`，`.private`）
-- `SafariBridge.TargetDocument.windowID(Int, tabInWindow: Int? = nil, pinnedFrom: PinnedFrom? = nil)`，`PinnedFrom { window: Int; checkedProfile: String? }`（`wasChecked(against:)` 是兩處跳過逐次 profile 檢查的唯一條件）
-- `TargetOptions.profileCheckedAtStart: String?`（不是選項；只有 `pinWindowAtStart()` 在檢查之後設定）、`awaitsProfileCheckAtStart`
+- `SafariBridge.TargetDocument.windowID(Int, tabInWindow: Int? = nil, pinnedFrom: PinnedFrom? = nil)`，`PinnedFrom { window: Int; check: ProfileCheck? }`、`ProfileCheck { profile: String; windowID: Int }`（`wasChecked(windowID:against:)` 是兩處跳過逐次 profile 檢查的唯一條件）
+- `TargetOptions.profileCheckedAtStart: PinnedFrom.ProfileCheck?`（不是選項；只有 `pinWindowAtStart()` 在檢查之後設定）、`awaitsProfileCheckAtStart`
 - `InProcessStepDispatcher(sharedTarget: TargetOptions? = nil)`（request 已先處理好的 exec 層目標）
 - `SafariBridge.checkWindowID(_:profile:in:pinnedFrom:)`（`pinnedFrom` 預設 nil）
 - `ExecCommand.execute(source:pacingEnabled:daemonOptedIn:viaDaemon:note:environment:stepDispatcher:)`，`viaDaemon: (ExecCommand, [ScriptStep]) async throws -> String?`
@@ -143,6 +143,6 @@
 - [未來新指令忘了呼叫釘住步驟，安靜退回位置] → 形狀檢查。
 - [只解析一次 profile 的指令（`get text`、`get html`、`save-image`、`upload --js`、`open`）之後的呼叫不帶 profile，釘住的視窗不見時只列一則 note，不列 profile 的分頁] → 記為已知限制。
 - [真正的失敗只在真機多視窗、Safari 不在前景時出現] → fake Safari 測試涵蓋腳本形狀；真機驗收列為維護者的任務，未做時照實標示。
-- [`--pinned-from-window` 可被使用者自行傳入，也可寫進直接送給 daemon 的 request，而釘住的 id 在 `--profile` 下不再逐次檢查歸屬] → 跳過逐次檢查的條件不看這個選項，只看本行程做過的檢查（`PinnedFrom.checkedProfile`）。帶著它到達的 `--window-id W --profile P`：會釘的指令在開頭由 `pinWindowAtStart()` 檢查一次；daemon 的 `exec.runScript` 每個 request 檢查一次（`SharedWindowPin`，有標記時在包標題之前）；`js`／`wait`／`save-pdf` 的錨定照舊檢查；其餘指令照 `--window-id` 的逐次檢查。成本：經 daemon 的 exec 在 `--profile` 下共列舉兩次（client 的釘住、daemon 的檢查）。
+- [`--pinned-from-window` 可被使用者自行傳入，也可寫進直接送給 daemon 的 request，而釘住的 id 在 `--profile` 下不再逐次檢查歸屬] → 跳過逐次檢查的條件不看這個選項，只看本行程做過的檢查（`PinnedFrom.check`）。帶著它到達的 `--window-id W --profile P`：會釘的指令在開頭由 `pinWindowAtStart()` 檢查一次；daemon 的 `exec.runScript` 每個 request 檢查一次（`SharedWindowPin`，有標記時在包標題之前）；`js`／`wait`／`save-pdf` 的錨定照舊檢查；其餘指令照 `--window-id` 的逐次檢查。成本：經 daemon 的 exec 在 `--profile` 下共列舉兩次（client 的釘住、daemon 的檢查）。
 - [`exec` 的子行程 `js`／`wait` 步驟收到釘住的 `--window-id W` 後，錨點讀取逾時會直接失敗，而不是像 `--window N` 那樣退回位置] → 失敗關閉，寫進 CHANGELOG 的行為改變。
 - [讀不到 id 時安靜退回位置] → 印一行 note；daemon 上的 exec 在第一個需要的步驟再試一次。
