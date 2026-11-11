@@ -1021,7 +1021,9 @@ window closes mid-command. `--tab-in-window M` stays a position inside that
 window. When the id cannot be read at start, the command prints one note on
 stderr (the id of window N could not be read when the command started, so
 `--window N` is looked up by its position at each step; a window raised
-mid-command can take its place) and N stays a position. Some commands handle
+mid-command can take its place) and N stays a position; with `--profile`, a
+listing of the windows that times out or fails at that point is the command's
+error instead. Some commands handle
 the window themselves and are not pinned; the list is closed: `js`, `wait` and
 `save-pdf` (anchored at command start, with a current-tab check); `tabs`,
 `tab focus`, `tab new` and `open --new-tab` (they read the window's id
