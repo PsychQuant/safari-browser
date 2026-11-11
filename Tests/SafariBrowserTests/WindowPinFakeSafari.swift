@@ -101,15 +101,9 @@ final class PinFakeSafari: @unchecked Sendable {
         if script.contains("set windowCount to count of windows") {
             let nth = lock.withLock { () -> Int in enumerations += 1; return enumerations }
             if let enumerationError, nth >= (enumerationErrorFrom ?? 1) { throw enumerationError }
-            let gs = "\u{1D}", rs = "\u{1E}"
-            var out = ""
-            for (i, window) in windows.enumerated() {
-                for (j, url) in window.tabs.enumerated() {
-                    out += ["\(i + 1)", "\(j + 1)", j == 0 ? "1" : "0", url, "Tab \(j + 1)",
-                            "\(window.profile) — Tab 1", withoutIDs ? "" : "\(window.id)"].joined(separator: gs) + rs
-                }
-            }
-            return out
+            return FakeEnumeration.sourceForm(windows.map {
+                .titledTabs(id: withoutIDs ? nil : $0.id, profile: $0.profile, urls: $0.tabs)
+            })
         }
         if script.contains("set _id to "), let anchorError {
             let fails = lock.withLock { () -> Bool in

@@ -5,7 +5,7 @@ import XCTest
 /// operate on pre-constructed `WindowInfo` fixtures, so none of these
 /// tests require a live Safari — they cover the full decision tree of
 /// `SafariBridge.pickNativeTarget` plus the single-roundtrip parser
-/// `parseWindowEnumeration`.
+/// `decodeWindowEnumeration`.
 ///
 /// Integration coverage (actual Safari enumeration, AppleScript
 /// roundtrips, tab-switch side effects) lives in the manual verification
@@ -364,15 +364,13 @@ final class WindowIndexResolverTests: XCTestCase {
 
     // MARK: - Parser unit tests
 
-    func testParseEmptyEnumeration() {
-        XCTAssertTrue(SafariBridge.parseWindowEnumeration("").isEmpty)
+    func testParseEmptyEnumeration() throws {
+        XCTAssertTrue(try SafariBridge.decodeWindowEnumeration("{}").isEmpty)
     }
 
-    func testParseSingleWindowSingleTab() {
-        let gs = "\u{1D}"
-        let rs = "\u{1E}"
-        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(rs)"
-        let result = SafariBridge.parseWindowEnumeration(raw)
+    func testParseSingleWindowSingleTab() throws {
+        let raw = FakeEnumeration.sourceForm([.init(id: nil, name: nil, tabs: [(url: "https://a.com", title: "")])])
+        let result = try SafariBridge.decodeWindowEnumeration(raw)
         XCTAssertEqual(result.count, 1)
         XCTAssertEqual(result[0].windowIndex, 1)
         XCTAssertEqual(result[0].tabs.count, 1)
@@ -381,15 +379,12 @@ final class WindowIndexResolverTests: XCTestCase {
         XCTAssertEqual(result[0].currentTabIndex, 1)
     }
 
-    func testParseMultipleWindowsMultipleTabs() {
-        let gs = "\u{1D}"
-        let rs = "\u{1E}"
-        let raw = [
-            "1\(gs)1\(gs)1\(gs)https://a.com",
-            "1\(gs)2\(gs)0\(gs)https://b.com",
-            "2\(gs)1\(gs)1\(gs)https://c.com",
-        ].joined(separator: rs) + rs
-        let result = SafariBridge.parseWindowEnumeration(raw)
+    func testParseMultipleWindowsMultipleTabs() throws {
+        let raw = FakeEnumeration.sourceForm([
+            .init(id: nil, name: nil, currentTab: 1, tabs: [(url: "https://a.com", title: ""), (url: "https://b.com", title: "")]),
+            .init(id: nil, name: nil, currentTab: 1, tabs: [(url: "https://c.com", title: "")]),
+        ])
+        let result = try SafariBridge.decodeWindowEnumeration(raw)
         XCTAssertEqual(result.count, 2)
         XCTAssertEqual(result[0].windowIndex, 1)
         XCTAssertEqual(result[0].tabs.count, 2)
@@ -441,57 +436,46 @@ final class WindowIndexResolverTests: XCTestCase {
         XCTAssertNotEqual(resultA, resultB)
     }
 
-    func testParseDroppsMalformedRecords() {
-        // Records with wrong field count (not 4) are silently skipped.
-        // This is defensive — a well-formed AppleScript loop should
-        // never emit malformed records, but a transient Safari state
-        // glitch shouldn't crash the parser.
-        let gs = "\u{1D}"
-        let rs = "\u{1E}"
-        let raw = "1\(gs)bogus\(rs)" + "1\(gs)1\(gs)1\(gs)https://a.com\(rs)"
-        let result = SafariBridge.parseWindowEnumeration(raw)
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].tabs.count, 1)
+    func testAMalformedRecordFailsTheEnumeration() {
+        // Before #355 a record with the wrong field count was dropped silently. A list the script
+        // cannot produce now fails the command (maintainer decision: fail rather than drop rows).
+        let raw = #"{{1, "bogus"}, {2, missing value, missing value, 1, {"https://a.com"}, {""}}}"#
+        XCTAssertThrowsError(try SafariBridge.decodeWindowEnumeration(raw)) { error in
+            guard case SafariBrowserError.windowEnumerationCorrupt = error else {
+                return XCTFail("expected windowEnumerationCorrupt, got \(error)")
+            }
+        }
     }
 
     // MARK: - Profile parsing (Issue #47)
     //
-    // Records emitted by `listAllWindows` gained a 6th field for
-    // window-level title (which Safari prepends with the active profile
-    // name as `<profile> — <title>`). Each tab record in the same window
-    // carries the same window-name field — redundant on the wire but
-    // simplifies the parser (which groups records by windowIndex anyway).
-    //
-    // Older 4-field and 5-field records remain valid (backward compat).
+    // The window name (which Safari prepends with the active profile name as
+    // `<profile> — <title>`) is read once per window (#355: one record per
+    // window); a window whose name cannot be read carries `missing value`.
 
-    func testParseSixFieldRecordExtractsProfile() {
-        let gs = "\u{1D}"
-        let rs = "\u{1E}"
-        // window 1 = "個人" profile; window-name field = "個人 — Plaud Web"
-        let raw = "1\(gs)1\(gs)1\(gs)https://web.plaud.ai/\(gs)Plaud Web\(gs)個人 — Plaud Web\(rs)"
-        let result = SafariBridge.parseWindowEnumeration(raw)
+    func testParseSixFieldRecordExtractsProfile() throws {
+        // window 1 = "個人" profile; window name = "個人 — Plaud Web"
+        let raw = FakeEnumeration.sourceForm([
+            .init(id: nil, name: "個人 — Plaud Web", tabs: [(url: "https://web.plaud.ai/", title: "Plaud Web")]),
+        ])
+        let result = try SafariBridge.decodeWindowEnumeration(raw)
         XCTAssertEqual(result.count, 1)
         XCTAssertEqual(result[0].profile, "個人")
         XCTAssertEqual(result[0].tabs[0].title, "Plaud Web")
     }
 
-    func testParseSixFieldRecordWithoutProfileSeparator() {
-        let gs = "\u{1D}"
-        let rs = "\u{1E}"
-        // window-name has no em-dash → profile = nil, no error
-        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(gs)A Title\(gs)A Title\(rs)"
-        let result = SafariBridge.parseWindowEnumeration(raw)
+    func testParseSixFieldRecordWithoutProfileSeparator() throws {
+        // window name has no em-dash → profile = nil, no error
+        let raw = FakeEnumeration.sourceForm([.init(id: nil, name: "A Title", tabs: [(url: "https://a.com", title: "A Title")])])
+        let result = try SafariBridge.decodeWindowEnumeration(raw)
         XCTAssertEqual(result.count, 1)
         XCTAssertNil(result[0].profile)
     }
 
-    func testParseFiveFieldRecordHasNilProfile() {
-        // Pre-#47 5-field record (no window-name field) → profile = nil
-        // (no breakage; field count tolerance preserved).
-        let gs = "\u{1D}"
-        let rs = "\u{1E}"
-        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(gs)A Title\(rs)"
-        let result = SafariBridge.parseWindowEnumeration(raw)
+    func testParseFiveFieldRecordHasNilProfile() throws {
+        // A window name that could not be read (`missing value`) → profile = nil.
+        let raw = FakeEnumeration.sourceForm([.init(id: nil, name: nil, tabs: [(url: "https://a.com", title: "A Title")])])
+        let result = try SafariBridge.decodeWindowEnumeration(raw)
         XCTAssertEqual(result.count, 1)
         XCTAssertNil(result[0].profile)
     }

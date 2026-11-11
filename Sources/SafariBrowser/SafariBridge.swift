@@ -2826,6 +2826,9 @@ enum SafariBridge {
     /// `pickNativeTarget`.
     struct WindowInfo: Sendable, Equatable {
         let windowIndex: Int
+        /// The current tab's index, 1…tabs.count. A window without tabs carries 1. A window with
+        /// tabs but no current tab (its tab opened while the enumeration read it, #355) carries 0,
+        /// never 1, so a resolver that compares a tab with this index always switches to the tab.
         let currentTabIndex: Int
         let tabs: [TabInWindow]
         /// Active Safari profile name for this window, parsed from the
@@ -2989,7 +2992,9 @@ enum SafariBridge {
             availableDocuments: candidates.map { w -> String in
                 // #362 verify F8: the same spelling as `entryLabel`, which `listingWindowIDs` recognises.
                 let id = w.windowID.map { "window id \($0)" } ?? "window \(w.windowIndex) (no window id)"
-                let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) } ?? "(0 tabs)"
+                // #355: a window read while a tab opened has tabs but none current.
+                let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) }
+                    ?? (w.tabs.isEmpty ? "(0 tabs)" : "(unknown)")
                 return "\(id): \(cur)"
             }
         )
@@ -3397,18 +3402,27 @@ enum SafariBridge {
         )
     }
 
-    /// Enumerate every Safari window with its tabs in a single
-    /// AppleScript roundtrip. URLs are emitted between ASCII group
-    /// separators (GS, U+001D) and records terminated with the ASCII
-    /// record separator (RS, U+001E). These bytes do not appear in
-    /// percent-encoded URLs, so the parser needs no escape handling.
+    /// Enumerate every Safari window with its tabs in a single AppleScript
+    /// round trip. Exposed for unit-testing the script's structure
+    /// (`ZeroTabWindowGuardTests`, `WindowEnumerationBatchingTests`); live
+    /// execution is E2E-only.
     ///
-    /// Performance: O(1) AppleScript roundtrips regardless of window /
-    /// tab count, vs. the naive per-tab query approach which would
-    /// dominate upload latency (10 windows × 5 tabs ≈ 70 roundtrips).
-    /// AppleScript that enumerates every window/tab in one roundtrip.
-    /// Exposed for unit-testing the guard structure (ZeroTabWindowGuardTests);
-    /// the string is the pure testable output — live execution is E2E-only.
+    /// #355: the script returns an AppleScript list, one item per window:
+    /// `{w, winID, winName, currentIdx, urls, names}`. It used to join every
+    /// tab's fields into text with GS (U+001D) and RS (U+001E); page titles and
+    /// window names keep those characters on a real Safari, so a page could
+    /// forge rows, profiles and window ids. Now page text is only ever an
+    /// AppleScript text value inside the list: the script never joins, reads,
+    /// replaces or tests its characters, and its cost is linear in the titles'
+    /// length. `listAllWindows` receives the list as AppleScript source form
+    /// (`osascript -s s` on the stateless path; the daemon converts the
+    /// descriptor to the same text) and `decodeWindowEnumeration` checks its
+    /// shape. Measurements: openspec change `structured-window-enumeration`,
+    /// design.md.
+    ///
+    /// Performance: O(1) AppleScript round trips regardless of window / tab
+    /// count, vs. the naive per-tab query approach which would dominate upload
+    /// latency (10 windows × 5 tabs ≈ 70 round trips).
     ///
     /// #85: a window with 0 tabs has no `current tab`; reading it raises
     /// AppleScript -1728. We count tabs FIRST and skip only the tab-level
@@ -3417,23 +3431,18 @@ enum SafariBridge {
     /// depends on.
     ///
     /// The window itself is still emitted, as a tab-less shell record
-    /// (`tab_idx 0`) on the guard's else path. Do not "simplify" that branch
-    /// away: dropping 0-tab windows makes the enumeration sparse, and the
-    /// positional lookups in `pickNativeTargetCore` then resolve `--window N`
-    /// to the wrong Safari window instead of failing loudly (#88 verify
-    /// round 1). The shell record's field count MUST stay identical to the
-    /// tab record's — a dropped or shifted field silently strips the window's
-    /// profile, which puts it back outside `--profile` candidate lists and
-    /// reopens the same sparsity hole (#88 verify round 2).
+    /// (current tab 0, empty lists) on the guard's else path. Do not
+    /// "simplify" that branch away: dropping 0-tab windows makes the
+    /// enumeration sparse, and the positional lookups in `pickNativeTargetCore`
+    /// then resolve `--window N` to the wrong Safari window instead of failing
+    /// loudly (#88 verify round 1). The shell record carries the same six
+    /// elements as the window record — a dropped or shifted element silently
+    /// strips the window's profile (#88 verify round 2), and the decoder
+    /// rejects any other count.
     static let listAllWindowsScript = """
         tell application "Safari"
             set windowCount to count of windows
-            if windowCount = 0 then
-                return ""
-            end if
-            set output to ""
-            set GS to (character id 29)
-            set RS to (character id 30)
+            set output to {}
             repeat with w from 1 to windowCount
                 set tabCount to count of tabs of window w
                 if tabCount > 0 then
@@ -3441,10 +3450,9 @@ enum SafariBridge {
                     -- Window-level title carries the profile prefix
                     -- (e.g. "個人 — Plaud Web") on Safari 17+ multi-profile
                     -- setups. Per-tab `name of tab` does NOT include the
-                    -- prefix, so we have to read window name once per
-                    -- window and emit it on every record.
+                    -- prefix, so we read the window name once per window.
+                    -- `missing value` is left for the decoder (→ "").
                     set winName to name of window w
-                    if winName is missing value then set winName to ""
                     -- #79: stable window id — unlike the z-order index w,
                     -- it doesn't dangle when the user raises another window.
                     set winID to id of window w
@@ -3487,144 +3495,41 @@ enum SafariBridge {
                             set end of names to (name of tab t of window w)
                         end repeat
                     end if
-                    repeat with t from 1 to tabCount
-                        set tabUrl to item t of urls
-                        if tabUrl is missing value then set tabUrl to ""
-                        set tabName to item t of names
-                        if tabName is missing value then set tabName to ""
-                        if t = currentIdx then
-                            set isCur to "1"
-                        else
-                            set isCur to "0"
-                        end if
-                        set output to output & w & GS & t & GS & isCur & GS & tabUrl & GS & tabName & GS & winName & GS & winID & RS
-                    end repeat
+                    -- #355: the lists go into the record as they are; no
+                    -- per-tab step touches a URL or a name.
+                    set end of output to {w, winID, winName, currentIdx, urls, names}
                 else
-                    -- Tab-less shell record (tab_idx 0). A 0-tab window
-                    -- must still occupy its slot: dropping it entirely
-                    -- makes the enumeration sparse, and the positional
-                    -- lookups in pickNativeTargetCore then resolve
+                    -- Tab-less shell record (index 0, empty lists). A
+                    -- 0-tab window must still occupy its slot: dropping it
+                    -- entirely makes the enumeration sparse, and the
+                    -- positional lookups in pickNativeTargetCore then resolve
                     -- `--window N` to the wrong Safari window instead of
                     -- failing loudly. Reads below are tab-independent
-                    -- (`name` / `id`), but stay defensive — a ghost
-                    -- window that cannot answer them degrades to an
-                    -- anonymous slot rather than killing enumeration.
-                    set winName to ""
+                    -- (`name` / `id`), but stay defensive — a ghost window
+                    -- that cannot answer them degrades to an anonymous slot
+                    -- (`missing value`) rather than killing enumeration.
+                    set winName to missing value
                     try
                         set winName to name of window w
-                        if winName is missing value then set winName to ""
                     end try
-                    set winIDStr to ""
+                    set winID to missing value
                     try
-                        set winIDStr to (id of window w) as text
+                        set winID to id of window w
                     end try
-                    set output to output & w & GS & 0 & GS & "0" & GS & "" & GS & "" & GS & winName & GS & winIDStr & RS
+                    set end of output to {w, winID, winName, 0, {}, {}}
                 end if
             end repeat
             return output
         end tell
         """
 
+    /// The windows and tabs Safari has open, in Safari's window order. The script's list arrives as
+    /// AppleScript source form on both execution paths and is checked by
+    /// `decodeWindowEnumeration` (#355), which fails the command rather than return rows from a
+    /// list the script cannot have produced.
     static func listAllWindows() async throws -> [WindowInfo] {
-        let raw = try await runAppleScript(listAllWindowsScript)
-        return parseWindowEnumeration(raw)
-    }
-
-    /// Parse the `listAllWindows` output format. Exposed for unit
-    /// testing the parser independently of Safari. Record layout (7
-    /// fields separated by GS, terminated by RS):
-    /// `window_idx GS tab_idx GS is_current GS url GS title GS win_name GS win_id RS`
-    ///
-    /// Backward compatibility: shorter records still parse — 4 fields
-    /// (pre-title) default title to empty, 5 (pre-window-name, #47)
-    /// leave profile nil, 6 (pre-window-id, #79) leave windowID nil —
-    /// so tests and mid-deploy states that don't emit the newer fields
-    /// keep working.
-    static func parseWindowEnumeration(_ raw: String) -> [WindowInfo] {
-        let gs = "\u{1D}"
-        let rs = "\u{1E}"
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return [] }
-
-        var byWindow: [Int: [TabInWindow]] = [:]
-        var currentTabByWindow: [Int: Int] = [:]
-        var windowNameByWindow: [Int: String] = [:]
-        var windowIDByWindow: [Int: Int] = [:]
-
-        for record in trimmed.components(separatedBy: rs) where !record.isEmpty {
-            let fields = record.components(separatedBy: gs)
-            guard fields.count >= 4,
-                  let winIdx = Int(fields[0]),
-                  let tabIdx = Int(fields[1]) else {
-                continue
-            }
-            let isCurrent = fields[2] == "1"
-            let url = fields[3]
-            let title = fields.count >= 5 ? fields[4] : ""
-            // 6th field: window-level title (Issue #47). Stored once per
-            // window — every tab record carries the same value, so first
-            // observation wins. Absent on legacy 4-/5-field records.
-            if fields.count >= 6, windowNameByWindow[winIdx] == nil {
-                windowNameByWindow[winIdx] = fields[5]
-            }
-            // 7th field: stable AppleScript window id (#79). Same
-            // once-per-window convention; non-numeric values degrade to
-            // nil (positional fallback) rather than corrupting the record.
-            if fields.count >= 7, windowIDByWindow[winIdx] == nil,
-               let winID = Int(fields[6]) {
-                windowIDByWindow[winIdx] = winID
-            }
-            // tab_idx 0 is the tab-less shell record emitted for a 0-tab
-            // window. It registers the window (keeping the enumeration
-            // dense so positional lookups stay aligned with Safari's own
-            // window numbering) without contributing a phantom tab.
-            //
-            // Accept it only in the exact shape the script emits — full
-            // 7 fields, not current, empty url and title. A truncated or
-            // corrupt record that merely happens to carry tab_idx 0 would
-            // otherwise conjure a candidate window out of nothing and shift
-            // every positional lookup after it, which is the very failure
-            // this record exists to prevent.
-            if tabIdx <= 0 {
-                let isShellRecord = fields.count >= 7
-                    && !isCurrent
-                    && url.isEmpty
-                    && title.isEmpty
-                if isShellRecord, byWindow[winIdx] == nil {
-                    byWindow[winIdx] = []
-                }
-                continue
-            }
-            byWindow[winIdx, default: []].append(TabInWindow(
-                tabIndex: tabIdx,
-                url: url,
-                title: title,
-                isCurrent: isCurrent
-            ))
-            if isCurrent {
-                currentTabByWindow[winIdx] = tabIdx
-            }
-        }
-
-        return byWindow.keys.sorted().map { w in
-            let tabs = (byWindow[w] ?? []).sorted(by: { $0.tabIndex < $1.tabIndex })
-            // Parse profile from window name (Issue #47). nil propagates
-            // when no window-name field was emitted (5-field legacy) or
-            // when the name has no profile separator.
-            let profile: String?
-            if let winName = windowNameByWindow[w] {
-                profile = UrlMatcher.parseProfile(fromWindowName: winName).profile
-            } else {
-                profile = nil
-            }
-            return WindowInfo(
-                windowIndex: w,
-                currentTabIndex: currentTabByWindow[w] ?? 1,
-                tabs: tabs,
-                profile: profile,
-                windowID: windowIDByWindow[w]
-            )
-        }
+        let text = try await runAppleScriptSourceForm(listAllWindowsScript)
+        return try decodeWindowEnumeration(text)
     }
 
     /// Switch window N's current tab to tab T if T is non-nil and
@@ -4957,6 +4862,55 @@ enum SafariBridge {
                 )
             },
             warnWriter: { msg in
+                FileHandle.standardError.write(Data(msg.utf8))
+            }
+        )
+    }
+
+    /// Arguments that make `osascript` print a result in AppleScript source form (#355).
+    static func sourceFormOsascriptArguments(_ script: String) -> [String] {
+        ["-s", "s", "-e", script]
+    }
+
+    /// Run a script whose result is read as AppleScript source form (#355): the text
+    /// `osascript -s s` prints, which `AppleScriptSourceForm.parse` reads back. Used for the
+    /// window enumeration, whose result is a list; page text in it stays inside quoted strings.
+    ///
+    /// Order: the in-process source form runner (`exec.runScript` in the daemon); else the
+    /// in-process text runner, which only test fakes install alone and which then answers with
+    /// source form text; else the router, sending `resultForm: sourceForm` to the daemon or running
+    /// `osascript -s s`. Errors keep `osascript`'s shape (`… (-1728)`), so the AppleScript error
+    /// classification is unchanged.
+    ///
+    /// The daemon is asked only if its handshake announces `DaemonProtocol.Capability.sourceForm`.
+    /// A daemon from before #355 can pass the version check (unstamped builds all report one
+    /// version, #320) but does not announce it; the client finds that out before sending, and the
+    /// router prints one `[daemon fallback: …]` line naming `safari-browser daemon stop` and runs
+    /// the script on the stateless path. Nothing is ever rerun after it was sent: a daemon that
+    /// announced the capability and still answers with an empty text gets that answer decoded,
+    /// which fails.
+    static func runAppleScriptSourceForm(
+        _ script: String,
+        timeout: TimeInterval = SafariBridge.defaultProcessTimeout,
+        warnWriter: ((String) -> Void)? = nil
+    ) async throws -> String {
+        if let runner = DaemonRequestContext.appleScriptSourceFormRunner ?? DaemonRequestContext.appleScriptRunner {
+            return try await PerformanceTrace.spanAsync(.appleScriptInProcess) { try await runner(script) }
+        }
+        return try await runViaRouter(
+            source: script,
+            daemonOptIn: SafariBridge.shouldUseDaemonAuto(),
+            daemonFn: { src in
+                try await SafariBridge.executeAppleScriptViaDaemon(
+                    source: src, timeout: timeout, sourceForm: true
+                )
+            },
+            statelessFn: { src in
+                try await runProcessWithTimeout(
+                    "/usr/bin/osascript", sourceFormOsascriptArguments(src), timeout: timeout
+                )
+            },
+            warnWriter: warnWriter ?? { msg in
                 FileHandle.standardError.write(Data(msg.utf8))
             }
         )

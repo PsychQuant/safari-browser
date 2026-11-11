@@ -181,17 +181,35 @@ enum DaemonProtocol {
         return server.semver == client.semver && server.commit == client.commit
     }
 
+    /// Features a daemon announces in its v2 handshake (#355), in the optional `capabilities`
+    /// array of the `protocol` object. A daemon that predates a feature does not list it, and the
+    /// client checks before it sends a request that needs one; old clients ignore the field.
+    enum Capability: String, Sendable {
+        /// `applescript.execute` accepts `resultForm: "sourceForm"`, and `exec.runScript` enumerates
+        /// windows as a structured list (#355).
+        case sourceForm
+    }
+
+    /// What this build's daemon serves.
+    static let serverCapabilities: [String] = [Capability.sourceForm.rawValue]
+
     /// Transport metadata from a single interpretation of the v2 handshake.
     /// An absent limit denotes a legacy peer, not a guessed default.
     struct Handshake: Decodable, Sendable {
         let version: Version
         let maxRequestLineBytes: Int?
+        /// Announced capabilities (#355); empty for a daemon that announces none.
+        let capabilities: Set<String>
 
-        private enum CodingKeys: String, CodingKey { case version, maxRequestLineBytes }
+        private enum CodingKeys: String, CodingKey { case version, maxRequestLineBytes, capabilities }
 
         init(from decoder: Decoder) throws {
             let fields = try decoder.container(keyedBy: CodingKeys.self)
             version = try fields.decode(Version.self, forKey: .version)
+            // Present means an array of strings; anything else is an invalid handshake.
+            capabilities = fields.contains(.capabilities)
+                ? Set(try fields.decode([String].self, forKey: .capabilities))
+                : []
             if fields.contains(.maxRequestLineBytes) {
                 // Decimal text avoids JSON number decoders rounding a fractional
                 // advertisement into an integer (including values beyond 2^53).
@@ -220,7 +238,8 @@ enum DaemonProtocol {
 
     /// Existing v2 envelope with an optional transport limit. Real server
     /// instances supply their reader limit; nil preserves legacy fixtures.
-    static func encodeHandshake(version: Version = currentVersion, maxRequestLineBytes: Int? = nil) -> Data {
+    static func encodeHandshake(version: Version = currentVersion, maxRequestLineBytes: Int? = nil,
+                                capabilities: [String] = []) -> Data {
         var proto: [String: Any] = [
             "name": "persistent-daemon",
             "version": [
@@ -233,6 +252,9 @@ enum DaemonProtocol {
         if let maxRequestLineBytes {
             precondition(maxRequestLineBytes > 0)
             proto["maxRequestLineBytes"] = String(maxRequestLineBytes)
+        }
+        if !capabilities.isEmpty {
+            proto["capabilities"] = capabilities
         }
         return (try? JSONSerialization.data(withJSONObject: ["protocol": proto], options: []))
             ?? Data("{}".utf8)

@@ -135,39 +135,29 @@ final class ZeroTabWindowGuardTests: XCTestCase {
 
     // MARK: - Parser behavior
 
-    func testParseWindowEnumeration_emptyStringYieldsNoWindows() {
-        // Only Safari-has-no-windows returns "" now — a 0-tab window emits a
-        // tab-less shell record (see the density tests below). The parser must
-        // still treat the genuinely empty string as "no windows" cleanly.
-        XCTAssertEqual(SafariBridge.parseWindowEnumeration(""), [])
+    func testParseWindowEnumeration_emptyListYieldsNoWindows() throws {
+        // Safari with no windows returns `{}` — a 0-tab window emits a tab-less
+        // shell record (see the density tests below). #355: an empty *text* is
+        // not "no windows" any more; `WindowEnumerationDecoderTests` pins that.
+        XCTAssertEqual(try SafariBridge.decodeWindowEnumeration("{}"), [])
     }
 
     // MARK: - Enumeration density (#88 re-verify findings 1 / 3 / 9)
-
-    /// Build one enumeration record in the 7-field wire format.
-    private func record(
-        window: Int, tab: Int, isCurrent: Bool = false,
-        url: String = "", title: String = "", winName: String = "", winID: String = ""
-    ) -> String {
-        let gs = "\u{1D}", rs = "\u{1E}"
-        return [String(window), String(tab), isCurrent ? "1" : "0",
-                url, title, winName, winID].joined(separator: gs) + rs
-    }
 
     func testListAllWindowsScript_emitsShellRecordForZeroTabWindow() {
         // Dropping 0-tab windows entirely made the enumeration sparse, which
         // silently shifted every positional lookup after the hole. The guard
         // must have an else branch that still emits the window's slot.
         let s = SafariBridge.listAllWindowsScript
-        guard let shell = s.range(of: "set output to output & w & GS & 0 & GS") else {
-            return XCTFail("0-tab windows must emit a tab-less shell record (tab_idx 0), not be skipped")
+        guard let shell = s.range(of: "set end of output to {w, winID, winName, 0, {}, {}}") else {
+            return XCTFail("0-tab windows must emit a tab-less shell record (current tab 0, empty lists), not be skipped")
         }
         guard let guardStart = s.range(of: "if tabCount > 0 then") else {
             return XCTFail("script missing `if tabCount > 0 then` guard")
         }
         // The shell record only runs for 0-tab windows if it sits on the guard's
         // else path. Anchoring on the nearest preceding `else` (rather than the
-        // first one in the script) skips the inner is-current branch.
+        // first one in the script) skips any inner branch.
         guard let elseRange = s.range(of: "else", options: .backwards,
                                       range: guardStart.upperBound..<shell.lowerBound) else {
             return XCTFail("shell record is not on the `if tabCount > 0` else path — it would run for every window")
@@ -177,46 +167,43 @@ final class ZeroTabWindowGuardTests: XCTestCase {
             "the shell-record branch must stay free of `current tab` — that read is what raises -1728")
     }
 
-    func testListAllWindowsScript_shellAndTabRecordsShareFieldCount() {
-        // The script↔parser contract, pinned structurally. Hand-written
-        // fixtures elsewhere in this file cannot catch a change to the script's
-        // own emission: dropping the trailing winID field, or the empty title
-        // field (which shifts winName into the title slot), both left every
-        // test green while silently stripping the window's profile and window
-        // id — putting the window back outside `--profile` candidate lists and
-        // reopening the sparsity hole this whole fix closes (#88 verify r2).
+    func testListAllWindowsScript_shellAndTabRecordsShareTheirShape() {
+        // The script↔decoder contract, pinned structurally. Hand-written
+        // fixtures elsewhere cannot catch a change to the script's own
+        // emission: dropping the window id, or shifting the name into another
+        // slot, would silently strip the window's profile and window id —
+        // putting the window back outside `--profile` candidate lists and
+        // reopening the sparsity hole (#88 verify r2). #355: the record is an
+        // AppleScript list of six elements, and `decodeWindowEnumeration`
+        // rejects any other count.
         let s = SafariBridge.listAllWindowsScript
         let emissions = s
             .components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.hasPrefix("set output to output & w & GS &") }
+            .filter { $0.hasPrefix("set end of output to {w,") }
         XCTAssertEqual(emissions.count, 2,
-                       "expected exactly two emission sites (tab record + shell record), got \(emissions.count)")
-        let separatorCounts = emissions.map { $0.components(separatedBy: "& GS &").count - 1 }
-        XCTAssertEqual(
-            separatorCounts.first, separatorCounts.last,
-            "shell and tab records must carry identical field counts — a shifted field silently drops profile / window id: \(emissions)")
-        XCTAssertEqual(
-            separatorCounts.first, 6,
-            "the wire format is 7 fields (6 GS separators); parseWindowEnumeration reads winName at index 5 and winID at index 6")
+                       "expected exactly two emission sites (window record + shell record), got \(emissions.count)")
+        let elementCounts = emissions.map { emission -> Int in
+            guard let open = emission.firstIndex(of: "{"), emission.hasSuffix("}") else { return -1 }
+            // Count top-level commas of the record literal (`{}` items hold none).
+            return emission[emission.index(after: open)..<emission.index(before: emission.endIndex)]
+                .filter { $0 == "," }.count + 1
+        }
+        XCTAssertEqual(elementCounts, [6, 6],
+                       "both records must carry the same six elements — a shifted element silently drops profile / window id: \(emissions)")
         for emission in emissions {
-            XCTAssertTrue(emission.hasSuffix("& RS"),
-                          "every record must be RS-terminated: \(emission)")
+            XCTAssertTrue(emission.hasPrefix("set end of output to {w, winID, winName, "),
+                          "window number, id and name come first in both records: \(emission)")
         }
     }
 
-    func testParseWindowEnumeration_ignoresMalformedZeroTabRecord() {
-        // A truncated / corrupt record that merely carries tab_idx 0 must NOT
-        // register a window — conjuring a phantom candidate shifts every
-        // positional lookup after it (Codex r2 finding 1).
-        let gs = "\u{1D}", rs = "\u{1E}"
-        let legacyFourField = ["2", "0", "0", ""].joined(separator: gs) + rs
-        let raw = record(window: 1, tab: 1, isCurrent: true, url: "https://a/", winID: "11")
-            + legacyFourField
-            + record(window: 3, tab: 1, isCurrent: true, url: "https://c/", winID: "33")
-        let windows = SafariBridge.parseWindowEnumeration(raw)
-        XCTAssertEqual(windows.map(\.windowIndex), [1, 3],
-                       "a 4-field record is not a shell record and must not create window 2")
+    func testParseWindowEnumeration_rejectsMalformedZeroTabRecord() {
+        // A truncated / corrupt shell record must NOT register a window —
+        // conjuring a phantom candidate shifts every positional lookup after it
+        // (Codex r2 finding 1). #355: it fails the enumeration instead of being
+        // dropped, so no positional lookup runs on the list at all.
+        let raw = #"{{1, 11, "", 1, {"https://a/"}, {""}}, {2, 0, 0, {}}, {3, 33, "", 1, {"https://c/"}, {""}}}"#
+        XCTAssertThrowsError(try SafariBridge.decodeWindowEnumeration(raw))
     }
 
     func testPickNativeTarget_otherTargetKindsUnaffectedByTablessWindow() {
@@ -248,11 +235,13 @@ final class ZeroTabWindowGuardTests: XCTestCase {
                        ".frontWindow must not skip past a tab-less first window")
     }
 
-    func testParseWindowEnumeration_shellRecordYieldsTablessWindow() {
-        let raw = record(window: 1, tab: 1, isCurrent: true, url: "https://a/", winID: "11")
-            + record(window: 2, tab: 0, winName: "個人 — (untitled)", winID: "22")
-            + record(window: 3, tab: 1, isCurrent: true, url: "https://c/", winID: "33")
-        let windows = SafariBridge.parseWindowEnumeration(raw)
+    func testParseWindowEnumeration_shellRecordYieldsTablessWindow() throws {
+        let raw = FakeEnumeration.sourceForm([
+            .init(id: 11, name: "", tabs: [(url: "https://a/", title: "")]),
+            .init(id: 22, name: "個人 — (untitled)", tabs: []),
+            .init(id: 33, name: "", tabs: [(url: "https://c/", title: "")]),
+        ])
+        let windows = try SafariBridge.decodeWindowEnumeration(raw)
 
         XCTAssertEqual(windows.map(\.windowIndex), [1, 2, 3],
                        "the 0-tab window must keep its slot so indices stay dense")

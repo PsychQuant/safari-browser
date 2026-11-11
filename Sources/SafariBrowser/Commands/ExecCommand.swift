@@ -154,7 +154,15 @@ struct ExecCommand: AsyncParsableCommand {
     /// Send the script to the daemon's `exec.runScript` handler. Returns
     /// the encoded result-array string on success. Returns nil only when the
     /// request is known not to have executed and local fallback is safe.
-    private func runViaDaemon(steps: [ScriptStep]) async throws -> String? {
+    ///
+    /// #355: steps that run in the daemon enumerate windows with the daemon's own code, so the
+    /// script goes only to a daemon that announces the structured enumeration
+    /// (`DaemonProtocol.Capability.sourceForm`); an older one gets nothing, and the per-step path
+    /// runs the script. `note` is a seam for the fallback line.
+    func runViaDaemon(
+        steps: [ScriptStep],
+        note: (String) -> Void = { FileHandle.standardError.write(Data($0.utf8)) }
+    ) async throws -> String? {
         // Re-encode steps + target as the envelope the handler expects.
         // Section 7 of tab-ownership-marker v2: forward the resolved
         // markTab mode so the daemon wraps the entire execution in one
@@ -174,7 +182,8 @@ struct ExecCommand: AsyncParsableCommand {
                 method: "exec.runScript",
                 params: envelopeData,
                 requestId: Int.random(in: 1...Int.max),
-                timeout: 60.0
+                timeout: 60.0,
+                requiredCapability: .sourceForm
             )
             return try Self.daemonResults(from: resultData)
         } catch let err as DaemonClient.Error {
@@ -183,7 +192,7 @@ struct ExecCommand: AsyncParsableCommand {
             if err.fallbackReason == nil {
                 throw err
             }
-            FileHandle.standardError.write(Data("[daemon fallback: \(err.fallbackReason ?? "")]\n".utf8))
+            note("[daemon fallback: \(err.fallbackReason ?? "")]\n")
             return nil
         }
     }

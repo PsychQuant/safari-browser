@@ -22,9 +22,14 @@ enum DaemonClient {
         case requestOutcomeUnknown(String)
         case invalidTimeout
         case requestTooLarge(encodedBytes: Int, limit: Int)
+        /// The daemon did not announce a capability the request needs (#355). Raised from the
+        /// handshake, before any request byte is written, so the stateless path is safe.
+        case missingCapability(String)
 
         var description: String {
             switch self {
+            case .missingCapability(let capability):
+                return "daemon lacks capability \(capability)"
             case .requestOutcomeUnknown(let r): return "daemon request outcome unknown: \(r); operation may have executed; not retrying"
             case .requestTooLarge(let bytes, let limit):
                 return "daemon request too large: encoded JSON line is \(bytes) bytes; peer limit is \(limit) bytes (excluding LF); no request bytes sent for this RPC; reduce the request size"
@@ -85,6 +90,8 @@ enum DaemonClient {
         var fallbackReason: String? {
             switch self {
             case .requestOutcomeUnknown, .invalidTimeout, .requestTooLarge: return nil
+            case .missingCapability(let capability):
+                return "the running daemon predates \(capability) (#355); run `safari-browser daemon stop` and then `safari-browser daemon start` to replace it"
             case .connectFailed(let r):  return "connect: \(r)"
             case .ioError(let r):        return "io: \(r)"
             case .protocolError(let r):  return "protocol: \(r)"
@@ -168,7 +175,8 @@ enum DaemonClient {
         socketDir: String? = nil,
         diagnosticsWriter: (@Sendable (String) -> Void)? = nil,
         responseLineLimit: Int = maxResponseLineBytes,
-        handshakeObserver: (@Sendable (DaemonProtocol.Version) -> Void)? = nil
+        handshakeObserver: (@Sendable (DaemonProtocol.Version) -> Void)? = nil,
+        requiredCapability: DaemonProtocol.Capability? = nil
     ) async throws -> Data {
         return try await PerformanceTrace.spanAsync(.daemonRequest) {
             guard timeout.isFinite, (0.001...86400).contains(timeout) else {
@@ -188,7 +196,8 @@ enum DaemonClient {
                                          requestId: requestId, deadline: deadline,
                                          diagnosticsWriter: diagnosticsWriter,
                                          responseLineLimit: responseLineLimit,
-                                         handshakeObserver: handshakeObserver)
+                                         handshakeObserver: handshakeObserver,
+                                         requiredCapability: requiredCapability)
                         }
                         continuation.resume(returning: reply)
                     } catch {
@@ -204,7 +213,8 @@ enum DaemonClient {
         path: String, method: String, params: Data, requestId: Int,
         deadline: Deadline, diagnosticsWriter: (@Sendable (String) -> Void)?,
         responseLineLimit: Int,
-        handshakeObserver: (@Sendable (DaemonProtocol.Version) -> Void)? = nil
+        handshakeObserver: (@Sendable (DaemonProtocol.Version) -> Void)? = nil,
+        requiredCapability: DaemonProtocol.Capability? = nil
     ) throws -> Data {
         let fd = try connectUnixSocket(path: path, deadline: deadline)
         defer { close(fd) }
@@ -218,6 +228,11 @@ enum DaemonClient {
         guard DaemonProtocol.isBuildIndependent(method: method)
                 || DaemonProtocol.versionsMatch(server: version, client: DaemonProtocol.currentVersion) else {
             throw Error.remoteError(code: "versionMismatch", message: "daemon \(version.description), client \(DaemonProtocol.currentVersion.description)")
+        }
+        // #355: unstamped builds all report one version (#320), so a daemon that predates a
+        // feature can pass the check above. Its handshake does not announce the feature.
+        if let requiredCapability, !metadata.capabilities.contains(requiredCapability.rawValue) {
+            throw Error.missingCapability(requiredCapability.rawValue)
         }
         let paramsValue = try JSONSerialization.jsonObject(with: params, options: [.fragmentsAllowed])
         var payload = try JSONSerialization.data(withJSONObject: [

@@ -52,10 +52,27 @@ enum DaemonDispatch {
         // interpreter in-process and returns the result array. Eliminates
         // per-step subprocess + socket handshake from the client path.
         await server.register("exec.runScript") { [cache] params in
-            try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
-                try await Handlers.cachedScriptText(source: source, cache: cache)
-            }) {
+            try await withInProcessRunners(cache: cache) {
                 try await Handlers.execRunScript(paramsData: params)
+            }
+        }
+    }
+
+    /// Run `body` with both in-process AppleScript runners installed: the text runner and, for
+    /// the window enumeration (#355), the source form runner. They are installed together so the
+    /// enumeration inside `exec.runScript` can never fall back to the text runner, whose answer for
+    /// a list is an empty string.
+    static func withInProcessRunners<T>(
+        cache: PreCompiledScripts.CompileCache,
+        _ body: () async throws -> T
+    ) async throws -> T {
+        try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
+            try await Handlers.cachedScriptText(source: source, cache: cache)
+        }) {
+            try await DaemonRequestContext.$appleScriptSourceFormRunner.withValue({ source in
+                try await Handlers.cachedScriptSourceForm(source: source, cache: cache)
+            }) {
+                try await body()
             }
         }
     }
@@ -82,6 +99,18 @@ enum DaemonDispatch {
         static func cachedScriptText(source: String, cache: PreCompiledScripts.CompileCache) async throws -> String {
             do {
                 let output = try await cache.execute(source: source).stringValue ?? ""
+                return output.trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch PreCompiledScripts.Error.compilationFailed(let message) {
+                throw SafariBrowserError.appleScriptFailed(message)
+            } catch PreCompiledScripts.Error.executionFailed(let message) {
+                throw SafariBrowserError.appleScriptFailed(message)
+            }
+        }
+
+        /// The in-process counterpart of `osascript -s s` (#355).
+        static func cachedScriptSourceForm(source: String, cache: PreCompiledScripts.CompileCache) async throws -> String {
+            do {
+                let output = try await cache.execute(source: source, renderSourceForm: true).sourceForm ?? ""
                 return output.trimmingCharacters(in: .whitespacesAndNewlines)
             } catch PreCompiledScripts.Error.compilationFailed(let message) {
                 throw SafariBrowserError.appleScriptFailed(message)
@@ -117,8 +146,14 @@ enum DaemonDispatch {
         /// transport failures (which would trigger fallback — AppleScript
         /// errors are Safari-domain and must surface directly).
         ///
+        /// An optional `"resultForm": "sourceForm"` (#355) makes `output` the result in AppleScript
+        /// source form (`AppleScriptSourceForm.render`, the text `osascript -s s` prints) instead of
+        /// its string value; the window enumeration needs it because a list has no string value.
+        ///
         /// Response shape:
         /// - `{"status":"ok","output":"<stringValue>"}` on success
+        /// - `{"status":"error","errorKind":"badRequest","message":"..."}` for a `resultForm` that is
+        ///   present but not the string `"sourceForm"` (another string, a number, a boolean, null)
         /// - `{"status":"error","errorKind":"compileFailed","message":"..."}`
         ///   when NSAppleScript rejects the source
         /// - `{"status":"error","errorKind":"executeFailed","message":"..."}`
@@ -231,21 +266,39 @@ enum DaemonDispatch {
                 // requests are measured without decoding the script twice.
                 let source: Result<String, Error>
                 let timing: Bool
-                enum CodingKeys: String, CodingKey { case source, timing }
+                /// nil when absent; `.some(nil)` when present but not a string (#355: a bad request,
+                /// not the old text result).
+                let resultForm: String??
+                enum CodingKeys: String, CodingKey { case source, timing, resultForm }
                 init(from decoder: Decoder) throws {
                     let values = try decoder.container(keyedBy: CodingKeys.self)
                     source = Result { try values.decode(String.self, forKey: .source) }
                     timing = (try? values.decode(Bool.self, forKey: .timing)) ?? false
+                    resultForm = values.contains(.resultForm)
+                        ? .some(try? values.decode(String.self, forKey: .resultForm))
+                        : nil
                 }
             }
             let params = try JSONDecoder().decode(Params.self, from: paramsData)
             return try await PerformanceTrace.withDaemonTiming(enabled: params.timing) {
             let source = try params.source.get()
+            let sourceForm: Bool
+            switch params.resultForm {
+            case nil: sourceForm = false
+            case .some(SafariBridge.sourceFormResultForm?): sourceForm = true
+            case .some:
+                let response: [String: Any] = [
+                    "status": "error",
+                    "errorKind": "badRequest",
+                    "message": "unknown resultForm (expected \"\(SafariBridge.sourceFormResultForm)\")",
+                ]
+                return try JSONSerialization.data(withJSONObject: response, options: [])
+            }
             do {
-                let result = try await cache.execute(source: source)
+                let result = try await cache.execute(source: source, renderSourceForm: sourceForm)
                 let response: [String: Any] = [
                     "status": "ok",
-                    "output": result.stringValue ?? "",
+                    "output": (sourceForm ? result.sourceForm : result.stringValue) ?? "",
                 ]
                 return try JSONSerialization.data(withJSONObject: response, options: [])
             } catch PreCompiledScripts.Error.compilationFailed(let msg) {
