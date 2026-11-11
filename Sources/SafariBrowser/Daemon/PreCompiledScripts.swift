@@ -169,10 +169,15 @@ enum PreCompiledScripts {
     struct ExecutionResult: Sendable, Equatable {
         let int32Value: Int32
         let stringValue: String?
+        /// The descriptor in AppleScript source form (`AppleScriptSourceForm.render`), the text
+        /// `osascript -s s` prints. Converted only when the caller asks (#355): the descriptor does
+        /// not leave the main actor, so the conversion has to happen here.
+        let sourceForm: String?
 
-        init(descriptor: NSAppleEventDescriptor) {
+        init(descriptor: NSAppleEventDescriptor, renderSourceForm: Bool = false) {
             self.int32Value = descriptor.int32Value
             self.stringValue = descriptor.stringValue
+            self.sourceForm = renderSourceForm ? AppleScriptSourceForm.render(descriptor) : nil
         }
     }
 
@@ -214,8 +219,9 @@ enum PreCompiledScripts {
         }
 
         /// Compile (cached) and execute the script, returning a Sendable
-        /// snapshot of the result descriptor.
-        func execute(source: String) throws -> ExecutionResult {
+        /// snapshot of the result descriptor. With `renderSourceForm`, the snapshot also carries
+        /// the result in AppleScript source form (#355).
+        func execute(source: String, renderSourceForm: Bool = false) throws -> ExecutionResult {
             let script = try compiledLocked(for: source)
             return try PerformanceTrace.span(.daemonExecute) {
                 var errorInfo: NSDictionary?
@@ -223,7 +229,7 @@ enum PreCompiledScripts {
                 if let info = errorInfo {
                     throw Error.executionFailed(Self.describe(info))
                 }
-                return ExecutionResult(descriptor: descriptor)
+                return ExecutionResult(descriptor: descriptor, renderSourceForm: renderSourceForm)
             }
         }
 

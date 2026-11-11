@@ -49,14 +49,9 @@ final class FakeSafari: @unchecked Sendable {
         if script.contains("set windowCount to count of windows") {
             let n = lock.withLock { listingCount += 1; return listingCount }
             if let listingError, n >= listingErrorFrom { throw listingError }
-            let gs = "\u{1D}", rs = "\u{1E}"
-            var out = ""
-            for (i, window) in open.enumerated() {
-                for (j, url) in window.tabs.enumerated() {
-                    out += ["\(i + 1)", "\(j + 1)", j == 0 ? "1" : "0", url, "Tab \(j + 1)",
-                            "\(window.profile) — Tab 1", "\(window.id)"].joined(separator: gs) + rs
-                }
-            }
+            let out = FakeEnumeration.sourceForm(open.map {
+                .titledTabs(id: $0.id, profile: $0.profile, urls: $0.tabs)
+            })
             if let closing = closesAfterListing, n == closing.after { lock.withLock { _ = closed.insert(closing.id) } }
             return out
         }

@@ -54,14 +54,31 @@ final class WindowEnumerationBatchingTests: XCTestCase {
     func testEmissionStillComesFromASingleSiteOverTheLists() {
         // The fallback must refill the SAME lists, not add a second emission
         // loop — ZeroTabWindowGuardTests pins exactly two emission sites
-        // (tab record + shell record) as the script↔parser contract.
+        // (window record + shell record) as the script↔decoder contract.
+        // #355: the window record carries the batched lists themselves; no
+        // per-tab loop builds anything out of a tab's URL or name.
         let s = SafariBridge.listAllWindowsScript
         let emissions = s.components(separatedBy: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.hasPrefix("set output to output & w & GS &") }
+            .filter { $0.hasPrefix("set end of output to {w,") }
         XCTAssertEqual(emissions.count, 2)
-        XCTAssertTrue(s.contains("item t of urls"), "tab record must read its URL from the batched list")
-        XCTAssertTrue(s.contains("item t of names"), "tab record must read its name from the batched list")
+        XCTAssertTrue(emissions.contains("set end of output to {w, winID, winName, currentIdx, urls, names}"),
+                      "the window record must carry the batched URL and name lists: \(emissions)")
+        XCTAssertFalse(s.contains("item t of urls") || s.contains("item t of names"),
+                       "#355: no per-tab step may read a tab's URL or name out of the lists")
+    }
+
+    func testThePageTextIsNeverJoinedOrTouchedCharacterByCharacter() {
+        // #355: titles, window names and URLs travel only as AppleScript text
+        // values inside the returned list. No separator characters, no
+        // concatenation into an output string, no per-character handler.
+        let s = SafariBridge.listAllWindowsScript
+        for needle in ["character id", "text item delimiters", "& GS &", "& RS", "ignoring diacriticals", "set output to output"] {
+            XCTAssertFalse(s.contains(needle), "the enumeration script must not contain `\(needle)`")
+        }
+        XCTAssertTrue(s.contains("set output to {}"), "the result is a list that starts empty (no windows → {})")
+        XCTAssertTrue(s.contains("return output"))
+        XCTAssertFalse(s.contains("return \"\""), "no windows must be `{}`, not an empty text")
     }
 
     func testBatchedURLsAreReReadSoAReorderCannotPairAURLWithAnotherTabsTitle() {
@@ -73,5 +90,13 @@ final class WindowEnumerationBatchingTests: XCTestCase {
         XCTAssertTrue(s.contains("set urls2 to URL of every tab of window w"), s)
         XCTAssertTrue(s.contains("urls = urls2"), "the re-read must be compared with the first read")
         XCTAssertTrue(s.contains("considering case"), "URL comparison must be case-sensitive")
+    }
+
+    func testTheEnumerationScriptCompiles() {
+        // Compile only (no Safari is asked for anything): catches a record
+        // literal or `set end of` that AppleScript would reject.
+        var error: NSDictionary?
+        let ok = NSAppleScript(source: SafariBridge.listAllWindowsScript)?.compileAndReturnError(&error) ?? false
+        XCTAssertTrue(ok, "listAllWindowsScript does not compile: \(String(describing: error))")
     }
 }

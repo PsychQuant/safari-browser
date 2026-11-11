@@ -5,6 +5,11 @@ final class DaemonRequestContext: @unchecked Sendable {
     typealias AppleScriptRunner = @Sendable (String) async throws -> String
     @TaskLocal static var current: DaemonRequestContext?
     @TaskLocal static var appleScriptRunner: AppleScriptRunner?
+    /// #355: the in-process runner for scripts whose result is read as AppleScript source form
+    /// (`SafariBridge.runAppleScriptSourceForm`). `DaemonDispatch.withInProcessRunners` installs it
+    /// together with `appleScriptRunner`. When only `appleScriptRunner` is installed (test fakes),
+    /// that runner is asked instead and must answer with source form text itself.
+    @TaskLocal static var appleScriptSourceFormRunner: AppleScriptRunner?
 
     let id = UUID()
     private let probe: ((BlockingDialogGate.WindowKey) -> BlockingDialogState)?

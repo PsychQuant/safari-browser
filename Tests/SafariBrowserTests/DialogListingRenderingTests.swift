@@ -118,8 +118,7 @@ final class DialogListingRenderingTests: XCTestCase {
     }
 
     func testInProcessDocumentsSharesMetadataAndHonorsRequestOptOut() async throws {
-        let record = ["1", "1", "1", "https://fixture.test", "Fixture", "個人 — Fixture", "71"]
-            .joined(separator: "\u{1D}")
+        let record = FakeEnumeration.sourceForm([.init(id: 71, name: "個人 — Fixture", tabs: [(url: "https://fixture.test", title: "Fixture")])])
         for disabled in [false, true] {
             let calls = ExecSubprocessOutputTests.Output()
             let context = DaemonRequestContext(environment: [:])
@@ -149,7 +148,7 @@ final class DialogListingRenderingTests: XCTestCase {
                 try await DaemonRequestContext.$current.withValue(context) {
                     try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
                         if source == SafariBridge.listAllWindowsScript {
-                            return ["1", "1", "1", "https://fixture.test", "Fixture", "個人 — Fixture", "72"].joined(separator: "\u{1D}")
+                            return FakeEnumeration.sourceForm([.init(id: 72, name: "個人 — Fixture", tabs: [(url: "https://fixture.test", title: "Fixture")])])
                         }
                         if source.contains("get id of window") { return "72" }
                         if source.contains("count of tabs") { return "1" }
@@ -186,11 +185,10 @@ final class DialogListingRenderingTests: XCTestCase {
 
     func testDocumentsCaptureOnceAfterProfileFilteringForEachOutputMode() async throws {
         let captured = observation()
-        let records = [
-            ["1", "1", "1", "https://personal.test", "Personal", "個人 — Personal", "71"],
-            ["2", "1", "1", "https://work.test/1", "Work 1", "工作 — Work", "72"],
-            ["2", "2", "0", "https://work.test/2", "Work 2", "工作 — Work", "72"],
-        ].map { $0.joined(separator: "\u{1D}") }.joined(separator: "\u{1E}")
+        let records = FakeEnumeration.sourceForm([
+            .init(id: 71, name: "個人 — Personal", tabs: [(url: "https://personal.test", title: "Personal")]),
+            .init(id: 72, name: "工作 — Work", tabs: [(url: "https://work.test/1", title: "Work 1"), (url: "https://work.test/2", title: "Work 2")]),
+        ])
         for arguments in [["--profile", "工作"], ["--profile", "工作", "--json"]] {
             let calls = ExecSubprocessOutputTests.Output()
             let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
@@ -239,13 +237,13 @@ final class DialogListingRenderingTests: XCTestCase {
             try await DaemonRequestContext.$current.withValue(context) {
                 try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
                     if source == SafariBridge.listAllWindowsScript {
-                        return ["1", "1", "1", "https://work.test", "Work", "工作 — Work", "72"].joined(separator: "\u{1D}")
+                        return FakeEnumeration.sourceForm([.init(id: 72, name: "工作 — Work", tabs: [(url: "https://work.test", title: "Work")])])
                     }
                     if source.contains("get id of window") { return "72" }
                     if source.contains("count of tabs") { return "1" }
                     if source.contains("get name of tab") { return "Work" }
                     if source.contains("get URL of tab") { return "https://work.test" }
-                    return ["1", "1", "1", "https://work.test", "Work", "工作 — Work", "72"].joined(separator: "\u{1D}")
+                    return FakeEnumeration.sourceForm([.init(id: 72, name: "工作 — Work", tabs: [(url: "https://work.test", title: "Work")])])
                 }) {
                     try await WindowDialogObservation.$provider.withValue({ listing.append("capture"); return captured }) {
                         try await command.run()
@@ -267,8 +265,7 @@ final class DialogListingRenderingTests: XCTestCase {
                 calls.append("unexpected capture")
                 return .unavailable(reason: "unavailable")
             }) {
-                let personal = ["1", "1", "1", "https://personal.test", "Personal", "個人 — Personal", "71"]
-                    .joined(separator: "\u{1D}")
+                let personal = FakeEnumeration.sourceForm([.init(id: 71, name: "個人 — Personal", tabs: [(url: "https://personal.test", title: "Personal")])])
                 try await DaemonRequestContext.$appleScriptRunner.withValue({ _ in personal }) {
                     try await documents.run()
                 }

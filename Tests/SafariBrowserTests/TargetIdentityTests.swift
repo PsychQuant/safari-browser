@@ -12,17 +12,14 @@ import XCTest
 /// and the bounded re-resolve retry decision logic.
 final class TargetIdentityTests: XCTestCase {
 
-    private let gs = "\u{1D}"
-    private let rs = "\u{1E}"
-
     // MARK: - S1: enumeration carries the stable window id
 
-    func testParseWindowEnumeration7FieldCarriesWindowID() {
-        // 7-field record: window GS tab GS isCurrent GS url GS title GS winName GS winID RS
-        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(gs)Alpha\(gs)個人 — Alpha\(gs)22510\(rs)"
-            + "1\(gs)2\(gs)0\(gs)https://b.com\(gs)Beta\(gs)個人 — Alpha\(gs)22510\(rs)"
-            + "2\(gs)1\(gs)1\(gs)https://c.com\(gs)Gamma\(gs)work — Gamma\(gs)30691\(rs)"
-        let windows = SafariBridge.parseWindowEnumeration(raw)
+    func testParseWindowEnumeration7FieldCarriesWindowID() throws {
+        let raw = FakeEnumeration.sourceForm([
+            .init(id: 22510, name: "個人 — Alpha", tabs: [(url: "https://a.com", title: "Alpha"), (url: "https://b.com", title: "Beta")]),
+            .init(id: 30691, name: "work — Gamma", tabs: [(url: "https://c.com", title: "Gamma")]),
+        ])
+        let windows = try SafariBridge.decodeWindowEnumeration(raw)
         XCTAssertEqual(windows.count, 2)
         XCTAssertEqual(windows[0].windowID, 22510)
         XCTAssertEqual(windows[1].windowID, 30691)
@@ -31,25 +28,21 @@ final class TargetIdentityTests: XCTestCase {
         XCTAssertEqual(windows[0].tabs.count, 2)
     }
 
-    func testParseWindowEnumerationLegacy6FieldWindowIDNil() {
-        // Pre-#79 6-field records (no window id) must still parse —
-        // windowID degrades to nil and resolution falls back to the
-        // positional form.
-        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(gs)Alpha\(gs)個人 — Alpha\(rs)"
-        let windows = SafariBridge.parseWindowEnumeration(raw)
+    func testParseWindowEnumerationLegacy6FieldWindowIDNil() throws {
+        // A window whose id cannot be read (`missing value`) decodes with no window id, and
+        // resolution falls back to the positional form.
+        let raw = FakeEnumeration.sourceForm([.init(id: nil, name: "個人 — Alpha", tabs: [(url: "https://a.com", title: "Alpha")])])
+        let windows = try SafariBridge.decodeWindowEnumeration(raw)
         XCTAssertEqual(windows.count, 1)
         XCTAssertNil(windows[0].windowID)
         XCTAssertEqual(windows[0].profile, "個人")
     }
 
-    func testParseWindowEnumerationMalformedWindowIDNil() {
-        // A non-numeric id field must not crash the parser or corrupt
-        // the record — windowID degrades to nil.
-        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(gs)Alpha\(gs)win\(gs)garbage\(rs)"
-        let windows = SafariBridge.parseWindowEnumeration(raw)
-        XCTAssertEqual(windows.count, 1)
-        XCTAssertNil(windows[0].windowID)
-        XCTAssertEqual(windows[0].tabs[0].url, "https://a.com")
+    func testParseWindowEnumerationMalformedWindowIDFailsTheEnumeration() {
+        // Before #355 a non-numeric id degraded to nil. A window id that is neither an integer nor
+        // `missing value` is a list the script cannot produce, so the enumeration fails.
+        let raw = #"{{1, "garbage", "win", 1, {"https://a.com"}, {"Alpha"}}}"#
+        XCTAssertThrowsError(try SafariBridge.decodeWindowEnumeration(raw))
     }
 
     // MARK: - S2: identity-anchored references

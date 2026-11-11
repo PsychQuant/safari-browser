@@ -454,7 +454,9 @@ final class URLTextTests: XCTestCase {
     /// The `-1719` / `-1728` translation in `runTargetedAppleScript` is its own producer of the
     /// listing, reached only when Safari itself reports the target missing.
     func testTheTranslatedAppleScriptFailureListsTabsWithoutTheirQuery() async {
-        let record = ["1", "1", "1", "https://cdn.example.org/a.pdf?X-Signature=\(secret)", "T", "", "71"].joined(separator: "\u{1D}") + "\u{1E}"
+        let record = FakeEnumeration.sourceForm([
+            .init(id: 71, name: "", tabs: [(url: "https://cdn.example.org/a.pdf?X-Signature=\(secret)", title: "T")]),
+        ])
         // A context with a probe that answers, so the dialog gate does not scan the real Safari.
         let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         do {

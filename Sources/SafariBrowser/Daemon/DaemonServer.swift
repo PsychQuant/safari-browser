@@ -413,6 +413,8 @@ enum DaemonServer {
 
         private let shutdownWatchdog: (@Sendable () -> Void)?
         private nonisolated let requestLineLimit: Int
+        /// Announced in the handshake (#355). Tests pass `[]` to stand in for an older daemon.
+        nonisolated let capabilities: [String]
         private nonisolated let connectionObservation: ConnectionObservation
         private let connectionEnvironment: DaemonConnection.Environment
         var trackedConnectionCount: Int { connections.count }
@@ -427,6 +429,7 @@ enum DaemonServer {
 
         init(shutdownWatchdog: (@Sendable () -> Void)? = nil,
              requestLineLimit: Int = DaemonServer.maxRequestLineBytes,
+             capabilities: [String] = DaemonProtocol.serverCapabilities,
              diagnosticClock: @escaping @Sendable () -> ContinuousClock.Instant = { ContinuousClock.now },
              diagnosticSleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .milliseconds(500)) },
              connectionObservation: ConnectionObservation = .init(),
@@ -434,6 +437,7 @@ enum DaemonServer {
             precondition(requestLineLimit > 0 && requestLineLimit < Int.max)
             self.shutdownWatchdog = shutdownWatchdog
             self.requestLineLimit = requestLineLimit
+            self.capabilities = capabilities
             self.connectionObservation = connectionObservation
             self.connectionEnvironment = connectionEnvironment
             self.diagnosticClock = diagnosticClock
@@ -1190,7 +1194,7 @@ enum DaemonServer {
             connection: DaemonConnection, instance: Instance
         ) async -> DaemonDiagnosticBudget.Event? {
             defer { connection.revoke() }
-            guard await writeLine(connection: connection, line: DaemonProtocol.encodeHandshake(maxRequestLineBytes: instance.requestLineLimit)) else { return nil }
+            guard await writeLine(connection: connection, line: DaemonProtocol.encodeHandshake(maxRequestLineBytes: instance.requestLineLimit, capabilities: instance.capabilities)) else { return nil }
             var reader = RequestLineReader(maxBytes: instance.requestLineLimit)
             while !Task.isCancelled && !connection.isRevoked {
                 let line: Data

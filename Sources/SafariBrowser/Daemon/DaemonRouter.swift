@@ -34,10 +34,14 @@ extension SafariBridge {
     /// an unknown outcome, because repeating the script could repeat effects.
     static func executeAppleScriptViaDaemon(
         source: String,
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        sourceForm: Bool = false
     ) async throws -> String {
         let name = DaemonClient.resolveName(flag: nil)
         var parameters: [String: Any] = ["source": source]
+        // #355: ask the daemon for the result in AppleScript source form (what `osascript -s s`
+        // prints) instead of its string value.
+        if sourceForm { parameters["resultForm"] = sourceFormResultForm }
         if PerformanceTrace.isActive { parameters["timing"] = true }
         let paramsData = try JSONSerialization.data(withJSONObject: parameters, options: [])
         // The caller's shorter budget applies; ordinary bridge requests never
@@ -47,7 +51,9 @@ extension SafariBridge {
             method: "applescript.execute",
             params: paramsData,
             requestId: Int.random(in: 1...Int.max),
-            timeout: min(timeout, DaemonClient.defaultTimeoutSeconds)
+            timeout: min(timeout, DaemonClient.defaultTimeoutSeconds),
+            // #355: a daemon that does not announce source form would ignore `resultForm`.
+            requiredCapability: sourceForm ? .sourceForm : nil
         )
         guard let result = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any],
               let status = result["status"] as? String else {
@@ -68,6 +74,9 @@ extension SafariBridge {
             throw DaemonClient.Error.requestOutcomeUnknown("invalid AppleScript status")
         }
     }
+
+    /// The `applescript.execute` `resultForm` value that asks for AppleScript source form (#355).
+    static let sourceFormResultForm = "sourceForm"
 
     /// Three-signal opt-in detection per the `Daemon mode is opt-in` spec
     /// requirement. Any one of (flag / env / live socket) returns `true`.

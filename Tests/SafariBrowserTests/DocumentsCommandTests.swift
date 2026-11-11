@@ -168,5 +168,7 @@ final class DocumentsCommandTests: XCTestCase {
                       "Legend must say * marks the active tab")
         XCTAssertTrue(legend.contains("is_current"),
                       "Legend must point scripters at the JSON boolean instead of glyph-matching")
+        // #355: a window read while a tab was opening has no current tab, so no '*'.
+        XCTAssertFalse(legend.contains("each window has one"), legend)
     }
 }

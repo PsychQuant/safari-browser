@@ -117,6 +117,11 @@ enum SafariBrowserError: LocalizedError {
     /// `documentNotFound`: that error lists every open tab of every profile,
     /// which the default target never did before it was anchored.
     case anchoredTargetChanged(target: String)
+    /// #355: Safari's window enumeration (`listAllWindowsScript`) came back in a shape the decoder
+    /// rejects (`SafariBridge.decodeWindowEnumeration` lists the checks). The command stops instead
+    /// of acting on a list it cannot trust. `reason` names positions, counts and kinds of value only,
+    /// never a title, window name or URL (page-controlled text, #227). `kind` picks the advice.
+    case windowEnumerationCorrupt(reason: String, kind: WindowEnumerationProblem = .shape)
 
     var errorDescription: String? {
         switch self {
@@ -138,6 +143,29 @@ enum SafariBrowserError: LocalizedError {
                 \(actualLine)The window may have closed, or the tab moved/navigated during execution.
                 Run `safari-browser documents` to re-discover targets, then retry.
                 """
+        case .windowEnumerationCorrupt(let reason, let kind):
+            switch kind {
+            case .windowsChanged:
+                return """
+                    Safari's windows changed while they were being read: \(reason).
+                    A window opened or was raised during the read, so one window was read twice. The command stopped \
+                    before acting on the list; run the command again.
+                    """
+            case .windowIDNotInteger:
+                return """
+                    Could not use Safari's list of windows and tabs: \(reason).
+                    AppleScript integers stop at 536,870,911, so a window id of 536,870,912 or more arrives as a real \
+                    number, which is the likely cause; a real cannot identify the window. The command stopped before \
+                    acting on the list; running it again does not help while that window is open. Report it at \
+                    https://github.com/PsychQuant/safari-browser/issues.
+                    """
+            case .shape:
+                return """
+                    Could not read Safari's list of windows and tabs: \(reason).
+                    The command stopped before acting on the list; run the command again, and if it keeps failing, \
+                    report it at https://github.com/PsychQuant/safari-browser/issues.
+                    """
+            }
         case .anchoredTargetChanged(let target):
             // #180: the command's JavaScript is not re-dispatched elsewhere — a
             // positional target carries no URL to find the tab again by, and
@@ -719,6 +747,8 @@ extension SafariBrowserError {
             kind = SafariBridge.appleScriptErrorCode(in: message).map { "AppleScript error \($0)" } ?? "an AppleScript error"
         case SafariBrowserError.processTimedOut(_, let seconds):
             kind = "timed out after \(seconds) s"
+        case SafariBrowserError.windowEnumerationCorrupt:
+            kind = "the list came back malformed"
         default:
             kind = "an unexpected \(type(of: error))"
         }
@@ -987,4 +1017,16 @@ extension SafariBrowserError {
         lines.append(line)
         return lines.joined(separator: "\n").replacingOccurrences(of: joiner, with: " ")
     }
+}
+
+/// Why `decodeWindowEnumeration` rejected Safari's window list (#355); it picks the advice in
+/// `windowEnumerationCorrupt`'s message.
+enum WindowEnumerationProblem: Sendable, Equatable {
+    /// A list the script cannot produce. Running the command again may help; if not, a bug.
+    case shape
+    /// Two windows reported one id: a window opened or was raised mid-read and was read twice.
+    case windowsChanged
+    /// A window id that arrived as a real number (an id of 2^29 or more arrives as one). Other
+    /// non-integer window ids (booleans, raw data, classes, text, lists) are `.shape`.
+    case windowIDNotInteger
 }
