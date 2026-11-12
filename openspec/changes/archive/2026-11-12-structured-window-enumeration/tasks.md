@@ -32,7 +32,7 @@
 
 - [x] 7.1 完整 `swift test`，回報測試數、略過數與失敗數；MCP 程序計時測試若失敗（#318/#332），單獨重跑並兩次都回報。
 - [x] 7.2 變異檢查：解碼器七項檢查、空字串拒絕、孤立代理截斷、`resultForm` 分支、`-s s` 參數各拿掉一次，記下哪個具名測試失敗。
-- [ ] 7.3 真 Safari 驗收（不在本次執行範圍，orchestrator 執行）：重讀 #355 的偽造標題 fixture 與一個長標題 fixture，`documents --json` 列數等於分頁數、標題原樣；量 Safari 是否截斷長標題（已量：1000 個 UTF-16 單位，issue 留言 6743483662），並加上截在代理對中間的標題（`a` × 999 + 😀）：兩列、標題為 999 個 `a`、window id 保留、`--window-id` 選得到。尚未執行：本次執行不碰 Safari。
+- [x] 7.3 真 Safari 驗收（不在本次執行範圍，orchestrator 執行）：重讀 #355 的偽造標題 fixture 與一個長標題 fixture，`documents --json` 列數等於分頁數、標題原樣；量 Safari 是否截斷長標題（已量：1000 個 UTF-16 單位，issue 留言 6743483662），並加上截在代理對中間的標題（`a` × 999 + 😀）：兩列、標題為 999 個 `a`、window id 保留、`--window-id` 選得到。尚未執行：本次執行不碰 Safari。 結果（2026-11-10，issue 留言 6754428341）：在 `5ae1378` 的 debug build 上，四種標題 × stateless 與 daemon 兩條路徑，88 項檢查全數通過。之後到 `a8d5d8a` 的程式只改了一段說明註解；本 change 在 #354 合併後 rebase，rebase 後的版本沒有在真 Safari 上重跑。
 
 ## 8. Verify 第二輪的修正
 
