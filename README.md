@@ -1030,15 +1030,14 @@ the window themselves and are not pinned; the list is closed: `js`, `wait` and
 themselves); `tab <N> --window N` without `--profile` (one Apple event that
 names the window by position); `open --new-window`, `documents` and
 `wait <ms>` (no existing tab); `pdf-cache get`; a command given no targeting
-flag (the front window, #287); and `close`, `screenshot`, `pdf` and `upload`
-on its native path (#353). `upload` is pinned on its JavaScript path.
+flag (the front window, #287). `close`, `screenshot`, `pdf` and `upload` (on
+every path) are pinned, and then act on the window by that id (#353).
 `--window-id` takes Safari's own window id, which does not change while the
 window is open: read it from `documents --json` (`window_id`). A missing id, or
 a window outside `--profile`, fails with `No Safari document matches`; it never
 falls back to the front window. `close`, `screenshot`, `pdf`, and `upload` on
 its native paths (`--native`, `--allow-hid`, or the default when Accessibility
-is granted) find the window by its id but still act on it by its position
-(#353).
+is granted) find the window by its id and act on it by that id (#353).
 
 **Identity-anchored `--url` / `--document` resolution (#79)**: a `--url` or
 `--document` match resolves to the tab's *identity* (`tab T of window id W`,
@@ -1209,21 +1208,34 @@ safari-browser screenshot --window 2 out.png # captures window 2
 safari-browser pdf --window 2 --allow-hid out.pdf
 ```
 
-`pdf`, `upload --native`, and `close` briefly **raise the resolved
-window to the front** before their respective System Events keystroke
-operations. Keystrokes inherently target the front window, so the raise
-is part of the operation, not just identification. When the resolver
-identifies a background tab within that window, these commands also
-briefly switch to that tab (`set current tab of window N to tab T`)
-before dispatching — documented as a passively interfering side effect
-transitively authorized by `--native` / `--allow-hid` in the
-non-interference spec.
+Once these commands have resolved their target they name the window by
+its stable id (`window id W`) in every step, not by its position (#353):
+a window raised between two steps no longer redirects the later ones, and
+a window that closed fails the command with `No Safari document matches`
+before anything is closed, typed or captured. With no targeting flag they
+act on the front window as before.
+
+`pdf` and `upload --native` briefly **raise the resolved window to the
+front** before their System Events keystrokes. Keystrokes inherently
+target the front window, so the raise is part of the operation, not just
+identification. When the target is a background tab within that window,
+they also switch to that tab first (`set current tab of window id W`) —
+a passively interfering side effect transitively authorized by
+`--native` / `--allow-hid` in the non-interference spec. A native upload
+checks that the resolved window is Safari's front window before every
+keystroke and stops, sending nothing, when it is not.
+
+`close` raises nothing and switches no tab: it closes the tab it
+resolved, in one step, and a background tab closes without changing the
+tab you are looking at (#348). A tab found by `--url` (or the other URL
+flags) is checked again in the step that acts on it; if another tab has
+taken its position, the command fails with "Target tab changed before
+the command acted" and nothing is closed or typed.
 
 `screenshot` deliberately does **not** tab-switch — it observes without
-interfering. A `--url` that resolves to a background tab captures the
-window's currently-visible content (which may differ from the targeted
-tab). Users who need DOM-level content of a background tab should
-switch tabs first, or use document-scoped commands (`snapshot --url`,
+interfering. A `--url` that resolves to a background tab is refused,
+because a window screenshot shows only the tab that is visible. Switch
+to the tab first, or use document-scoped commands (`snapshot --url`,
 `get text --url`, `get source --url`) that read via JavaScript without
 touching window focus.
 

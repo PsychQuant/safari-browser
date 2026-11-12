@@ -37,7 +37,7 @@ final class PDFNativeCompletionTests: XCTestCase {
     }
 
     func testStagingScriptHasNoReplacementShortcutAndCompiles() async throws {
-        let script = PdfCommand.exportScript(path: "/tmp/capture.pdf", windowIndex: 1, timeout: 60)
+        let script = PdfCommand.exportScript(path: "/tmp/capture.pdf", window: .position(1), timeout: 60)
         XCTAssertTrue(script.contains("set pdfEndTime"))
         XCTAssertTrue(script.contains(PdfCommand.completionWaitScript()))
         XCTAssertFalse(script.contains("click replaceBtn"))

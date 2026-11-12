@@ -136,7 +136,7 @@ final class FileDialogScriptSharingTests: XCTestCase {
     /// Sharing the navigation as *text* (#105) is what made merging possible
     /// without either caller giving up its single invocation.
     func testPdfExportIsOneScriptCarryingTheSharedFragment() {
-        let s = PdfCommand.exportScript(path: path, windowIndex: 2)
+        let s = PdfCommand.exportScript(path: path, window: .position(2))
 
         XCTAssertTrue(s.contains(SafariBridge.fileDialogNavigationScript(path: path, pdfSave: true)),
                       "pdf must embed the shared fragment, not a private copy")
@@ -149,12 +149,12 @@ final class FileDialogScriptSharingTests: XCTestCase {
     }
 
     func testPdfChecksFrontmostBeforeTouchingMenus() {
-        XCTAssertTrue(PdfCommand.exportScript(path: path, windowIndex: 1).contains("if not frontmost then"),
+        XCTAssertTrue(PdfCommand.exportScript(path: path, window: .position(1)).contains("if not frontmost then"),
                       "a menu click on the wrong app is as bad as a keystroke on the wrong app")
     }
 
     func testPdfRaisesTheResolvedWindow() {
-        XCTAssertTrue(PdfCommand.exportScript(path: path, windowIndex: 3)
+        XCTAssertTrue(PdfCommand.exportScript(path: path, window: .position(3))
             .contains("set index of window 3 to 1"),
             "keystrokes and menu clicks reach the front window, so the target must be raised")
     }
@@ -177,7 +177,7 @@ final class FileDialogScriptSharingTests: XCTestCase {
         let none = UploadCommand.nativeDialogScript(path: path, window: nil)
         XCTAssertFalse(none.contains("set index of window"),
                        "no targeting flag → no window raise")
-        let some = UploadCommand.nativeDialogScript(path: path, window: 3)
+        let some = UploadCommand.nativeDialogScript(path: path, window: .position(3))
         XCTAssertTrue(some.contains("set index of window 3 to 1"),
                       "keystrokes only reach the front window, so an explicit target must be raised first")
     }

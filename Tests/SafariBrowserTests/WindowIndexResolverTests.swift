@@ -395,18 +395,19 @@ final class WindowIndexResolverTests: XCTestCase {
         XCTAssertEqual(result[1].tabs.count, 1)
     }
 
-    // MARK: - performTabSwitchIfNeeded no-op path
+    // MARK: - switchToResolvedTab no-op path
 
-    func testPerformTabSwitchIfNeededWithNilTabIsNoOp() async {
-        // When `tab` is nil, the helper must return immediately without
-        // running any AppleScript. We prove this by passing a window
-        // index that would be garbage (99) for any typical Safari setup —
-        // if the AppleScript ran, it would error. A successful return
-        // confirms the nil-guard short-circuited before reaching Safari.
-        do {
-            try await SafariBridge.performTabSwitchIfNeeded(window: 99, tab: nil)
-        } catch {
-            XCTFail("Expected no-op for nil tab, got error: \(error)")
+    func testSwitchToResolvedTabWithNoTabToSwitchSendsNothing() async throws {
+        // When the resolution names no background tab (`tabIndexInWindow` is nil), the helper must return
+        // without running any AppleScript. The runner installed here fails the test if it is ever called,
+        // so nothing reaches a real Safari either way.
+        let resolved = SafariBridge.ResolvedWindowTarget(
+            windowIndex: 99, tabIndexInWindow: nil, windowID: 5822, anchorTabIndex: 1)
+        try await DaemonRequestContext.$appleScriptRunner.withValue({ script in
+            XCTFail("no script expected, got:\n\(script)")
+            return ""
+        }) {
+            try await SafariBridge.switchToResolvedTab(resolved, named: .windowID(5822, tabInWindow: 1), profile: nil)
         }
     }
 

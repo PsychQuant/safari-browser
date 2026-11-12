@@ -115,6 +115,7 @@ struct OpenCommand: AsyncParsableCommand {
                 tabInWindow: match.tabInWindow,
                 isCurrent: match.isCurrent,
                 url: url,
+                windowID: match.windowID,
                 warnWriter: { msg in
                     FileHandle.standardError.write(Data(msg.utf8))
                 }

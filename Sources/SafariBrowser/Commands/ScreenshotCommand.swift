@@ -83,6 +83,48 @@ struct ScreenshotCommand: AsyncParsableCommand {
         return ["1", "true", "yes", "on"].contains(raw)
     }
 
+    /// The window a targeted screenshot captures, as its AppleScript reads name it.
+    struct CaptureTarget {
+        let window: SafariBridge.ActingWindow
+        let missTarget: SafariBridge.TargetDocument
+        let profile: String?
+    }
+
+    /// Resolve an explicit target to the window to capture; `nil` when no targeting flag was given.
+    ///
+    /// Preserves the #23 legacy fallback: with no targeting flag and no Accessibility permission,
+    /// `resolveWindowForCapture(window: nil)` takes the CG name-match path, which does not need AX. Only an
+    /// explicit target is resolved here. Which flags count is unchanged (safari-browser#233).
+    ///
+    /// #26 verify P1-2: a target that is a background tab is refused. Screenshot captures the window's visible
+    /// pixels, so it would silently produce the current (wrong) tab; switching tabs would break the
+    /// non-interference contract.
+    ///
+    /// #353: the result names the window by the id the resolution read, so the bounds and title are read from
+    /// that window and not from whatever sits in its position by then.
+    static func resolveCaptureTarget(_ target: TargetOptions) async throws -> CaptureTarget? {
+        let hasExplicitTarget = target.url != nil
+            || target.window != nil
+            || target.windowID != nil
+            || target.tab != nil
+            || target.document != nil
+        guard hasExplicitTarget else { return nil }
+        let profile = target.resolveProfile()
+        let named = target.resolve()
+        let resolved = try await SafariBridge.resolveWindowLevelTarget(
+            named: named, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
+        if resolved.tabIndexInWindow != nil {
+            throw SafariBrowserError.backgroundTabNotCapturable(
+                windowIndex: resolved.windowIndex,
+                tabIndex: resolved.tabIndexInWindow ?? -1
+            )
+        }
+        return CaptureTarget(
+            window: SafariBridge.actingWindow(for: resolved, named: named, profile: profile),
+            missTarget: SafariBridge.actedTarget(for: resolved, named: named, profile: profile),
+            profile: profile)
+    }
+
     func run() async throws {
         // Session state precedes both permission and target resolution: a
         // locked desktop can return AX placeholders that look like no window.
@@ -123,48 +165,18 @@ struct ScreenshotCommand: AsyncParsableCommand {
             throw SafariBrowserError.accessibilityRequired(flag: "--content-only")
         }
 
-        // Preserve the #23 legacy fallback: when the user supplies no
-        // targeting flag AND Accessibility permission is absent,
-        // `resolveWindowForCapture(window: nil)` takes the CG name-
-        // match path which does not require AX. Only resolve to a
-        // concrete window index when the user explicitly asked for a
-        // target — otherwise the `nil` signal tells the capture
-        // resolver to preserve its existing fallback behavior.
-        let hasExplicitTarget = target.url != nil
-            || target.window != nil
-            || target.windowID != nil
-            || target.tab != nil
-            || target.document != nil
-
-        let resolvedWindowIndex: Int?
-        if hasExplicitTarget {
-            let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
-
-            // #26 verify P1-2: fail-closed when the resolved target is a
-            // background tab. Screenshot captures window-level visible
-            // pixels — a background-tab target would silently produce
-            // the currently-visible (wrong) tab's screenshot. Rather
-            // than break the non-interference contract by switching
-            // tabs (upload/pdf/close do that explicitly) or silently
-            // wrong-target, refuse and point the user at alternatives.
-            if resolved.tabIndexInWindow != nil {
-                throw SafariBrowserError.backgroundTabNotCapturable(
-                    windowIndex: resolved.windowIndex,
-                    tabIndex: resolved.tabIndexInWindow ?? -1
-                )
-            }
-
-            resolvedWindowIndex = resolved.windowIndex
-        } else {
-            resolvedWindowIndex = nil
-        }
+        // #354 / #353: `--window N` becomes the window's id once, here, after the checks above (none of which
+        // contacts Safari) and before the first Apple event. Everything below reads the pinned copy.
+        let target = try await self.target.pinWindowAtStart()
+        let capture = try await Self.resolveCaptureTarget(target)
 
         // #23 verify R7: resolve both CG ID AND AX element so --full mode
         // can do bounds operations on the SAME window we're about to
         // capture. This eliminates the R6 F42 cross-API mismatch where
         // CG ID came from AX but bounds resize went through AS `window N`
         // (could be a different window).
-        let (windowID, axWindow) = try await SafariBridge.resolveWindowForCapture(window: resolvedWindowIndex)
+        let (windowID, axWindow) = try await SafariBridge.resolveWindowForCapture(
+            window: capture?.window, missTarget: capture?.missTarget, profile: capture?.profile)
         // Default captures bypass the document resolver to preserve their CG
         // fallback. Probe the exact capture window after that resolution too.
         let probeKey: BlockingDialogGate.WindowKey

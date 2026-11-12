@@ -5,7 +5,7 @@ import XCTest
 
 final class FileDialogConfirmationPolicyTests: XCTestCase {
     func testPDFExportMenuSupportsMeasuredTraditionalChineseWithoutPrintFallback() {
-        let script = PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1)
+        let script = PdfCommand.exportScript(path: "/tmp/fixture.pdf", window: .position(1))
         XCTAssertTrue(script.contains("輸出為PDF⋯"))
         XCTAssertTrue(script.contains("menu bar items of menu bar 1"))
         XCTAssertTrue(script.contains("click exportItem"))
@@ -47,7 +47,7 @@ final class FileDialogConfirmationPolicyTests: XCTestCase {
     }
 
     func testDefaultExportRefusesLateReplacementInsteadOfConfirmingIt() {
-        let script = PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1)
+        let script = PdfCommand.exportScript(path: "/tmp/fixture.pdf", window: .position(1))
         let replacement = PdfCommand.completionWaitScript()
         XCTAssertTrue(script.contains(replacement))
         XCTAssertTrue(replacement.contains("Unexpected PDF staging confirmation"))
@@ -144,9 +144,9 @@ final class FileDialogConfirmationPolicyTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let scripts = [PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1),
-                       PdfCommand.exportScript(path: "/tmp/fixture.pdf", windowIndex: 1, timeout: 2),
-                       UploadCommand.nativeDialogScript(path: "/tmp/fixture.txt", window: 1),
+        let scripts = [PdfCommand.exportScript(path: "/tmp/fixture.pdf", window: .position(1)),
+                       PdfCommand.exportScript(path: "/tmp/fixture.pdf", window: .position(1), timeout: 2),
+                       UploadCommand.nativeDialogScript(path: "/tmp/fixture.txt", window: .position(1)),
                        SafariBridge.fileDialogNavigationOuterScript(path: "/tmp/fixture.txt")]
         for (index, script) in scripts.enumerated() {
             let source = directory.appendingPathComponent("\(index).applescript")

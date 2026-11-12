@@ -155,7 +155,8 @@ struct UploadCommand: AsyncParsableCommand {
         if js {
             // #51: scope to --profile via a concrete target (10 MB JS path); #231: and honour
             // --first-match, once, instead of once per chunk.
-            // #354: the JavaScript path resolves --window N to the window's id once; the native paths are #353.
+            // #354: the JavaScript path resolves --window N to the window's id once. The native paths do the same
+            // in `nativeUploadPlan` (#353).
             let scoped = try await target.pinWindowAtStart().resolveFirstMatchOnce()
             try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
@@ -192,42 +193,61 @@ struct UploadCommand: AsyncParsableCommand {
         try await uploadViaJSDataTransfer(selector: selector, path: expandedPath, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
     }
 
-    /// Resolve the target to a (windowIndex, tabIndexInWindow) pair via
-    /// `SafariBridge.resolveNativeTarget`, perform the tab switch if
-    /// needed, then dispatch the native file-dialog keystroke path to
-    /// the resolved window.
+    /// What a native upload is about to do once its target is resolved and, when needed, switched to.
+    struct NativeUploadPlan {
+        /// How the dialog script names the window.
+        let window: SafariBridge.ActingWindow
+        /// The document the existence read and the file-input click address.
+        let jsTarget: SafariBridge.TargetDocument
+        let profile: String?
+        let effects: [NativeUploadEffect]
+    }
+
+    /// Everything a native upload does before System Events is involved (#353): `--window N` becomes the
+    /// window's id once (#354), the target is resolved, a background tab is made current, and the read that
+    /// checks the target exists runs. Every step after the resolution names the window by its id.
     ///
-    /// This is the #26 replacement for the old "native only accepts
-    /// --window" path. `--url` / `--tab` / `--document` flags all flow
-    /// through the resolver, eliminating the shell `documents | grep`
-    /// workaround and restoring AI-agent autonomy in multi-window
-    /// Safari sessions.
-    private func runNativeWithResolver(expandedPath: String) async throws {
-        let scoped = try await target.resolveProfileScoped()
-        let resolved = try await SafariBridge.resolveNativeTarget(from: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
+    /// This is the #26 path that lets `--url` / `--tab` / `--document` reach the native dialog. It is separate
+    /// from the part that runs the effects so a test can drive it against a fake Safari: the dialog script goes
+    /// straight to `osascript`.
+    ///
+    /// `notice` receives the tab-switch addendum, before the switch (the keyboard warning is the plan's first
+    /// effect). The preflight read comes before any warning, so a bad `--window 99` surfaces
+    /// `documentNotFound` with the listing before the user is told the keyboard is being taken over (#23).
+    func nativeUploadPlan(
+        expandedPath: String,
+        notice: (String) -> Void = { FileHandle.standardError.write(Data($0.utf8)) }
+    ) async throws -> NativeUploadPlan {
+        let target = try await self.target.pinWindowAtStart()
+        let profile = target.resolveProfile()
+        let named = target.resolve()
+        let resolved = try await SafariBridge.resolveWindowLevelTarget(
+            named: named, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
+        let window = SafariBridge.actingWindow(for: resolved, named: named, profile: profile)
+        let jsTarget = SafariBridge.actedTarget(for: resolved, named: named, profile: profile)
 
         // Tab switch is a passively interfering side effect transitively
-        // authorized by --native / --allow-hid. The stderr warning in
-        // uploadViaNativeDialog covers keyboard control; here we add a
-        // tab-switch addendum when applicable so the user knows what
-        // extra interaction is about to happen.
+        // authorized by --native / --allow-hid. The keyboard warning is the
+        // plan's first effect; this addendum says what extra interaction is
+        // about to happen.
         if resolved.tabIndexInWindow != nil {
-            FileHandle.standardError.write(Data(
-                "ℹ️  Target tab will be brought to the front of its window before upload.\n".utf8
-            ))
+            notice("ℹ️  Target tab will be brought to the front of its window before upload.\n")
         }
-        try await SafariBridge.performTabSwitchIfNeeded(
-            window: resolved.windowIndex,
-            tab: resolved.tabIndexInWindow
-        )
+        try await SafariBridge.switchToResolvedTab(resolved, named: named, profile: profile)
 
+        _ = try await SafariBridge.getCurrentURL(target: jsTarget)
+
+        return NativeUploadPlan(
+            window: window,
+            jsTarget: jsTarget,
+            profile: profile,
+            effects: UploadCommand.nativeUploadEffects(selector: selector, path: expandedPath, window: window))
+    }
+
+    private func runNativeWithResolver(expandedPath: String) async throws {
+        let plan = try await nativeUploadPlan(expandedPath: expandedPath)
         do {
-            try await uploadViaNativeDialog(
-                selector: selector,
-                path: expandedPath,
-                timeout: timeout,
-                window: resolved.windowIndex
-            )
+            try await runNativeUpload(plan)
         } catch {
             // #67: the native file dialog can enter a stale state after a
             // prior aborted attempt (focus race / expired user gesture) where
@@ -268,20 +288,7 @@ struct UploadCommand: AsyncParsableCommand {
     /// Click file input to open dialog, then navigate via a single combined osascript.
     /// Merges activate + wait + keystroke navigation into one osascript invocation
     /// to prevent focus-stealing race conditions between separate calls (fixes #15).
-    ///
-    /// `window` selects which Safari window the keystrokes target. `nil`
-    /// preserves the legacy front-window behavior; an explicit index
-    /// raises `window N` to the front before activating Safari (#23).
-    private func uploadViaNativeDialog(selector: String, path: String, timeout: Double, window: Int? = nil) async throws {
-        // #23 verify R1: preflight the window so a bad `--window 99`
-        // surfaces `documentNotFound` with the available-docs listing
-        // before we touch System Events. The subsequent doJavaScript call
-        // on `.windowIndex(window)` would already error, but we want the
-        // error BEFORE we warn the user about keyboard takeover below.
-        if let window {
-            _ = try await SafariBridge.getCurrentURL(target: .windowIndex(window))
-        }
-
+    private func runNativeUpload(_ plan: NativeUploadPlan) async throws {
         // #20: probe System Events before sending any keystrokes. A silent hang
         // inside the combined osascript is the single worst failure mode of this
         // command, and System Events being down is by far the most common cause.
@@ -289,18 +296,19 @@ struct UploadCommand: AsyncParsableCommand {
 
         // Everything below is the injectable interpreter, wired to its real
         // implementations. The wiring is the only part a test cannot reach.
+        let timeout = self.timeout
         try await UploadCommand.runNativeUploadEffects(
-            UploadCommand.nativeUploadEffects(selector: selector, path: path, window: window),
-            // `.forWindow` enforces `--window N` → `.windowIndex(N)`, never
-            // `.documentIndex(N)` (#23 verify R1→R2).
-            jsTarget: SafariBridge.TargetDocument.forWindow(window),
+            plan.effects,
+            jsTarget: plan.jsTarget,
             warn: { FileHandle.standardError.write(Data($0.utf8)) },
             runJS: { js, target in try await SafariBridge.doJavaScript(js, target: target) },
             // Subprocess-level timeout (#19) bounds the whole invocation in case
             // System Events or Safari's Apple Event dispatcher is blocked and
             // the inner `maxWait to 10` loops never progress.
             runScript: { script in
-                try await SafariBridge.runFileDialogScript(script, timeout: timeout)
+                try await SafariBridge.translatingWindowLevelMarkers(target: plan.jsTarget, profile: plan.profile) {
+                    try await SafariBridge.runFileDialogScript(script, timeout: timeout)
+                }
             })
     }
 
@@ -358,7 +366,7 @@ struct UploadCommand: AsyncParsableCommand {
     }
 
     static func nativeUploadEffects(
-        selector: String, path: String, window: Int?
+        selector: String, path: String, window: SafariBridge.ActingWindow?
     ) -> [NativeUploadEffect] {
         [
             .warnOnStderr(keyboardControlWarning),
@@ -377,13 +385,39 @@ struct UploadCommand: AsyncParsableCommand {
     /// `window` raises that window first: keystrokes only ever reach the front
     /// window, so an explicit target has to be brought forward before the
     /// activate (#23).
-    static func nativeDialogScript(path: String, window: Int?) -> String {
-        let raisePrelude = window.map { idx in
-            "tell application \"Safari\" to set index of window \(idx) to 1\n"
+    ///
+    /// #353: by window id the script also checks who it is typing into. A window that is gone ends it with
+    /// `SB_WINDOW_GONE` before anything is raised, and `verifyUploadOwner` stops it when Safari's front window
+    /// is not that window: after the file dialog appeared, before every keystroke, in every wait, and before
+    /// the confirming click. By position, and with no window at all, the script is the one sent before #353.
+    static func nativeDialogScript(path: String, window: SafariBridge.ActingWindow?) -> String {
+        let ownerID = window?.windowID
+        let ownerHandler = ownerID.map { _ in
+            """
+            on verifyUploadOwner(expectedID)
+                tell application "Safari"
+                    if not (exists window id expectedID) then error "Upload target window is no longer open; no further keystroke was sent. If a file dialog is still open, dismiss it (Esc) before retrying"
+                    if id of front window is not expectedID then error "Upload target window is not Safari's front window; no keystroke was sent to another window. The file dialog is still open: dismiss it (Esc) before retrying"
+                end tell
+            end verifyUploadOwner
+
+
+            """
         } ?? ""
+        let ownerGuard = ownerID.map { "my verifyUploadOwner(\($0))" } ?? ""
+        let raisePrelude: String
+        switch window {
+        case .id(let id)?:
+            raisePrelude = "tell application \"Safari\"\n\(SafariBridge.windowGoneCheck(windowID: id))\nset index of window id \(id) to 1\nend tell\n"
+        case .position(let index)?:
+            raisePrelude = "tell application \"Safari\" to set index of window \(index) to 1\n"
+        case nil:
+            raisePrelude = ""
+        }
+        let afterDialogAppeared = ownerGuard.isEmpty ? "" : "\n        \(ownerGuard)\n"
 
         return """
-            \(raisePrelude)tell application "Safari" to activate
+            \(ownerHandler)\(raisePrelude)tell application "Safari" to activate
             tell application "System Events"
                 tell process "Safari"
                     -- Verify Safari is frontmost before sending any keystrokes
@@ -401,8 +435,8 @@ struct UploadCommand: AsyncParsableCommand {
                             error "File dialog did not appear within " & maxWait & " seconds"
                         end if
                     end repeat
-
-            \(SafariBridge.fileDialogNavigationScript(path: path))
+            \(afterDialogAppeared)
+            \(SafariBridge.fileDialogNavigationScript(path: path, ownerGuard: ownerGuard))
                 end tell
             end tell
             """

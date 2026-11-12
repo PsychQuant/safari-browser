@@ -64,55 +64,78 @@ struct PdfCommand: AsyncParsableCommand {
         return destination
     }
 
+    /// What the native export is about to run: the one export script, and the target a miss is worded for.
+    struct ExportPlan {
+        let script: String
+        let missTarget: SafariBridge.TargetDocument
+        let profile: String?
+        /// Whether the script makes a background tab current before it raises the window.
+        let switchesTab: Bool
+    }
+
+    /// Everything the native export does before the keyboard is touched (#353): `--window N` becomes the
+    /// window's id once (#354), the target is resolved, and the export script is built to name that window by
+    /// its id. A bad window index or URL pattern throws `documentNotFound` / `ambiguousWindowMatch` here, so a
+    /// typo never shows the "Controlling keyboard…" warning for a run that sends no key. Separate from
+    /// `exportNative` so a test can drive it against a fake Safari: the script itself goes straight to
+    /// `osascript`.
+    func plannedExport(stagingPath: String, remaining: () throws -> TimeInterval) async throws -> ExportPlan {
+        let target = try await self.target.pinWindowAtStart()
+        let profile = target.resolveProfile()
+        let named = target.resolve()
+        let resolved = try await SafariBridge.resolveWindowLevelTarget(
+            named: named, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
+        let script = PdfCommand.exportScript(
+            path: stagingPath,
+            window: SafariBridge.actingWindow(for: resolved, named: named, profile: profile),
+            switchToTab: resolved.tabIndexInWindow,
+            guardClause: SafariBridge.tabGuardClause(named: named, matchedURL: resolved.matchedURL),
+            timeout: try remaining())
+        return ExportPlan(
+            script: script,
+            missTarget: SafariBridge.actedTarget(for: resolved, named: named, profile: profile),
+            profile: profile,
+            switchesTab: resolved.tabIndexInWindow != nil)
+    }
+
     private func exportNative(to stagingPath: String, deadline: PDFExportDeadline) async throws {
         try deadline.check()
-        // #26: route through the native-path resolver. The resolver
-        // short-circuits for .frontWindow / .windowIndex (preserving the
-        // #23 behavior for --window N / no flag) and enumerates windows
-        // only for --url / --tab / --document. Preflight is implicit in
-        // the resolver — a bad window index / URL pattern throws
-        // documentNotFound or ambiguousWindowMatch before any stderr
-        // warning, so users with a typo never see the misleading
-        // "Controlling keyboard..." message for a run that fails
-        // immediately without touching the keyboard.
-        let resolved = try await SafariBridge.resolveNativeTarget(from: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())
+        let plan = try await plannedExport(stagingPath: stagingPath, remaining: { try deadline.remaining() })
 
         // Tab switch is a passively interfering side effect transitively
         // authorized by --allow-hid. Emit the addendum before the
         // keyboard takeover warning so users see the full interaction
         // plan up front.
-        if resolved.tabIndexInWindow != nil {
-            FileHandle.standardError.write(Data(
-                "ℹ️  Target tab will be brought to the front of its window before PDF export.\n".utf8
-            ))
+        for line in Self.exportNotices(switchesTab: plan.switchesTab) {
+            FileHandle.standardError.write(Data(line.utf8))
         }
         try deadline.check()
-        try await SafariBridge.performTabSwitchIfNeeded(
-            window: resolved.windowIndex,
-            tab: resolved.tabIndexInWindow
-        )
 
-        FileHandle.standardError.write(Data("⚠️  Controlling keyboard for PDF export. Do not type until complete.\n".utf8))
-
-        // The resolved window index always raises explicitly — even when the
-        // user passed no targeting flag (resolved windowIndex is 1, the front
-        // window), because the raise is a no-op for an already-frontmost window
-        // and keeping one code path is worth more than skipping it.
-        //
-        // One osascript for the whole flow. It used to be three, with the gaps
-        // between them open to another app taking focus — the race #15 closed
-        // for `upload` and #106 for this command. The navigation body is the
-        // fragment `upload` embeds too (#105), so there is one source of truth
-        // without either caller giving up atomicity.
+        // One osascript for the whole flow, the tab switch included (#353): it used to be a separate Apple
+        // event before this script, and before #106 the flow was three scripts, with the gaps between them
+        // open to another app taking focus. The window always raises explicitly, even with no targeting flag
+        // (a no-op for a window that is already frontmost). The navigation body is the fragment `upload`
+        // embeds too (#105).
         do {
             let remaining = try deadline.remaining()
-            try await SafariBridge.runFileDialogScript(
-                PdfCommand.exportScript(path: stagingPath, windowIndex: resolved.windowIndex, timeout: remaining),
-                timeout: remaining)
+            try await SafariBridge.translatingWindowLevelMarkers(target: plan.missTarget, profile: plan.profile) {
+                try await SafariBridge.runFileDialogScript(plan.script, timeout: remaining)
+            }
         } catch {
             FileHandle.standardError.write(Data("PDF native export failed; inspect Safari and cancel any remaining save dialog before retrying. If the process was interrupted, the clipboard may need restoration.\n".utf8))
             throw error
         }
+    }
+
+    /// What goes to stderr before the export script runs, in order: the tab-switch notice when the target is a
+    /// background tab, then the keyboard warning.
+    static func exportNotices(switchesTab: Bool) -> [String] {
+        var lines: [String] = []
+        if switchesTab {
+            lines.append("ℹ️  Target tab will be brought to the front of its window before PDF export.\n")
+        }
+        lines.append("⚠️  Controlling keyboard for PDF export. Do not type until complete.\n")
+        return lines
     }
 
     static func validateDestination(_ path: String, overwrite: Bool) throws {
@@ -127,8 +150,38 @@ struct PdfCommand: AsyncParsableCommand {
     /// save panel, and a failure there wedges every later Safari command (#67).
     /// The issue records that limitation rather than implying the unit tests
     /// cover it.
-    static func exportScript(path: String, windowIndex: Int, timeout: TimeInterval = 60) -> String {
-        """
+    ///
+    /// #353: `window` is how the script names the window. By id, the first Safari block checks that the window
+    /// still exists (a missing one ends the script with `SB_WINDOW_GONE` before any menu action), makes
+    /// `switchToTab` current after `guardClause` when the tab was found by its URL, reads the page URL, raises
+    /// the window and activates. By position it is the block sent before #353, with the tab switch folded in.
+    static func exportScript(
+        path: String,
+        window: SafariBridge.ActingWindow,
+        switchToTab: Int? = nil,
+        guardClause: String? = nil,
+        timeout: TimeInterval = 60
+    ) -> String {
+        let reference = window.reference
+        var open: [String] = []
+        if let id = window.windowID {
+            open.append(SafariBridge.windowGoneCheck(windowID: id))
+            open.append("set pdfWindowID to \(id)")
+        } else {
+            open.append("set pdfWindowID to id of \(reference)")
+        }
+        if let tab = switchToTab {
+            open.append("set _t to tab \(tab) of \(reference)")
+            if let guardClause { open.append(guardClause) }
+            open.append("set current tab of \(reference) to _t")
+        }
+        open += [
+            "set pdfPageURL to URL of current tab of \(reference)",
+            "set index of \(reference) to 1",
+            "activate",
+        ]
+        let openBlock = open.joined(separator: "\n    ")
+        return """
         on verifyPDFOwner(expectedID, expectedURL)
             tell application "Safari"
                 if not (exists window id expectedID) then error "PDF target window disappeared"
@@ -146,10 +199,7 @@ struct PdfCommand: AsyncParsableCommand {
 
         set pdfEndTime to (current date) + \(max(0, timeout))
         tell application "Safari"
-            set pdfWindowID to id of window \(windowIndex)
-            set pdfPageURL to URL of current tab of window \(windowIndex)
-            set index of window \(windowIndex) to 1
-            activate
+            \(openBlock)
         end tell
         delay 0.5
         tell application "System Events"

@@ -40,8 +40,11 @@ final class WindowEnumerationDecoderTests: XCTestCase {
         assertCorrupt("  \n")
     }
 
+    // spec-example: window-enumeration / rejected shapes
     func testRejectedShapes() {
         let rejected: [(String, String)] = [
+            ("", "empty text"),
+            (#"{{1, true, "w", 1, {"u"}, {"t"}}}"#, "window id is a boolean"),
             (#"{{1, 7, "w", 1, {"u"}, {"t"}, 9}}"#, "seven elements"),
             (#"{{1, 7, "w", 1, {"u"}}}"#, "five elements"),
             (#"{{2, 7, "w", 1, {"u"}, {"t"}}}"#, "first window numbered 2"),

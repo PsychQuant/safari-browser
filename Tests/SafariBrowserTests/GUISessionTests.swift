@@ -68,7 +68,7 @@ final class GUISessionTests: XCTestCase {
 
     func testCaptureResolverDoesNotResolveAnyWindowWhenSessionUnavailable() async throws {
         for (session, expected) in [(locked, GUISession.State.locked), (unavailable, .unavailable)] {
-            for window in [nil, 2] as [Int?] {
+            for window in [nil, .position(2), .id(5822)] as [SafariBridge.ActingWindow?] {
                 var calls = 0
                 do {
                     _ = try await SafariBridge.resolveWindowForCapture(window: window, session: session, resolve: { _ in
@@ -86,8 +86,8 @@ final class GUISessionTests: XCTestCase {
                 XCTAssertEqual(calls, 0)
             }
         }
-        let result = try await SafariBridge.resolveWindowForCapture(window: 2, session: available, resolve: { window in
-            XCTAssertEqual(window, 2)
+        let result = try await SafariBridge.resolveWindowForCapture(window: .id(5822), session: available, resolve: { window in
+            XCTAssertEqual(window, .id(5822))
             return ("42", nil)
         })
         XCTAssertEqual(result.cgID, "42")

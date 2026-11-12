@@ -70,7 +70,7 @@ struct TargetOptions: ParsableArguments {
         name: .long,
         help: ArgumentHelp(
             "Target the document of the Nth Safari window (1-indexed). Pair with --tab-in-window to select a specific tab.",
-            discussion: "N counts windows from the front when the command starts. Most commands that read or act on a tab resolve it to that window's stable id once, before anything else, and then address the window by id (as --window-id does), so a window raised mid-command does not redirect later steps; if that window closes mid-command the command fails instead of using the window now in position N. --tab-in-window M stays a position inside that window. If the id cannot be read at start, a note says so and N stays a position; with --profile, an enumeration that times out or fails is the command's error instead. `close`, `screenshot`, `pdf` and `upload` on its native paths (#353), and `tab <N>` without --profile, still look the position up."
+            discussion: "N counts windows from the front when the command starts. Most commands that read or act on a tab resolve it to that window's stable id once, before anything else, and then address the window by id (as --window-id does), so a window raised mid-command does not redirect later steps; if that window closes mid-command the command fails instead of using the window now in position N. --tab-in-window M stays a position inside that window. If the id cannot be read at start, a note says so and N stays a position; with --profile, an enumeration that times out or fails is the command's error instead. `close`, `screenshot`, `pdf` and `upload` then act on the window by that id as well (#353); with no targeting flag they keep the front window. `tab <N>` without --profile still looks the position up."
         )
     )
     var window: Int?
@@ -79,7 +79,7 @@ struct TargetOptions: ParsableArguments {
         name: .customLong("window-id"),
         help: ArgumentHelp(
             "Target the Safari window whose stable id is W (its current tab; pair with --tab-in-window for another tab).",
-            discussion: "The id is Safari's own `id of window`: it does not change while the window is open, unlike --window N, which counts windows from the front when each command starts, so a window raised between two commands does not change which window the reference names. Read the ids from `safari-browser documents --json` (`window_id`). A window id that does not exist, or one outside --profile, fails with \"No Safari document matches\"; it never falls back to the front window. `close`, `screenshot`, `pdf`, and `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted) find the window by its id but still act on it by its position (#353). Mutually exclusive with --window, --url, --url-exact, --url-endswith, --url-regex, --tab and --document."
+            discussion: "The id is Safari's own `id of window`: it does not change while the window is open, unlike --window N, which counts windows from the front when each command starts, so a window raised between two commands does not change which window the reference names. Read the ids from `safari-browser documents --json` (`window_id`). A window id that does not exist, or one outside --profile, fails with \"No Safari document matches\"; it never falls back to the front window. `close`, `screenshot`, `pdf`, and `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted) find the window by its id and act on it by that id (#353): `close` closes the tab it resolved without switching tabs, and a native upload sends no keystroke unless that window is Safari's front window. Mutually exclusive with --window, --url, --url-exact, --url-endswith, --url-regex, --tab and --document."
         )
     )
     var windowID: Int?
@@ -445,7 +445,8 @@ struct TargetOptions: ParsableArguments {
     ///
     /// Call it in `run()` after the command's own argument checks and before anything else reaches Safari
     /// (including the `--mark-tab` wrap): `let target = try await self.target.pinWindowAtStart()`. `close`,
-    /// `screenshot`, `pdf` and the native upload paths are to use the same line (#353).
+    /// `screenshot`, `pdf` and the native upload paths use the same line, and then act on the window by the id
+    /// (`SafariBridge.actingWindow`, #353).
     func pinWindowAtStart(note: ((String) -> Void)? = nil) async throws -> TargetOptions {
         if awaitsProfileCheckAtStart, let profile, let windowID {
             // The enumeration refuses an id of another profile. Only after it does the copy carry the proof.

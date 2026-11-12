@@ -52,7 +52,7 @@ final class InterferenceWarningTests: XCTestCase {
     private let selector = "input[type=file]"
     private let path = "/tmp/example.mp3"
 
-    private func effects(window: Int? = nil) -> [UploadCommand.NativeUploadEffect] {
+    private func effects(window: SafariBridge.ActingWindow? = nil) -> [UploadCommand.NativeUploadEffect] {
         UploadCommand.nativeUploadEffects(selector: selector, path: path, window: window)
     }
 

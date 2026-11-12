@@ -110,6 +110,11 @@ enum SafariBrowserError: LocalizedError {
     case windowIdentityAmbiguous(reason: String)
     /// #227: `actualURL` is a `RedactedURL`, so the payload cannot hold a URL with its query.
     case targetTabChanged(expected: String, actualURL: RedactedURL?)
+    /// #353: a window-level command (`close`, `pdf`, a native `upload`, `open` revealing a tab) found its tab
+    /// by a URL, and in the script that was about to act on the tab that tab no longer passed the URL check.
+    /// Nothing was done to it and the target is not resolved again: these commands close a tab or send
+    /// keystrokes, so a target that moved is a failure, not something to chase.
+    case targetChangedBeforeActing(expected: String)
     /// #180: a positional target (`--window N --tab-in-window M`, `--window N`
     /// or the default) was anchored to a stable window id + tab at command
     /// start, and mid-command that tab closed, moved, or (for the default and
@@ -141,6 +146,13 @@ enum SafariBrowserError: LocalizedError {
             return """
                 Target tab changed mid-command: expected \(expected), but the tab no longer matches after one automatic re-resolve.
                 \(actualLine)The window may have closed, or the tab moved/navigated during execution.
+                Run `safari-browser documents` to re-discover targets, then retry.
+                """
+        case .targetChangedBeforeActing(let expected):
+            return """
+                Target tab changed before the command acted: expected \(expected), but the tab in that position no longer passes the URL check.
+                Nothing was done to it: no tab was closed or switched, no window was raised and no keystroke was sent.
+                A tab may have closed, moved or navigated since the target was resolved.
                 Run `safari-browser documents` to re-discover targets, then retry.
                 """
         case .windowEnumerationCorrupt(let reason, let kind):
