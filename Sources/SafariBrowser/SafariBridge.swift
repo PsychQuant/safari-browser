@@ -934,8 +934,8 @@ enum SafariBridge {
     /// scripts of Layers 2 and 3 compare the tab with it before they change anything.
     ///
     /// #353: when the enumeration read an id for the window (`windowID`), Layers 2 and 3 are one script each
-    /// that names `window id W`, checks that the tab still shows `url` before anything changes, and for Layer 3
-    /// switches the tab, raises the window and activates Safari in that order. A tab that moved fails with
+    /// that names `window id W`, checks that the tab still shows `url` before anything changes, makes it current
+    /// when it is not, and for Layer 3 then raises the window and activates Safari. A tab that moved fails with
     /// `targetChangedBeforeActing`, a window that closed with `documentNotFound`; neither opens a new tab.
     /// Without an id the window is named by its position, in two events (switch, then raise). `spaces` is where the Space of the
     /// caller and of the target window come from; a test injects it so it never asks the running Safari.
@@ -959,8 +959,7 @@ enum SafariBridge {
             if let windowID, windowID > 0 {
                 let target = TargetDocument.resolvedTab(
                     windowID: windowID, tabInWindow: tabInWindow, rematch: .exact(url), profile: nil)
-                let script = focusExistingScript(
-                    windowID: windowID, tab: tabInWindow, url: url, switchTab: !isCurrent, raise: raise)
+                let script = focusExistingScript(windowID: windowID, tab: tabInWindow, url: url, raise: raise)
                 try await translatingWindowLevelMarkers(target: target, profile: nil) {
                     _ = try await runTargetedAppleScript(script, target: target)
                 }
@@ -968,10 +967,8 @@ enum SafariBridge {
             }
             // No id for this window (a record without one): by position. The tab is switched before the raise,
             // because once the window is raised its position is 1 and `window N` names another window.
-            if !isCurrent {
-                try await runAppleScript(tabSwitchScript(
-                    windowReference: ActingWindow.position(window).reference, tab: tabInWindow, guardClause: nil))
-            }
+            try await runAppleScript(bringTabForwardScript(
+                windowReference: ActingWindow.position(window).reference, tab: tabInWindow, guardClause: nil))
             if raise { try await activateWindow(window) }
         }
         switch action {

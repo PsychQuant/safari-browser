@@ -35,6 +35,23 @@ final class WindowLevelNativeDialogTests: XCTestCase {
         }
     }
 
+    /// The export script's first Safari block (everything it asks Safari before System Events is involved).
+    private func openingBlock(of script: String) throws -> String {
+        let afterHandlers = try XCTUnwrap(script.range(of: "set pdfEndTime to"))
+        let start = try XCTUnwrap(script.range(of: "tell application \"Safari\"", range: afterHandlers.upperBound..<script.endIndex))
+        let end = try XCTUnwrap(script.range(of: "end tell", range: start.upperBound..<script.endIndex))
+        return String(script[start.lowerBound..<end.upperBound])
+    }
+
+    /// Runs that block against `fake` (it contains no keystroke and no System Events statement) and returns
+    /// what it did.
+    private func runOpeningBlock(of plan: PdfCommand.ExportPlan, on fake: Fake) async throws -> [Fake.Action] {
+        let block = try openingBlock(of: plan.script)
+        XCTAssertFalse(block.contains("System Events") || block.contains("keystroke"), block)
+        _ = try await fake.drive { try await SafariBridge.runAppleScript(block) }
+        return fake.actions
+    }
+
     /// The first Safari block of the export script sent before #353 for the front window.
     private static let pdfFrontWindowBlock = """
         tell application "Safari"
@@ -56,10 +73,13 @@ final class WindowLevelNativeDialogTests: XCTestCase {
             "set index of window id 5822 to 1",
             "activate",
         ], in: byNumber.script)
-        XCTAssertFalse(byNumber.script.contains("set current tab"), byNumber.script)
+        XCTAssertFalse(byNumber.script.contains("set _t to") || byNumber.script.contains("set current tab"),
+                       "a window target says nothing about a tab:\n\(byNumber.script)")
         XCTAssertFalse(Fake.namesAPosition(byNumber.script), byNumber.script)
         XCTAssertFalse(byNumber.switchesTab)
         XCTAssertFalse(pinned.scripts(afterFirst: Fake.isAnchor).contains(where: Fake.namesAPosition), pinned.transcript)
+        let pinnedActions = try await runOpeningBlock(of: byNumber, on: pinned)
+        XCTAssertEqual(pinnedActions, [.raised(windowID: 5822), .activated])
 
         // A background tab found by its URL: the switch is inside the script, checked first, before the raise.
         let byURLFake = Fake()
@@ -78,12 +98,45 @@ final class WindowLevelNativeDialogTests: XCTestCase {
         XCTAssertFalse(byURLFake.scripts.contains { $0.contains("set current tab") },
                        "no separate AppleScript switches the tab:\n\(byURLFake.transcript)")
         XCTAssertEqual(byURLFake.actions, [])
+        let byURLActions = try await runOpeningBlock(of: byURL, on: byURLFake)
+        XCTAssertEqual(byURLActions, [.madeCurrent(windowID: 5822, tab: 2), .raised(windowID: 5822), .activated])
+
+        // The current tab found by its URL: checked all the same, and nothing is made current.
+        let currentFake = Fake()
+        let byCurrent = try await exportPlan(["--url", "work.example/a1"], fake: currentFake)
+        assertOrder([
+            "if not (exists window id 5822) then error \"SB_WINDOW_GONE\" number 9002",
+            "set _t to tab 1 of window id 5822",
+            "does not contain \"work.example/a1\"",
+            "SB_TARGET_CHANGED",
+            "set pdfPageURL to URL of current tab of window id 5822",
+            "set index of window id 5822 to 1",
+        ], in: byCurrent.script)
+        XCTAssertFalse(byCurrent.switchesTab)
+        let byCurrentActions = try await runOpeningBlock(of: byCurrent, on: currentFake)
+        XCTAssertEqual(byCurrentActions, [.raised(windowID: 5822), .activated], "tab 1 is current: no tab is made current")
+
+        // …and when that tab shows another URL by the time the script runs, the block stops before the raise.
+        let moved = try await exportPlan(["--url", "work.example/a1"], fake: Fake())
+        var windows = Fake.threeWindows
+        windows[1].tabs[0] = "https://other.example/"
+        let changed = Fake(windows: windows)
+        do {
+            _ = try await runOpeningBlock(of: moved, on: changed)
+            XCTFail("the URL check must stop the export")
+        } catch SafariBrowserError.appleScriptFailed(let message) {
+            XCTAssertTrue(message.contains("SB_TARGET_CHANGED"), message)
+            XCTAssertEqual(changed.actions, [], "nothing is switched, raised or activated")
+        }
 
         // A tab named by its position: the same, without the URL check.
-        let byPosition = try await exportPlan(["--window-id", "5822", "--tab-in-window", "2"], fake: Fake())
+        let byPositionFake = Fake()
+        let byPosition = try await exportPlan(["--window-id", "5822", "--tab-in-window", "2"], fake: byPositionFake)
         assertOrder(["set _t to tab 2 of window id 5822", "set current tab of window id 5822 to _t",
                      "set index of window id 5822 to 1"], in: byPosition.script)
         XCTAssertFalse(byPosition.script.contains("SB_TARGET_CHANGED"), byPosition.script)
+        let byPositionActions = try await runOpeningBlock(of: byPosition, on: byPositionFake)
+        XCTAssertEqual(byPositionActions, [.madeCurrent(windowID: 5822, tab: 2), .raised(windowID: 5822), .activated])
 
         // No targeting flag: the block sent before.
         let plain = try await exportPlan([], fake: Fake())
@@ -189,23 +242,45 @@ final class WindowLevelNativeDialogTests: XCTestCase {
         XCTAssertTrue(byNumber.dialogScript.contains("if not (exists window id 5822) then error \"SB_WINDOW_GONE\" number 9002"))
         XCTAssertFalse(Fake.namesAPosition(byNumber.dialogScript), byNumber.dialogScript)
         XCTAssertEqual(pinned.actions, [], "a window target switches no tab")
+        XCTAssertFalse(pinned.scripts.contains { $0.contains("set _t to") }, "and no script checks one:\n\(pinned.transcript)")
 
-        // A background tab found by its URL: one switch, with the check; then the tab by its position in W.
+        // A background tab found by its URL: one script checks it and makes it current; then the read and the
+        // click go to that tab of window id 5822, each only while it is still the current tab.
         let background = Fake()
         let byURL = try await upload(["--url", "work.example/a2"], fake: background)
         XCTAssertEqual(background.actions, [.madeCurrent(windowID: 5822, tab: 2)])
+        XCTAssertEqual(byURL.plan.jsTarget, .anchoredCurrentTab(windowID: 5822, tabInWindow: 2, profile: nil))
         XCTAssertEqual(SafariBridge.resolveDocumentReference(byURL.plan.jsTarget), "tab 2 of window id 5822")
-        XCTAssertTrue(background.scripts.contains { $0.contains("get URL of tab 2 of window id 5822") }, background.transcript)
-        XCTAssertTrue(background.scripts.contains { $0.contains("do JavaScript") && $0.contains("tab 2 of window id 5822") }, background.transcript)
-        XCTAssertFalse(background.scripts(afterFirst: Fake.isEnumeration).contains(where: Fake.namesAPosition), background.transcript)
+        let later = background.scripts(afterFirst: Fake.isEnumeration)
+        XCTAssertFalse(later.contains(where: Fake.namesAPosition), background.transcript)
+        XCTAssertEqual(later.filter { $0.contains("set _t to tab 2 of window id 5822") && $0.contains("SB_TARGET_CHANGED") }.count, 1,
+                       "one script checks the tab:\n\(background.transcript)")
+        let read = try XCTUnwrap(later.first { $0.contains("get URL of tab 2 of _w") }, background.transcript)
+        let click = try XCTUnwrap(later.first { $0.contains("do JavaScript") }, background.transcript)
+        for script in [read, click] {
+            XCTAssertTrue(script.contains("set _w to window id 5822"), script)
+            XCTAssertTrue(script.contains("(index of current tab of _w) is not 2"), "only while tab 2 is current:\n\(script)")
+        }
         XCTAssertTrue(byURL.dialogScript.contains("set index of window id 5822 to 1"))
 
-        // The current tab found by its URL: nothing to switch.
+        // The current tab found by its URL: checked by one script, and no tab is made current.
         let current = Fake()
         let byCurrent = try await upload(["--url", "work.example/a1"], fake: current)
         XCTAssertEqual(current.actions, [])
-        XCTAssertFalse(current.scripts.contains { $0.contains("set current tab") }, current.transcript)
-        XCTAssertEqual(SafariBridge.resolveDocumentReference(byCurrent.plan.jsTarget), "tab 1 of window id 5822")
+        XCTAssertEqual(current.scripts.filter { $0.contains("set _t to tab 1 of window id 5822") && $0.contains("SB_TARGET_CHANGED") }.count, 1,
+                       current.transcript)
+        XCTAssertEqual(byCurrent.plan.jsTarget, .anchoredCurrentTab(windowID: 5822, tabInWindow: 1, profile: nil))
+
+        // Another tab becomes current after the check: the upload stops before the file input is clicked.
+        let switchedBack = Fake()
+        switchedBack.after(script: 2) { $0[1].current = 1 }
+        let command = try UploadCommand.parse(["--native", "input[type=file]", uploadPath, "--url", "work.example/a2"])
+        do {
+            _ = try await switchedBack.drive { try await command.nativeUploadPlan(expandedPath: self.uploadPath, notice: { _ in }) }
+            XCTFail("tab 2 is no longer current")
+        } catch SafariBrowserError.targetChangedBeforeActing {
+            XCTAssertFalse(switchedBack.scripts.contains { $0.contains("do JavaScript") }, switchedBack.transcript)
+        }
 
         // No targeting flag: `window 1`, and the dialog script is the text sent before.
         let plain = try await upload([], fake: Fake())
@@ -258,29 +333,61 @@ final class WindowLevelNativeDialogTests: XCTestCase {
 
     // spec-example: document-targeting / tab switch scripts
     func testTabSwitchScripts() async throws {
+        /// The scripts that bind a tab and can make it current.
         func switches(_ fake: Fake) -> [String] { fake.scripts.filter { $0.contains("set current tab") } }
+        func madeCurrent(_ fake: Fake) -> [Fake.Action] {
+            fake.actions.filter { if case .madeCurrent = $0 { return true }; return false }
+        }
 
+        // A background tab found by its URL: one script, the check first, then the tab is made current.
         let background = Fake()
         _ = try await upload(["--url", "work.example/a2"], fake: background)
         XCTAssertEqual(switches(background).count, 1, background.transcript)
         assertOrder(["set _t to tab 2 of window id 5822", "SB_TARGET_CHANGED", "set current tab of window id 5822 to _t"],
                     in: switches(background).first ?? "")
+        XCTAssertEqual(madeCurrent(background), [.madeCurrent(windowID: 5822, tab: 2)])
 
+        // The current tab found by its URL: the same one script checks it, and no tab is made current.
         let current = Fake()
         _ = try await upload(["--url", "work.example/a1"], fake: current)
-        XCTAssertEqual(switches(current), [])
+        XCTAssertEqual(switches(current).count, 1, current.transcript)
+        assertOrder(["set _t to tab 1 of window id 5822", "SB_TARGET_CHANGED"], in: switches(current).first ?? "")
+        XCTAssertEqual(madeCurrent(current), [])
 
+        // A tab named by its position: one script, no URL check, the tab is made current.
         let byPosition = Fake()
         _ = try await upload(["--window-id", "5822", "--tab-in-window", "2"], fake: byPosition)
         XCTAssertEqual(switches(byPosition).count, 1, byPosition.transcript)
         XCTAssertFalse(switches(byPosition).first?.contains("SB_TARGET_CHANGED") == true, "a position is not checked by URL")
-        XCTAssertEqual(byPosition.actions, [.madeCurrent(windowID: 5822, tab: 2)])
+        XCTAssertEqual(madeCurrent(byPosition), [.madeCurrent(windowID: 5822, tab: 2)])
 
-        // pdf: no AppleScript of its own; the switch is inside the export script, before the raise.
+        // A window with no tab named: no such script.
+        let windowOnly = Fake()
+        _ = try await upload(["--window", "2"], fake: windowOnly)
+        XCTAssertEqual(switches(windowOnly), [])
+
+        // The tab is switched away again after the check: the upload stops before the click.
+        let switchedBack = Fake()
+        switchedBack.after(script: 2) { $0[1].current = 1 }
+        do {
+            _ = try await upload(["--url", "work.example/a2"], fake: switchedBack)
+            XCTFail("tab 2 is no longer current")
+        } catch SafariBrowserError.targetChangedBeforeActing {
+            XCTAssertFalse(switchedBack.scripts.contains { $0.contains("do JavaScript") }, switchedBack.transcript)
+        }
+
+        // pdf: no AppleScript of its own; the check and the switch are inside the export script, before the raise.
         let pdfFake = Fake()
         let plan = try await exportPlan(["--url", "work.example/a2"], fake: pdfFake)
         XCTAssertEqual(switches(pdfFake), [])
-        assertOrder(["set current tab of window id 5822 to _t", "set index of window id 5822 to 1"], in: plan.script)
+        assertOrder(["SB_TARGET_CHANGED", "set current tab of window id 5822 to _t", "set index of window id 5822 to 1"], in: plan.script)
+        let pdfActions = try await runOpeningBlock(of: plan, on: pdfFake)
+        XCTAssertEqual(pdfActions, [.madeCurrent(windowID: 5822, tab: 2), .raised(windowID: 5822), .activated])
+        let pdfCurrentFake = Fake()
+        let currentPlan = try await exportPlan(["--url", "work.example/a1"], fake: pdfCurrentFake)
+        assertOrder(["set _t to tab 1 of window id 5822", "SB_TARGET_CHANGED", "set index of window id 5822 to 1"], in: currentPlan.script)
+        let pdfCurrentActions = try await runOpeningBlock(of: currentPlan, on: pdfCurrentFake)
+        XCTAssertEqual(pdfCurrentActions, [.raised(windowID: 5822), .activated])
 
         // close: never.
         let closeFake = Fake()

@@ -395,19 +395,19 @@ final class WindowIndexResolverTests: XCTestCase {
         XCTAssertEqual(result[1].tabs.count, 1)
     }
 
-    // MARK: - switchToResolvedTab no-op path
+    // MARK: - bringResolvedTabForward no-op path
 
-    func testSwitchToResolvedTabWithNoTabToSwitchSendsNothing() async throws {
-        // When the resolution names no background tab (`tabIndexInWindow` is nil), the helper must return
-        // without running any AppleScript. The runner installed here fails the test if it is ever called,
+    func testBringResolvedTabForwardWithNoNamedTabSendsNothing() async throws {
+        // When the resolution names no tab (`anchorTabIndex` is nil: a window-level target), the helper must
+        // return without running any AppleScript. The runner installed here fails the test if it is ever called,
         // so nothing reaches a real Safari either way.
         let resolved = SafariBridge.ResolvedWindowTarget(
-            windowIndex: 99, tabIndexInWindow: nil, windowID: 5822, anchorTabIndex: 1)
+            windowIndex: 99, tabIndexInWindow: nil, windowID: 5822)
         try await DaemonRequestContext.$appleScriptRunner.withValue({ script in
             XCTFail("no script expected, got:\n\(script)")
             return ""
         }) {
-            try await SafariBridge.switchToResolvedTab(resolved, named: .windowID(5822, tabInWindow: 1), profile: nil)
+            try await SafariBridge.bringResolvedTabForward(resolved, named: .windowID(5822), profile: nil)
         }
     }
 

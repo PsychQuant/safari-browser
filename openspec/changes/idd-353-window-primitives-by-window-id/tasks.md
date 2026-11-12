@@ -40,9 +40,9 @@ Each task states the behavior delivered and how it is verified.
 
 - [x] 4.1 測試先行：Example「native upload by window id」（requirement「Upload command accepts full TargetOptions on all execution paths」）。把「釘住、解析、切換分頁、事前檢查、產生 effects」抽成 `UploadCommand` 回傳計畫的方法並在假 Safari 上執行：表中四列的事前檢查、點擊目標與 dialog 腳本的指稱符合；釘住之後沒有腳本含 `window 2`。標記 `spec-example: file-upload / native upload by window id`。驗證：`WindowLevelNativeDialogTests` 的對應測試
 - [x] 4.2 測試先行：Example「front window check before every keystroke」（requirement「Upload command accepts full TargetOptions on all execution paths」）。以 id 進行的 dialog 腳本裡，每一個 `keystroke` 與確認的 `click` 之前（上一個按鍵之後）都有 `verifyUploadOwner` 的呼叫，共七處，第一處在等到檔案對話框之後、第一個按鍵之前；沒有旗標的腳本不含這個呼叫且與現在逐字相同。標記 `spec-example: file-upload / front window check before every keystroke`。驗證：`WindowLevelNativeDialogTests` 的對應測試
-- [x] 4.3 測試先行：Example「tab switch scripts」（requirement「Tab auto-switch before keystroke dispatch」）。表中五列：`upload` 對背景分頁送出一段以 id 切換的腳本（網址旗標帶比對、位置旗標不帶）、目前分頁不送；`pdf` 的切換在匯出腳本裡、拉到前面之前；`close` 不切換。標記 `spec-example: document-targeting / tab switch scripts`。驗證：`WindowLevelNativeDialogTests` 的對應測試
+- [x] 4.3 測試先行：Example「tab switch scripts」（requirement「Tab auto-switch before keystroke dispatch」）。表中八列：`upload` 對指名的分頁送出一段以 id 的腳本（網址旗標帶比對、位置旗標不帶），背景分頁被設成目前分頁、已是目前分頁的不動；沒有指名分頁時不送；檢查之後分頁被切走則在點擊前停下；`pdf` 的比對與切換在匯出腳本裡、拉到前面之前；`close` 不切換。標記 `spec-example: document-targeting / tab switch scripts`。驗證：`WindowLevelNativeDialogTests` 的對應測試
 - [x] 4.4 測試先行：Example「tab switch notice and script」（requirement「Tab auto-switch classified as transitively authorized interference」）。目標是背景分頁時，`upload` 與 `pdf` 在鍵盤警告之前先寫出「目標分頁會被帶到前面」的提示；目標是目前分頁時沒有提示也沒有切換。標記 `spec-example: non-interference / tab switch notice and script`。驗證：`WindowLevelNativeDialogTests` 的對應測試（提示經注入的 writer 收集）
-- [x] 4.5 實作（design「upload 在每個按鍵之前檢查最前面的視窗」「四個指令在開頭呼叫 pinWindowAtStart」）：`SafariBridge.tabSwitchScript(windowReference:tab:guardClause:)` 與 `switchToResolvedTab(_:named:profile:)`；`fileDialogNavigationScript(path:pdfSave:ownerGuard:)`；`UploadCommand.nativeDialogScript(path:window:)` 與 `nativeUploadEffects(selector:path:window:)` 改收 `ActingWindow?`，以 id 進行時定義 `verifyUploadOwner` 並在開頭檢查視窗存在；native 路徑改呼叫 `resolveNativeTarget(from:firstMatch:warnWriter:profile:)`，事前檢查與點擊用 `actedTarget` 的結果。驗證：4.1–4.4 通過；`InterferenceWarningTests`、`FileDialogScriptSharingTests`、`FileDialogConfirmationPolicyTests`、`UploadGuidanceTests` 改用新簽名後原有斷言保留並通過；`pdf` 與沒有 guard 的 `upload` 的導覽片段與現在逐字相同
+- [x] 4.5 實作（design「upload 在每個按鍵之前檢查最前面的視窗」「四個指令在開頭呼叫 pinWindowAtStart」）：`SafariBridge.bringTabForwardScript(windowReference:tab:guardClause:)`、`bringResolvedTabForward(_:named:profile:)` 與 `clickTarget(for:named:profile:)`；`fileDialogNavigationScript(path:pdfSave:ownerGuard:)`；`UploadCommand.nativeDialogScript(path:window:)` 與 `nativeUploadEffects(selector:path:window:)` 改收 `ActingWindow?`，以 id 進行時定義 `verifyUploadOwner` 並在開頭檢查視窗存在；native 路徑改呼叫 `resolveWindowLevelTarget(named:firstMatch:warnWriter:profile:)`，事前檢查與點擊用 `clickTarget` 的結果。驗證：4.1–4.4 通過；`InterferenceWarningTests`、`FileDialogScriptSharingTests`、`FileDialogConfirmationPolicyTests`、`UploadGuidanceTests` 改用新簽名後原有斷言保留並通過；`pdf` 與沒有 guard 的 `upload` 的導覽片段與現在逐字相同
 
 ## 5. screenshot
 
@@ -66,7 +66,7 @@ Each task states the behavior delivered and how it is verified.
 - [x] 7.5 測試先行：Example「a tab opened during the enumeration, by command」（requirement「The enumeration decoder fails closed」）。視窗的列舉紀錄有兩個分頁、目前分頁序號 3 時，以 `--window-id 5822 --tab-in-window 1` 指定分頁 1：`pdf` 的匯出腳本與 `upload` 的一段腳本把它設成目前分頁，`close` 以位置關掉它且沒有任何分頁被設成目前分頁，`screenshot` 以 `backgroundTabNotCapturable` 拒絕。標記 `spec-example: window-enumeration / a tab opened during the enumeration, by command`。驗證：`WindowLevelCommandsTests` 的對應測試
 - [x] 7.6 同一條 requirement 既有的 Example「rejected shapes」補上標記（#379 第 13 項的其中一筆）：`WindowEnumerationDecoderTests.testRejectedShapes` 補齊規格表的七列（加上空字串與布林的視窗 id 兩列）並帶標記 `spec-example: window-enumeration / rejected shapes`。驗證：該測試通過
 - [x] 7.3 形狀檢查跟著更新（design「四個指令在開頭呼叫 pinWindowAtStart」）：`WindowPinCommandTests.testEveryCommandStructWithATargetPinsTheWindowExceptTheKnownOnes` 的已知例外拿掉 `CloseCommand`、`ScreenshotCommand`、`PdfCommand`。驗證：該測試通過；把任一個指令的 `pinWindowAtStart()` 拿掉時它失敗
-- [x] 7.4 沒有呼叫端的舊函式移除：`performTabSwitchIfNeeded(window:tab:)`（由 `switchToResolvedTab` 與各腳本取代）。驗證：`swift build` 通過；`WindowIndexResolverTests` 裡呼叫它的測試改成對 `switchToResolvedTab` 斷言「沒有分頁要切時不送任何腳本」
+- [x] 7.4 沒有呼叫端的舊函式移除：`performTabSwitchIfNeeded(window:tab:)`（由 `bringResolvedTabForward` 與各腳本取代）。驗證：`swift build` 通過；`WindowIndexResolverTests` 裡呼叫它的測試改成對 `bringResolvedTabForward` 斷言「沒有指名分頁時不送任何腳本」
 
 ## 8. 說明、文件與整體驗證
 
@@ -81,6 +81,8 @@ Each task states the behavior delivered and how it is verified.
   - 1.6 另加一個測試 `WindowLevelTargetTests.testEveryWindowLevelScriptCompiles`：假 Safari 逐行讀腳本，AppleScript 語法錯了它看不出來，所以每一段新腳本另外交給 `NSAppleScript` 編譯（只編譯、不執行）。
   - `open` 的位置後備路徑改成先切分頁再拉視窗：原本先 `set index of window N to 1` 再 `set current tab of window N`，拉到前面之後 `window N` 已是另一個視窗（讀碼推得，未在真機重現）。
   - `README.md` 一併更新（8.1），原任務只列了 `CLAUDE.md` 與 `CHANGELOG.md`。
+  - 提交後的修正（同日，封存之前）：`pdf` 與 native `upload` 原本只在目標是背景分頁時才比對網址，解析時已是目前分頁的不比對，與 requirement「第一段對分頁動手的腳本先比對」不符。改成只要解析指名了分頁就比對、不是目前分頁才切換（`bringTabForwardStatements`）；`upload` 的讀取與點擊改用 `.anchoredCurrentTab`，分頁不再是目前分頁就停，不重新解析。`open` 的腳本同樣改成「不是目前分頁才切」。`screenshot` 的釘住移進 `resolveCapture()`，`run()` 只讀它回傳的選項。4.3、4.1、3.1、6.1 的 Example 表格跟著改。
+  - `--profile` 下釘住的視窗在解析前關掉時，原本只得到一行 note；改成列出該 profile 的分頁（`resolveWindowLevelTarget`），既有的 `ProfileScopedMissTranslationTests.testCloseUnderAProfile` 是抓到它的測試。
   - 規格範圍調整：不修改 `screenshot` 的〈Hidden window capture…〉與 `non-interference` 的〈Screenshot Accessibility path…〉（`-R`／`-l` 與沒有 Accessibility 時的行為，另開 #382）；新增修改 `window-enumeration` 的〈The enumeration decoder fails closed〉（它把 `close` 列為會切換分頁的指令）。
 
 - ASSUMPTION（無人值守時的決定，verify 時請挑戰）：

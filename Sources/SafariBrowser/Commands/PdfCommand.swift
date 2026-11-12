@@ -69,7 +69,8 @@ struct PdfCommand: AsyncParsableCommand {
         let script: String
         let missTarget: SafariBridge.TargetDocument
         let profile: String?
-        /// Whether the script makes a background tab current before it raises the window.
+        /// Whether the resolution found the target in a background tab, so that the user is told a tab will
+        /// be brought forward. The script itself checks the named tab either way.
         let switchesTab: Bool
     }
 
@@ -88,7 +89,7 @@ struct PdfCommand: AsyncParsableCommand {
         let script = PdfCommand.exportScript(
             path: stagingPath,
             window: SafariBridge.actingWindow(for: resolved, named: named, profile: profile),
-            switchToTab: resolved.tabIndexInWindow,
+            tab: resolved.anchorTabIndex,
             guardClause: SafariBridge.tabGuardClause(named: named, matchedURL: resolved.matchedURL),
             timeout: try remaining())
         return ExportPlan(
@@ -152,13 +153,15 @@ struct PdfCommand: AsyncParsableCommand {
     /// cover it.
     ///
     /// #353: `window` is how the script names the window. By id, the first Safari block checks that the window
-    /// still exists (a missing one ends the script with `SB_WINDOW_GONE` before any menu action), makes
-    /// `switchToTab` current after `guardClause` when the tab was found by its URL, reads the page URL, raises
-    /// the window and activates. By position it is the block sent before #353, with the tab switch folded in.
+    /// still exists (a missing one ends the script with `SB_WINDOW_GONE` before any menu action). When the
+    /// resolution named a tab (`tab`), the block then binds it, runs `guardClause` when the tab was found by its
+    /// URL, and makes it current when it is not: a tab that was already current is checked too. Then it reads
+    /// the page URL, raises the window and activates. By position it is the block sent before #353, with the
+    /// same tab statements folded in.
     static func exportScript(
         path: String,
         window: SafariBridge.ActingWindow,
-        switchToTab: Int? = nil,
+        tab: Int? = nil,
         guardClause: String? = nil,
         timeout: TimeInterval = 60
     ) -> String {
@@ -170,10 +173,8 @@ struct PdfCommand: AsyncParsableCommand {
         } else {
             open.append("set pdfWindowID to id of \(reference)")
         }
-        if let tab = switchToTab {
-            open.append("set _t to tab \(tab) of \(reference)")
-            if let guardClause { open.append(guardClause) }
-            open.append("set current tab of \(reference) to _t")
+        if let tab {
+            open += SafariBridge.bringTabForwardStatements(windowReference: reference, tab: tab, guardClause: guardClause)
         }
         open += [
             "set pdfPageURL to URL of current tab of \(reference)",

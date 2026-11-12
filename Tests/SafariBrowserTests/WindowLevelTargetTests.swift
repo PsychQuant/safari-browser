@@ -275,22 +275,22 @@ final class WindowLevelTargetTests: XCTestCase {
             for reference in ["window id 5822", "window 2"] {
                 scripts.append(("close, \(name), \(reference)",
                                 SafariBridge.closeTabScript(windowReference: reference, tab: 2, guardClause: clause)))
-                scripts.append(("tab switch, \(name), \(reference)",
-                                SafariBridge.tabSwitchScript(windowReference: reference, tab: 2, guardClause: clause)))
+                scripts.append(("bring tab forward, \(name), \(reference)",
+                                SafariBridge.bringTabForwardScript(windowReference: reference, tab: 2, guardClause: clause)))
             }
             scripts.append(("pdf export by id, \(name)", PdfCommand.exportScript(
-                path: "/tmp/staging/out.pdf", window: .id(5822), switchToTab: 2, guardClause: clause)))
+                path: "/tmp/staging/out.pdf", window: .id(5822), tab: 2, guardClause: clause)))
             scripts.append(("pdf export by position, \(name)", PdfCommand.exportScript(
-                path: "/tmp/staging/out.pdf", window: .position(2), switchToTab: 2, guardClause: clause)))
+                path: "/tmp/staging/out.pdf", window: .position(2), tab: 2, guardClause: clause)))
         }
         scripts.append(("close current tab by id", SafariBridge.closeTabScript(windowReference: "window id 5822", tab: nil, guardClause: nil)))
         scripts.append(("pdf export by id, no tab", PdfCommand.exportScript(path: "/tmp/staging/out.pdf", window: .id(5822))))
         scripts.append(("pdf export, front window", PdfCommand.exportScript(path: "/tmp/staging/out.pdf", window: .position(1))))
         scripts.append(("geometry by id", SafariBridge.captureGeometryScript(windowReference: "window id 5822")))
         scripts.append(("geometry by position", SafariBridge.captureGeometryScript(windowReference: "window 2")))
-        for (switchTab, raise) in [(true, false), (true, true), (false, true)] {
-            scripts.append(("reveal, switch \(switchTab), raise \(raise)", SafariBridge.focusExistingScript(
-                windowID: 5822, tab: 2, url: "https://work.example/a2", switchTab: switchTab, raise: raise)))
+        for raise in [false, true] {
+            scripts.append(("reveal, raise \(raise)", SafariBridge.focusExistingScript(
+                windowID: 5822, tab: 2, url: "https://work.example/a2", raise: raise)))
         }
         scripts.append(("upload dialog by id", UploadCommand.nativeDialogScript(path: "/tmp/f.txt", window: .id(5822))))
         scripts.append(("upload dialog by position", UploadCommand.nativeDialogScript(path: "/tmp/f.txt", window: .position(2))))
@@ -301,6 +301,37 @@ final class WindowLevelTargetTests: XCTestCase {
             var error: NSDictionary?
             XCTAssertTrue(script.compileAndReturnError(&error), "\(name): \(String(describing: error))\n\(source)")
         }
+    }
+
+    func testTheFakeMakesATabCurrentOnlyWhenItIsNot() async throws {
+        let fake = Fake()
+        _ = try await fake.drive {
+            try await SafariBridge.runAppleScript(SafariBridge.bringTabForwardScript(windowReference: "window id 5822", tab: 1, guardClause: nil))
+        }
+        XCTAssertEqual(fake.actions, [], "tab 1 is already current")
+        _ = try await fake.drive {
+            try await SafariBridge.runAppleScript(SafariBridge.bringTabForwardScript(windowReference: "window id 5822", tab: 2, guardClause: nil))
+        }
+        XCTAssertEqual(fake.actions, [.madeCurrent(windowID: 5822, tab: 2)])
+    }
+
+    func testClickTargetIsTheNamedTabOnlyWhileItIsCurrent() {
+        typealias Resolved = SafariBridge.ResolvedWindowTarget
+        // A named tab of a window with an id: the anchored form, which checks it is still current.
+        XCTAssertEqual(SafariBridge.clickTarget(
+            for: Resolved(windowIndex: 2, tabIndexInWindow: 2, windowID: 5822, anchorTabIndex: 2, matchedURL: "https://work.example/a2"),
+            named: .urlMatch(.contains("a2")), profile: nil),
+            .anchoredCurrentTab(windowID: 5822, tabInWindow: 2, profile: nil))
+        XCTAssertEqual(SafariBridge.clickTarget(
+            for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: 5822, anchorTabIndex: 2),
+            named: .windowID(5822, tabInWindow: 2), profile: "Work"),
+            .anchoredCurrentTab(windowID: 5822, tabInWindow: 2, profile: "Work"))
+        // A window with no tab named, and the positional cases: what `actedTarget` gives.
+        let pinned = SafariBridge.TargetDocument.windowID(5822, tabInWindow: nil, pinnedFrom: 2)
+        XCTAssertEqual(SafariBridge.clickTarget(
+            for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: 5822), named: pinned, profile: nil), pinned)
+        XCTAssertEqual(SafariBridge.clickTarget(
+            for: Resolved(windowIndex: 1, tabIndexInWindow: nil, windowID: 4711), named: .frontWindow, profile: nil), .windowIndex(1))
     }
 
     func testActedTargetKeepsWhatAMissNeeds() {

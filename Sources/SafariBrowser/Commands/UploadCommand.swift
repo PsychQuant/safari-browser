@@ -197,15 +197,19 @@ struct UploadCommand: AsyncParsableCommand {
     struct NativeUploadPlan {
         /// How the dialog script names the window.
         let window: SafariBridge.ActingWindow
-        /// The document the existence read and the file-input click address.
+        /// The document the existence read and the file-input click address. For a named tab it is that tab
+        /// only while it is still its window's current tab (`SafariBridge.clickTarget`).
         let jsTarget: SafariBridge.TargetDocument
+        /// The target a miss is worded for.
+        let missTarget: SafariBridge.TargetDocument
         let profile: String?
         let effects: [NativeUploadEffect]
     }
 
     /// Everything a native upload does before System Events is involved (#353): `--window N` becomes the
-    /// window's id once (#354), the target is resolved, a background tab is made current, and the read that
-    /// checks the target exists runs. Every step after the resolution names the window by its id.
+    /// window's id once (#354), the target is resolved, a tab the resolution named is checked and made current
+    /// when it is not, and the read that checks the target exists runs. Every step after the resolution names
+    /// the window by its id.
     ///
     /// This is the #26 path that lets `--url` / `--tab` / `--document` reach the native dialog. It is separate
     /// from the part that runs the effects so a test can drive it against a fake Safari: the dialog script goes
@@ -224,7 +228,8 @@ struct UploadCommand: AsyncParsableCommand {
         let resolved = try await SafariBridge.resolveWindowLevelTarget(
             named: named, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: profile)
         let window = SafariBridge.actingWindow(for: resolved, named: named, profile: profile)
-        let jsTarget = SafariBridge.actedTarget(for: resolved, named: named, profile: profile)
+        let jsTarget = SafariBridge.clickTarget(for: resolved, named: named, profile: profile)
+        let missTarget = SafariBridge.actedTarget(for: resolved, named: named, profile: profile)
 
         // Tab switch is a passively interfering side effect transitively
         // authorized by --native / --allow-hid. The keyboard warning is the
@@ -233,13 +238,16 @@ struct UploadCommand: AsyncParsableCommand {
         if resolved.tabIndexInWindow != nil {
             notice("ℹ️  Target tab will be brought to the front of its window before upload.\n")
         }
-        try await SafariBridge.switchToResolvedTab(resolved, named: named, profile: profile)
+        try await SafariBridge.bringResolvedTabForward(resolved, named: named, profile: profile)
 
-        _ = try await SafariBridge.getCurrentURL(target: jsTarget)
+        try await SafariBridge.translatingWindowLevelMarkers(target: missTarget, profile: profile, translateNotFound: true) {
+            _ = try await SafariBridge.getCurrentURL(target: jsTarget)
+        }
 
         return NativeUploadPlan(
             window: window,
             jsTarget: jsTarget,
+            missTarget: missTarget,
             profile: profile,
             effects: UploadCommand.nativeUploadEffects(selector: selector, path: expandedPath, window: window))
     }
@@ -301,12 +309,18 @@ struct UploadCommand: AsyncParsableCommand {
             plan.effects,
             jsTarget: plan.jsTarget,
             warn: { FileHandle.standardError.write(Data($0.utf8)) },
-            runJS: { js, target in try await SafariBridge.doJavaScript(js, target: target) },
+            runJS: { js, target in
+                try await SafariBridge.translatingWindowLevelMarkers(
+                    target: plan.missTarget, profile: plan.profile, translateNotFound: true
+                ) {
+                    try await SafariBridge.doJavaScript(js, target: target)
+                }
+            },
             // Subprocess-level timeout (#19) bounds the whole invocation in case
             // System Events or Safari's Apple Event dispatcher is blocked and
             // the inner `maxWait to 10` loops never progress.
             runScript: { script in
-                try await SafariBridge.translatingWindowLevelMarkers(target: plan.jsTarget, profile: plan.profile) {
+                try await SafariBridge.translatingWindowLevelMarkers(target: plan.missTarget, profile: plan.profile) {
                     try await SafariBridge.runFileDialogScript(script, timeout: timeout)
                 }
             })

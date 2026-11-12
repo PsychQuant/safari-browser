@@ -545,7 +545,8 @@ final class CommandParsingTests: XCTestCase {
     }
 
     /// Source-level assertion: each native-path command routes
-    /// targeting flags through `SafariBridge.resolveNativeTarget` so
+    /// targeting flags through `SafariBridge.resolveNativeTarget` (since #353 by way of
+    /// `resolveWindowLevelTarget`, which calls it and words a pinned miss for the profile) so
     /// `--url plaud` on a non-front window correctly resolves + raises
     /// the plaud window before keystroke dispatch. This catches
     /// regressions where a refactor forgets to call the resolver and
@@ -557,13 +558,17 @@ final class CommandParsingTests: XCTestCase {
             "Sources/SafariBrowser/Commands/UploadCommand.swift",
             "Sources/SafariBrowser/Commands/CloseCommand.swift",
             "Sources/SafariBrowser/Commands/PdfCommand.swift",
+            "Sources/SafariBrowser/Commands/ScreenshotCommand.swift",
         ] {
             let src = try String(contentsOfFile: sourcePath, encoding: .utf8)
             XCTAssertTrue(
-                src.contains("resolveNativeTarget"),
-                "\(sourcePath) must call resolveNativeTarget to honor --url/--tab/--document (#26)"
+                src.contains("SafariBridge.resolveWindowLevelTarget("),
+                "\(sourcePath) must resolve through resolveWindowLevelTarget to honor --url/--tab/--document (#26, #353)"
             )
         }
+        let wrapper = try String(contentsOfFile: "Sources/SafariBrowser/SafariBridge+WindowLevel.swift", encoding: .utf8)
+        XCTAssertTrue(wrapper.contains("try await resolveNativeTarget("),
+                      "resolveWindowLevelTarget must call the native-path resolver")
     }
 
     // MARK: - #26 Tab-switch interference warning

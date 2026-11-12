@@ -144,9 +144,15 @@ extension SafariBridge {
     /// `SB_TARGET_CHANGED` (9001), the URL check failed, and `SB_WINDOW_GONE` (9002), the window a
     /// file-dialog script was to act on is no longer open. The file-dialog scripts go straight to `osascript`
     /// and never pass through `runTargetedAppleScript`, which is why they announce a missing window themselves.
+    ///
+    /// `translateNotFound` also turns a bare "object not found" (-1719 / -1728) into that miss. It is for the
+    /// one Safari script that reaches here untranslated: a read or a click on `.anchoredCurrentTab`, whose
+    /// errors `runTargetedAppleScript` passes through as they are. It must stay off for the file-dialog
+    /// scripts, where System Events answers -1728 for a button or a sheet that is not there.
     static func translatingWindowLevelMarkers<T>(
         target: TargetDocument,
         profile: String?,
+        translateNotFound: Bool = false,
         _ body: () async throws -> T
     ) async throws -> T {
         do {
@@ -154,6 +160,8 @@ extension SafariBridge {
         } catch SafariBrowserError.appleScriptFailed(let message) where message.contains("SB_TARGET_CHANGED") {
             throw SafariBrowserError.targetChangedBeforeActing(expected: targetDescription(target))
         } catch SafariBrowserError.appleScriptFailed(let message) where message.contains("SB_WINDOW_GONE") {
+            throw try await notFoundError(for: target, profile: profile)
+        } catch SafariBrowserError.appleScriptFailed(let message) where translateNotFound && isObjectNotFound(message) {
             throw try await notFoundError(for: target, profile: profile)
         }
     }
@@ -200,31 +208,55 @@ extension SafariBridge {
         }
     }
 
-    // MARK: - Tab switch
+    // MARK: - Bringing a named tab forward
 
-    /// Make tab `tab` the current tab of the window, after the URL check when there is one, in one script.
-    static func tabSwitchScript(windowReference: String, tab: Int, guardClause: String?) -> String {
-        var lines = ["tell application \"Safari\"", "set _t to tab \(tab) of \(windowReference)"]
+    /// Statements that bind the tab to `_t`, run the URL check when there is one, and make the tab the
+    /// window's current tab when it is not. A tab that is already current is checked and left alone, so the
+    /// check runs whether or not the tab was current when it was resolved.
+    static func bringTabForwardStatements(windowReference: String, tab: Int, guardClause: String?) -> [String] {
+        var lines = ["set _t to tab \(tab) of \(windowReference)"]
         if let guardClause { lines.append(guardClause) }
-        lines += ["set current tab of \(windowReference) to _t", "end tell"]
-        return lines.joined(separator: "\n")
+        lines.append("if (index of current tab of \(windowReference)) is not \(tab) then set current tab of \(windowReference) to _t")
+        return lines
     }
 
-    /// Switch the resolved window to the resolved tab when it is a background tab; nothing is sent when it is
-    /// already current or the target names no tab. Used by the native `upload` paths, whose file-input click
-    /// has to come between the switch and the dialog script. The switch is a passively interfering side effect
-    /// that `--native` / `--allow-hid` authorize (non-interference).
-    static func switchToResolvedTab(_ resolved: ResolvedWindowTarget, named: TargetDocument, profile: String?) async throws {
-        guard let tab = resolved.tabIndexInWindow else { return }
+    /// One script that brings tab `tab` of the window forward (`bringTabForwardStatements`).
+    static func bringTabForwardScript(windowReference: String, tab: Int, guardClause: String?) -> String {
+        (["tell application \"Safari\""]
+            + bringTabForwardStatements(windowReference: windowReference, tab: tab, guardClause: guardClause)
+            + ["end tell"]).joined(separator: "\n")
+    }
+
+    /// Check the tab the resolution named and make it current when it is not; nothing is sent when the target
+    /// names no tab. Used by the native `upload` paths, whose file-input click has to come between this and the
+    /// dialog script. The switch is a passively interfering side effect that `--native` / `--allow-hid`
+    /// authorize (non-interference).
+    static func bringResolvedTabForward(_ resolved: ResolvedWindowTarget, named: TargetDocument, profile: String?) async throws {
+        guard let tab = resolved.anchorTabIndex else { return }
         let window = actingWindow(for: resolved, named: named, profile: profile)
         let target = actedTarget(for: resolved, named: named, profile: profile)
-        let script = tabSwitchScript(
+        let script = bringTabForwardScript(
             windowReference: window.reference,
             tab: tab,
             guardClause: tabGuardClause(named: named, matchedURL: resolved.matchedURL))
         try await translatingWindowLevelMarkers(target: target, profile: profile) {
             _ = try await runTargetedAppleScript(script, target: target, profile: profile)
         }
+    }
+
+    /// The document a native upload reads and clicks in once the target is resolved and brought forward.
+    ///
+    /// For a named tab of a window with an id it is `.anchoredCurrentTab`: the read and the click check, in
+    /// their own script, that the tab is still that window's current tab, and stop when it is not. They do not
+    /// resolve the target again, as a `.resolvedTab` with a matcher would (#79): a file dialog opened from
+    /// whichever tab a second resolution found is not what the user asked for. Any other target is
+    /// `actedTarget`.
+    static func clickTarget(for resolved: ResolvedWindowTarget, named: TargetDocument, profile: String?) -> TargetDocument {
+        if case .id(let id) = actingWindow(for: resolved, named: named, profile: profile),
+           let tab = resolved.anchorTabIndex {
+            return .anchoredCurrentTab(windowID: id, tabInWindow: tab, profile: profile)
+        }
+        return actedTarget(for: resolved, named: named, profile: profile)
     }
 
     // MARK: - screenshot
@@ -274,11 +306,12 @@ extension SafariBridge {
 
     /// Layers 2 and 3 of the spatial gradient, by window id, in one script: check that the tab still shows
     /// `url`, make it current when it is not, and for another window raise it and activate Safari.
-    static func focusExistingScript(windowID: Int, tab: Int, url: String, switchTab: Bool, raise: Bool) -> String {
+    static func focusExistingScript(windowID: Int, tab: Int, url: String, raise: Bool) -> String {
         let reference = ActingWindow.id(windowID).reference
-        var lines = ["tell application \"Safari\"", "set _t to tab \(tab) of \(reference)",
-                     urlGuardClause(for: .exact(url)) ?? exactURLGuardClause(url)]
-        if switchTab { lines.append("set current tab of \(reference) to _t") }
+        var lines = ["tell application \"Safari\""]
+        lines += bringTabForwardStatements(
+            windowReference: reference, tab: tab,
+            guardClause: urlGuardClause(for: .exact(url)) ?? exactURLGuardClause(url))
         if raise { lines += ["set index of \(reference) to 1", "activate"] }
         lines.append("end tell")
         return lines.joined(separator: "\n")

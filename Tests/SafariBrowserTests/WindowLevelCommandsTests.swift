@@ -50,8 +50,7 @@ final class WindowLevelCommandsTests: XCTestCase {
         let fake = Fake()
         let command = try ScreenshotCommand.parse(flags + ["/tmp/out.png"])
         _ = try await fake.drive {
-            let target = try await command.target.pinWindowAtStart()
-            guard let capture = try await ScreenshotCommand.resolveCaptureTarget(target) else {
+            guard let capture = try await command.resolveCapture().capture else {
                 throw ValidationError("no explicit target")
             }
             return try await SafariBridge.readCaptureGeometry(
@@ -213,10 +212,7 @@ final class WindowLevelCommandsTests: XCTestCase {
         let shotFake = fixture()
         let shotCommand = try ScreenshotCommand.parse(flags + ["/tmp/out.png"])
         do {
-            _ = try await shotFake.drive { () -> ScreenshotCommand.CaptureTarget? in
-                let target = try await shotCommand.target.pinWindowAtStart()
-                return try await ScreenshotCommand.resolveCaptureTarget(target)
-            }
+            _ = try await shotFake.drive { try await shotCommand.resolveCapture() }
             XCTFail("a tab that is not known to be current cannot be captured")
         } catch SafariBrowserError.backgroundTabNotCapturable {
             XCTAssertFalse(shotFake.scripts.contains { $0.contains("bounds of") }, shotFake.transcript)
@@ -252,10 +248,7 @@ final class WindowLevelCommandsTests: XCTestCase {
 
         let shotCommand = try ScreenshotCommand.parse(flags + ["/tmp/out.png"])
         do {
-            _ = try await closing().drive { () -> ScreenshotCommand.CaptureTarget? in
-                let target = try await shotCommand.target.pinWindowAtStart()
-                return try await ScreenshotCommand.resolveCaptureTarget(target)
-            }
+            _ = try await closing().drive { try await shotCommand.resolveCapture() }
             misses.append(("screenshot", nil))
         } catch { misses.append(("screenshot", error)) }
 

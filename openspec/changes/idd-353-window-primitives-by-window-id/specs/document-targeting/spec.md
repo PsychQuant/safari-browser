@@ -2,7 +2,7 @@
 
 ### Requirement: Window-level commands act on the window they resolved
 
-`close`, `pdf`, `screenshot`, `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted), and `open` when it reveals an existing tab SHALL, once their target is resolved, name the target window as `window id <id>` in every AppleScript they send afterwards, where `<id>` is the id the resolution read for that window. After the resolution no AppleScript of the command SHALL name the target window by its position (`window <n>`), and none SHALL name Safari's `front window` except inside a check that stops the command unless `id of front window` is `<id>`. An enumeration that lists every window does not name the target. The steps a System Events block performs on the file sheet of the front window are outside this sentence; that check is what guards them (see file-upload and pdf-export).
+`close`, `pdf`, `screenshot`, `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted), and `open` when it reveals an existing tab SHALL, once their target is resolved, name the target window as `window id <id>` in every AppleScript they send afterwards, where `<id>` is the id the resolution read for that window. After the resolution no AppleScript of the command SHALL name the target window by its position (`window <n>`), and none SHALL reach the target window through Safari's `front window`, except inside a check that stops the command unless `id of front window` is `<id>`. An enumeration that lists every window does not name the target, and neither does the new tab `open` creates in the front window when it leaves a window on another Space alone. The steps a System Events block performs on the file sheet of the front window are outside this sentence; that check is what guards them (see file-upload and pdf-export).
 
 Two cases keep the position, and the list is closed:
 
@@ -11,7 +11,7 @@ Two cases keep the position, and the list is closed:
 
 When the resolution names one tab (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, `--tab`, `--document`, `--tab-in-window`, or the URL `open` was asked to reveal), the command SHALL name it `tab <t> of window id <id>`. `<t>` is a position inside that window (safari-browser#188).
 
-When the tab was found by its URL (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, or the URL `open` was asked to reveal), the first AppleScript that acts on it (closes it, makes it the current tab, or raises its window) SHALL check the tab's URL before it acts, in that same AppleScript, and SHALL act only when the check holds. The check is case-sensitive. For `--url`, `--url-exact` and `--url-endswith` it holds when the URL still satisfies the flag. For `--url-regex` it holds when the URL equals the URL the resolution read for that tab, or, when that URL is longer than 2,000 characters, starts with its first 2,000 characters. For `open` it holds when the URL equals the requested URL. When the check fails the command SHALL fail with a target-changed error that says nothing was done to the tab, and SHALL NOT resolve the target again. A tab named by its position (`--tab`, `--document`, `--tab-in-window`) is not checked.
+When the tab was found by its URL (`--url`, `--url-exact`, `--url-endswith`, `--url-regex`, or the URL `open` was asked to reveal), the first AppleScript that acts on it (closes it, makes it the current tab, or raises its window) SHALL check the tab's URL before it acts, in that same AppleScript, and SHALL act only when the check holds. The check is case-sensitive. For `--url`, `--url-exact` and `--url-endswith` it holds when the URL still satisfies the flag. For `--url-regex` it holds when the URL equals the URL the resolution read for that tab, or, when that URL is longer than 2,000 characters, starts with its first 2,000 characters. For `open` it holds when the URL equals the requested URL. When the check fails the command SHALL fail with a target-changed error that says nothing was done to the tab, and SHALL NOT resolve the target again. A tab named by its position (`--tab`, `--document`, `--tab-in-window`) is not checked. `pdf` and the native `upload` paths run the check on every tab the resolution names, whether or not it was the current tab of its window when it was resolved.
 
 When the target window is no longer open at a step that names it by its id, the command SHALL fail with a document-not-found error before that step acts: no tab is closed, no tab is made current, no window is raised, no keystroke or click is sent, and nothing is captured. The command SHALL NOT act on the window now in that position, on the front window, or on any other window. For a window whose id was read from `--window <n>` at command start, the error's pattern SHALL be the one "Window number resolved to its id at command start" defines.
 
@@ -128,7 +128,7 @@ Safari's windows, front to back: window 1 has id 4711 and tabs `https://home.exa
 
 ### Requirement: Tab auto-switch before keystroke dispatch
 
-When the resolver determines that a target document resides in a non-current tab of its owning window, `pdf` and the native `upload` paths SHALL switch that window's active tab to the target before dispatching any keystroke. The tab switch SHALL name the window and the tab as "Window-level commands act on the window they resolved" requires (`set current tab of window id <id> to tab <t> of window id <id>`), with that requirement's URL check in the same AppleScript when the tab was found by its URL. `pdf` SHALL make the switch inside its export script; `upload` SHALL make it in one AppleScript before it opens the file dialog. `close` and `screenshot` SHALL NOT switch tabs. The tab switch SHALL be classified as a passively interfering side effect transitively authorized by the `--native` or `--allow-hid` opt-in flag.
+When the resolution names a tab, `pdf` and the native `upload` paths SHALL bring it forward before dispatching any keystroke: one AppleScript names the window and the tab as "Window-level commands act on the window they resolved" requires, runs that requirement's URL check when the tab was found by its URL, and makes the tab the window's current tab when it is not (`set current tab of window id <id> to tab <t> of window id <id>`). A tab that is already current is checked and left as it is. `pdf` SHALL do this inside its export script. `upload` SHALL do it in one AppleScript before it opens the file dialog, and SHALL then read the page and click the file input in that tab only while it is still the window's current tab; when another tab has become current, the upload SHALL stop with a target-changed error before the file dialog opens. `close` and `screenshot` SHALL NOT switch tabs. The tab switch SHALL be classified as a passively interfering side effect transitively authorized by the `--native` or `--allow-hid` opt-in flag.
 
 **Concurrent modification window** (#26 verify P1-3, safari-browser#353): the native-path workflow still spans several AppleScript runs: the resolver's enumeration, the tab switch of `upload`, its read that checks the target exists, and the script that sends the keystrokes. Safari's windows can change between them. Because every run after the resolution names the window by its id, a window that closed fails the command with a document-not-found error, and a window that moved in the window order is still the one acted on. A tab that closed or moved inside its window is caught only for a tab found by its URL; a tab named by its position is not.
 
@@ -144,8 +144,8 @@ When the resolver determines that a target document resides in a non-current tab
 
 - **WHEN** Safari window 1's current tab is already `https://web.plaud.ai/`
 - **AND** user runs `safari-browser upload --native "input" "/tmp/f.mp3" --url plaud`
-- **THEN** the system SHALL NOT issue a tab switch AppleScript command
-- **AND** SHALL proceed directly to raise and keystroke
+- **THEN** the system SHALL check the tab's URL and SHALL NOT make any tab current
+- **AND** SHALL proceed to raise and keystroke
 
 #### Scenario: close does not switch tabs
 
@@ -156,13 +156,16 @@ When the resolver determines that a target document resides in a non-current tab
 
 Safari's windows, front to back: window 1 has id 4711 and tabs `https://home.example/1`, `https://home.example/2`, `https://home.example/3`; window 2 has id 5822 and tabs `https://work.example/a1`, `https://work.example/a2`; window 3 has id 6933 and the tab `https://work.example/b1`. Tab 1 is the current tab of each window.
 
-| Command | Target | Tab switch |
+| Command | Target | What happens to the tab before any keystroke |
 | --- | --- | --- |
-| `upload --native "input" f.txt --url work.example/a2` | background tab 2 of window id 5822 | one AppleScript: the URL check on `tab 2 of window id 5822`, then `set current tab of window id 5822 to` that tab |
-| `upload --native "input" f.txt --url work.example/a1` | current tab 1 of window id 5822 | none |
-| `upload --native "input" f.txt --window-id 5822 --tab-in-window 2` | background tab 2 of window id 5822 | one AppleScript, without a URL check |
-| `pdf --allow-hid --url work.example/a2 out.pdf` | background tab 2 of window id 5822 | inside the export script, before the window is raised |
-| `close --url work.example/a2` | background tab 2 of window id 5822 | none |
+| `upload --native "input" f.txt --url work.example/a2` | background tab 2 of window id 5822 | one AppleScript: the URL check on `tab 2 of window id 5822`, then that tab is made current |
+| `upload --native "input" f.txt --url work.example/a1` | current tab 1 of window id 5822 | one AppleScript: the URL check on `tab 1 of window id 5822`; no tab is made current |
+| `upload --native "input" f.txt --window-id 5822 --tab-in-window 2` | background tab 2 of window id 5822 | one AppleScript, without a URL check; tab 2 is made current |
+| `upload --native "input" f.txt --window 2` | window id 5822, no tab named | no AppleScript for this |
+| `upload --native "input" f.txt --url work.example/a2`, when tab 1 is made current again after that AppleScript | tab 2 of window id 5822 | the upload stops with a target-changed error; the file input is not clicked |
+| `pdf --allow-hid --url work.example/a2 out.pdf` | background tab 2 of window id 5822 | inside the export script, before the window is raised: the URL check, then tab 2 is made current |
+| `pdf --allow-hid --url work.example/a1 out.pdf` | current tab 1 of window id 5822 | inside the export script: the URL check; no tab is made current |
+| `close --url work.example/a2` | background tab 2 of window id 5822 | nothing; `close` makes no tab current |
 
 ### Requirement: WindowOnlyTargetOptions removal
 

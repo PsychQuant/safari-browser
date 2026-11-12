@@ -19,8 +19,7 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
     private func geometry(_ flags: [String], fake: Fake) async throws -> String {
         let command = try ScreenshotCommand.parse(flags + ["/tmp/out.png"])
         return try await fake.drive {
-            let target = try await command.target.pinWindowAtStart()
-            guard let capture = try await ScreenshotCommand.resolveCaptureTarget(target) else {
+            guard let capture = try await command.resolveCapture().capture else {
                 throw ValidationError("no explicit target")
             }
             return try await SafariBridge.readCaptureGeometry(
@@ -74,6 +73,31 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         }
     }
 
+    /// `run()` reads the page (`--full`) through the options `resolveCapture()` returns, so they must be the
+    /// pinned ones: `--window 2` has become the window's id.
+    func testResolveCaptureReturnsThePinnedOptions() async throws {
+        let fake = Fake()
+        let command = try ScreenshotCommand.parse(["--window", "2", "/tmp/out.png"])
+        let resolved = try await fake.drive { try await command.resolveCapture() }
+        XCTAssertNil(resolved.target.window)
+        XCTAssertEqual(resolved.target.windowID, 5822)
+        XCTAssertEqual(resolved.capture?.window, .id(5822))
+        XCTAssertTrue(fake.scripts.first.map(Fake.isAnchor) == true, fake.transcript)
+    }
+
+    /// `run()` cannot be driven in a test: it needs a GUI session, Screen Recording and Accessibility. So this is
+    /// a shape check, not a proof: `run()` takes its options from `resolveCapture()` and never reads the
+    /// unpinned `self.target` again.
+    func testRunReadsOnlyThePinnedOptions() throws {
+        let source = try String(contentsOfFile: "Sources/SafariBrowser/Commands/ScreenshotCommand.swift", encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "    func run() async throws {"))
+        let end = try XCTUnwrap(source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex))
+        let body = String(source[start.lowerBound..<end.upperBound])
+        XCTAssertTrue(body.contains("let (target, capture) = try await resolveCapture()"), "run() must pin through resolveCapture()")
+        XCTAssertFalse(body.contains("self.target"), "run() must not read the unpinned options")
+        XCTAssertTrue(body.contains("try await target.resolveProfileScoped()"), "--full reads the page through the pinned options")
+    }
+
     func testAnUnpinnedWindowNumberKeepsTheTwoPositionalReads() async throws {
         let fake = Fake()
         fake.anchorDoesNotAnswer = true
@@ -87,11 +111,8 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
     func testNoTargetingFlagResolvesNoCaptureTarget() async throws {
         let fake = Fake()
         let command = try ScreenshotCommand.parse(["/tmp/out.png"])
-        let capture = try await fake.drive { () -> ScreenshotCommand.CaptureTarget? in
-            let target = try await command.target.pinWindowAtStart()
-            return try await ScreenshotCommand.resolveCaptureTarget(target)
-        }
-        XCTAssertNil(capture)
+        let resolved = try await fake.drive { try await command.resolveCapture() }
+        XCTAssertNil(resolved.capture)
         XCTAssertEqual(fake.scripts, [])
     }
 
@@ -172,7 +193,7 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         XCTAssertEqual(layer3Current.scripts.count, 1, currentElsewhere.transcript)
         assertOrder(["set _t to tab 1 of window id 6933", "SB_TARGET_CHANGED", "set index of window id 6933 to 1", "activate"],
                     in: layer3Current.scripts.first ?? "")
-        XCTAssertFalse(layer3Current.scripts.first?.contains("set current tab") == true)
+        XCTAssertEqual(currentElsewhere.actions, [.raised(windowID: 6933), .activated], "tab 1 is current: no tab is made current")
 
         // Layer 4: the window is on another Space. It is not named at all; a new tab opens here.
         let elsewhere = Fake()

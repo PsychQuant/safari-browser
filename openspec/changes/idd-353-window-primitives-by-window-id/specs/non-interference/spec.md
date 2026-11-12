@@ -4,7 +4,7 @@
 
 When a window-only primitive (`upload --native`, `upload --allow-hid`, `pdf`) resolves a target via `--url`, `--tab`, or `--document` and the target document resides in a non-current tab of its owning window, the system SHALL treat the subsequent tab switch (`set current tab of window id <id> to tab <t> of window id <id>`, or the same statement with the window's position when no window id is available) as a passively interfering side effect transitively authorized by the `--native` or `--allow-hid` opt-in flag. The system SHALL NOT require a separate opt-in flag for tab switching.
 
-The stderr interference warning emitted before keystroke dispatch SHALL include a note that the target tab will be briefly switched if it is not currently active.
+The stderr interference warning emitted before keystroke dispatch SHALL include a note that the target tab will be briefly switched if it is not currently active. The note is written when the resolution found the tab in the background; a tab that stops being current between the resolution and the AppleScript that checks it is brought forward without the note.
 
 #### Scenario: Tab switch accompanies native upload to background tab
 
@@ -16,7 +16,7 @@ The stderr interference warning emitted before keystroke dispatch SHALL include 
 
 - **WHEN** user runs `safari-browser upload --native "input" "/tmp/f.mp3" --url plaud` and the plaud document is already the current tab of its owning window
 - **THEN** the system SHALL emit the standard keystroke interference warning without a tab-switch addendum
-- **AND** SHALL NOT issue a `set current tab` AppleScript command
+- **AND** SHALL NOT make any tab current
 
 ##### Example: tab switch notice and script
 
@@ -24,8 +24,8 @@ Safari's windows, front to back: window 1 has id 4711 and tabs `https://home.exa
 
 | Command | Notice on stderr before the keyboard warning | Tab switch |
 | --- | --- | --- |
-| `upload --native "input" f.txt --url work.example/a2` | says the target tab will be brought to the front of its window | `set current tab of window id 5822 to` tab 2 of that window |
-| `upload --native "input" f.txt --url work.example/a1` | none | none |
+| `upload --native "input" f.txt --url work.example/a2` | says the target tab will be brought to the front of its window | tab 2 of window id 5822 is made current |
+| `upload --native "input" f.txt --url work.example/a1` | none | no tab is made current |
 | `pdf --allow-hid --url work.example/a2 out.pdf` | says the target tab will be brought to the front of its window | inside the export script |
 
 ### Requirement: Spatial interference gradient for focus-existing

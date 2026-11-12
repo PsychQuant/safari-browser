@@ -16,7 +16,10 @@ import XCTest
 ///   with "…" then error "SB_TARGET_CHANGED" number 9001`) are evaluated, case-sensitively, against the URL
 ///   that tab shows now;
 /// - `close _t`, `close current tab of <window>`, `set current tab of <window> to _t`, `set index of <window>
-///   to 1` and `activate` change the state and are recorded in `actions`.
+///   to 1` and `activate` change the state and are recorded in `actions`;
+/// - `if (index of current tab of <window>) is not T then …` is evaluated against the window's current tab, so a
+///   tab that is already current is not "made current" again, and the bridge's check for an anchored current tab
+///   (`set _w to window id W` …) fails as it would in Safari.
 ///
 /// It never runs a file-dialog script: those go straight to `osascript` in the product, and the tests stop at
 /// the text.
@@ -198,11 +201,23 @@ final class WindowLevelFakeSafari: @unchecked Sendable {
 
     private func interpret(_ script: String) throws -> String {
         var bound: (window: Int, tab: Int)?
+        /// `set _w to window id W`: the window the bridge's anchored scripts name `_w`.
+        var boundWindow: Int?
         var skipping = false
         var result = "OK"
 
+        /// The window a statement names: `_w` when the script bound one, else the reference in the text.
+        func window(in text: String) throws -> Int? {
+            if let boundWindow, text.hasSuffix(" _w") || text.contains(" _w)") || text.contains(" _w ") { return boundWindow }
+            return try windowIndex(in: text)
+        }
+
         func condition(_ text: String) throws -> Bool {
             if text == "(count of windows) = 0" { return order.isEmpty }
+            if text.hasPrefix("(index of current tab of "), let wanted = Self.int(after: ") is not ", in: text) {
+                guard let index = try window(in: String(text[..<(text.range(of: ") is not ")!.lowerBound)]) + ")") else { return false }
+                return order[index].current != wanted
+            }
             if text.hasPrefix("(count of tabs of "), text.hasSuffix(") = 0") {
                 guard let index = try windowIndex(in: text) else { return false }
                 return order[index].tabs.isEmpty
@@ -238,6 +253,10 @@ final class WindowLevelFakeSafari: @unchecked Sendable {
                 let number = Self.int(after: " number ", in: line) ?? -2700
                 throw SafariBrowserError.appleScriptFailed("execution error: \(message) (\(number))")
             }
+            if line.hasPrefix("set _w to window id ") {
+                boundWindow = try windowIndex(in: line)
+                return
+            }
             if line.hasPrefix("set _t to tab ") {
                 guard let tab = Self.int(after: "set _t to tab ", in: line), let index = try windowIndex(in: line) else { return }
                 guard tab >= 1, tab <= order[index].tabs.count else { throw Self.invalidIndex("tab \(tab)") }
@@ -266,7 +285,12 @@ final class WindowLevelFakeSafari: @unchecked Sendable {
                 guard let index = try windowIndex(in: line) else { return }
                 let window = order.remove(at: index)
                 order.insert(window, at: 0)
-                if let tab = bound, tab.window == index { bound = (0, tab.tab) }
+                // The raise moved every window in front of this one back by one place.
+                if let tab = bound {
+                    let moved = tab.window == index ? 0 : (tab.window < index ? tab.window + 1 : tab.window)
+                    bound = (moved, tab.tab)
+                }
+                boundWindow = nil
                 done.append(.raised(windowID: window.id))
                 return
             }
@@ -280,7 +304,7 @@ final class WindowLevelFakeSafari: @unchecked Sendable {
                 return
             }
             if line.hasPrefix("get URL of ") || line.hasPrefix("return URL of ") {
-                guard let index = try windowIndex(in: line) else { return }
+                guard let index = try window(in: line) else { return }
                 // `tab 2 of window id W` names a tab; `document of …` and `current tab of …` are the current one.
                 let tab = Self.int(after: "tab ", in: line) ?? order[index].current
                 guard tab >= 1, tab <= order[index].tabs.count else { throw Self.invalidIndex("tab \(tab)") }

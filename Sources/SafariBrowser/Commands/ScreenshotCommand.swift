@@ -102,7 +102,15 @@ struct ScreenshotCommand: AsyncParsableCommand {
     ///
     /// #353: the result names the window by the id the resolution read, so the bounds and title are read from
     /// that window and not from whatever sits in its position by then.
-    static func resolveCaptureTarget(_ target: TargetOptions) async throws -> CaptureTarget? {
+    ///
+    /// The pin (`--window N` to the window's id, #354) is made here, after the checks in `run()` that contact no
+    /// Safari, and the pinned options are returned with the result: `--full` reads the page through them too.
+    func resolveCapture() async throws -> (target: TargetOptions, capture: CaptureTarget?) {
+        let target = try await self.target.pinWindowAtStart()
+        return (target, try await Self.resolveCaptureTarget(target))
+    }
+
+    private static func resolveCaptureTarget(_ target: TargetOptions) async throws -> CaptureTarget? {
         let hasExplicitTarget = target.url != nil
             || target.window != nil
             || target.windowID != nil
@@ -167,8 +175,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
 
         // #354 / #353: `--window N` becomes the window's id once, here, after the checks above (none of which
         // contacts Safari) and before the first Apple event. Everything below reads the pinned copy.
-        let target = try await self.target.pinWindowAtStart()
-        let capture = try await Self.resolveCaptureTarget(target)
+        let (target, capture) = try await resolveCapture()
 
         // #23 verify R7: resolve both CG ID AND AX element so --full mode
         // can do bounds operations on the SAME window we're about to
