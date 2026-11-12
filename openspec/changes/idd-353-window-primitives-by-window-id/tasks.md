@@ -71,8 +71,25 @@ Each task states the behavior delivered and how it is verified.
 ## 8. 說明、文件與整體驗證
 
 - [x] 8.1 [P] 使用者看得到的說明與文件符合新行為（含 `README.md` 的 multi-window 段落：改寫「`pdf`、`upload --native`、`close` 會把視窗拉到前面並切分頁」那一段，並更正「背景分頁會截到目前看得到的內容」為拒絕）：`--window` 與 `--window-id` 的 `--help` 不再寫「這四個指令留給 #353」；`pinWindowAtStart` 的註解更新；`CHANGELOG.md`（Unreleased）列出兩個行為改變（`close` 不再切換分頁、`upload` 有目標時在按鍵之前檢查最前面的視窗）與 `--window N` 在這四個指令上釘住；`CLAUDE.md` 的 multi-window 段落與 #354 段落的例外清單更新，並寫明沒有旗標時不變、Accessibility 那一側以 id 找視窗尚未做。驗證：內容檢查；`grep` 確認 `Sources/` 與 `CLAUDE.md` 沒有殘留「out of scope (safari-browser#353)」與「native paths are #353」
-- [ ] 8.2 整套測試通過：`swift build --build-tests`，等 90 秒，`swift test --skip-build`（#380 的時序問題）。驗證：XCTest 與 Swift Testing 的失敗數為 0，計數寫在這一行下面
-- [ ] 8.3 mutation 各做一次（改一處、跑相關測試、還原），每一次都有具名測試失敗：(a) 拿掉 `CloseCommand` 的 `pinWindowAtStart()`；(b) `close` 改回先切換分頁再關目前分頁；(c) 拿掉關閉腳本的網址比對；(d) 拿掉 dialog 腳本的 `verifyUploadOwner`；(e) `pdf` 匯出腳本的第一個區塊改回 `window N`；(f) `screenshot` 的讀取改回位置；(g) `open` 第 3 層改回兩個事件。驗證：每一項記下失敗的測試名稱，寫在這一行下面
+- [x] 8.2 整套測試通過：`swift build --build-tests`，等 90 秒，`swift test --skip-build`（#380 的時序問題）。驗證：XCTest 與 Swift Testing 的失敗數為 0，計數寫在這一行下面
+  - 2026-11-13（commit `11b7bb7`，Mac mini、負載約 3）：`swift build --build-tests`、等 90 秒、`swift test --skip-build`：2,623 個 XCTest（13 個略過，0 失敗）與 38 個 Swift Testing 全過。第一次整套執行有 1 個失敗（`ProfileScopedMissTranslationTests.testCloseUnderAProfile`：`--profile` 下釘住的視窗關掉時少了該 profile 的清單），第二次有 1 個（`CommandParsingTests.testNativePathCommandsRouteThroughResolver`：形狀檢查要求原始碼含 `resolveNativeTarget` 字樣）；前者是實作的缺口、已修，後者改成檢查新的包裝函式與它對 resolver 的呼叫。
+- [x] 8.3 mutation 各做一次（改一處、跑相關測試、還原），每一次都有具名測試失敗：(a) 拿掉 `CloseCommand` 的 `pinWindowAtStart()`；(b) `close` 改回先切換分頁再關目前分頁；(c) 拿掉關閉腳本的網址比對；(d) 拿掉 dialog 腳本的 `verifyUploadOwner`；(e) `pdf` 匯出腳本的第一個區塊改回 `window N`；(f) `screenshot` 的讀取改回位置；(g) `open` 第 3 層改回兩個事件。實際做了 17 項，見下。驗證：每一項記下失敗的測試名稱，寫在這一行下面
+  - 2026-11-13（commit `11b7bb7`）：共 17 項，每項改一處、在 Mac mini 上重建並跑 `WindowLevel*` 與 `WindowPinCommandTests`、還原；沒有任何一項的建置出錯（建置出錯會沿用舊的執行檔，不能算抓到）。除了 (n)，每一項都有行為測試失敗：
+    - (a) `close` 不釘 → `testWindowLevelCommandsAndTheWindowNumber`、`testReferencesAfterTheResolution`、`testCasesThatKeepThePosition` 等 4 個，加形狀檢查。
+    - (b) `close` 改回先切換再關目前分頁 → `testWhichTabCloseCloses`、`testCloseWithEachTargetingFlag`、`testWindowLevelCommandsWithAWindowID` 等 6 個。
+    - (c) 關閉腳本沒有網址比對 → `testWhichTabCloseCloses`。
+    - (d) dialog 腳本沒有 `verifyUploadOwner` → `testFrontWindowCheckBeforeEveryKeystroke`。
+    - (e) `pdf` 匯出腳本改回位置 → `testExportScriptByWindowID`、`testTabSwitchScripts` 等 5 個。
+    - (f) `screenshot` 的讀取改回位置 → `testGeometryReadByWindowID` 等 4 個。
+    - (g) `open` 改回位置、兩個事件 → `testFocusExistingByWindowID`、`testGradientActionsByWindowID` 等 4 個。
+    - (h) `upload` 的分頁檢查沒有網址比對 → `testATabThatMovedStopsANativeUploadBeforeAnythingIsTouched`、`testTabSwitchScripts`、`testNativeUploadByWindowID`。
+    - (i) `SB_WINDOW_GONE` 不轉換 → `testExportScriptByWindowID`、`testAMarkerFromAWindowLevelScriptBecomesTheErrorACallerReads`。
+    - (j) `--profile` 下釘住後再列舉一次 → `testAPinnedWindowUnderAProfileIsEnumeratedOnce` 等 3 個。
+    - (k)(l)(m) `pdf`、native `upload`、`screenshot` 不釘 → 各自的 driven 測試（`testExportScriptByWindowID`／`testNativeUploadByWindowID`／`testGeometryReadByWindowID`）與 `testWindowLevelCommandsAndTheWindowNumber`；(k)(m) 另有形狀檢查。
+    - (n) `screenshot` 的 `run()` 釘住後仍讀未釘住的選項 → 只有形狀檢查 `testRunReadsOnlyThePinnedOptions` 抓到。`run()` 需要 GUI session、Screen Recording 與 Accessibility，沒有測試能執行它。
+    - (o) `pdf` 不檢查解析時已是目前分頁的目標 → `testExportScriptByWindowID`、`testTabSwitchScripts`。
+    - (p) `upload` 點擊前不確認分頁仍是目前分頁 → `testNativeUploadByWindowID`、`testTabSwitchScripts`。
+    - (q) 指名的分頁一律設成目前分頁 → `testTabSwitchNoticeAndScript`、`testFocusExistingByWindowID` 等 6 個。
 
 真機驗收不在這份清單裡：它在 verify 之後、經維護者同意並事先告知才進行，項目是 issue #353 Diagnosis 的「Only a real Safari can show these」六項，結果寫回 issue。封存在 verify 之前，封存後的 tasks.md 不能再改，所以不列成勾選項。
 
