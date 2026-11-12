@@ -20,6 +20,17 @@ struct InProcessStepDispatcher: StepDispatcher {
     /// requests. Before, every step rebuilt and re-resolved the shared target —
     /// one full window/tab enumeration per step for a `--url` target.
     private let sharedResolution = SharedTargetResolution()
+    /// #354 verify F20: the exec-level `--window N`, pinned on the first step that needs it (see `SharedWindowPin`).
+    private let sharedWindowPin: SharedWindowPin
+
+    /// `sharedTarget` (#354): the exec-level target when the request already made its one attempt before the
+    /// run — the daemon's whole-run marker pins, or checks an id against `--profile`, before it wraps the title.
+    /// Steps that use the exec-level arguments then get exactly that value (the id with its profile check, or
+    /// the position if the id could not be read) and make no attempt of their own, so a read that succeeds
+    /// later cannot move them to a window the marker was not wrapped on.
+    init(sharedTarget: TargetOptions? = nil) {
+        sharedWindowPin = SharedWindowPin(settled: sharedTarget)
+    }
 
     /// Only a `--url` target (any matcher form) is effectively reused: it
     /// resolves to a tab that can be re-checked by its URL, while
@@ -34,6 +45,37 @@ struct InProcessStepDispatcher: StepDispatcher {
     /// cached. A change between the check and the step itself is not
     /// detected; the subprocess path has the same gap between its resolution
     /// and its read.
+    /// #354 verify F20: `ExecCommand.execute` pins the exec-level `--window N` before the run is routed, so the
+    /// arguments usually arrive as `--window-id W`. When that pin could not read the id, they arrive as
+    /// `--window N`: the first step that needs them tries once more, and every later step of this request uses
+    /// what that one attempt returned (the id, or — if it could not be read again — the position), so a run
+    /// is not left counting windows at every step just because Safari was slow once.
+    ///
+    /// Verify round 2: an id that arrives pinned under `--profile` (`--window-id W --pinned-from-window N`) is
+    /// checked against the profile here too, once per request. The arguments are text from another process, so
+    /// they prove nothing about W; the check `pinWindowAtStart` makes is what lets the later steps address W
+    /// without enumerating again.
+    final class SharedWindowPin: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cached: (key: [UInt8], options: TargetOptions)?
+
+        /// `settled`: the request's own attempt, made before the run; no step repeats it.
+        init(settled: TargetOptions? = nil) {
+            cached = settled.map { (Self.key(ScriptInterpreter.encodeTargetArgs($0)), $0) }
+        }
+
+        private static func key(_ args: [String]) -> [UInt8] { Array(args.joined(separator: "\u{0}").utf8) }
+
+        func options(for args: [String], _ target: TargetOptions) async throws -> TargetOptions {
+            let key = Self.key(args)
+            if let hit = lock.withLock({ cached.flatMap { $0.key == key ? $0.options : nil } }) { return hit }
+            guard target.window != nil || target.awaitsProfileCheckAtStart else { return target }
+            let result = try await target.pinWindowAtStart()
+            lock.withLock { cached = (key, result) }
+            return result
+        }
+    }
+
     final class SharedTargetResolution: @unchecked Sendable {
         private let lock = NSLock()
         /// Keyed by the target arguments' UTF-8 bytes, not by `String` equality: Swift treats canonically
@@ -205,14 +247,22 @@ struct InProcessStepDispatcher: StepDispatcher {
         // bounded retry, #79). Steps without their own target flags share one
         // resolution per exec run. The resolution now also honours `--profile`,
         // which this path parsed but never handed to the bridge (#60 intent).
-        let resolveConcrete = {
+        // #354: a step's own `--window N` is resolved to its window id at the start of that step. The
+        // exec-level arguments usually arrive pinned: `ExecCommand.execute` read the id once, before the run
+        // was routed, so they read `--window-id W`. `sharedWindowPin` settles them once per request, on the
+        // first step that needs them (unless the request already did): a `--window N` gets one more attempt,
+        // and an id under `--profile` is checked against it, because arguments from another process are not
+        // proof of the profile.
+        let resolveConcrete = { (options: TargetOptions) in
             try await SafariBridge.resolveToConcreteTarget(
-                target.resolve(), firstMatch: target.firstMatch,
-                warnWriter: nil, profile: target.resolveProfile())
+                options.resolve(), firstMatch: options.firstMatch,
+                warnWriter: nil, profile: options.resolveProfile())
         }
         let resolved = cmd == "documents" ? target.resolve()
-            : stepHasTargetFlag ? try await resolveConcrete()
-            : try await sharedResolution.resolve(args: effectiveTargetArgs, resolveConcrete)
+            : stepHasTargetFlag ? try await resolveConcrete(target.pinWindowAtStart())
+            : try await sharedResolution.resolve(args: effectiveTargetArgs, {
+                try await resolveConcrete(sharedWindowPin.options(for: effectiveTargetArgs, target))
+            })
         // A step with its own target flags resolves outside the shared object, and a resolver that
         // finishes after the request was cancelled still returns a target: check again before the
         // command runs, so no command's AppleScript follows a cancellation.

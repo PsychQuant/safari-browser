@@ -42,6 +42,8 @@ final class TargetOptionsTests: XCTestCase {
         opts.window = window
         // #352: same reason as profile above — validate() reads it.
         opts.windowID = windowID
+        // #354: and the private --pinned-from-window, which validate() reads too.
+        opts.pinnedFromWindow = nil
         opts.tab = tab
         opts.document = document
         opts.tabInWindow = tabInWindow

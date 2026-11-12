@@ -12,6 +12,8 @@ struct CheckCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; if (!el.checked) { el.click(); if (!el.checked) { el.checked = true; } el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true})); } return 'OK'; })()",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -34,6 +36,8 @@ struct UncheckCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; if (el.checked) { el.click(); if (el.checked) { el.checked = false; } el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true})); } return 'OK'; })()",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()

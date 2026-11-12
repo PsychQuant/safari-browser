@@ -817,9 +817,9 @@ extension SafariBridge.TargetDocument: Equatable {
             return lw == rw && lt == rt && lm == rm && lp == rp
         case (.anchoredCurrentTab(let lw, let lt, let lp), .anchoredCurrentTab(let rw, let rt, let rp)):
             return lw == rw && lt == rt && lp == rp
-        case (.windowID(let l, let lt), .windowID(let r, let rt)):
-            // #352: `--window-id W` (tab only with `--tab-in-window` and `--profile`).
-            return l == r && lt == rt
+        case (.windowID(let l, let lt, let lf), .windowID(let r, let rt, let rf)):
+            // #352: `--window-id W` (tab only with `--tab-in-window` and `--profile`); #354: the `--window N` it was pinned from.
+            return l == r && lt == rt && lf == rf
         default:
             return false
         }

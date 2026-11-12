@@ -748,10 +748,37 @@ extension SafariBrowserError {
         if pattern.hasPrefix(profileMissPrefix) {
             return profileMissHint(listing)
         }
+        // #354: `--window N` read as window id W at command start, and W is gone. Nothing listed has coordinates to
+        // copy, and N may now name another window, which the command deliberately did not use.
+        let pinned = pattern.range(of: #"^window \d+( tab \d+)? \(window id \d+ at command start\)"#,
+                                   options: .regularExpression) != nil
+        if pinned, listing.contains(where: { $0.contains("Safari did not answer") }) {
+            // The anchor of `js` / `wait` / `save-pdf` could not be read: the window may well be open (verify round 2).
+            return """
+                Hint: the window that --window N named when the command started could not be read just now (the line
+                      above gives the possible reasons), and the command did not move on to the window now in that
+                      position. Run `safari-browser documents` to see the open windows (`--json` gives the ids
+                      --window-id W takes), then retry or retarget.
+                """
+        }
+        if pinned, listing.allSatisfy({ $0.hasPrefix("(") }) {
+            // A missing tab can be the reason only when the pattern names one (verify round 2). A window-level
+            // miss can come from a step that named the window's current tab, so the hint names both; the note
+            // above says which of the two is known (gate round 1).
+            let namesTab = pattern.range(of: #"^window \d+ tab \d+ "#, options: .regularExpression) != nil
+            let what = namesTab ? "is no longer open, or no longer has that tab,"
+                : "is no longer open, or its current tab could not be found,"
+            return """
+                Hint: the window that --window N named when the command started \(what) and the command did
+                      not move on to the window now in that position. Run `safari-browser documents` to see the
+                      open windows (`--json` gives the ids --window-id W takes), then retarget.
+                """
+        }
         // #352: not positional — sending the reader to `--window N` would swap a
         // stable name for the one that moves. A lost `.resolvedTab` reads
         // `window id W tab T` too, but its listing has coordinates to copy.
-        if pattern.hasPrefix("window id "),
+        // #354 verify F9: a pinned `--window N` miss whose listing names windows by id only gets this hint too.
+        if pattern.hasPrefix("window id ") || pinned,
            listing.allSatisfy({ $0.hasPrefix("(") || $0.hasPrefix("window id ") }) {
             return """
                 Hint: read the open windows' ids from `safari-browser documents --json` (`window_id`)

@@ -27,6 +27,8 @@ struct CookiesGet: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         let documentTarget = target.resolve()
         let profile = target.resolveProfile()
         if let name {
@@ -62,6 +64,8 @@ struct CookiesSet: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             "document.cookie = '\(name.escapedForJS)=\(value.escapedForJS); path=/'",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
@@ -78,6 +82,8 @@ struct CookiesClear: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         _ = try await SafariBridge.doJavaScript(
             "(function(){ document.cookie.split(';').forEach(function(c){ var n = c.split('=')[0].trim(); document.cookie = n + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'; }); })()",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()

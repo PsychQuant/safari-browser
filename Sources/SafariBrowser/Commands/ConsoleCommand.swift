@@ -15,6 +15,8 @@ struct ConsoleCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         let documentTarget = target.resolve()
         let profile = target.resolveProfile()
         if start {

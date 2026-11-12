@@ -12,6 +12,13 @@ struct PressCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // The key's own check comes first (verify F12): a key with no name never reaches Safari.
+        guard key.split(separator: "+").last != nil else {
+            throw ValidationError("The key must not be empty or made only of '+'.")
+        }
+        // #354: --window N becomes the id of that window, once — after the arguments are checked (verify F12),
+        // before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         try await Self.perform(
             key: key, target: target.resolve(), firstMatch: target.firstMatch,
             warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())

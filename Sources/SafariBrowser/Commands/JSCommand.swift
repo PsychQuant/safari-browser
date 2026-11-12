@@ -124,8 +124,11 @@ struct JSCommand: AsyncParsableCommand {
             switch original {
             case .windowIndex(let n):
                 return .anchoredTargetChanged(target: "the current tab of window \(n) (\(anchor))")
-            case .windowID(let id, _):
-                return .anchoredTargetChanged(target: "the current tab of window id \(id) (\(anchor))")
+            case .windowID(let id, _, let pinnedFrom):
+                // #354 verify F4: an id an `exec --window N` step received names that N. The anchor already
+                // names the id, so the window is `window N` or `window id W`, not both forms.
+                let window = pinnedFrom.map { "window \($0.window)" } ?? "window id \(id)"
+                return .anchoredTargetChanged(target: "the current tab of \(window) (\(anchor))")
             default:
                 return .anchoredTargetChanged(target: "the front window's current tab (\(anchor))")
             }
@@ -139,10 +142,10 @@ struct JSCommand: AsyncParsableCommand {
                 return .anchoredTargetChanged(target: "window \(w) tab \(t) (window id \(windowID))")
             case .documentIndex(let n):
                 return .anchoredTargetChanged(target: "document \(n) (window id \(windowID) tab \(tab) at command start)")
-            case .windowID(let w, let t?):
+            case .windowID(let w, let t?, let pinnedFrom):
                 // #352: `--window-id W --tab-in-window T`, checked at command
-                // start by `resolveToAnchoredTarget`.
-                return .anchoredTargetChanged(target: "window id \(w) tab \(t)")
+                // start by `resolveToAnchoredTarget`. #354: the N it was pinned from, if any.
+                return .anchoredTargetChanged(target: SafariBridge.windowIDDescription(w, tab: t, pinnedFrom: pinnedFrom))
             default:
                 return error
             }

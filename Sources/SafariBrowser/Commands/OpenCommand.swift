@@ -80,7 +80,9 @@ struct OpenCommand: AsyncParsableCommand {
         if replaceTab {
             // Opt-out of focus-existing: navigate the (profile-scoped) target
             // document via `do JavaScript window.location.href`.
-            let scoped = try await target.resolveProfileScoped()
+            // #354: --window N becomes the id of that window, once; `openURL` then reads the reference,
+            // navigates, and activates last, as for --window-id. `--new-tab` keeps its own pre-`activate` read.
+            let scoped = try await target.pinWindowAtStart().resolveProfileScoped()
             try await SafariBridge.openURL(url, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }
@@ -100,7 +102,9 @@ struct OpenCommand: AsyncParsableCommand {
             || profile != nil
 
         if hasExplicitTarget {
-            let scoped = try await target.resolveProfileScoped()
+            // #354: --window N becomes the id of that window, once; `openURL` then reads the reference,
+            // navigates, and activates last, as for --window-id. `--new-tab` keeps its own pre-`activate` read.
+            let scoped = try await target.pinWindowAtStart().resolveProfileScoped()
             try await SafariBridge.openURL(url, target: scoped, firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter)
             return
         }

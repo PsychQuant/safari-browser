@@ -181,10 +181,14 @@ enum DaemonDispatch {
                 let context = DaemonRequestContext.current ?? DaemonRequestContext()
                 try context.configureDialogProbe(probeOptions)
 
-                let interpreter = ScriptInterpreter(
-                    maxSteps: maxSteps,
-                    dispatcher: InProcessStepDispatcher()
-                )
+                // #354: the whole-run marker reads and rewrites the title before the first step, so a marked
+                // request settles the exec-level target below, before the wrap, and hands the result to the
+                // dispatcher so no step tries again: a `--window N` that arrives unpinned (the client's pin could
+                // not read the id) gets its one more attempt, and an id that arrives pinned under `--profile` is
+                // checked against it (the arguments are text from the client, not proof). The wrap, every step
+                // and the unwrap then address the same thing: the id, or the position if it could not be read
+                // here either. Without a marker the first step that needs the target does this.
+                let marked = markTabMode != .off
 
                 // Section 7 of tab-ownership-marker v2: wrap the ENTIRE script
                 // execution in `SafariBridge.markTabIfRequested` when the
@@ -194,15 +198,19 @@ enum DaemonDispatch {
                 // wrapper, not by individual steps). For `.off` the closure
                 // body runs directly, so the daemon path stays zero-overhead
                 // when no marker is requested.
-                let resolved = target.resolve()
                 let results: [StepResult] = try await DaemonRequestContext.$current.withValue(context) {
-                    try await SafariBridge.markTabIfRequested(
-                        target: resolved,
+                    let runTarget = marked ? try await target.pinWindowAtStart() : target
+                    let interpreter = ScriptInterpreter(
+                        maxSteps: maxSteps,
+                        dispatcher: InProcessStepDispatcher(sharedTarget: marked ? runTarget : nil)
+                    )
+                    return try await SafariBridge.markTabIfRequested(
+                        target: runTarget.resolve(),
                         mode: markTabMode,
-                        firstMatch: target.firstMatch,
-                        profile: target.resolveProfile()
+                        firstMatch: runTarget.firstMatch,
+                        profile: runTarget.resolveProfile()
                     ) {
-                        try await interpreter.runSteps(parsedSteps, target: target)
+                        try await interpreter.runSteps(parsedSteps, target: runTarget)
                     }
                 }
 

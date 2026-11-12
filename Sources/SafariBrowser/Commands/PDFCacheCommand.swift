@@ -152,6 +152,8 @@ struct PDFCacheGet: AsyncParsableCommand {
         let form = try selectionForm()
         var tabURL: String?
         if case .tab = form {
+            // #354: not pinned. The command reads one URL through the injected `readTabURL` seam and nothing
+            // after it addresses the window; a pin outside the seam would reach Safari from a test (verify F22).
             tabURL = try await readTabURL(target.resolve(), target.firstMatch)
         }
         let retrieved = try PDFCacheService.retrieve(

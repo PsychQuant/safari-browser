@@ -68,7 +68,10 @@ struct TargetOptions: ParsableArguments {
 
     @Option(
         name: .long,
-        help: "Target the document of the Nth Safari window (1-indexed). Pair with --tab-in-window to select a specific tab."
+        help: ArgumentHelp(
+            "Target the document of the Nth Safari window (1-indexed). Pair with --tab-in-window to select a specific tab.",
+            discussion: "N counts windows from the front when the command starts. Most commands that read or act on a tab resolve it to that window's stable id once, before anything else, and then address the window by id (as --window-id does), so a window raised mid-command does not redirect later steps; if that window closes mid-command the command fails instead of using the window now in position N. --tab-in-window M stays a position inside that window. If the id cannot be read at start, a note says so and N stays a position; with --profile, an enumeration that times out or fails is the command's error instead. `close`, `screenshot`, `pdf` and `upload` on its native paths (#353), and `tab <N>` without --profile, still look the position up."
+        )
     )
     var window: Int?
 
@@ -76,10 +79,29 @@ struct TargetOptions: ParsableArguments {
         name: .customLong("window-id"),
         help: ArgumentHelp(
             "Target the Safari window whose stable id is W (its current tab; pair with --tab-in-window for another tab).",
-            discussion: "The id is Safari's own `id of window`: it does not change while the window is open, unlike --window N, which counts windows from the front, so a window raised in between does not change which window the reference names. Read the ids from `safari-browser documents --json` (`window_id`). A window id that does not exist, or one outside --profile, fails with \"No Safari document matches\"; it never falls back to the front window. `close`, `screenshot`, `pdf`, and `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted) find the window by its id but still act on it by its position (#353). Mutually exclusive with --window, --url, --url-exact, --url-endswith, --url-regex, --tab and --document."
+            discussion: "The id is Safari's own `id of window`: it does not change while the window is open, unlike --window N, which counts windows from the front when each command starts, so a window raised between two commands does not change which window the reference names. Read the ids from `safari-browser documents --json` (`window_id`). A window id that does not exist, or one outside --profile, fails with \"No Safari document matches\"; it never falls back to the front window. `close`, `screenshot`, `pdf`, and `upload` on its native paths (`--native`, `--allow-hid`, or the default when Accessibility is granted) find the window by its id but still act on it by its position (#353). Mutually exclusive with --window, --url, --url-exact, --url-endswith, --url-regex, --tab and --document."
         )
     )
     var windowID: Int?
+
+    /// #354: the `--window N` a `--window-id` was read from by `pinWindowAtStart()` at command start.
+    /// Private (not in `--help` or the MCP tool schema): it exists so `exec`, which hands its target to
+    /// each step as command-line arguments (`ScriptInterpreter.encodeTargetArgs`), keeps naming the
+    /// user's `--window N` in a miss. It changes only the wording of an error, never the target.
+    @Option(
+        name: .customLong("pinned-from-window"),
+        help: ArgumentHelp("The --window number a --window-id was read from at command start (internal).",
+                           visibility: .private)
+    )
+    var pinnedFromWindow: Int?
+
+    /// #354 (verify round 2): the window id and the profile `pinWindowAtStart()` checked it against, in this
+    /// process. Not an option: no flag, environment variable or daemon request can set it, and
+    /// `ScriptInterpreter.encodeTargetArgs` does not carry it, so the check is made again by whichever process
+    /// receives the arguments. It is the only thing that lets a call skip its `--profile` check
+    /// (`SafariBridge.PinnedFrom.check`); `--pinned-from-window` alone never does. It names the id it was made
+    /// for, so a copy whose `windowID` or `profile` is changed afterwards no longer has it (verify round 3).
+    var profileCheckedAtStart: SafariBridge.PinnedFrom.ProfileCheck?
 
     @Option(
         name: .long,
@@ -278,6 +300,15 @@ struct TargetOptions: ParsableArguments {
         if let id = windowID, id < 1 {
             throw ValidationError("--window-id must be a Safari window id (>= 1), got \(id)")
         }
+        // #354: only meaningful next to the id it describes.
+        if let n = pinnedFromWindow {
+            if windowID == nil {
+                throw ValidationError("--pinned-from-window requires --window-id")
+            }
+            if n < 1 {
+                throw ValidationError("--pinned-from-window must be >= 1 (1-indexed), got \(n)")
+            }
+        }
         if let t = tab, t < 1 {
             throw ValidationError("--tab must be >= 1 (1-indexed), got \(t)")
         }
@@ -347,7 +378,9 @@ struct TargetOptions: ParsableArguments {
         // one: nothing would notice a missing window or tab before the first
         // action, and `open` would still make a new window.
         if let id = windowID {
-            return .windowID(id, tabInWindow: tabInWindow)
+            return .windowID(id, tabInWindow: tabInWindow, pinnedFrom: pinnedFromWindow.map {
+                SafariBridge.PinnedFrom(window: $0, check: profileCheckedAtStart)
+            })
         }
         if let w = window, let m = tabInWindow {
             return .windowTab(window: w, tabInWindow: m)
@@ -379,6 +412,99 @@ struct TargetOptions: ParsableArguments {
             return .documentIndex(document)
         }
         return .frontWindow
+    }
+
+    /// #354: the command-start step. `--window N` (and `--window N --tab-in-window M`) counts windows from
+    /// the front, and every Apple event that names `window N` looks the position up again, so a window raised
+    /// between two steps of one command redirected the later steps. This reads the id of the window that is
+    /// N now, once, and returns a copy in which `--window N` has become `--window-id W` (`--tab-in-window M`,
+    /// `--profile` and every other flag kept, `pinnedFromWindow` = N for the wording of a miss). Every later
+    /// `resolve()` / `resolveProfileScoped()` / `resolveFirstMatchOnce()` / `resolveWithFirstMatch()` on the
+    /// copy therefore addresses the window as `--window-id W` does. `--tab-in-window M` stays a position inside
+    /// that window (#188).
+    ///
+    /// - Without `--profile`: one small query, the one `js` anchors with (#180, #255) — `readWindowAnchor`
+    ///   for `--window N`, `readTabAnchor` plus `1 <= M <= tab count` for `--tab-in-window M`.
+    /// - With `--profile`: N counts that profile's windows, which only the enumeration knows, so the id is
+    ///   the one one profile-scoped enumeration reads (no dialog probe: the command's own first step probes).
+    ///   That enumeration is the profile check for the whole command: a pinned id is not checked again per
+    ///   Apple event (a window's profile does not change while it is open), so the pin costs no enumeration
+    ///   beyond the one the first step made before (verify F5). The copy records the check in
+    ///   `profileCheckedAtStart`, which no flag can set; that record, not `--pinned-from-window`, is what the
+    ///   bridge accepts in place of its own check.
+    /// - An id that arrived pinned (`--window-id W --pinned-from-window N`, as `exec` hands it to a step) under
+    ///   `--profile`: the arguments prove nothing about W, so it is checked against the profile once, here,
+    ///   and only then recorded the same way. An id of another profile is refused before anything reads it.
+    /// - The id cannot be read — no N-th window, a window with no tab, tab M outside the window (the anchor
+    ///   query, or the profile enumeration's not-found answer), a legacy record without an id, and, without
+    ///   `--profile`, an anchor query that did not answer: `self` unchanged, so the first step fails — or runs —
+    ///   exactly as before (#87 / #97, the js/wait precedent), and `note` gets one line saying the position is
+    ///   used. Under `--profile`, an enumeration that times out or fails is thrown, not retried by the first
+    ///   step (verify F18), and so is cancellation.
+    /// - Any other flag set: `self` unchanged, nothing sent.
+    ///
+    /// Call it in `run()` after the command's own argument checks and before anything else reaches Safari
+    /// (including the `--mark-tab` wrap): `let target = try await self.target.pinWindowAtStart()`. `close`,
+    /// `screenshot`, `pdf` and the native upload paths are to use the same line (#353).
+    func pinWindowAtStart(note: ((String) -> Void)? = nil) async throws -> TargetOptions {
+        if awaitsProfileCheckAtStart, let profile, let windowID {
+            // The enumeration refuses an id of another profile. Only after it does the copy carry the proof.
+            _ = try await SafariBridge.resolveNativeTarget(
+                from: resolve(), firstMatch: firstMatch, warnWriter: nil, profile: profile, probeDialog: false)
+            var checked = self
+            checked.profileCheckedAtStart = .init(profile: profile, windowID: windowID)
+            return checked
+        }
+        guard let n = window, windowID == nil else { return self }
+        let id: Int?
+        if let profile, !profile.isEmpty {
+            let positional: SafariBridge.TargetDocument = tabInWindow.map { .windowTab(window: n, tabInWindow: $0) }
+                ?? .windowIndex(n)
+            do {
+                id = try await SafariBridge.resolveNativeTarget(
+                    from: positional, firstMatch: firstMatch, warnWriter: nil, profile: profile, probeDialog: false).windowID
+            } catch SafariBrowserError.documentNotFound {
+                // No N-th window of the profile, or no tab M in it: the first step reports it in its own words.
+                id = nil
+            }
+        } else if let m = tabInWindow {
+            let anchor = await SafariBridge.readTabAnchor(windowIndex: n)
+            id = anchor.flatMap { m >= 1 && m <= $0.tabCount ? $0.windowID : nil }
+        } else {
+            id = await SafariBridge.readWindowAnchor(index: n)?.windowID
+        }
+        try Task.checkCancellation()
+        guard let id, id > 0 else {
+            Self.emitPinNote(Self.pinFallbackNote(window: n), to: note)
+            return self
+        }
+        var pinned = self
+        pinned.window = nil
+        pinned.windowID = id
+        pinned.pinnedFromWindow = n
+        // Under `--profile` the id came from that profile's windows in the enumeration just made.
+        if let profile, !profile.isEmpty { pinned.profileCheckedAtStart = .init(profile: profile, windowID: id) }
+        return pinned
+    }
+
+    /// #354 (verify round 2): an id that arrived pinned (`--window-id W --pinned-from-window N`, from `exec` or
+    /// typed by hand) under a `--profile` it has not been checked against in this process.
+    var awaitsProfileCheckAtStart: Bool {
+        guard window == nil, let windowID, pinnedFromWindow != nil, let profile, !profile.isEmpty else { return false }
+        return profileCheckedAtStart != .init(profile: profile, windowID: windowID)
+    }
+
+    /// #354 verify F20: the one line a command prints when `--window N` stays a position.
+    static func pinFallbackNote(window n: Int) -> String {
+        "note: the id of window \(n) could not be read when the command started (no such window or tab, or Safari "
+            + "did not answer in time), so --window \(n) is looked up by its position at each step; a window raised "
+            + "mid-command can take its place.\n"
+    }
+
+    private static func emitPinNote(_ line: String, to note: ((String) -> Void)?) {
+        if let note { note(line) }
+        else if let context = DaemonRequestContext.current { context.emit(line) }
+        else { FileHandle.standardError.write(Data(line.utf8)) }
     }
 
     /// Default warn-writer shared by every command that wires

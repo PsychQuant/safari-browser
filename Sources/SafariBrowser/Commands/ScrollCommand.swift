@@ -32,6 +32,10 @@ struct ScrollCommand: AsyncParsableCommand {
             throw ValidationError("Direction must be up, down, left, or right")
         }
 
+        // #354: --window N becomes the id of that window, once — after the arguments are checked (verify F12),
+        // before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
+
         guard let selector else {
             // Page-level path unchanged.
             _ = try await SafariBridge.doJavaScript("window.scrollBy(\(x), \(y))", target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile())

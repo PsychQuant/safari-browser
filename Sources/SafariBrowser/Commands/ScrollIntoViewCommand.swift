@@ -12,6 +12,8 @@ struct ScrollIntoViewCommand: AsyncParsableCommand {
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
+        // #354: --window N becomes the id of that window, once, before anything reaches Safari.
+        let target = try await self.target.pinWindowAtStart()
         let result = try await SafariBridge.doJavaScript(
             "(function(){ var el = \(selector.resolveRefJS); if (!el) return 'NOT_FOUND'; el.scrollIntoView({behavior:'smooth',block:'center'}); return 'OK'; })()",
             target: target.resolve(), firstMatch: target.firstMatch, warnWriter: TargetOptions.stderrWarnWriter, profile: target.resolveProfile()
