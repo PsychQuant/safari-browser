@@ -273,12 +273,12 @@ Known limitation, left for a follow-up: when the windows of the profile have no 
 - **THEN** the error lists one note saying the open tabs could not be listed, with `AppleScript error -1712`
 - **AND** the error does not say that no document is open, nor that no window of a profile is open, and contains no text of the AppleScript error message
 
-
 #### Scenario: the enumeration after a miss comes back malformed
 
 - **WHEN** a command's target is not found and the enumeration that would list the open tabs fails with `windowEnumerationCorrupt`
 - **THEN** the error lists one note saying the open tabs could not be listed, naming a malformed list
 - **AND** the note contains no text of the corruption reason
+
 #### Scenario: a pinned window that closes under a profile lists the profile's tabs by id
 
 - **WHEN** the windows of the profile `Work` are Safari windows 2 and 3, with ids 303 and 404, and user runs `safari-browser get url --window 2 --profile Work`
