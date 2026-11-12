@@ -125,6 +125,27 @@ final class DaemonRequestPreflightTests: XCTestCase {
         XCTAssertEqual(peer.observed.received.count, 0)
     }
 
+    /// #355 verify round 1, persistent-daemon "Client requires a capability before sending a request that needs it",
+    /// scenario "an oversize exec script and a daemon without the capability": the capability is checked before the
+    /// request size, so the client gets a fallback (`missingCapability`) and runs the script step by step instead of
+    /// failing with `requestTooLarge`. Nothing is sent.
+    func testAMissingCapabilityIsReportedBeforeTheRequestSize() async throws {
+        let peer = try Peer(limitJSON: "\"64\"")   // announces a request-line limit and no capabilities
+        defer { peer.stop() }
+        let params = try JSONSerialization.data(withJSONObject: ["source": String(repeating: "x", count: 100)])
+        do {
+            _ = try await DaemonClient.sendRequest(name: peer.name, method: "exec.runScript", params: params,
+                requestId: 7, timeout: 2, socketDir: peer.directory.path, requiredCapability: .sourceForm)
+            XCTFail("a daemon without the capability must not receive the request")
+        } catch let error as DaemonClient.Error {
+            guard case .missingCapability(let capability) = error else { return XCTFail("expected missingCapability, got \(error)") }
+            XCTAssertEqual(capability, "sourceForm")
+            XCTAssertNotNil(error.fallbackReason, "the caller falls back to the step-by-step path")
+        }
+        XCTAssertTrue(peer.wait())
+        XCTAssertEqual(peer.observed.received.count, 0)
+    }
+
     func testMalformedAdvertisementsSendNoRequestBytes() async throws {
         for scalar in ["null", "true", "false", "1024", "\"01\"", "\" 1\"", "\"١\"", "\"9223372036854775808\"", "1.5", "0", "-1", "9223372036854775808", "{}", "[]"] {
             let peer = try Peer(limitJSON: scalar)

@@ -302,7 +302,7 @@ final class PreCompiledScriptsTests: XCTestCase {
         do {
             _ = try await DaemonRequestContext.$current.withValue(context) {
                 try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
-                    if source.contains("set windowCount to count of windows") { return "" }
+                    if source.contains("set windowCount to count of windows") { return FakeEnumeration.sourceForm([FakeEnumeration.Window]()) }
                     throw SafariBrowserError.appleScriptFailed("Can’t make -1719 into type text (-1700)")
                 }) {
                     try await SafariBridge.getCurrentURL(target: .windowIndex(2))
@@ -325,8 +325,9 @@ final class PreCompiledScriptsTests: XCTestCase {
     }
 
     private func runDanglingJS(failingDispatches: Int) async throws -> (result: String, dispatches: Int) {
-        let gs = "\u{1D}", rs = "\u{1E}"
-        let listing = ["1", "2", "1", "https://w1.example/2", "Tab 2", "個人 — Tab 2", "101"].joined(separator: gs) + rs
+        let listing = FakeEnumeration.sourceForm([
+            .titledTabs(id: 101, profile: "個人", urls: ["https://w1.example/1", "https://w1.example/2"], currentTab: 2),
+        ])
         let dangling = SafariBrowserError.appleScriptFailed(
             "Safari got an error: Can’t get tab 2 of window id 101. Invalid index. (-1719)")
         let dispatches = DispatchCount()
@@ -374,7 +375,7 @@ final class PreCompiledScriptsTests: XCTestCase {
         do {
             _ = try await DaemonRequestContext.$current.withValue(context) {
                 try await DaemonRequestContext.$appleScriptRunner.withValue({ source in
-                    if source.contains("set windowCount to count of windows") { return "" }
+                    if source.contains("set windowCount to count of windows") { return FakeEnumeration.sourceForm([FakeEnumeration.Window]()) }
                     return try await DaemonDispatch.Handlers.cachedScriptText(
                         source: #"error "Can’t get window 2." number -1728"#, cache: cache)
                 }) {
@@ -382,7 +383,11 @@ final class PreCompiledScriptsTests: XCTestCase {
                 }
             }
             XCTFail("the window does not exist")
-        } catch SafariBrowserError.documentNotFound {}
+        } catch SafariBrowserError.documentNotFound(_, let entries) {
+            // Safari has no windows (`{}`): the miss lists nothing, rather than the failure note a
+            // malformed enumeration would give (#355 verify round 2).
+            XCTAssertFalse(entries.joined().contains("could not be listed"), "\(entries)")
+        }
     }
 
     // MARK: - #170 verify R1: bounded capacity

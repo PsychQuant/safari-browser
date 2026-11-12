@@ -53,6 +53,7 @@ final class EnumerationFailureNoteTests: XCTestCase, @unchecked Sendable {
 
     func testTheFailureNoteNamesTheKindOfFailureOnly() async throws {
         let cases: [(Error, String)] = [
+            (SafariBrowserError.windowEnumerationCorrupt(reason: "window 2 has 3 URLs and 4 titles"), "malformed"),
             (SafariBrowserError.processTimedOut(command: "osascript", seconds: 7), "timed out"),
             (SafariBrowserError.appleScriptFailed("execution error: no code here"), "AppleScript error"),
         ]
@@ -68,7 +69,7 @@ final class EnumerationFailureNoteTests: XCTestCase, @unchecked Sendable {
                 XCTAssertEqual(entries.count, 1, "\(entries)")
                 XCTAssertTrue(entries[0].hasPrefix("(the open tabs could not be listed"), entries[0])
                 XCTAssertTrue(entries[0].contains(kind), entries[0])
-                XCTAssertFalse(entries[0].contains("no code here"), entries[0])
+                XCTAssertFalse(entries[0].contains("no code here") || entries[0].contains("4 titles"), entries[0])
             }
         }
     }

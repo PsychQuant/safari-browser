@@ -27,17 +27,11 @@ final class WindowIDCommandTests: XCTestCase, @unchecked Sendable {
         func respond(_ script: String) throws -> String {
             lock.withLock { sent.append(script) }
             if script.contains("set windowCount to count of windows") {
-                let gs = "\u{1D}", rs = "\u{1E}"
-                var out = ""
                 let first = lock.withLock { listings += 1; return listings == 1 }
                 let open = windows.filter { first || $0.id != closesAfterFirstListing }
-                for (i, window) in open.enumerated() {
-                    for (j, url) in window.tabs.enumerated() {
-                        out += ["\(i + 1)", "\(j + 1)", j == 0 ? "1" : "0", url,
-                                "Tab \(j + 1)", "\(window.profile) — Tab 1", "\(window.id)"].joined(separator: gs) + rs
-                    }
-                }
-                return out
+                return FakeEnumeration.sourceForm(open.map {
+                    .titledTabs(id: $0.id, profile: $0.profile, urls: $0.tabs)
+                })
             }
             // `windowAnchorScript(windowID:)`: "id GS current-tab-index", or an error for a missing id.
             if script.contains("set _id to "), let id = Self.int(after: "set _id to ", in: script) {

@@ -58,8 +58,14 @@ class OwnedBatchDaemon:
             try:
                 with connection, connection.makefile('rb') as reader:
                     connection.settimeout(2)
+                    # Since #355 the client sends `exec.runScript` only to a daemon that announces
+                    # the `sourceForm` capability. A fake without it looks like a pre-#355 daemon:
+                    # the batchable script would fall back to child commands, which resolve the
+                    # front window and probe the real Safari. Same class of pin as the identity in
+                    # `environment()`.
                     handshake = {'protocol': {'name': 'persistent-daemon', 'version': {
-                        'semver': '1.0.0', 'commit': 'unknown', 'dirty': False, 'vendor': 'source'}}}
+                        'semver': '1.0.0', 'commit': 'unknown', 'dirty': False, 'vendor': 'source'},
+                        'capabilities': ['sourceForm']}}
                     connection.sendall(json.dumps(handshake).encode() + b'\n')
                     raw = reader.readline(65537)
                     if not raw:

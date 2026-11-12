@@ -37,15 +37,9 @@ final class ExecSharedTargetTests: XCTestCase, @unchecked Sendable {
             lock.lock(); defer { lock.unlock() }
             sent.append(script)
             if script.contains("set windowCount to count of windows") {
-                let gs = "\u{1D}", rs = "\u{1E}"
-                var out = ""
-                for (i, window) in windows.enumerated() {
-                    for (j, url) in window.tabs.enumerated() {
-                        out += ["\(i + 1)", "\(j + 1)", j == 0 ? "1" : "0", url,
-                                "Tab \(j + 1)", "個人 — Tab 1", "\(window.id)"].joined(separator: gs) + rs
-                    }
-                }
-                return out
+                return FakeEnumeration.sourceForm(windows.map {
+                    .titledTabs(id: $0.id, profile: "個人", urls: $0.tabs)
+                })
             }
             guard let tab = Self.int(after: "tab ", in: script), let id = Self.int(after: "window id ", in: script) else {
                 return "ok"

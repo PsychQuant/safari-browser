@@ -112,7 +112,8 @@ struct DocumentsCommand: AsyncParsableCommand {
     /// bit-stable for scripts. Pure helper for unit testing. #46.
     static func legendLine() -> String {
         "documents: '*' marks the active tab of each window (live snapshot; "
-            + "each window has one, so multiple '*' across windows is normal — "
+            + "a window usually has one, so multiple '*' across windows is normal, "
+            + "and a window read while a tab was opening has none — "
             + "for scripting use the is_current field from --json).\n"
     }
 

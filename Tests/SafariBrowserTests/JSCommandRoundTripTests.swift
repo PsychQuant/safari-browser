@@ -118,20 +118,15 @@ final class JSCommandRoundTripTests: XCTestCase, @unchecked Sendable {
                 .replacingOccurrences(of: "  ", with: "").prefix(140) }.joined(separator: "\n")
         }
 
-        /// The 7-field GS/RS wire format of `listAllWindowsScript`.
+        /// What `listAllWindowsScript` returns (`FakeEnumeration`, #355).
         var enumeration: String {
-            let gs = "\u{1D}", rs = "\u{1E}"
-            var out = ""
-            for (offset, count) in tabCounts.enumerated() {
+            FakeEnumeration.sourceForm(tabCounts.enumerated().map { offset, count in
                 let w = offset + 1
-                for t in 1...count {
-                    let url = (w == 1 && t == 53 && tab53HasNavigated) ? "https://w1.example/done" : "https://w\(w).example/\(t)"
-                    var fields = ["\(w)", "\(t)", t == 1 ? "1" : "0", url, "Tab \(t)", "個人 — Tab 1"]
-                    if !legacyEnumeration { fields.append("\(idBase + w)") }
-                    out += fields.joined(separator: gs) + rs
+                let urls = (1...count).map { t in
+                    (w == 1 && t == 53 && tab53HasNavigated) ? "https://w1.example/done" : "https://w\(w).example/\(t)"
                 }
-            }
-            return out
+                return .titledTabs(id: legacyEnumeration ? nil : idBase + w, profile: "個人", urls: urls)
+            })
         }
 
         /// Current URLs of AppleScript window `w`, after any simulated change.

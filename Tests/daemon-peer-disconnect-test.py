@@ -35,9 +35,12 @@ class DaemonPeerDisconnectTests(unittest.TestCase):
             script = Path(directory, 'empty.json')
             script.write_text('[]')
             path = str(Path(directory, 'safari-browser-' + env['SAFARI_BROWSER_NAME'] + '.sock'))
+            # Since #355 the client sends `exec.runScript` only to a daemon that announces the
+            # `sourceForm` capability; without it the CLI would run the script step by step instead
+            # of reaching the size check below. Same class of pin as the identity above.
             handshake = {'protocol': {'name': 'persistent-daemon',
                 'version': {'semver': '1.0.0', 'commit': 'unknown', 'dirty': False, 'vendor': 'source'},
-                'maxRequestLineBytes': '1'}}
+                'maxRequestLineBytes': '1', 'capabilities': ['sourceForm']}}
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
                 listener.bind(path)
                 listener.listen(1)

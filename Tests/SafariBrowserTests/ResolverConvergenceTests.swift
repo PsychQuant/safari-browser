@@ -235,29 +235,24 @@ final class ResolverConvergenceTests: XCTestCase {
         )
     }
 
-    // MARK: - parseWindowEnumeration title round-trip
+    // MARK: - decodeWindowEnumeration title round-trip
 
-    func testParseWindowEnumerationIncludesTitle() {
-        let gs = "\u{1D}"
-        let rs = "\u{1E}"
-        // 5-field record: window GS tab GS isCurrent GS url GS title RS
-        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(gs)Alpha Page\(rs)"
-            + "1\(gs)2\(gs)0\(gs)https://b.com\(gs)Beta Page\(rs)"
-        let windows = SafariBridge.parseWindowEnumeration(raw)
+    func testParseWindowEnumerationIncludesTitle() throws {
+        let raw = FakeEnumeration.sourceForm([
+            .init(id: nil, name: nil, tabs: [(url: "https://a.com", title: "Alpha Page"), (url: "https://b.com", title: "Beta Page")]),
+        ])
+        let windows = try SafariBridge.decodeWindowEnumeration(raw)
         XCTAssertEqual(windows.count, 1)
         XCTAssertEqual(windows[0].tabs.count, 2)
         XCTAssertEqual(windows[0].tabs[0].title, "Alpha Page")
         XCTAssertEqual(windows[0].tabs[1].title, "Beta Page")
     }
 
-    func testParseWindowEnumerationLegacy4FieldFallback() {
-        // Legacy 4-field records (pre-title) must still parse,
-        // producing empty title — supports graceful mid-deploy state
-        // where the AppleScript may not yet emit titles.
-        let gs = "\u{1D}"
-        let rs = "\u{1E}"
-        let raw = "1\(gs)1\(gs)1\(gs)https://a.com\(rs)"
-        let windows = SafariBridge.parseWindowEnumeration(raw)
+    func testParseWindowEnumerationMissingTitleIsEmpty() throws {
+        // A tab whose name Safari reports as `missing value` decodes to an empty title (#355: this
+        // replaces the pre-title 4-field record, which the structured format cannot carry).
+        let raw = #"{{1, missing value, missing value, 1, {"https://a.com"}, {missing value}}}"#
+        let windows = try SafariBridge.decodeWindowEnumeration(raw)
         XCTAssertEqual(windows.count, 1)
         XCTAssertEqual(windows[0].tabs[0].title, "")
         XCTAssertEqual(windows[0].tabs[0].url, "https://a.com")
