@@ -96,7 +96,8 @@ The system SHALL decode the enumeration text into windows and tabs only when eve
 
 - **WHEN** a window's record has two tabs and current-tab index 3
 - **THEN** the window is listed with both tabs, neither marked current
-- **AND** a native-path command that switches tabs (`pdf`, `upload --native`, `close`) and names tab 1 with `--window-id` and `--tab-in-window 1` switches to tab 1 instead of assuming it is current
+- **AND** `pdf` and `upload --native`, naming tab 1 with `--window-id` and `--tab-in-window 1`, switch to tab 1 instead of assuming it is current
+- **AND** `close` naming that tab closes tab 1 by its position in the window and makes no tab current
 - **AND** `screenshot` naming that tab refuses with `backgroundTabNotCapturable` (v2.9.0 captured the window, which showed the newly opened tab)
 - **AND** document-scoped JavaScript commands, which do not read the window's current-tab index, behave as before
 
@@ -110,6 +111,17 @@ The system SHALL decode the enumeration text into windows and tabs only when eve
 - **WHEN** the enumeration is rejected because two windows report one id
 - **THEN** the error says the windows changed while they were read and to run the command again, without asking for a report
 - **AND** when it is rejected because a window id is a real, the error names the AppleScript integer limit and does not suggest running the command again
+
+##### Example: a tab opened during the enumeration, by command
+
+Window id 5822 is listed with two tabs and current-tab index 3. Each command names tab 1 with `--window-id 5822 --tab-in-window 1`.
+
+| Command | What it does with tab 1 |
+| --- | --- |
+| `pdf --allow-hid out.pdf` | the export script makes `tab 1 of window id 5822` current before it raises the window |
+| `upload --native "input" f.txt` | one AppleScript makes `tab 1 of window id 5822` current |
+| `close` | one AppleScript closes `tab 1 of window id 5822`; no tab is made current |
+| `screenshot out.png` | refuses with `backgroundTabNotCapturable` |
 
 ---
 ### Requirement: Page text cannot forge enumeration rows

@@ -179,9 +179,9 @@ Every new safari-browser command or flag MUST be classified into one of three in
 ---
 ### Requirement: Tab auto-switch classified as transitively authorized interference
 
-When a window-only primitive (`upload --native`, `upload --allow-hid`, `pdf`) resolves a target via `--url`, `--tab`, or `--document` and the target document resides in a non-current tab of its owning window, the system SHALL treat the subsequent `set current tab of window N to tab T` AppleScript operation as a passively interfering side effect transitively authorized by the `--native` or `--allow-hid` opt-in flag. The system SHALL NOT require a separate opt-in flag for tab switching.
+When a window-only primitive (`upload --native`, `upload --allow-hid`, `pdf`) resolves a target via `--url`, `--tab`, or `--document` and the target document resides in a non-current tab of its owning window, the system SHALL treat the subsequent tab switch (`set current tab of window id <id> to tab <t> of window id <id>`, or the same statement with the window's position when no window id is available) as a passively interfering side effect transitively authorized by the `--native` or `--allow-hid` opt-in flag. The system SHALL NOT require a separate opt-in flag for tab switching.
 
-The stderr interference warning emitted before keystroke dispatch SHALL include a note that the target tab will be briefly switched if it is not currently active.
+The stderr interference warning emitted before keystroke dispatch SHALL include a note that the target tab will be briefly switched if it is not currently active. The note is written when the resolution found the tab in the background; a tab that stops being current between the resolution and the AppleScript that checks it is brought forward without the note.
 
 #### Scenario: Tab switch accompanies native upload to background tab
 
@@ -193,7 +193,17 @@ The stderr interference warning emitted before keystroke dispatch SHALL include 
 
 - **WHEN** user runs `safari-browser upload --native "input" "/tmp/f.mp3" --url plaud` and the plaud document is already the current tab of its owning window
 - **THEN** the system SHALL emit the standard keystroke interference warning without a tab-switch addendum
-- **AND** SHALL NOT issue a `set current tab` AppleScript command
+- **AND** SHALL NOT make any tab current
+
+##### Example: tab switch notice and script
+
+Safari's windows, front to back: window 1 has id 4711 and tabs `https://home.example/1`, `https://home.example/2`, `https://home.example/3`; window 2 has id 5822 and tabs `https://work.example/a1`, `https://work.example/a2`; window 3 has id 6933 and the tab `https://work.example/b1`. Tab 1 is the current tab of each window.
+
+| Command | Notice on stderr before the keyboard warning | Tab switch |
+| --- | --- | --- |
+| `upload --native "input" f.txt --url work.example/a2` | says the target tab will be brought to the front of its window | tab 2 of window id 5822 is made current |
+| `upload --native "input" f.txt --url work.example/a1` | none | no tab is made current |
+| `pdf --allow-hid --url work.example/a2 out.pdf` | says the target tab will be brought to the front of its window | inside the export script |
 
 ---
 ### Requirement: Screenshot Accessibility path remains non-interfering for background windows
@@ -218,8 +228,8 @@ When a command (such as `open <url>` in its default focus-existing mode) needs t
 | Spatial layer | Condition | Behavior | Interference classification |
 |---------------|-----------|----------|----------------------------|
 | 1. Already focused | Target is the current tab of the front window | No AppleScript action | Non-interfering |
-| 2. Same window | Target is a background tab within the front window | `set current tab of window N to tab T` | Passively interfering, transitively authorized by the invoking command's semantics (no new opt-in flag required) |
-| 3. Same Space | Target is in a different window sharing the caller's current macOS Space | Activate that window and, if needed, switch its current tab | Passively interfering; stderr warning SHALL be emitted |
+| 2. Same window | Target is a background tab within the front window | One AppleScript: check that the tab still shows the requested URL, then `set current tab of window id <id> to tab <t> of window id <id>` | Passively interfering, transitively authorized by the invoking command's semantics (no new opt-in flag required) |
+| 3. Same Space | Target is in a different window sharing the caller's current macOS Space | One AppleScript that names the window by its id: check that the tab still shows the requested URL, switch its current tab if needed, raise the window and activate Safari | Passively interfering; stderr warning SHALL be emitted |
 | 4. Cross-Space | Target is in a window on a different macOS Space | Do NOT raise across Space; fall back to opening a new tab in the current Space | Non-interfering (the cross-Space target is left undisturbed) |
 
 Space membership SHALL be detected via the CGWindow API (`kCGWindowWorkspace` or equivalent). If Space detection fails due to missing permissions, the system SHALL default to the same-Space behavior (layer 3, raise window) rather than introduce unauthorized cross-Space interference, and SHALL emit a stderr note that Space detection was unavailable.
@@ -268,11 +278,17 @@ This gradient SHALL apply uniformly to every command that performs focus-existin
 - **THEN** its interference classification SHALL follow the same spatial gradient defined here
 - **AND** SHALL NOT redefine the gradient behavior locally
 
-<!-- @trace
-source: tab-targeting-v2
-updated: 2026-04-18
-code:
--->
+##### Example: gradient actions by window id
+
+Safari's windows, front to back: window 1 has id 4711 and tabs `https://home.example/1`, `https://home.example/2`, `https://home.example/3`; window 2 has id 5822 and tabs `https://work.example/a1`, `https://work.example/a2`; window 3 has id 6933 and the tab `https://work.example/b1`. Tab 1 is the current tab of each window. Window 1 is the front window.
+
+| Target tab | Layer | Tab made current | Window raised | Warning on stderr |
+| --- | --- | --- | --- | --- |
+| tab 1 of window id 4711 | 1 | no | no | no |
+| tab 3 of window id 4711 | 2 | tab 3 of window id 4711 | no | no |
+| tab 2 of window id 5822, same Space | 3 | tab 2 of window id 5822 | window id 5822 | yes |
+| tab 1 of window id 6933, another Space | 4 | no | no | a note; a new tab opens in the front window |
+| tab 2 of window id 5822, which shows another URL when the AppleScript runs | 3 | no | no | the command fails with a target-changed error |
 
 ---
 ### Requirement: Daemon process is passively interfering and user-terminable
