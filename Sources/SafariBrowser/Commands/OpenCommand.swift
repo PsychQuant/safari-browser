@@ -130,7 +130,7 @@ struct OpenCommand: AsyncParsableCommand {
     /// - `--window-id W`: that window, without `activate`; with `--profile` the
     ///   enumeration first checks W belongs to the profile (fails closed otherwise).
     /// - `--profile P [--window k]`: the id the profile-scoped enumeration read
-    ///   for that window (`activate` kept); a legacy record without an id falls
+    ///   for that window (`activate` kept); a record without an id (`missing value`) falls
     ///   back to its position, which the script pins before `activate`.
     /// - `--window N`: the position, pinned by id before `activate` in the script.
     /// - nothing: the front window.

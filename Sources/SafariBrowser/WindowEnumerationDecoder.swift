@@ -9,13 +9,19 @@ extension SafariBridge {
     /// (`AppleScriptSourceForm`) on both the stateless and the daemon path. Page titles, window names
     /// and URLs are quoted strings in that text, so no character in them can add, remove or alter a
     /// row; the rows and window ids below depend only on the list structure. The profile is the
-    /// exception: it is parsed from the window name, and a default-profile window's name is its page
-    /// title, so a title such as `Work — x` gives that window the profile `Work` (#364).
+    /// exception: it is parsed from the window name, which carries the page title (#364). A
+    /// default-profile window's name is its page title, so a title such as `Work — x` gives that
+    /// window the profile `Work`; and in a named-profile window, a title that starts with a combining
+    /// mark merges with the space ending the ` — ` separator, so `parseProfile` does not find it there
+    /// and the window leaves its own profile.
     ///
     /// A list the script cannot produce fails the command with `windowEnumerationCorrupt`
     /// (maintainer decision for #355: fail rather than drop rows). So does one state the script
     /// produces only while Safari's windows change under it: two windows reporting one id (a window
-    /// opened or raised mid-enumeration is read at two z-order positions). The checks:
+    /// opened or raised mid-enumeration is read at two z-order positions). That check does not catch a
+    /// window raised between the read of its own id and the reads of its tabs, which pairs the id with
+    /// the tabs of the window then at that position; the reads keep the order they had before #355.
+    /// The checks:
     /// 1. the text parses as source form and is a list (an empty text is not; no windows is `{}`);
     /// 2. every item is a list of six elements;
     /// 3. its first element is an integer equal to its 1-based position;

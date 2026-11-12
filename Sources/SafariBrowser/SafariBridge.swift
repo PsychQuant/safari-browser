@@ -409,7 +409,7 @@ enum SafariBridge {
     ///   (fires `warnWriter` at most once) and collapse to `.resolvedTab`
     ///   when a specific tab is known, or `.windowID` when only the window is
     ///   known (tab defaults to current-of-window); `.windowTab` / `.windowIndex`
-    ///   only for legacy enumerations without window ids.
+    ///   only when the enumeration carried no window id (`missing value`: a window with no tabs whose id could not be read).
     static func resolveToConcreteTarget(
         _ target: TargetDocument,
         firstMatch: Bool = false,
@@ -463,7 +463,7 @@ enum SafariBridge {
     /// URL matcher (for per-round-trip guards and bounded re-resolve)
     /// and the resolve-time profile filter (so the retry stays within
     /// the same profile) — and degrades to the pre-#79 positional forms
-    /// when the enumeration didn't yield an id (legacy records) or no
+    /// when the enumeration didn't yield an id (`missing value`) or no
     /// concrete tab is known (window-level target).
     static func concreteTarget(
         from resolved: ResolvedWindowTarget,
@@ -665,7 +665,7 @@ enum SafariBridge {
     /// command boundary so later calls can reuse the window ID and tab position:
     ///
     /// - `.windowTab` → one enumeration, collapsed by `concreteTarget`
-    ///   (stays positional only for legacy records without a window id);
+    ///   (stays positional only for a record without a window id, `missing value`);
     /// - `.frontWindow` / `.windowIndex` → `readWindowAnchor` (id + current
     ///   tab in one script); no anchor (0-tab window, no window, timeout)
     ///   → unchanged, so the existing error paths are byte-identical.
@@ -730,7 +730,7 @@ enum SafariBridge {
             // `--profile`: there the window index counts only that profile's windows, which only
             // the enumeration knows, so anchoring by Safari's own window index could pick another
             // profile's window. `resolveToConcreteTarget` usually sends such a target through the
-            // enumeration already, but a legacy enumeration record without a window id can still
+            // enumeration already, but a record without a window id (`missing value`) can still
             // hand a positional target back, so this guard is what keeps the cheap read from ever
             // running with a profile. `JSCommandRoundTripTests` pins both.
             if (profile ?? "").isEmpty,
@@ -2850,7 +2850,7 @@ enum SafariBridge {
         /// `windowIndex` (a z-order position that dangles when the user
         /// clicks another window), the id stays fixed for the window's
         /// lifetime, so `tab T of window id W` references survive z-order
-        /// churn. `nil` on legacy 4/5/6-field enumeration records.
+        /// churn. `nil` when the enumeration carried `missing value` (a window with no tabs whose id could not be read); since #355 a record that is not six elements fails the enumeration.
         let windowID: Int?
 
         /// Backwards-compatible initializer with `profile` / `windowID`
@@ -2881,7 +2881,7 @@ enum SafariBridge {
         let windowIndex: Int
         let tabIndexInWindow: Int?
         /// Stable AppleScript window id of the resolved window (#79).
-        /// `nil` on legacy enumeration records or targets resolved
+        /// `nil` when the enumeration carried no id (`missing value`) or targets resolved
         /// without enumeration — reference production falls back to the
         /// positional form.
         let windowID: Int?
@@ -3050,7 +3050,7 @@ enum SafariBridge {
     /// `documents` prints (document-listing, "Discovery aid"). A listing narrowed by a profile also names
     /// each window's id: with `--profile`, `--window N` counts only that profile's windows, so a Safari
     /// number copied into it can select another window, while `--window-id W` selects the listed one with
-    /// or without `--profile`. A legacy record has no id, and its label says so. Built here, at the
+    /// or without `--profile`. A record without an id (`missing value`) has no id, and its label says so. Built here, at the
     /// producers, because a daemon prints the payload, not the rendered message (#227).
     static func entryLabel(window: Int, tab: Int?, windowID: Int?, scoped: Bool) -> String {
         let label = tab.map { "window \(window) tab \($0)" } ?? "window \(window)"

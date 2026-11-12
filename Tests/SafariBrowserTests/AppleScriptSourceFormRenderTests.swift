@@ -114,8 +114,9 @@ final class AppleScriptSourceFormRenderTests: XCTestCase {
     }
 
     func testOtherValueKindsDecodeAlikeOnBothPaths() throws {
-        // Reals and booleans are printed differently by the two paths, but both decode to `.other`,
-        // so an enumeration that carried one fails the same way on either path. (Records are not
+        // Reals and booleans are printed differently by the two paths, but each decodes to the same
+        // value on both (`.real` for a real, `.other` for a boolean), so an enumeration that carried
+        // one fails the same way on either path. (Records are not
         // covered: the enumeration script builds only lists, so none can arrive.)
         let script = "return {3.5, 2147483647, true, false}"
         let stateless = try AppleScriptSourceForm.parse(try Self.osascriptSourceForm(script))

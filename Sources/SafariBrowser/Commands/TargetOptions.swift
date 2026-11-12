@@ -436,7 +436,7 @@ struct TargetOptions: ParsableArguments {
     ///   `--profile`: the arguments prove nothing about W, so it is checked against the profile once, here,
     ///   and only then recorded the same way. An id of another profile is refused before anything reads it.
     /// - The id cannot be read — no N-th window, a window with no tab, tab M outside the window (the anchor
-    ///   query, or the profile enumeration's not-found answer), a legacy record without an id, and, without
+    ///   query, or the profile enumeration's not-found answer), an enumeration record without an id (`missing value`), and, without
     ///   `--profile`, an anchor query that did not answer: `self` unchanged, so the first step fails — or runs —
     ///   exactly as before (#87 / #97, the js/wait precedent), and `note` gets one line saying the position is
     ///   used. Under `--profile`, an enumeration that times out or fails is thrown, not retried by the first

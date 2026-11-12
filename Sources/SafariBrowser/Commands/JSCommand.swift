@@ -51,7 +51,7 @@ struct JSCommand: AsyncParsableCommand {
         // read-result/delete) reuse the resolved window and tab position.
         // URL-selected targets carry an in-script URL guard and bounded
         // retry (#79); positional targets do not have stable tab identity.
-        // legacy enumeration without window ids degrades to positional
+        // an enumeration record without a window id (`missing value`) degrades to positional
         // `.windowTab` / `.windowIndex`.
         //
         // #180: positional targets (`--window N --tab-in-window M`,

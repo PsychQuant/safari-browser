@@ -2,8 +2,10 @@ import Foundation
 
 /// A value read back from AppleScript source form (#355). Only the shapes the window enumeration
 /// uses are distinguished, plus reals (a window id of 2^29 or more arrives as one); every other
-/// atom (booleans, `«class …»`, `«data …»`, dates, records) is `.other`, so a caller can reject it
-/// without the atom's text reaching an error message.
+/// atom (booleans, `«class …»`, `«data …»`, dates) is `.other`, so a caller can reject it
+/// without the atom's text reaching an error message. A record is read differently by the two
+/// paths: osascript's `{a:1}` parses as a list of `.other` atoms, the daemon's `«class reco»` as
+/// `.other`. The enumeration script builds no records, and no field of it accepts either.
 indirect enum AppleScriptValue: Equatable, Sendable {
     case list([AppleScriptValue])
     case text(String)

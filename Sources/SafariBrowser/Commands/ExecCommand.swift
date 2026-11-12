@@ -99,7 +99,7 @@ struct ExecCommand: AsyncParsableCommand {
         // never runs.
         if target.markTabResolved(env: environment) != .off,
            (try? ScriptInterpreter.parseScript(source: source, maxSteps: maxSteps)) != nil {
-            note("note: the tab-ownership marker (--mark-tab, --mark-tab-persist or SAFARI_BROWSER_MARK_TAB) is applied around a whole run only when the daemon runs the whole script; this script runs each step as its own command (a step is outside the shapes the daemon runs in-process, pacing is on, or the daemon is not in use), so no marker is applied around the run.\n")
+            note("note: the tab-ownership marker (--mark-tab, --mark-tab-persist or SAFARI_BROWSER_MARK_TAB) is applied around a whole run only when the daemon runs the whole script; this script runs each step as its own command (a step is outside the shapes the daemon runs in-process, pacing is on, the daemon is not in use, or the daemon does not announce the source form this build needs: run `safari-browser daemon stop` and then `safari-browser daemon start`), so no marker is applied around the run.\n")
         }
         let interpreter = ScriptInterpreter(maxSteps: maxSteps, dispatcher: stepDispatcher)
         let results = try await interpreter.run(source: source, target: target)
