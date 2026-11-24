@@ -1,0 +1,14 @@
+## 1. 測試先行（RED）
+
+- [x] 1.1 [P] 在 `Tests/SafariBrowserTests/TabPDFReaderTests.swift` 以替身頁面寫判定優先順序的測試，帶標記 `spec-example: save-pdf / an entry above 0 outweighs one without a number`（表中三列：`NaN` 與 12 帶旗標存檔且判定 `seen`、`NaN` 與 0 帶旗標判定 `unconfirmed`、`NaN` 與 12 不帶旗標以 `fail:sw-seen:` 結束），並在 `SavePDFFailureTests` 斷言 `notHeld`、`badStatus`、`readFailed`、`bytesNotPDF` 四則訊息都寫明「unless a service worker controls this tab」。對應 requirement「Only a PDF document is read, and a service worker's part is checked」與「save-pdf saves the displayed PDF without any request」。驗證：`PATH=/usr/bin:$PATH swift test --filter 'TabPDFReaderScriptTests|SavePDFFailureTests'` 在實作前有斷言失敗。
+- [x] 1.2 [P] 把 `Tests/SafariBrowserTests/TabPDFWebKitTests.swift` 的暫時量測測試改成正式測試 `testAControlledTabWhoseDocumentIsNotHeldReachesTheServiceWorker`，帶兩個標記 `spec-example: save-pdf / a controlled PDF tab whose address was never loaded` 與 `spec-example: non-interference / a controlled PDF tab whose document is not held`：`replaceState` 到從沒載入過的網址後讀取，伺服器紀錄多了 service worker 的記號與那個網址的請求，失敗是 `badStatus(code: 404)`，訊息含「unless a service worker controls this tab」。對應 requirement「save-pdf is non-interfering and sends no request」。驗證：`PATH=/usr/bin:$PATH make test-save-pdf-webkit` 在訊息改之前失敗。
+
+## 2. 實作（GREEN）
+
+- [x] 2.1 改 `TabPDFReader.startScript` 的 `verdict()`：先找有沒有 `workerStart` 大於 0 的 entry（有就是 `seen`），其次有無法判讀的 entry 就是 `unconfirmed`，再來才是 `not-seen`；不再提前回傳。驗證：1.1 的優先順序測試與既有的 `testAnEntryWithoutANumericWorkerStartIsUnconfirmed` 綠燈。
+- [x] 2.2 改 `SavePDFFailure` 的 `notHeld`、`badStatus`、`readFailed`、`bytesNotPDF` 訊息，落實 requirement「save-pdf saves the displayed PDF without any request」新增的那一句：不再無條件說沒有送出請求，寫明 service worker 控制分頁時讀取交給了它、它可以向網路回答。驗證：1.1 的訊息測試與 `testEveryMessageSaysNothingWasRequestedWhereItMatters` 綠燈。
+- [x] 2.3 讓 1.2 的 WebKit 測試與全套測試通過。驗證：`PATH=/usr/bin:$PATH make test-save-pdf-webkit` 16/16、`PATH=/usr/bin:$PATH make test` 0 失敗。
+
+## 3. 文件
+
+- [x] 3.1 更新 `README.md` 的 save-pdf 一節、`CLAUDE.md`〈Tab PDFs〉、`CHANGELOG.md`：WebKit 沒持有文件時，受控分頁的讀取會交給 service worker，沒帶旗標也一樣、而且在判定之前；存檔的保證不變。對應 requirement「save-pdf is non-interfering and sends no request」。驗證：內容審查，三處都不再寫「網站看不到預設的讀法」而不加條件。

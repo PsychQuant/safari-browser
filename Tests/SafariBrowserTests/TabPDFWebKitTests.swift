@@ -317,6 +317,26 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(serviceWorkerActivity, before, "no request for the document and no fetch event during the read: \(log)")
     }
 
+    /// When WebKit does not hold the document at the tab's address, the read goes to the service worker like any
+    /// fetch of the page, before any check and without the flag (#390 comment 7142919264). Nothing is saved, and the
+    /// message does not claim that no request was sent.
+    /// spec-example: save-pdf / a controlled PDF tab whose address was never loaded
+    /// spec-example: non-interference / a controlled PDF tab whose document is not held
+    func testAControlledTabWhoseDocumentIsNotHeldReachesTheServiceWorker() async throws {
+        let tab = try await openControlled()
+        _ = tab.evaluate("history.replaceState(null, '', '/sw/never-loaded.pdf'); 1")
+        let before = log.count
+        let got = await failure(tab)
+        for _ in 0..<20 where !log.dropFirst(before).contains(where: { $0.hasPrefix("GET /sw/never-loaded.pdf") }) {
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        let added = Array(log.dropFirst(before))
+        XCTAssertEqual(got, .badStatus(code: 404))
+        XCTAssertTrue(added.contains { $0.hasPrefix("GET /sw-saw") && $0.contains("never-loaded.pdf") }, "\(added)")
+        XCTAssertTrue(added.contains { $0.hasPrefix("GET /sw/never-loaded.pdf") }, "\(added)")
+        XCTAssertTrue(got?.message.contains("unless a service worker controls this tab") ?? false, got?.message ?? "nil")
+    }
+
     /// With no entry for the read, it cannot be confirmed: refused without the flag, kept with it.
     /// spec-example: save-pdf / a full resource timing buffer
     func testAFullResourceTimingBufferIsUnconfirmed() async throws {

@@ -907,6 +907,10 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
   and changes nothing about the read, and with it a service worker may have answered from the network. The output
   names the verdict: `--json` always has `service_worker` (`none`, `not-seen`, `seen` or `unconfirmed`), the text
   line only when a service worker controls the tab. A tab no service worker controls is read exactly as before.
+  This holds only while WebKit holds the document. When it no longer does (it was dropped, or the page changed its
+  address), the read of a tab a service worker controls goes to the service worker like any fetch, before the
+  check and also without the flag, and the service worker can answer it from the network: the site may see that
+  read, and nothing is saved unless the check allows it. How long WebKit keeps a displayed PDF has not been measured.
 - **What it saves is what the fetch answers**, and that answer is made for the displayed PDF. Measured on Safari: a PDF
   served with a 404 is saved like any other, a tab reached through a redirect saves, and two tabs on one URL with different
   content each gave their own. In an off-screen WebKit view (`make test-save-pdf-webkit`, no Safari involved) the status reads 200 whatever the server sent. So it saves what

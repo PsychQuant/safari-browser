@@ -11,7 +11,8 @@ enum SavePDFFailure: Equatable, Sendable {
     case serviceWorkerUnconfirmed
     /// The `only-if-cached` fetch rejected. WebKit does not hold the whole document (it was dropped, or the
     /// load stopped) or the page's policy blocked the read; the page cannot tell these apart (all are a
-    /// `TypeError`). `detail` is the error's name, never its message.
+    /// `TypeError`). `detail` is the error's name, never its message. On a tab a service worker controls, a read
+    /// WebKit does not hold goes to the service worker like any fetch, so this and the failures after it name that.
     case notHeld(detail: String)
     /// The fetch answered with something other than 200. On WebKit a PDF document answers 200 whatever the
     /// server sent, so this is for an engine that does not.
@@ -43,17 +44,17 @@ enum SavePDFFailure: Equatable, Sendable {
         case .serviceWorkerUnconfirmed:
             return "A service worker controls this tab, and whether it handled this read could not be confirmed (there is no timing entry for the read), so the bytes were read but not saved (verdict: unconfirmed). To keep it anyway, run again with --allow-service-worker."
         case .notHeld(let detail):
-            return "Could not read the PDF from the tab (\(t(detail))): WebKit does not hold the whole document (it was dropped, or the load stopped), or the page's policy blocked the read. No request for the document was sent. Display the PDF again, or save it by hand."
+            return "Could not read the PDF from the tab (\(t(detail))): WebKit does not hold the whole document (it was dropped, or the load stopped), or the page's policy blocked the read. No request for the document was sent, unless a service worker controls this tab: then the read went to the service worker, which can answer from the network. Display the PDF again, or save it by hand."
         case .badStatus(let code):
-            return "The tab answered with HTTP \(code), so nothing was saved. No request was sent."
+            return "The tab answered with HTTP \(code), so nothing was saved. No request was sent, unless a service worker controls this tab: then the read went to the service worker, which can answer from the network."
         case .readFailed(let detail):
-            return "WebKit answered, but the tab could not prepare the document (\(t(detail))), so nothing was saved. No request was sent."
+            return "WebKit answered, but the tab could not prepare the document (\(t(detail))), so nothing was saved. No request was sent, unless a service worker controls this tab: then the read went to the service worker, which can answer from the network."
         case .tooLarge(let bytes):
             return "The PDF is \(bytes) bytes, over the \(TabPDFReader.maxBytes) byte limit of save-pdf. Nothing was written."
         case .notScriptable:
             return "The tab is not running scripts: it is still loading, or its policy forbids them. Nothing was read and no request was sent. Run this again when it has loaded, or save the PDF by hand."
         case .bytesNotPDF:
-            return "What the tab holds does not start with %PDF-, so nothing was saved. No request was sent."
+            return "What the tab holds does not start with %PDF-, so nothing was saved. No request was sent, unless a service worker controls this tab: then the read went to the service worker, which can answer from the network."
         case .pageReplaced:
             return "The tab's page was replaced during the read, so nothing was saved."
         case .timedOut(let seconds):

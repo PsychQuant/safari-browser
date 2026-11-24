@@ -84,15 +84,15 @@ enum TabPDFReader {
               function verdict(t0) {
                 try {
                   if (!(t0 >= 0) || typeof performance !== 'object' || !performance || typeof performance.getEntriesByType !== 'function') { return 'unconfirmed'; }
-                  var want = ('' + location.href).split('#')[0], list = performance.getEntriesByType('resource'), found = false, most = 0;
+                  var want = ('' + location.href).split('#')[0], list = performance.getEntriesByType('resource'), found = false, unknown = false, most = 0;
                   for (var i = 0; i < list.length; i++) {
                     var e = list[i];
                     if (('' + e.name).split('#')[0] !== want || e.initiatorType !== 'fetch' || !(e.startTime >= t0)) { continue; }
-                    if (typeof e.workerStart !== 'number' || !(e.workerStart >= 0)) { return 'unconfirmed'; }
                     found = true;
+                    if (typeof e.workerStart !== 'number' || !(e.workerStart >= 0)) { unknown = true; continue; }
                     if (e.workerStart > most) { most = e.workerStart; }
                   }
-                  return !found ? 'unconfirmed' : (most > 0 ? 'seen' : 'not-seen');
+                  return most > 0 ? 'seen' : (!found || unknown ? 'unconfirmed' : 'not-seen');
                 } catch (e) { return 'unconfirmed'; }
               }
               try {

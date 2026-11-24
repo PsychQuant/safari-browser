@@ -197,6 +197,23 @@ final class TabPDFReaderScriptTests: XCTestCase {
         }
     }
 
+    /// A read the service worker handled is `seen` even when another entry for it tells nothing (#390 fix0).
+    /// spec-example: save-pdf / an entry above 0 outweighs one without a number
+    func testAnEntryAbove0OutweighsOneWithoutANumber() throws {
+        let name = TabPDFFixture.Entry().name
+        let rows: [(label: String, workerStarts: [String], allow: Bool, expected: String)] = [
+            ("NaN and 12, flag", ["NaN", "12"], true, okPrefix + ":seen"),
+            ("NaN and 0, flag", ["NaN", "0"], true, okPrefix + ":unconfirmed"),
+            ("NaN and 12", ["NaN", "12"], false, "fail:sw-seen:"),
+        ]
+        for row in rows {
+            let page = TabPDFFixture.page(serviceWorker: true)
+            let entries = row.workerStarts.map { "{ name: '\(name)', initiatorType: 'fetch', startTime: 150, workerStart: \($0) }" }
+            _ = page.evaluate("performance.getEntriesByType = function () { return [\(entries.joined(separator: ", "))]; };")
+            XCTAssertEqual(try run(page, allow: row.allow), row.expected, row.label)
+        }
+    }
+
     /// The flag is a literal in the script and changes nothing about the one fetch.
     func testTheFlagDoesNotChangeTheFetch() throws {
         for allow in [false, true] {
@@ -494,6 +511,14 @@ final class SavePDFFailureTests: XCTestCase {
             XCTAssertTrue(failure.message.contains("No request was sent"), failure.message)
         }
         XCTAssertTrue(SavePDFFailure.notScriptable.message.contains("no request was sent"))
+    }
+
+    /// On a tab a service worker controls, a read WebKit does not hold goes to the service worker, which can answer
+    /// from the network (#390 comment 7142919264), so these messages name that exception.
+    func testFailuresAfterTheFetchNameTheServiceWorkerException() {
+        for failure: SavePDFFailure in [.notHeld(detail: "TypeError"), .badStatus(code: 404), .readFailed(detail: "Error"), .bytesNotPDF] {
+            XCTAssertTrue(failure.message.contains("unless a service worker controls this tab"), failure.message)
+        }
     }
 
     /// Both say the bytes were read and not kept, name the flag, and do not claim that no request was sent.
