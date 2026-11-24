@@ -287,6 +287,50 @@ final class WindowLevelCommandsTests: XCTestCase {
         }
     }
 
+    /// The same miss when the window closes later: after the resolution, at the read that checks the target,
+    /// and at the click. Those two calls name `window id W` and take no profile (so that the windows are not
+    /// enumerated a second time); the miss is worded again with the profile, and lists that profile's tabs.
+    func testAPinnedWindowUnderAProfileThatClosesAfterTheResolutionListsTheProfilesTabs() async throws {
+        let command = try UploadCommand.parse(["--native", "input[type=file]", uploadPath, "--window", "1", "--profile", "Work"])
+        func assertProfileMiss(_ error: Error?, _ what: String, file: StaticString = #filePath, line: UInt = #line) {
+            guard case SafariBrowserError.documentNotFound(let pattern, let entries)? = error else {
+                return XCTFail("\(what): expected documentNotFound, got \(String(describing: error))", file: file, line: line)
+            }
+            XCTAssertEqual(pattern, "window 1 (window id 5822 at command start)", what, file: file, line: line)
+            XCTAssertEqual(entries.count, 1, "\(what): \(entries)", file: file, line: line)
+            XCTAssertTrue(entries.first?.hasSuffix("(window id 6933): https://work.example/b1") == true, "\(what): \(entries)",
+                          file: file, line: line)
+        }
+
+        // Gone when the read that checks the target runs.
+        let atRead = Fake()
+        atRead.after(script: 2) { $0.removeAll { $0.id == 5822 } }
+        do {
+            _ = try await atRead.drive { try await command.nativeUploadPlan(expandedPath: self.uploadPath, notice: { _ in }) }
+            XCTFail("the window is gone when it is read")
+        } catch {
+            XCTAssertTrue(atRead.scripts.contains { $0.contains("get URL of document of window id 5822") }, atRead.transcript)
+            assertProfileMiss(error, "read")
+        }
+
+        // Gone when the file input is to be clicked.
+        let atClick = Fake()
+        let plan = try await atClick.drive { try await command.nativeUploadPlan(expandedPath: self.uploadPath, notice: { _ in }) }
+        atClick.after(script: atClick.scripts.count + 1) { $0.removeAll { $0.id == 5822 } }
+        _ = try await atClick.drive { try await SafariBridge.runAppleScript("tell application \"Safari\"\nend tell") }
+        var dialogs: [String] = []
+        do {
+            try await atClick.drive {
+                try await command.runNativeUpload(
+                    plan, ensureLive: {}, runDialogScript: { script, _ in dialogs.append(script) }, warn: { _ in })
+            }
+            XCTFail("the window is gone when the file input is to be clicked")
+        } catch {
+            assertProfileMiss(error, "click")
+            XCTAssertEqual(dialogs, [], "no dialog script runs")
+        }
+    }
+
     /// The same pin on the other three commands under `--profile`: one enumeration each.
     func testAPinnedWindowUnderAProfileIsEnumeratedOnce() async throws {
         let traces = [try await pdfTrace(["--window", "1", "--profile", "Work"]),

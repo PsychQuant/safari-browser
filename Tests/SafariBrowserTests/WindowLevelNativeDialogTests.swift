@@ -202,6 +202,7 @@ final class WindowLevelNativeDialogTests: XCTestCase {
 
     /// The "the save dialog may still be open" advice follows only an error after which it can be: a target
     /// that was never found, or that changed before the script did anything, opened no dialog.
+    // spec-example: pdf-export / save-dialog advice after a failed export
     func testTheSaveDialogAdviceFollowsOnlyAnErrorThatCanLeaveOneOpen() {
         XCTAssertFalse(PdfCommand.needsRecoveryAdvice(
             after: SafariBrowserError.documentNotFound(pattern: "window 9", availableDocuments: [])))
@@ -616,6 +617,37 @@ final class WindowLevelNativeDialogTests: XCTestCase {
             XCTFail("tab 2 is no longer current")
         } catch SafariBrowserError.targetChangedBeforeActing {
             XCTAssertFalse(switchedBack.scripts.contains { $0.contains("do JavaScript") }, switchedBack.transcript)
+        }
+
+        // The tab navigates after that AppleScript: the upload stops at the read, before the click.
+        let navigating = Fake()
+        navigating.after(script: 2) { $0[1].tabs[1] = "https://other.example/" }
+        do {
+            _ = try await upload(["--url", "work.example/a2"], fake: navigating)
+            XCTFail("tab 2 no longer shows a URL --url matches")
+        } catch SafariBrowserError.targetChangedBeforeActing(_, let stage) {
+            XCTAssertEqual(stage, .afterTabSwitch)
+            XCTAssertFalse(navigating.scripts.contains { $0.contains("do JavaScript") }, navigating.transcript)
+        }
+
+        // pdf: a tab named by its position that is gone when the export script runs: the script stops before
+        // any tab is made current or the window is raised.
+        let shrinking = Fake()
+        let tabOfWindow = try await exportPlan(["--window-id", "5822", "--tab-in-window", "2"], fake: shrinking)
+        var oneTab = Fake.threeWindows
+        oneTab[1].tabs.removeLast()
+        let shrunk = Fake(windows: oneTab)
+        do {
+            _ = try await runOpeningBlock(of: tabOfWindow, on: shrunk)
+            XCTFail("tab 2 is gone")
+        } catch SafariBrowserError.appleScriptFailed(let message) {
+            XCTAssertEqual(SafariBridge.appleScriptErrorCode(in: message), SafariBridge.WindowLevelMarker.tabGone, message)
+            XCTAssertEqual(shrunk.actions, [])
+            let miss = try await shrunk.drive {
+                try await SafariBridge.notFoundError(for: tabOfWindow.missTarget, profile: tabOfWindow.profile)
+            }
+            guard case .documentNotFound(let pattern, _) = miss else { return XCTFail("\(miss)") }
+            XCTAssertEqual(pattern, "window id 5822 tab 2")
         }
 
         // pdf: no AppleScript of its own; the check and the switch are inside the export script, before the raise.

@@ -87,6 +87,17 @@ final class WindowLevelTargetTests: XCTestCase {
             for: Resolved(windowIndex: 2, tabIndexInWindow: 2, windowID: 5822, anchorTabIndex: 2),
             named: .windowTab(window: 2, tabInWindow: 2), profile: nil), .position(2))
 
+        // `screenshot` does not count --profile alone, --url-exact, --url-endswith or --url-regex as a target
+        // (#233): no window is resolved, nothing is sent, and the front window is captured as before.
+        for flags in [["--profile", "Work"], ["--url-exact", "https://work.example/a1"],
+                      ["--url-endswith", "/a1"], ["--url-regex", "a1$"]] {
+            let fake = Fake()
+            let shot = try ScreenshotCommand.parse(flags + ["/tmp/out.png"])
+            let resolved = try await fake.drive { try await shot.resolveCapture() }
+            XCTAssertNil(resolved.capture, "\(flags)")
+            XCTAssertEqual(fake.scripts, [], "\(flags)")
+        }
+
         // `close`: no flag — the script is the one sent before, and it names `window 1`.
         let plain = Fake()
         let plainError = await plain.run(CloseCommand.self, [])
@@ -166,8 +177,14 @@ final class WindowLevelTargetTests: XCTestCase {
         let script = SafariBridge.closeTabScript(
             windowReference: "window id 5822", tab: 2,
             guardClause: SafariBridge.tabGuardClause(named: named, matchedURL: read))
+        // Through the translation the commands use, so that a failed check is the error a caller reads.
+        let target = SafariBridge.TargetDocument.resolvedTab(windowID: 5822, tabInWindow: 2, rematch: nil, profile: nil)
         do {
-            _ = try await fake.drive { try await SafariBridge.runAppleScript(script) }
+            _ = try await fake.drive {
+                try await SafariBridge.translatingWindowLevelMarkers(target: target, profile: nil) {
+                    try await SafariBridge.runAppleScript(script)
+                }
+            }
             return (!fake.closed.isEmpty, nil)
         } catch {
             return (!fake.closed.isEmpty, error)
@@ -200,11 +217,12 @@ final class WindowLevelTargetTests: XCTestCase {
             if row.acts {
                 XCTAssertNil(outcome.error, "\(row.0): \(String(describing: outcome.error))")
             } else {
-                guard case SafariBrowserError.appleScriptFailed(let message)? = outcome.error else {
-                    XCTFail("\(row.0): expected the check to stop the script, got \(String(describing: outcome.error))")
+                guard case SafariBrowserError.targetChangedBeforeActing(let expected, let stage)? = outcome.error else {
+                    XCTFail("\(row.0): expected a target-changed error, got \(String(describing: outcome.error))")
                     continue
                 }
-                XCTAssertTrue(message.contains("SB_TARGET_CHANGED"), message)
+                XCTAssertEqual(stage, .beforeAnyAction)
+                XCTAssertTrue(expected.contains("window id 5822 tab 2"), expected)
             }
         }
         // A tab named by its position has no check; a regex with no URL to compare refuses.
@@ -272,6 +290,7 @@ final class WindowLevelTargetTests: XCTestCase {
 
     /// The number at the end of the error decides, never the text (#218): the wrapped scripts include System
     /// Events blocks, whose error text can carry a window's name, and a window's name is a page's title.
+    // spec-example: document-targeting / markers by number
     func testAMarkerIsReadFromTheErrorNumberNotFromTheText() async throws {
         let fake = Fake()
         func translate(_ message: String, notFound: Bool = false) async -> Error? {
@@ -317,6 +336,7 @@ final class WindowLevelTargetTests: XCTestCase {
     }
 
     /// What the target-changed error says depends on what the command had already done.
+    // spec-example: document-targeting / what a target-changed error says
     func testTheTargetChangedErrorSaysWhatHadAlreadyHappened() async throws {
         let fake = Fake()
         func text(_ stage: SafariBrowserError.TargetChangeStage) async -> String {
