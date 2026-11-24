@@ -57,6 +57,28 @@ struct OpenCommand: AsyncParsableCommand {
         }
     }
 
+    /// The default path's first step: when a tab already shows exactly `url`, reveal it instead of opening
+    /// another one, and say so by returning true. The window id the enumeration read for that tab's window
+    /// goes to `focusExistingTab`, which is what makes the reveal name `window id W` (#353). A function of
+    /// its own, with the Space probe as a parameter, so a test runs this hand-over against a fake Safari.
+    static func revealExisting(
+        url: String,
+        warn: @escaping (String) -> Void,
+        spaces: SafariBridge.SpaceProbe = .live
+    ) async throws -> Bool {
+        guard let match = try await SafariBridge.findExactMatchingTab(url: url) else { return false }
+        try await SafariBridge.focusExistingTab(
+            window: match.window,
+            tabInWindow: match.tabInWindow,
+            isCurrent: match.isCurrent,
+            url: url,
+            windowID: match.windowID,
+            warnWriter: warn,
+            spaces: spaces
+        )
+        return true
+    }
+
     func run() async throws {
         let profile = target.resolveProfile()
         if newWindow {
@@ -109,17 +131,7 @@ struct OpenCommand: AsyncParsableCommand {
             return
         }
 
-        if let match = try await SafariBridge.findExactMatchingTab(url: url) {
-            try await SafariBridge.focusExistingTab(
-                window: match.window,
-                tabInWindow: match.tabInWindow,
-                isCurrent: match.isCurrent,
-                url: url,
-                windowID: match.windowID,
-                warnWriter: { msg in
-                    FileHandle.standardError.write(Data(msg.utf8))
-                }
-            )
+        if try await Self.revealExisting(url: url, warn: { FileHandle.standardError.write(Data($0.utf8)) }) {
             return
         }
 

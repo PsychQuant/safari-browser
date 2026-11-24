@@ -73,8 +73,16 @@ final class WindowLevelTargetTests: XCTestCase {
             for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: 5822), named: .windowIndex(2), profile: nil), .position(2))
         XCTAssertEqual(SafariBridge.actingWindow(
             for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: 5822), named: .frontWindow, profile: "Work"), .id(5822))
+        // A window id the user typed never falls back to a position, whatever the resolution carried
+        // (--window-id is an identity, not a place); a tab found by its URL in a record without an id does.
         XCTAssertEqual(SafariBridge.actingWindow(
-            for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: nil), named: .windowID(5822), profile: nil), .position(2))
+            for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: nil), named: .windowID(5822), profile: nil), .id(5822))
+        XCTAssertEqual(SafariBridge.actingWindow(
+            for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: nil),
+            named: .windowID(5822, tabInWindow: nil, pinnedFrom: 2), profile: "Work"), .id(5822))
+        XCTAssertEqual(SafariBridge.actingWindow(
+            for: Resolved(windowIndex: 2, tabIndexInWindow: 2, windowID: nil, anchorTabIndex: 2),
+            named: .urlMatch(.contains("a2")), profile: nil), .position(2))
         XCTAssertEqual(SafariBridge.actingWindow(
             for: Resolved(windowIndex: 2, tabIndexInWindow: 2, windowID: 5822, anchorTabIndex: 2),
             named: .windowTab(window: 2, tabInWindow: 2), profile: nil), .position(2))
@@ -237,13 +245,21 @@ final class WindowLevelTargetTests: XCTestCase {
         let moved = await translate(
             .resolvedTab(windowID: 5822, tabInWindow: 2, rematch: .contains("a2"), profile: nil),
             "execution error: SB_TARGET_CHANGED (9001)")
-        guard case SafariBrowserError.targetChangedBeforeActing(let expected)? = moved else {
+        guard case SafariBrowserError.targetChangedBeforeActing(let expected, let stage)? = moved else {
             return XCTFail("a failed URL check is targetChangedBeforeActing, got \(String(describing: moved))")
         }
         XCTAssertTrue(expected.contains("window id 5822 tab 2"), expected)
+        XCTAssertEqual(stage, .beforeAnyAction)
         let text = SafariBrowserError.targetChangedBeforeActing(expected: expected).errorDescription ?? ""
         XCTAssertTrue(text.contains("Nothing was done to it"), text)
         XCTAssertFalse(text.contains("re-resolve"), "this error does not retry, and must not say it did:\n\(text)")
+
+        // A tab the resolution named is gone from a window that is still open.
+        guard case SafariBrowserError.documentNotFound(let tabGone, _)? =
+                await translate(.windowID(5822, tabInWindow: 2), "execution error: SB_TAB_GONE (9003)") else {
+            return XCTFail("a tab that is gone is documentNotFound")
+        }
+        XCTAssertEqual(tabGone, "window id 5822 tab 2")
 
         // Anything else passes through untouched.
         guard case SafariBrowserError.appleScriptFailed(let other)? =
@@ -252,6 +268,196 @@ final class WindowLevelTargetTests: XCTestCase {
         }
         XCTAssertTrue(other.contains("File dialog did not appear"))
         XCTAssertEqual(fake.scripts, [], "wording a miss on a window id sends nothing")
+    }
+
+    /// The number at the end of the error decides, never the text (#218): the wrapped scripts include System
+    /// Events blocks, whose error text can carry a window's name, and a window's name is a page's title.
+    func testAMarkerIsReadFromTheErrorNumberNotFromTheText() async throws {
+        let fake = Fake()
+        func translate(_ message: String, notFound: Bool = false) async -> Error? {
+            do {
+                try await fake.drive {
+                    try await SafariBridge.translatingWindowLevelMarkers(
+                        target: .windowID(5822), profile: nil, translateNotFound: notFound
+                    ) {
+                        throw SafariBrowserError.appleScriptFailed(message)
+                    }
+                }
+                return nil
+            } catch {
+                return error
+            }
+        }
+        // A page titled like a marker, reported by System Events with its own number: passed through.
+        for title in ["SB_WINDOW_GONE", "SB_TARGET_CHANGED", "SB_TAB_GONE"] {
+            let message = "System Events got an error: Can’t get sheet 1 of window \"\(title)\" of process \"Safari\". (-1728)"
+            guard case SafariBrowserError.appleScriptFailed(let passed)? = await translate(message) else {
+                return XCTFail("\(title) in the text is not a marker")
+            }
+            XCTAssertEqual(passed, message)
+        }
+        // The numbers alone are the markers.
+        guard case SafariBrowserError.targetChangedBeforeActing? = await translate("execution error: tab 2 is no longer current (9001)") else {
+            return XCTFail("9001 is the target-changed marker")
+        }
+        guard case SafariBrowserError.documentNotFound? = await translate("execution error: gone (9002)") else {
+            return XCTFail("9002 is the window-gone marker")
+        }
+        guard case SafariBrowserError.documentNotFound? = await translate("execution error: gone (9003)") else {
+            return XCTFail("9003 is the tab-gone marker")
+        }
+        // "Object not found" is a miss only where the caller says the wrapped script is a Safari read.
+        let bare = "execution error: Safari got an error: Can’t get window id 5822. (-1728)"
+        guard case SafariBrowserError.appleScriptFailed? = await translate(bare) else {
+            return XCTFail("-1728 is left alone by default")
+        }
+        guard case SafariBrowserError.documentNotFound? = await translate(bare, notFound: true) else {
+            return XCTFail("-1728 is a miss when translateNotFound is set")
+        }
+    }
+
+    /// What the target-changed error says depends on what the command had already done.
+    func testTheTargetChangedErrorSaysWhatHadAlreadyHappened() async throws {
+        let fake = Fake()
+        func text(_ stage: SafariBrowserError.TargetChangeStage) async -> String {
+            do {
+                try await fake.drive {
+                    try await SafariBridge.translatingWindowLevelMarkers(
+                        target: .resolvedTab(windowID: 5822, tabInWindow: 2, rematch: .contains("a2"), profile: nil),
+                        profile: nil, stage: stage
+                    ) {
+                        throw SafariBrowserError.appleScriptFailed("execution error: SB_TARGET_CHANGED (9001)")
+                    }
+                }
+                return ""
+            } catch {
+                guard case SafariBrowserError.targetChangedBeforeActing(_, let carried) = error else { return "\(error)" }
+                XCTAssertEqual(carried, stage)
+                return error.localizedDescription
+            }
+        }
+        let before = await text(.beforeAnyAction)
+        XCTAssertTrue(before.contains("Nothing was done to it"), before)
+
+        let switched = await text(.afterTabSwitch)
+        XCTAssertFalse(switched.contains("Nothing was done"), "a tab may have been made current by then:\n\(switched)")
+        XCTAssertFalse(switched.contains("no tab was closed or switched"), switched)
+        XCTAssertTrue(switched.contains("had already made that tab current"), switched)
+        XCTAssertTrue(switched.contains("The file input was not clicked"), switched)
+        XCTAssertTrue(switched.contains("no longer its window's current tab"), switched)
+
+        let dialog = await text(.afterFileDialog)
+        XCTAssertFalse(dialog.contains("Nothing was done"), dialog)
+        XCTAssertFalse(dialog.contains("was not clicked"), "the click had happened:\n\(dialog)")
+        XCTAssertTrue(dialog.contains("after the file input was clicked"), dialog)
+        XCTAssertTrue(dialog.contains("dismiss it (Esc)"), dialog)
+        for message in [before, switched, dialog] {
+            XCTAssertTrue(message.contains("window id 5822 tab 2"), message)
+            XCTAssertFalse(message.contains("re-resolve"), message)
+        }
+    }
+
+    // spec-example: document-targeting / misses of window-level commands under a profile
+    func testMissesOfWindowLevelCommandsUnderAProfile() async throws {
+        func miss(_ target: SafariBridge.TargetDocument, profile: String?, on fake: Fake) async throws -> (String, [String]) {
+            let error = try await fake.drive { try await SafariBridge.notFoundError(for: target, profile: profile) }
+            guard case .documentNotFound(let pattern, let entries) = error else {
+                XCTFail("expected documentNotFound, got \(error)")
+                return ("", [])
+            }
+            return (pattern, entries)
+        }
+        var windows = Fake.threeWindows
+        windows.removeAll { $0.id == 5822 }
+
+        // A window id that is gone, under --profile: that profile's windows, by id.
+        let gone = try await miss(.windowID(5822), profile: "Work", on: Fake(windows: windows))
+        XCTAssertEqual(gone.0, "window id 5822 (profile: \"Work\")")
+        XCTAssertEqual(gone.1, ["window id 6933: https://work.example/b1"])
+
+        // The same miss on a tab of that window.
+        let goneTab = try await miss(.windowID(5822, tabInWindow: 2), profile: "Work", on: Fake(windows: windows))
+        XCTAssertEqual(goneTab.0, "window id 5822 tab 2 (profile: \"Work\")")
+        XCTAssertEqual(goneTab.1, ["window id 6933: https://work.example/b1"])
+
+        // The window is open but has no tab 2 any more: the tabs it has.
+        var oneTab = Fake.threeWindows
+        oneTab[1].tabs.removeLast()
+        let tabGone = try await miss(.windowID(5822, tabInWindow: 2), profile: "Work", on: Fake(windows: oneTab))
+        XCTAssertEqual(tabGone.0, "window id 5822 tab 2 (profile: \"Work\")")
+        XCTAssertEqual(tabGone.1.count, 1, "\(tabGone.1)")
+        XCTAssertTrue(tabGone.1.first?.hasSuffix("(window id 5822): https://work.example/a1") == true, "\(tabGone.1)")
+
+        // No window of the profile is left.
+        let none = try await miss(.windowID(5822), profile: "Work", on: Fake(windows: [Fake.threeWindows[0]]))
+        XCTAssertEqual(none.1, ["(no window of profile \"Work\" is open)"])
+        // A window of another profile is never listed, even when it is the window named and it is open.
+        let foreign = try await miss(.windowID(4711, tabInWindow: 9), profile: "Work", on: Fake())
+        XCTAssertEqual(foreign.1, ["window id 5822: https://work.example/a1", "window id 6933: https://work.example/b1"])
+        for entries in [gone.1, goneTab.1, tabGone.1, none.1, foreign.1] {
+            XCTAssertFalse(entries.contains { $0.contains("home.example") }, "another profile's tab is listed: \(entries)")
+        }
+
+        // Without --profile the miss sends nothing and lists nothing, as before.
+        let plain = Fake(windows: windows)
+        let bare = try await miss(.windowID(5822), profile: nil, on: plain)
+        XCTAssertEqual(bare.0, "window id 5822")
+        XCTAssertEqual(plain.scripts, [])
+
+        // close --window-id 5822 --profile Work, the window closes after the resolution.
+        let closing = Fake()
+        closing.after(script: 1) { $0.removeAll { $0.id == 5822 } }
+        let closeError = await closing.run(CloseCommand.self, ["--window-id", "5822", "--profile", "Work"])
+        guard case SafariBrowserError.documentNotFound(let pattern, let entries)? = closeError else {
+            return XCTFail("expected documentNotFound, got \(String(describing: closeError))\n\(closing.transcript)")
+        }
+        XCTAssertEqual(pattern, "window id 5822 (profile: \"Work\")")
+        XCTAssertEqual(entries, ["window id 6933: https://work.example/b1"])
+        XCTAssertEqual(closing.closed, [])
+    }
+
+    /// The `--url-regex` check carries the URL the resolution read inside the script: it has to be escaped as
+    /// AppleScript text, and a long one is cut before it is escaped, not after.
+    func testTheURLCheckCarriesAURLThatNeedsEscaping() async throws {
+        let regex = try NSRegularExpression(pattern: "quote")
+        let quoted = "https://work.example/quote?q=\"a\\b\"&r=\\"
+        let same = await closeTab2(named: .urlMatch(.regex(regex)), read: quoted, now: quoted)
+        XCTAssertTrue(same.closed, "the tab still shows the URL that was read: \(String(describing: same.error))")
+        let other = await closeTab2(named: .urlMatch(.regex(regex)), read: quoted, now: quoted + "x")
+        XCTAssertFalse(other.closed)
+
+        // Character 2,000 is a quote: cut after escaping, the compared text would end in a lone backslash.
+        let head = "https://work.example/quote/" + String(repeating: "x", count: 1_972) + "\""
+        XCTAssertEqual(head.count, 2_000)
+        let long = head + String(repeating: "y", count: 500)
+        let sameStart = await closeTab2(named: .urlMatch(.regex(regex)), read: long, now: head + String(repeating: "z", count: 40))
+        XCTAssertTrue(sameStart.closed, "the first 2,000 characters are the same: \(String(describing: sameStart.error))")
+        let differsAtTheCut = await closeTab2(
+            named: .urlMatch(.regex(regex)), read: long, now: String(head.dropLast()) + "'" + String(repeating: "y", count: 500))
+        XCTAssertFalse(differsAtTheCut.closed, "character 2,000 differs")
+        // Exactly 2,000 characters is compared whole.
+        let whole = await closeTab2(named: .urlMatch(.regex(regex)), read: head, now: head + "tail")
+        XCTAssertFalse(whole.closed, "a URL of exactly 2,000 characters is compared for equality")
+    }
+
+    /// The fake compares as AppleScript does: a check written without `considering case` lets a URL that
+    /// differs only in case through, so the check the product builds is seen to need it.
+    func testTheFakeIgnoresCaseOutsideConsideringCase() async throws {
+        func closes(_ clause: String) async -> Bool {
+            var windows = Fake.threeWindows
+            windows[1].tabs[1] = "https://work.example/A2"
+            let fake = Fake(windows: windows)
+            let script = SafariBridge.closeTabScript(windowReference: "window id 5822", tab: 2, guardClause: clause)
+            _ = try? await fake.drive { try await SafariBridge.runAppleScript(script) }
+            return !fake.closed.isEmpty
+        }
+        let withCase = SafariBridge.exactURLGuardClause("https://work.example/a2")
+        XCTAssertTrue(withCase.contains("considering case"), withCase)
+        let stopped = await closes(withCase)
+        XCTAssertFalse(stopped, "inside considering case, A2 is not a2")
+        let withoutCase = withCase.components(separatedBy: "\n").filter { !$0.contains("considering") }.joined(separator: "\n")
+        let passed = await closes(withoutCase)
+        XCTAssertTrue(passed, "outside considering case AppleScript ignores case, and so does the fake")
     }
 
     /// The fake reads these scripts line by line; it would accept text Safari's AppleScript cannot parse. So
@@ -289,8 +495,21 @@ final class WindowLevelTargetTests: XCTestCase {
         scripts.append(("geometry by id", SafariBridge.captureGeometryScript(windowReference: "window id 5822")))
         scripts.append(("geometry by position", SafariBridge.captureGeometryScript(windowReference: "window 2")))
         for raise in [false, true] {
-            scripts.append(("reveal, raise \(raise)", SafariBridge.focusExistingScript(
-                windowID: 5822, tab: 2, url: "https://work.example/a2", raise: raise)))
+            for window in [SafariBridge.ActingWindow.id(5822), .position(2)] {
+                scripts.append(("reveal, raise \(raise), \(window.reference)", SafariBridge.focusExistingScript(
+                    window: window, tab: 2, url: "https://work.example/a\"2", raise: raise)))
+            }
+        }
+        // A matched URL that needs escaping, whole and cut at 2,000 characters next to a quote.
+        let quoted = "https://work.example/quote?q=\"a\\b\"&r=\\"
+        let cutAtAQuote = "https://work.example/quote/" + String(repeating: "x", count: 1_972) + "\"" + String(repeating: "y", count: 500)
+        for (name, url) in [("quoted", quoted), ("cut at a quote", cutAtAQuote)] {
+            let clause = SafariBridge.tabGuardClause(named: .urlMatch(.regex(regex)), matchedURL: url)
+            scripts.append(("close, regex, \(name)", SafariBridge.closeTabScript(windowReference: "window id 5822", tab: 2, guardClause: clause)))
+        }
+        for (name, clause) in clauses {
+            scripts.append(("upload dialog by id, tab, \(name)", UploadCommand.nativeDialogScript(
+                path: "/tmp/f.txt", window: .id(5822), tab: 2, guardClause: clause)))
         }
         scripts.append(("upload dialog by id", UploadCommand.nativeDialogScript(path: "/tmp/f.txt", window: .id(5822))))
         scripts.append(("upload dialog by position", UploadCommand.nativeDialogScript(path: "/tmp/f.txt", window: .position(2))))
@@ -332,6 +551,27 @@ final class WindowLevelTargetTests: XCTestCase {
             for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: 5822), named: pinned, profile: nil), pinned)
         XCTAssertEqual(SafariBridge.clickTarget(
             for: Resolved(windowIndex: 1, tabIndexInWindow: nil, windowID: 4711), named: .frontWindow, profile: nil), .windowIndex(1))
+    }
+
+    func testPageTargetIsTheResolvedWindowOrItsCurrentTab() {
+        typealias Resolved = SafariBridge.ResolvedWindowTarget
+        // A tab the resolution named (it was the window's current tab, or the capture was refused): that tab,
+        // only while it is still current.
+        XCTAssertEqual(SafariBridge.pageTarget(
+            for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: 5822, anchorTabIndex: 1, matchedURL: "https://work.example/a1"),
+            named: .urlMatch(.contains("a1")), profile: nil),
+            .anchoredCurrentTab(windowID: 5822, tabInWindow: 1, profile: nil))
+        // A window with no tab named: the window by its id, keeping what a miss needs.
+        let pinned = SafariBridge.TargetDocument.windowID(5822, tabInWindow: nil, pinnedFrom: 2)
+        XCTAssertEqual(SafariBridge.pageTarget(
+            for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: 5822), named: pinned, profile: nil), pinned)
+        XCTAssertEqual(SafariBridge.pageTarget(
+            for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: 5822), named: .frontWindow, profile: "Work"), .windowID(5822))
+        // By position there is none: the page steps resolve the options as before.
+        XCTAssertNil(SafariBridge.pageTarget(
+            for: Resolved(windowIndex: 1, tabIndexInWindow: nil, windowID: 4711), named: .frontWindow, profile: nil))
+        XCTAssertNil(SafariBridge.pageTarget(
+            for: Resolved(windowIndex: 2, tabIndexInWindow: nil, windowID: 5822), named: .windowIndex(2), profile: nil))
     }
 
     func testActedTargetKeepsWhatAMissNeeds() {

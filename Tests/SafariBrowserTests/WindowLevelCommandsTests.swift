@@ -38,10 +38,8 @@ final class WindowLevelCommandsTests: XCTestCase {
         let plan = try await fake.drive { try await command.nativeUploadPlan(expandedPath: self.uploadPath, notice: { _ in }) }
         var dialog: [String] = []
         try await fake.drive {
-            try await UploadCommand.runNativeUploadEffects(
-                plan.effects, jsTarget: plan.jsTarget, warn: { _ in },
-                runJS: { js, target in try await SafariBridge.doJavaScript(js, target: target) },
-                runScript: { dialog.append($0) })
+            try await command.runNativeUpload(
+                plan, ensureLive: {}, runDialogScript: { script, _ in dialog.append(script) }, warn: { _ in })
         }
         return Trace(later: fake.scripts(afterFirst: Fake.isAnchor) + dialog, fake: fake)
     }
@@ -49,12 +47,22 @@ final class WindowLevelCommandsTests: XCTestCase {
     private func screenshotTrace(_ flags: [String]) async throws -> Trace {
         let fake = Fake()
         let command = try ScreenshotCommand.parse(flags + ["/tmp/out.png"])
+        // `captureWindow` is what `run()` starts with. Its `resolve` stands in for the Accessibility match, and
+        // makes the AppleScript read that match starts from, for the window it was handed.
+        let result = try await fake.drive {
+            try await command.captureWindow(
+                session: GUISession(readDictionary: { ["CGSSessionScreenIsLocked": false] }),
+                resolve: { window in
+                    guard let window else { throw ValidationError("no explicit target") }
+                    _ = try await SafariBridge.readCaptureGeometry(window: window, missTarget: .frontWindow, profile: nil)
+                    return (cgID: "77", axWindow: nil)
+                })
+        }
+        guard let capture = result.capture else { throw ValidationError("no explicit target") }
+        // …then one page step of --full, in the document the resolution fixed.
+        let page = try await fake.drive { try await ScreenshotCommand.pageTarget(capture: capture, options: result.target) }
         _ = try await fake.drive {
-            guard let capture = try await command.resolveCapture().capture else {
-                throw ValidationError("no explicit target")
-            }
-            return try await SafariBridge.readCaptureGeometry(
-                window: capture.window, missTarget: capture.missTarget, profile: capture.profile)
+            try await ScreenshotCommand.pageStep(page) { try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: page) }
         }
         return Trace(later: fake.scripts(afterFirst: Fake.isAnchor), fake: fake)
     }
@@ -109,15 +117,12 @@ final class WindowLevelCommandsTests: XCTestCase {
 
         // open: the tab is found by the enumeration, and revealed in window id 6933.
         let fake = Fake()
-        try await fake.drive {
-            guard let match = try await SafariBridge.findExactMatchingTab(url: "https://work.example/b1") else {
-                throw ValidationError("no tab shows that URL")
-            }
-            try await SafariBridge.focusExistingTab(
-                window: match.window, tabInWindow: match.tabInWindow, isCurrent: match.isCurrent,
-                url: "https://work.example/b1", windowID: match.windowID, warnWriter: { _ in },
+        let found = try await fake.drive {
+            try await OpenCommand.revealExisting(
+                url: "https://work.example/b1", warn: { _ in },
                 spaces: SafariBridge.SpaceProbe(current: { 1 }, ofWindow: { _ in 1 }))
         }
+        XCTAssertTrue(found)
         assertNamesOnly("window id 6933", in: Trace(later: fake.scripts(afterFirst: Fake.isEnumeration), fake: fake), "open")
     }
 
@@ -152,13 +157,31 @@ final class WindowLevelCommandsTests: XCTestCase {
         XCTAssertEqual(tab.closed, [.closed(windowID: 5822, tab: 2, url: "https://work.example/a2")])
 
         // pdf, upload and screenshot: nothing after the id read names `window 2`.
-        let pinnedTraces = [try await pdfTrace(["--window", "2"]), try await uploadTrace(["--window", "2"]),
-                            try await screenshotTrace(["--window", "2"])]
-        for trace in pinnedTraces {
+        let pdf = try await pdfTrace(["--window", "2"])
+        let upload = try await uploadTrace(["--window", "2"])
+        let screenshot = try await screenshotTrace(["--window", "2"])
+        for trace in [pdf, upload, screenshot] {
             XCTAssertTrue(trace.fake.scripts.first.map(Fake.isAnchor) == true, "the id is read first:\n\(trace.fake.transcript)")
             XCTAssertFalse(trace.later.contains(where: Fake.namesAPosition), trace.later.joined(separator: "\n---\n"))
             XCTAssertTrue(trace.later.contains { $0.contains("window id 5822") })
         }
+        // pdf: the export script itself names the window by its id.
+        let exportScript = try XCTUnwrap(pdf.later.last)
+        XCTAssertTrue(exportScript.contains("set index of window id 5822 to 1"), exportScript)
+        XCTAssertTrue(exportScript.contains("set pdfWindowID to 5822"), exportScript)
+        // upload: the read that checks the target, the click, and the dialog script, each by the id.
+        XCTAssertTrue(upload.later.contains { $0.contains("get URL of document of window id 5822") }, upload.fake.transcript)
+        XCTAssertTrue(upload.later.contains { $0.contains("do JavaScript") && $0.contains("document of window id 5822") },
+                      upload.fake.transcript)
+        let dialogScript = try XCTUnwrap(upload.later.last)
+        XCTAssertTrue(dialogScript.contains("set index of window id 5822 to 1"), dialogScript)
+        XCTAssertTrue(dialogScript.contains("my verifyUploadOwner(5822, uploadPageURL)"), dialogScript)
+        // screenshot: the bounds and the title are read from the id, and so is the page.
+        XCTAssertTrue(screenshot.later.contains {
+            $0.contains("set b to bounds of window id 5822") && $0.contains("set n to name of window id 5822")
+        }, screenshot.fake.transcript)
+        XCTAssertTrue(screenshot.later.contains { $0.contains("do JavaScript") && $0.contains("document of window id 5822") },
+                      screenshot.fake.transcript)
 
         // The id of window 2 cannot be read: one note, and the close names `window 2`.
         let unread = Fake()

@@ -3,7 +3,7 @@ import ArgumentParser
 struct CloseCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "close",
-        abstract: "Close the current tab"
+        abstract: "Close a tab: the tab a targeting flag names, or the current tab"
     )
 
     /// #26: close accepts the full TargetOptions (`--url`, `--tab`, `--document`, `--window`, …).

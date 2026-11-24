@@ -906,27 +906,14 @@ enum SafariBridge {
         return detectSpace(cgWindowID: cgID)
     }
 
-    /// Raise (activate) AppleScript `window N` so it becomes the
-    /// frontmost Safari window. Used by spatial gradient Layer 3.
-    /// AppleScript `set index of window N to 1` reorders windows; the
-    /// subsequent `activate` of the application brings Safari to the
-    /// foreground if it isn't already.
-    static func activateWindow(_ n: Int) async throws {
-        try await runAppleScript("""
-            tell application "Safari"
-                set index of window \(n) to 1
-                activate
-            end tell
-            """)
-    }
-
     /// Focus an existing tab by applying the spatial-interference
     /// gradient (Layers 1–4). Calls `selectFocusAction` to decide,
     /// then executes the chosen action:
     /// - `.noop`: return immediately.
-    /// - `.sameWindowTabSwitch`: `performTabSwitchIfNeeded`.
-    /// - `.sameSpaceRaise`: activate target window, then tab-switch;
-    ///   emits a stderr warning via `warnWriter`.
+    /// - `.sameWindowTabSwitch`: one script that checks the tab and makes it current.
+    /// - `.sameSpaceRaise`: the same script, which then raises the window and
+    ///   activates Safari; emits a stderr warning via `warnWriter` once the
+    ///   script has succeeded.
     /// - `.crossSpaceNewTab`: open a new tab in the caller's current
     ///   Space front window; emits a stderr note.
     ///
@@ -936,9 +923,10 @@ enum SafariBridge {
     /// #353: when the enumeration read an id for the window (`windowID`), Layers 2 and 3 are one script each
     /// that names `window id W`, checks that the tab still shows `url` before anything changes, makes it current
     /// when it is not, and for Layer 3 then raises the window and activates Safari. A tab that moved fails with
-    /// `targetChangedBeforeActing`, a window that closed with `documentNotFound`; neither opens a new tab.
-    /// Without an id the window is named by its position, in two events (switch, then raise). `spaces` is where the Space of the
-    /// caller and of the target window come from; a test injects it so it never asks the running Safari.
+    /// `targetChangedBeforeActing`, a window or a tab that is gone with `documentNotFound`; neither opens a new
+    /// tab. Without an id (an enumeration record that carries none) the same one script names the window by its
+    /// position. `spaces` is where the Space of the caller and of the target window come from; a test injects
+    /// it so it never asks the running Safari.
     static func focusExistingTab(
         window: Int,
         tabInWindow: Int,
@@ -956,20 +944,20 @@ enum SafariBridge {
             targetSpace: spaces.ofWindow(window)
         )
         func reveal(raise: Bool) async throws {
+            let acting: ActingWindow
+            let target: TargetDocument
             if let windowID, windowID > 0 {
-                let target = TargetDocument.resolvedTab(
-                    windowID: windowID, tabInWindow: tabInWindow, rematch: .exact(url), profile: nil)
-                let script = focusExistingScript(windowID: windowID, tab: tabInWindow, url: url, raise: raise)
-                try await translatingWindowLevelMarkers(target: target, profile: nil) {
-                    _ = try await runTargetedAppleScript(script, target: target)
-                }
-                return
+                acting = .id(windowID)
+                target = .resolvedTab(windowID: windowID, tabInWindow: tabInWindow, rematch: .exact(url), profile: nil)
+            } else {
+                // No id for this window (a record without one): the same script, by position.
+                acting = .position(window)
+                target = .windowTab(window: window, tabInWindow: tabInWindow)
             }
-            // No id for this window (a record without one): by position. The tab is switched before the raise,
-            // because once the window is raised its position is 1 and `window N` names another window.
-            try await runAppleScript(bringTabForwardScript(
-                windowReference: ActingWindow.position(window).reference, tab: tabInWindow, guardClause: nil))
-            if raise { try await activateWindow(window) }
+            let script = focusExistingScript(window: acting, tab: tabInWindow, url: url, raise: raise)
+            try await translatingWindowLevelMarkers(target: target, profile: nil) {
+                _ = try await runTargetedAppleScript(script, target: target)
+            }
         }
         switch action {
         case .noop:
@@ -977,8 +965,9 @@ enum SafariBridge {
         case .sameWindowTabSwitch:
             try await reveal(raise: false)
         case .sameSpaceRaise:
-            warnWriter?("warning: open --focus-existing raised window \(window) to front (the matching tab lives in a background window).\n")
+            // The warning follows the reveal: a reveal that fails raised nothing.
             try await reveal(raise: true)
+            warnWriter?("warning: open --focus-existing raised window \(window) to front (the matching tab lives in a background window).\n")
         case .crossSpaceNewTab:
             warnWriter?("note: open --focus-existing found a match in a different macOS Space — leaving that tab undisturbed and opening a new tab in the current Space.\n")
             try await openURLInNewTab(url, window: .front)
@@ -1038,6 +1027,12 @@ enum SafariBridge {
     static func notFoundError(for target: TargetDocument, profile: String?) async throws -> SafariBrowserError {
         if case .windowID(let windowID, let tab, let pinnedFrom) = target {
             guard let pinnedFrom else {
+                // #353 verify r1: under `--profile` a miss on a window id lists that profile's windows, as the
+                // same miss does when the id is resolved (`checkWindowID`). Without it, `close --profile P`
+                // lost the listing it had before the window-level commands named windows by id.
+                if let scope = profile, !scope.isEmpty {
+                    return try await windowIDMiss(windowID: windowID, tab: tab, profile: scope)
+                }
                 return SafariBrowserError.documentNotFound(
                     pattern: targetDescription(target),
                     availableDocuments: [windowIDMissNote(pinnedFrom: nil, tabs: true)])
@@ -1126,6 +1121,45 @@ enum SafariBridge {
         }
         let what = tabs ? "is no longer open or has no such tab" : "is no longer open"
         return "(the window that was window \(pinnedFrom.window) at command start \(what); \(moved)"
+    }
+
+    /// What a miss during a command on `window id W` lists under `--profile`, when the id was typed or came
+    /// from the profile's own resolution (not from `--window N`, which is `pinnedWindowMiss`). A named tab that
+    /// is gone from a window that is still open lists that window's tabs; otherwise the profile's windows, each
+    /// by its id with its current tab, the listing `checkWindowID` gives for the same miss at resolution.
+    private static func windowIDMiss(windowID: Int, tab: Int?, profile: String) async throws -> SafariBrowserError {
+        let pattern = "\(windowIDDescription(windowID, tab: tab, pinnedFrom: nil)) (profile: \"\(profile)\")"
+        let windows: [WindowInfo]
+        do {
+            windows = try await listAllWindows()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return .documentNotFound(pattern: pattern, availableDocuments: [SafariBrowserError.enumerationFailureNote(error)])
+        }
+        if tab != nil, let window = windows.first(where: { $0.windowID == windowID && $0.profile == profile }) {
+            return .documentNotFound(pattern: pattern, availableDocuments: window.tabs.map {
+                "\(entryLabel(window: window.windowIndex, tab: $0.tabIndex, windowID: window.windowID, scoped: true)): \(URLText.redactURL($0.url))"
+            })
+        }
+        let scoped = windows.filter { $0.profile == profile }
+        guard !scoped.isEmpty else {
+            return .documentNotFound(pattern: pattern, availableDocuments: ["(no window of profile \"\(profile)\" is open)"])
+        }
+        return .documentNotFound(pattern: pattern, availableDocuments: windowIDCandidateEntries(scoped))
+    }
+
+    /// One line per window for a `--window-id` miss under `--profile`: the window by its id (or Safari's number
+    /// marked `(no window id)`) and its current tab. #362 verify F8: the same spelling as `entryLabel`, which
+    /// `listingWindowIDs` recognises.
+    static func windowIDCandidateEntries(_ candidates: [WindowInfo]) -> [String] {
+        candidates.map { w -> String in
+            let id = w.windowID.map { "window id \($0)" } ?? "window \(w.windowIndex) (no window id)"
+            // #355: a window read while a tab opened has tabs but none current.
+            let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) }
+                ?? (w.tabs.isEmpty ? "(0 tabs)" : "(unknown)")
+            return "\(id): \(cur)"
+        }
     }
 
     /// #354 verify F1/F13: what a miss on an id `pinWindowAtStart` read from `--window N` lists. The pattern names
@@ -2887,8 +2921,8 @@ enum SafariBridge {
     /// AppleScript `window N` index. `tabIndexInWindow` is `nil` when no
     /// tab switch is needed — either the target is already the current
     /// tab, or the target request didn't specify a tab (`.frontWindow` /
-    /// `.windowIndex`). Native commands call `performTabSwitchIfNeeded`
-    /// with both fields before raising / keystroking.
+    /// `.windowIndex`). The native `upload` paths and `pdf` make that tab
+    /// current before raising / keystroking (`bringTabForwardStatements`).
     struct ResolvedWindowTarget: Sendable, Equatable {
         let windowIndex: Int
         let tabIndexInWindow: Int?
@@ -3016,15 +3050,7 @@ enum SafariBridge {
         }
         throw SafariBrowserError.documentNotFound(
             pattern: "\(named)\(scope)",
-            availableDocuments: candidates.map { w -> String in
-                // #362 verify F8: the same spelling as `entryLabel`, which `listingWindowIDs` recognises.
-                let id = w.windowID.map { "window id \($0)" } ?? "window \(w.windowIndex) (no window id)"
-                // #355: a window read while a tab opened has tabs but none current.
-                let cur = w.tabs.first(where: { $0.isCurrent }).map { URLText.redactURL($0.url) }
-                    ?? (w.tabs.isEmpty ? "(0 tabs)" : "(unknown)")
-                return "\(id): \(cur)"
-            }
-        )
+            availableDocuments: windowIDCandidateEntries(candidates))
     }
 
     /// Inner core (private) — unchanged switch logic operating on the

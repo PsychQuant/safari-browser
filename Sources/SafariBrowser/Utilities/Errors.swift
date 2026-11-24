@@ -110,11 +110,13 @@ enum SafariBrowserError: LocalizedError {
     case windowIdentityAmbiguous(reason: String)
     /// #227: `actualURL` is a `RedactedURL`, so the payload cannot hold a URL with its query.
     case targetTabChanged(expected: String, actualURL: RedactedURL?)
-    /// #353: a window-level command (`close`, `pdf`, a native `upload`, `open` revealing a tab) found its tab
-    /// by a URL, and in the script that was about to act on the tab that tab no longer passed the URL check.
-    /// Nothing was done to it and the target is not resolved again: these commands close a tab or send
-    /// keystrokes, so a target that moved is a failure, not something to chase.
-    case targetChangedBeforeActing(expected: String)
+    /// #353: a window-level command (`close`, `pdf`, a native `upload`, `open` revealing a tab) checked its
+    /// target in the script that was about to act on it, and the check failed: a tab found by its URL no
+    /// longer passed the URL check, or (native `upload`) the tab was no longer its window's current tab. The
+    /// target is not resolved again: these commands close a tab or send keystrokes, so a target that moved is
+    /// a failure, not something to chase. `stage` is what the command had already done, which the message
+    /// states instead of always claiming that nothing was done.
+    case targetChangedBeforeActing(expected: String, stage: TargetChangeStage = .beforeAnyAction)
     /// #180: a positional target (`--window N --tab-in-window M`, `--window N`
     /// or the default) was anchored to a stable window id + tab at command
     /// start, and mid-command that tab closed, moved, or (for the default and
@@ -148,13 +150,31 @@ enum SafariBrowserError: LocalizedError {
                 \(actualLine)The window may have closed, or the tab moved/navigated during execution.
                 Run `safari-browser documents` to re-discover targets, then retry.
                 """
-        case .targetChangedBeforeActing(let expected):
-            return """
-                Target tab changed before the command acted: expected \(expected), but the tab in that position no longer passes the URL check.
-                Nothing was done to it: no tab was closed or switched, no window was raised and no keystroke was sent.
-                A tab may have closed, moved or navigated since the target was resolved.
+        case .targetChangedBeforeActing(let expected, let stage):
+            let tail = """
+                A tab may have closed, moved, navigated or stopped being current since the target was resolved.
                 Run `safari-browser documents` to re-discover targets, then retry.
                 """
+            switch stage {
+            case .beforeAnyAction:
+                return """
+                    Target tab changed before the command acted: expected \(expected), but the tab in that position no longer passes the URL check.
+                    Nothing was done to it: no tab was closed or switched, no window was raised and no keystroke was sent.
+                    \(tail)
+                    """
+            case .afterTabSwitch:
+                return """
+                    Target tab changed before the upload read or clicked in it: expected \(expected), but that tab is no longer its window's current tab, or no longer shows a URL the target matches.
+                    The command had already made that tab current when it was not. The file input was not clicked, no window was raised and no keystroke was sent.
+                    \(tail)
+                    """
+            case .afterFileDialog:
+                return """
+                    Target tab changed after the file input was clicked: expected \(expected), but when the file dialog was about to be driven that tab was no longer its window's current tab, or no longer passed the URL check.
+                    No window was raised and no keystroke was sent. The click may have opened a file dialog: dismiss it (Esc) before retrying.
+                    \(tail)
+                    """
+            }
         case .windowEnumerationCorrupt(let reason, let kind):
             switch kind {
             case .windowsChanged:
@@ -1044,4 +1064,18 @@ enum WindowEnumerationProblem: Sendable, Equatable {
     /// A window id that arrived as a real number (an id of 2^29 or more arrives as one). Other
     /// non-integer window ids (booleans, raw data, classes, text, lists) are `.shape`.
     case windowIDNotInteger
+}
+
+extension SafariBrowserError {
+    /// #353: what a window-level command had already done when its target check failed. Carried by
+    /// `targetChangedBeforeActing` so the message says it.
+    enum TargetChangeStage: String, Sendable, Equatable {
+        /// The first script that acts on the target: nothing was closed, switched, raised or typed.
+        case beforeAnyAction
+        /// Native `upload`, at the read or the click: the tab may already have been made current.
+        case afterTabSwitch
+        /// Native `upload`, in the dialog script's first Safari block: the file input was clicked, so a file
+        /// dialog may be open; nothing was raised and no keystroke was sent.
+        case afterFileDialog
+    }
 }

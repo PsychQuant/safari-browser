@@ -67,6 +67,22 @@ final class WindowEnumerationDecoderTests: XCTestCase {
         for (text, why) in rejected {
             assertCorrupt(text, why)
         }
+        // The two rows whose reason names the advice: a real number gets the 2^29 explanation and is not told
+        // to run the command again; a boolean is a shape problem, to run again and report.
+        func advice(_ text: String) -> String {
+            do {
+                _ = try SafariBridge.decodeWindowEnumeration(text)
+                return "decoded"
+            } catch {
+                return error.localizedDescription
+            }
+        }
+        let real = advice(#"{{1, 3.5, "w", 1, {"u"}, {"t"}}}"#)
+        XCTAssertTrue(real.contains("536,870,911"), real)
+        XCTAssertFalse(real.contains("run the command again"), real)
+        let boolean = advice(#"{{1, true, "w", 1, {"u"}, {"t"}}}"#)
+        XCTAssertTrue(boolean.contains("run the command again") && boolean.contains("report it"), boolean)
+        XCTAssertFalse(boolean.contains("536,870,911"), boolean)
     }
 
     func testAReasonNamesNoStringContent() {

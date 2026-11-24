@@ -85,17 +85,179 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         XCTAssertTrue(fake.scripts.first.map(Fake.isAnchor) == true, fake.transcript)
     }
 
-    /// `run()` cannot be driven in a test: it needs a GUI session, Screen Recording and Accessibility. So this is
-    /// a shape check, not a proof: `run()` takes its options from `resolveCapture()` and never reads the
-    /// unpinned `self.target` again.
-    func testRunReadsOnlyThePinnedOptions() throws {
+    /// A session a test can pass `requireAvailable()` with.
+    private static let session = GUISession(readDictionary: { ["CGSSessionScreenIsLocked": false] })
+
+    /// Runs `ScreenshotCommand.captureWindow`, the function `run()` starts with, with `received` standing in
+    /// for Accessibility: it records the window the capture resolver is handed.
+    private func captureWindow(_ flags: [String], fake: Fake) async throws
+        -> (received: [SafariBridge.ActingWindow?], capture: ScreenshotCommand.CaptureTarget?, options: TargetOptions) {
+        let command = try ScreenshotCommand.parse(flags + ["/tmp/out.png"])
+        var received: [SafariBridge.ActingWindow?] = []
+        let result = try await fake.drive {
+            try await command.captureWindow(session: Self.session, resolve: { window in
+                received.append(window)
+                return (cgID: "77", axWindow: nil)
+            })
+        }
+        XCTAssertEqual(result.cgID, "77")
+        return (received, result.capture, result.target)
+    }
+
+    /// `run()` cannot be driven in a test (Screen Recording, Accessibility), but the function it starts with
+    /// can: the window the resolution found is the window the capture resolver is handed.
+    func testTheCaptureResolverIsHandedTheResolvedWindow() async throws {
+        let pinned = try await captureWindow(["--window", "2"], fake: Fake())
+        XCTAssertEqual(pinned.received, [.id(5822)])
+        let byURL = try await captureWindow(["--url", "work.example/a1"], fake: Fake())
+        XCTAssertEqual(byURL.received, [.id(5822)])
+        let scoped = try await captureWindow(["--profile", "Work"], fake: Fake())
+        XCTAssertEqual(scoped.received, [nil], "--profile alone is not a targeting flag for screenshot (#233)")
+        let plain = try await captureWindow([], fake: Fake())
+        XCTAssertEqual(plain.received, [nil])
+        XCTAssertNil(plain.capture)
+
+        // A locked or absent session stops before anything is resolved by Accessibility.
+        let command = try ScreenshotCommand.parse(["--window", "2", "/tmp/out.png"])
+        var asked = false
+        do {
+            _ = try await Fake().drive {
+                try await command.captureWindow(session: GUISession(readDictionary: { nil }), resolve: { _ in
+                    asked = true
+                    return (cgID: "77", axWindow: nil)
+                })
+            }
+            XCTFail("no GUI session")
+        } catch {
+            XCTAssertFalse(asked)
+        }
+    }
+
+    /// Changes the fake's windows now: the change is applied after one more script, which is sent here.
+    private func change(_ fake: Fake, _ body: @escaping (inout [Fake.Window]) -> Void) async throws {
+        fake.after(script: fake.scripts.count + 1, body)
+        _ = try await fake.drive { try await SafariBridge.runAppleScript("tell application \"Safari\"\nend tell") }
+    }
+
+    // spec-example: screenshot / page steps by window id
+    func testPageStepsByWindowID() async throws {
+        // --window 2: the page steps run in window id 5822, whatever is in position 2 by then.
+        let pinnedFake = Fake()
+        let pinned = try await captureWindow(["--window", "2"], fake: pinnedFake)
+        let pinnedPage = try await pinnedFake.drive { try await ScreenshotCommand.pageTarget(capture: pinned.capture, options: pinned.options) }
+        XCTAssertEqual(pinnedPage, .windowID(5822, tabInWindow: nil, pinnedFrom: 2))
+        XCTAssertEqual(SafariBridge.resolveDocumentReference(pinnedPage), "document of window id 5822")
+        try await change(pinnedFake) { windows in windows.insert(windows.removeLast(), at: 0) }
+        XCTAssertEqual(pinnedFake.windows.map(\.id), [6933, 4711, 5822], "window id 5822 is window 3 by then")
+        let sent = pinnedFake.scripts.count
+        _ = try await pinnedFake.drive {
+            try await ScreenshotCommand.pageStep(pinnedPage) { try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: pinnedPage) }
+        }
+        let steps = Array(pinnedFake.scripts[sent...])
+        XCTAssertFalse(steps.isEmpty)
+        XCTAssertFalse(steps.contains(where: Fake.namesAPosition), steps.joined(separator: "\n---\n"))
+        XCTAssertFalse(steps.contains(where: Fake.isEnumeration), "the options are not resolved a second time")
+        XCTAssertTrue(steps.contains { $0.contains("do JavaScript") && $0.contains("document of window id 5822") })
+
+        // The current tab found by its URL: that tab of window id 5822, only while it is still current.
+        let byURLFake = Fake()
+        let byURL = try await captureWindow(["--url", "work.example/a1"], fake: byURLFake)
+        let page = try await byURLFake.drive { try await ScreenshotCommand.pageTarget(capture: byURL.capture, options: byURL.options) }
+        XCTAssertEqual(page, .anchoredCurrentTab(windowID: 5822, tabInWindow: 1, profile: nil))
+        let before = byURLFake.scripts.count
+        _ = try await byURLFake.drive {
+            try await ScreenshotCommand.pageStep(page) { try await SafariBridge.doJavaScript("1", target: page) }
+        }
+        let anchored = Array(byURLFake.scripts[before...])
+        XCTAssertEqual(anchored.count, 1, anchored.joined(separator: "\n---\n"))
+        XCTAssertTrue(anchored[0].contains("set _w to window id 5822"), anchored[0])
+        XCTAssertTrue(anchored[0].contains("(index of current tab of _w) is not 1"), anchored[0])
+        XCTAssertFalse(anchored.contains(where: Fake.isEnumeration), "the URL is not matched a second time")
+
+        // Another tab of that window becomes current, or another tab now matches the flag: the step fails;
+        // it does not run in whichever tab a second resolution would find.
+        let switched = Fake()
+        let switchedCapture = try await captureWindow(["--url", "work.example/a1"], fake: switched)
+        let switchedPage = try await switched.drive {
+            try await ScreenshotCommand.pageTarget(capture: switchedCapture.capture, options: switchedCapture.options)
+        }
+        try await change(switched) { windows in
+            windows[1].current = 2
+            windows[2].tabs = ["https://work.example/a1"]
+        }
+        do {
+            _ = try await switched.drive {
+                try await ScreenshotCommand.pageStep(switchedPage) { try await SafariBridge.doJavaScript("1", target: switchedPage) }
+            }
+            XCTFail("tab 1 of window id 5822 is no longer current")
+        } catch SafariBrowserError.anchoredTargetChanged(let target) {
+            XCTAssertTrue(target.contains("tab 1 of window id 5822"), target)
+            XCTAssertFalse(switched.scripts.contains { $0.contains("window id 6933") && $0.contains("do JavaScript") }, switched.transcript)
+        }
+
+        // The window closes: a miss on what was typed.
+        let closing = Fake()
+        let closingCapture = try await captureWindow(["--window", "2"], fake: closing)
+        let closingPage = try await closing.drive {
+            try await ScreenshotCommand.pageTarget(capture: closingCapture.capture, options: closingCapture.options)
+        }
+        try await change(closing) { $0.removeAll { $0.id == 5822 } }
+        do {
+            _ = try await closing.drive {
+                try await ScreenshotCommand.pageStep(closingPage) { try await SafariBridge.doJavaScript("1", target: closingPage) }
+            }
+            XCTFail("the window is gone")
+        } catch SafariBrowserError.documentNotFound(let pattern, _) {
+            XCTAssertEqual(pattern, "window 2 (window id 5822 at command start)")
+        }
+
+        // By position (no flag, or a window number whose id could not be read): the options, as before.
+        let plainFake = Fake()
+        let plain = try await captureWindow([], fake: plainFake)
+        let plainPage = try await plainFake.drive { try await ScreenshotCommand.pageTarget(capture: plain.capture, options: plain.options) }
+        XCTAssertEqual(plainPage, .frontWindow)
+        let unreadFake = Fake()
+        unreadFake.anchorDoesNotAnswer = true
+        let unread = try await captureWindow(["--window", "2"], fake: unreadFake)
+        XCTAssertEqual(unread.received, [.position(2)])
+        XCTAssertNil(unread.capture?.pageTarget)
+        let unreadPage = try await unreadFake.drive { try await ScreenshotCommand.pageTarget(capture: unread.capture, options: unread.options) }
+        XCTAssertEqual(unreadPage, .windowIndex(2))
+    }
+
+    /// `screenshot` never makes a tab current and never raises a window, whatever the target: what it sends
+    /// before Accessibility is involved changes nothing in Safari.
+    func testScreenshotChangesNothingInSafari() async throws {
+        for flags in [["--window", "2"], ["--url", "work.example/a1"], ["--window-id", "5822"],
+                      ["--window-id", "5822", "--tab-in-window", "1"], ["--document", "4"]] {
+            let fake = Fake()
+            let capture = try await captureWindow(flags, fake: fake)
+            let window = try XCTUnwrap(capture.capture?.window, "\(flags)")
+            let missTarget = try XCTUnwrap(capture.capture?.missTarget)
+            _ = try await fake.drive {
+                try await SafariBridge.readCaptureGeometry(window: window, missTarget: missTarget, profile: capture.capture?.profile)
+            }
+            XCTAssertEqual(fake.actions, [], "\(flags)")
+            for forbidden in ["set current tab", "set index", "activate"] {
+                XCTAssertFalse(fake.scripts.contains { $0.contains(forbidden) }, "\(flags): \(forbidden)\n\(fake.transcript)")
+            }
+        }
+    }
+
+    /// A shape check, not a proof: `run()` starts from `captureWindow()` and never reads the unpinned
+    /// `self.target`, and its page steps take their document from `pageTarget(capture:options:)`.
+    func testRunStartsFromTheResolvedCapture() throws {
         let source = try String(contentsOfFile: "Sources/SafariBrowser/Commands/ScreenshotCommand.swift", encoding: .utf8)
         let start = try XCTUnwrap(source.range(of: "    func run() async throws {"))
         let end = try XCTUnwrap(source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex))
         let body = String(source[start.lowerBound..<end.upperBound])
-        XCTAssertTrue(body.contains("let (target, capture) = try await resolveCapture()"), "run() must pin through resolveCapture()")
+        XCTAssertTrue(body.contains("let (target, capture, windowID, axWindow) = try await captureWindow()"),
+                      "run() must take its window from captureWindow()")
         XCTAssertFalse(body.contains("self.target"), "run() must not read the unpinned options")
-        XCTAssertTrue(body.contains("try await target.resolveProfileScoped()"), "--full reads the page through the pinned options")
+        XCTAssertFalse(body.contains("resolveWindowForCapture("), "run() must not find the window a second way")
+        XCTAssertTrue(body.contains("let docTarget = try await Self.pageTarget(capture: capture, options: target)"))
+        XCTAssertFalse(body.contains("target.resolveProfileScoped()"), "the page steps must not resolve the options again")
+        XCTAssertFalse(source.contains("target: try await target.resolve"), "no page step resolves the options inline")
     }
 
     func testAnUnpinnedWindowNumberKeepsTheTwoPositionalReads() async throws {
@@ -129,23 +291,33 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         let scripts: [String]
     }
 
+    /// Runs `OpenCommand.revealExisting`, the first step of `open <url>`: the enumeration, the match, and the
+    /// hand-over of the window id the enumeration read to the reveal.
     private func reveal(_ url: String, fake: Fake, spaces: SafariBridge.SpaceProbe) async -> Reveal {
         var warnings: [String] = []
         var failure: Error?
         do {
-            try await fake.drive {
-                guard let match = try await SafariBridge.findExactMatchingTab(url: url) else {
-                    throw ValidationError("no tab shows \(url)")
-                }
-                try await SafariBridge.focusExistingTab(
-                    window: match.window, tabInWindow: match.tabInWindow, isCurrent: match.isCurrent,
-                    url: url, windowID: match.windowID,
-                    warnWriter: { warnings.append($0) }, spaces: spaces)
+            let found = try await fake.drive {
+                try await OpenCommand.revealExisting(url: url, warn: { warnings.append($0) }, spaces: spaces)
             }
+            XCTAssertTrue(found, "a tab shows \(url)")
         } catch {
             failure = error
         }
         return Reveal(error: failure, warnings: warnings, scripts: fake.scripts(afterFirst: Fake.isEnumeration))
+    }
+
+    func testNoExistingTabIsNotARevealAndSendsNothingMore() async throws {
+        let fake = Fake()
+        var warnings: [String] = []
+        let found = try await fake.drive {
+            try await OpenCommand.revealExisting(url: "https://nowhere.example/", warn: { warnings.append($0) }, spaces: Self.sameSpace)
+        }
+        XCTAssertFalse(found)
+        XCTAssertEqual(fake.scripts.count, 1, fake.transcript)
+        XCTAssertTrue(fake.scripts.first.map(Fake.isEnumeration) == true)
+        XCTAssertEqual(warnings, [])
+        XCTAssertEqual(fake.actions, [])
     }
 
     private func assertOrder(_ needles: [String], in text: String, file: StaticString = #filePath, line: UInt = #line) {
@@ -207,12 +379,14 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         let moved = Fake()
         moved.after(script: 1) { $0[1].tabs[1] = "https://other.example/" }
         let stopped = await reveal("https://work.example/a2", fake: moved, spaces: Self.sameSpace)
-        guard case SafariBrowserError.targetChangedBeforeActing? = stopped.error else {
+        guard case SafariBrowserError.targetChangedBeforeActing(_, let stage)? = stopped.error else {
             return XCTFail("expected targetChangedBeforeActing, got \(String(describing: stopped.error))\n\(moved.transcript)")
         }
+        XCTAssertEqual(stage, .beforeAnyAction)
         XCTAssertEqual(stopped.scripts.count, 1, moved.transcript)
         XCTAssertFalse(stopped.scripts.contains { $0.contains("make new") }, moved.transcript)
         XCTAssertEqual(moved.actions, [])
+        XCTAssertEqual(stopped.warnings, [], "nothing was raised, so nothing says a window was raised")
     }
 
     // spec-example: non-interference / gradient actions by window id
@@ -248,6 +422,7 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
             $0.after(script: 1) { $0[1].tabs[1] = "https://other.example/" }
         }
         XCTAssertEqual(moved.actions, [], "no tab is made current and no window is raised")
+        XCTAssertEqual(moved.warnings, [], "the warning that a window was raised follows the raise")
         guard case SafariBrowserError.targetChangedBeforeActing? = moved.error else {
             return XCTFail("expected targetChangedBeforeActing, got \(String(describing: moved.error))")
         }
@@ -262,6 +437,19 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         }
         XCTAssertEqual(fake.actions, [])
         XCTAssertFalse(fake.scripts.contains { $0.contains("make new") }, fake.transcript)
+        XCTAssertEqual(result.warnings, [])
+    }
+
+    /// The tab closed (its window is still open) before it was revealed: a miss, not Safari's "invalid index".
+    func testATabThatClosedBeforeItWasRevealedIsAMiss() async {
+        let fake = Fake()
+        fake.after(script: 1) { $0[1].tabs.removeLast() }
+        let result = await reveal("https://work.example/a2", fake: fake, spaces: Self.sameSpace)
+        guard case SafariBrowserError.documentNotFound? = result.error else {
+            return XCTFail("expected documentNotFound, got \(String(describing: result.error))\n\(fake.transcript)")
+        }
+        XCTAssertEqual(fake.actions, [])
+        XCTAssertEqual(result.warnings, [])
     }
 
     func testAMatchWithoutAWindowIDFallsBackToThePosition() async throws {
@@ -270,14 +458,46 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
             .titledTabs(id: $0.id, profile: nil, urls: $0.tabs, currentTab: $0.current)
         }))
         XCTAssertEqual(SafariBridge.findExactMatch(url: "https://work.example/a2", in: windows)?.windowID, 5822)
-        // …and without one, the reveal names the window by its position: the switch first, because after the
-        // raise `window 2` is another window.
+        // …and without one (a record that carries no id; `open` cannot produce this from a live enumeration),
+        // the reveal is the same one script by position: the checks, the switch, then the raise, because after
+        // the raise `window 2` is another window.
         let fake = Fake()
         try await fake.drive {
             try await SafariBridge.focusExistingTab(
                 window: 2, tabInWindow: 2, isCurrent: false, url: "https://work.example/a2",
                 windowID: nil, warnWriter: { _ in }, spaces: Self.sameSpace)
         }
+        XCTAssertEqual(fake.scripts.count, 1, fake.transcript)
+        assertOrder(["if (count of tabs of window 2) < 2 then error \"SB_TAB_GONE\" number 9003",
+                     "set _t to tab 2 of window 2", "is not equal to \"https://work.example/a2\"", "SB_TARGET_CHANGED",
+                     "set current tab of window 2 to _t", "set index of window 2 to 1", "activate"],
+                    in: fake.scripts.first ?? "")
+        XCTAssertFalse(fake.scripts.contains { $0.contains("window id") }, fake.transcript)
         XCTAssertEqual(fake.actions, [.madeCurrent(windowID: 5822, tab: 2), .raised(windowID: 5822), .activated])
+
+        // The checks are not lost with the id: a tab that shows another URL is left alone.
+        var otherURL = Fake.threeWindows
+        otherURL[1].tabs[1] = "https://other.example/"
+        let moved = Fake(windows: otherURL)
+        var warnings: [String] = []
+        do {
+            try await moved.drive {
+                try await SafariBridge.focusExistingTab(
+                    window: 2, tabInWindow: 2, isCurrent: false, url: "https://work.example/a2",
+                    windowID: nil, warnWriter: { warnings.append($0) }, spaces: Self.sameSpace)
+            }
+            XCTFail("the tab in that position shows another URL")
+        } catch SafariBrowserError.targetChangedBeforeActing {
+            XCTAssertEqual(moved.actions, [])
+            XCTAssertEqual(warnings, [])
+        }
+        // A window id of zero or less is no id.
+        let zero = Fake()
+        try await zero.drive {
+            try await SafariBridge.focusExistingTab(
+                window: 2, tabInWindow: 2, isCurrent: false, url: "https://work.example/a2",
+                windowID: 0, warnWriter: { _ in }, spaces: Self.sameSpace)
+        }
+        XCTAssertFalse(zero.scripts.contains { $0.contains("window id") }, zero.transcript)
     }
 }

@@ -132,16 +132,48 @@ final class WindowLevelNativeDialogTests: XCTestCase {
         // A tab named by its position: the same, without the URL check.
         let byPositionFake = Fake()
         let byPosition = try await exportPlan(["--window-id", "5822", "--tab-in-window", "2"], fake: byPositionFake)
-        assertOrder(["set _t to tab 2 of window id 5822", "set current tab of window id 5822 to _t",
-                     "set index of window id 5822 to 1"], in: byPosition.script)
+        assertOrder([
+            "if not (exists window id 5822) then error \"SB_WINDOW_GONE\" number 9002",
+            "if (count of tabs of window id 5822) < 2 then error \"SB_TAB_GONE\" number 9003",
+            "set _t to tab 2 of window id 5822",
+            "set current tab of window id 5822 to _t",
+            "set pdfPageURL to URL of current tab of window id 5822",
+            "set index of window id 5822 to 1",
+            "activate",
+        ], in: try openingBlock(of: byPosition.script))
         XCTAssertFalse(byPosition.script.contains("SB_TARGET_CHANGED"), byPosition.script)
         let byPositionActions = try await runOpeningBlock(of: byPosition, on: byPositionFake)
         XCTAssertEqual(byPositionActions, [.madeCurrent(windowID: 5822, tab: 2), .raised(windowID: 5822), .activated])
+
+        // The tab the resolution named is gone by the time the script runs (the window is still open): the
+        // block stops with the tab-gone marker before anything is switched or raised, and the error a caller
+        // reads is a miss on that tab, not Safari's "invalid index".
+        var oneTab = Fake.threeWindows
+        oneTab[1].tabs.removeLast()
+        let shrunk = Fake(windows: oneTab)
+        do {
+            _ = try await runOpeningBlock(of: byPosition, on: shrunk)
+            XCTFail("tab 2 is gone")
+        } catch SafariBrowserError.appleScriptFailed(let message) {
+            XCTAssertEqual(SafariBridge.appleScriptErrorCode(in: message), 9003, message)
+            XCTAssertEqual(shrunk.actions, [], "nothing is switched, raised or activated")
+        }
+        do {
+            try await shrunk.drive {
+                try await SafariBridge.translatingWindowLevelMarkers(target: byPosition.missTarget, profile: byPosition.profile) {
+                    throw SafariBrowserError.appleScriptFailed("42:118: execution error: SB_TAB_GONE (9003)")
+                }
+            }
+            XCTFail("expected documentNotFound")
+        } catch SafariBrowserError.documentNotFound(let pattern, _) {
+            XCTAssertEqual(pattern, "window id 5822 tab 2")
+        }
 
         // No targeting flag: the block sent before.
         let plain = try await exportPlan([], fake: Fake())
         XCTAssertTrue(plain.script.contains(Self.pdfFrontWindowBlock), plain.script)
         XCTAssertFalse(plain.script.contains("SB_WINDOW_GONE"), plain.script)
+        XCTAssertFalse(plain.script.contains("SB_TAB_GONE"), plain.script)
 
         // The script reports that the pinned window is gone: the error a caller reads names `--window 2`.
         do {
@@ -168,6 +200,32 @@ final class WindowLevelNativeDialogTests: XCTestCase {
                        "the opening Safari block must not name the front window")
     }
 
+    /// The "the save dialog may still be open" advice follows only an error after which it can be: a target
+    /// that was never found, or that changed before the script did anything, opened no dialog.
+    func testTheSaveDialogAdviceFollowsOnlyAnErrorThatCanLeaveOneOpen() {
+        XCTAssertFalse(PdfCommand.needsRecoveryAdvice(
+            after: SafariBrowserError.documentNotFound(pattern: "window 9", availableDocuments: [])))
+        XCTAssertFalse(PdfCommand.needsRecoveryAdvice(
+            after: SafariBrowserError.targetChangedBeforeActing(expected: "window id 5822 tab 2")))
+        XCTAssertTrue(PdfCommand.needsRecoveryAdvice(
+            after: SafariBrowserError.targetChangedBeforeActing(expected: "window id 5822 tab 2", stage: .afterFileDialog)))
+        XCTAssertTrue(PdfCommand.needsRecoveryAdvice(
+            after: SafariBrowserError.appleScriptFailed("execution error: Save dialog did not appear (-2700)")))
+        XCTAssertTrue(PdfCommand.needsRecoveryAdvice(after: CancellationError()))
+    }
+
+    /// A shape check, not a proof (`run()` needs a GUI session and the keyboard): the advice line is written
+    /// only inside the `needsRecoveryAdvice` branch.
+    func testTheSaveDialogAdviceIsWrittenOnlyInsideItsCheck() throws {
+        let source = try String(contentsOfFile: "Sources/SafariBrowser/Commands/PdfCommand.swift", encoding: .utf8)
+        let lines = source.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let advice = lines.indices.filter { lines[$0].contains("PDF native export failed; inspect Safari") }
+        XCTAssertEqual(advice.count, 1, "the advice is written in one place")
+        let index = try XCTUnwrap(advice.first)
+        XCTAssertEqual(lines[index - 1], "if Self.needsRecoveryAdvice(after: error) {")
+        XCTAssertEqual(lines[index + 1], "}")
+    }
+
     // MARK: upload
 
     private struct Upload {
@@ -177,8 +235,9 @@ final class WindowLevelNativeDialogTests: XCTestCase {
         let dialogScript: String
     }
 
-    /// Plans a native upload against `fake`, then runs the plan's effects with the dialog script captured
-    /// instead of executed.
+    /// Plans a native upload against `fake`, then runs it with `UploadCommand.runNativeUpload`, the function
+    /// the command itself calls: only the System Events probe, the dialog script's runner and stderr are
+    /// replaced, so which document is clicked and how a failed check is reported are the product's.
     private func upload(_ flags: [String], fake: Fake) async throws -> Upload {
         let command = try UploadCommand.parse(["--native", "input[type=file]", uploadPath] + flags)
         var notices: [String] = []
@@ -188,14 +247,41 @@ final class WindowLevelNativeDialogTests: XCTestCase {
         var warnings: [String] = []
         var scripts: [String] = []
         try await fake.drive {
-            try await UploadCommand.runNativeUploadEffects(
-                plan.effects, jsTarget: plan.jsTarget,
-                warn: { warnings.append($0) },
-                runJS: { js, target in try await SafariBridge.doJavaScript(js, target: target) },
-                runScript: { scripts.append($0) })
+            try await command.runNativeUpload(
+                plan,
+                ensureLive: {},
+                runDialogScript: { script, _ in scripts.append(script) },
+                warn: { warnings.append($0) })
         }
         XCTAssertEqual(scripts.count, 1, "one combined dialog script (#15)")
         return Upload(plan: plan, notices: notices, warnings: warnings, dialogScript: scripts.first ?? "")
+    }
+
+    /// The Safari block a dialog script by window id opens with (everything it asks Safari before it
+    /// activates Safari and System Events is involved).
+    private func openingBlock(ofDialog script: String) throws -> String {
+        let handlerEnd = try XCTUnwrap(script.range(of: "end verifyUploadOwner"))
+        let start = try XCTUnwrap(script.range(of: "tell application \"Safari\"", range: handlerEnd.upperBound..<script.endIndex))
+        let end = try XCTUnwrap(script.range(of: "end tell", range: start.upperBound..<script.endIndex))
+        let block = String(script[start.lowerBound..<end.upperBound])
+        XCTAssertFalse(block.contains("System Events") || block.contains("keystroke") || block.contains("activate"), block)
+        return block
+    }
+
+    /// Runs that block against `fake` and returns the error it ended with, if any.
+    private func runOpeningBlock(ofDialog script: String, on fake: Fake) async throws -> Error? {
+        let block = try openingBlock(ofDialog: script)
+        do {
+            _ = try await fake.drive { try await SafariBridge.runAppleScript(block) }
+            return nil
+        } catch {
+            return error
+        }
+    }
+
+    private func errorNumber(_ error: Error?) -> Int? {
+        guard case SafariBrowserError.appleScriptFailed(let message)? = error else { return nil }
+        return SafariBridge.appleScriptErrorCode(in: message)
     }
 
     /// The dialog script sent before #353 for `window`, written out again here so a change to it shows.
@@ -271,6 +357,45 @@ final class WindowLevelNativeDialogTests: XCTestCase {
                        current.transcript)
         XCTAssertEqual(byCurrent.plan.jsTarget, .anchoredCurrentTab(windowID: 5822, tabInWindow: 1, profile: nil))
 
+        // The dialog script checks the named tab once more before it raises anything: still there, still
+        // passing the URL check, still the window's current tab. Then it reads the page's URL and raises.
+        assertOrder([
+            "if not (exists window id 5822) then error \"SB_WINDOW_GONE\" number 9002",
+            "if (count of tabs of window id 5822) < 2 then error \"SB_TAB_GONE\" number 9003",
+            "set _t to tab 2 of window id 5822",
+            "does not contain \"work.example/a2\"",
+            "if (index of current tab of window id 5822) is not 2 then error \"SB_TARGET_CHANGED\" number 9001",
+            "set uploadPageURL to URL of current tab of window id 5822",
+            "set index of window id 5822 to 1",
+        ], in: try openingBlock(ofDialog: byURL.dialogScript))
+        XCTAssertFalse(try openingBlock(ofDialog: byURL.dialogScript).contains("set current tab"),
+                       "the dialog script never switches a tab")
+        let raised = try await runOpeningBlock(ofDialog: byURL.dialogScript, on: background)
+        XCTAssertNil(raised, "\(String(describing: raised))")
+        XCTAssertEqual(background.actions, [.madeCurrent(windowID: 5822, tab: 2), .raised(windowID: 5822)])
+        // …and it raises nothing when that tab changed since the click.
+        func dialogOutcome(_ change: (inout [Fake.Window]) -> Void) async throws -> (Int?, [Fake.Action]) {
+            var windows = Fake.threeWindows
+            windows[1].current = 2
+            change(&windows)
+            let fake = Fake(windows: windows)
+            let error = try await runOpeningBlock(ofDialog: byURL.dialogScript, on: fake)
+            return (errorNumber(error), fake.actions)
+        }
+        let navigated = try await dialogOutcome { $0[1].tabs[1] = "https://other.example/" }
+        let notCurrent = try await dialogOutcome { $0[1].current = 1 }
+        let tabGone = try await dialogOutcome { $0[1].tabs.removeLast(); $0[1].current = 1 }
+        let windowGone = try await dialogOutcome { $0.removeAll { $0.id == 5822 } }
+        XCTAssertEqual([navigated.0, notCurrent.0, tabGone.0, windowGone.0], [9001, 9001, 9003, 9002])
+        for outcome in [navigated, notCurrent, tabGone, windowGone] {
+            XCTAssertEqual(outcome.1, [], "nothing is raised")
+        }
+        // A window target has no tab to check: the existence check, the URL read, the raise.
+        let windowBlock = try openingBlock(ofDialog: byNumber.dialogScript)
+        assertOrder(["if not (exists window id 5822)", "set uploadPageURL to URL of current tab of window id 5822",
+                     "set index of window id 5822 to 1"], in: windowBlock)
+        XCTAssertFalse(windowBlock.contains("set _t to") || windowBlock.contains("SB_TARGET_CHANGED"), windowBlock)
+
         // Another tab becomes current after the check: the upload stops before the file input is clicked.
         let switchedBack = Fake()
         switchedBack.after(script: 2) { $0[1].current = 1 }
@@ -278,8 +403,42 @@ final class WindowLevelNativeDialogTests: XCTestCase {
         do {
             _ = try await switchedBack.drive { try await command.nativeUploadPlan(expandedPath: self.uploadPath, notice: { _ in }) }
             XCTFail("tab 2 is no longer current")
-        } catch SafariBrowserError.targetChangedBeforeActing {
+        } catch SafariBrowserError.targetChangedBeforeActing(_, let stage) {
+            XCTAssertEqual(stage, .afterTabSwitch, "the command had made tab 2 current by then")
             XCTAssertFalse(switchedBack.scripts.contains { $0.contains("do JavaScript") }, switchedBack.transcript)
+        }
+
+        // The tab navigates after the tab script checked it: the read's answer no longer satisfies --url, and
+        // the upload stops there.
+        let navigating = Fake()
+        navigating.after(script: 2) { $0[1].tabs[1] = "https://other.example/" }
+        do {
+            _ = try await navigating.drive { try await command.nativeUploadPlan(expandedPath: self.uploadPath, notice: { _ in }) }
+            XCTFail("tab 2 no longer shows a URL --url matches")
+        } catch SafariBrowserError.targetChangedBeforeActing(let expected, let stage) {
+            XCTAssertEqual(stage, .afterTabSwitch)
+            XCTAssertTrue(expected.contains("window id 5822 tab 2"), expected)
+            XCTAssertEqual(navigating.actions, [.madeCurrent(windowID: 5822, tab: 2)])
+            XCTAssertFalse(navigating.scripts.contains { $0.contains("do JavaScript") }, navigating.transcript)
+        }
+
+        // Another tab becomes current between the read and the click: the click's own check stops the upload,
+        // after the keyboard warning and before any dialog script.
+        let beforeClick = Fake()
+        beforeClick.after(script: 3) { $0[1].current = 1 }
+        let plan = try await beforeClick.drive { try await command.nativeUploadPlan(expandedPath: self.uploadPath, notice: { _ in }) }
+        var warned: [String] = []
+        var dialogs: [String] = []
+        do {
+            try await beforeClick.drive {
+                try await command.runNativeUpload(
+                    plan, ensureLive: {}, runDialogScript: { script, _ in dialogs.append(script) }, warn: { warned.append($0) })
+            }
+            XCTFail("tab 2 is no longer current when the file input is to be clicked")
+        } catch SafariBrowserError.targetChangedBeforeActing(_, let stage) {
+            XCTAssertEqual(stage, .afterTabSwitch)
+            XCTAssertEqual(dialogs, [], "no dialog script runs")
+            XCTAssertEqual(warned, [UploadCommand.keyboardControlWarning])
         }
 
         // No targeting flag: `window 1`, and the dialog script is the text sent before.
@@ -287,18 +446,90 @@ final class WindowLevelNativeDialogTests: XCTestCase {
         XCTAssertEqual(plain.plan.window, .position(1))
         XCTAssertEqual(plain.plan.jsTarget, .windowIndex(1))
         XCTAssertEqual(plain.dialogScript, dialogScriptBefore353(window: 1))
+
+        // --window 2 whose id cannot be read: `window 2` throughout, and the dialog script sent before.
+        let unreadFake = Fake()
+        unreadFake.anchorDoesNotAnswer = true
+        let unread = try await upload(["--window", "2"], fake: unreadFake)
+        XCTAssertEqual(unread.plan.window, .position(2))
+        XCTAssertEqual(unread.dialogScript, dialogScriptBefore353(window: 2))
+    }
+
+    /// What the dialog script reports once it runs is translated by `runNativeUpload`: a check that failed in
+    /// its first Safari block came after the click, and a System Events answer is left as it is.
+    func testWhatTheDialogScriptReportsIsTranslatedForTheStageItRanAt() async throws {
+        let command = try UploadCommand.parse(["--native", "input[type=file]", uploadPath, "--url", "work.example/a2"])
+        func outcome(_ message: String) async throws -> Error? {
+            let fake = Fake()
+            let plan = try await fake.drive { try await command.nativeUploadPlan(expandedPath: self.uploadPath, notice: { _ in }) }
+            do {
+                try await fake.drive {
+                    try await command.runNativeUpload(
+                        plan, ensureLive: {},
+                        runDialogScript: { _, _ in throw SafariBrowserError.appleScriptFailed(message) },
+                        warn: { _ in })
+                }
+                return nil
+            } catch {
+                return error
+            }
+        }
+        guard case SafariBrowserError.targetChangedBeforeActing(_, let stage)? =
+                try await outcome("88:140: execution error: SB_TARGET_CHANGED (9001)") else {
+            return XCTFail("a failed check in the dialog script is targetChangedBeforeActing")
+        }
+        XCTAssertEqual(stage, .afterFileDialog)
+        for gone in ["execution error: SB_WINDOW_GONE (9002)", "execution error: SB_TAB_GONE (9003)"] {
+            guard case SafariBrowserError.documentNotFound? = try await outcome(gone) else {
+                return XCTFail("\(gone) is documentNotFound")
+            }
+        }
+        // System Events answers -1728 for a sheet or a button that is not there: not a missing window.
+        let systemEvents = "execution error: System Events got an error: Can’t get sheet 1 of window 1 of process \"Safari\". (-1728)"
+        guard case SafariBrowserError.appleScriptFailed(let passed)? = try await outcome(systemEvents) else {
+            return XCTFail("a System Events error passes through")
+        }
+        XCTAssertEqual(passed, systemEvents)
+        // The owner check's own errors (the window closed or lost the front after the dialog appeared) too.
+        let owner = "execution error: Upload target window is no longer open; no further keystroke was sent. If a file dialog is still open, dismiss it (Esc) before retrying. (-2700)"
+        guard case SafariBrowserError.appleScriptFailed(let ownerPassed)? = try await outcome(owner) else {
+            return XCTFail("the owner check's error passes through")
+        }
+        XCTAssertEqual(ownerPassed, owner)
     }
 
     // spec-example: file-upload / front window check before every keystroke
     func testFrontWindowCheckBeforeEveryKeystroke() throws {
         let script = UploadCommand.nativeDialogScript(path: uploadPath, window: .id(5822))
         let lines = script.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-        let call = "my verifyUploadOwner(5822)"
+        let call = "my verifyUploadOwner(5822, uploadPageURL)"
 
-        // The check itself: the window still exists, and it is Safari's front window.
-        XCTAssertEqual(lines.filter { $0 == "on verifyUploadOwner(expectedID)" }.count, 1)
-        XCTAssertTrue(script.contains("if not (exists window id expectedID) then error"), script)
-        XCTAssertTrue(script.contains("if id of front window is not expectedID then error"), script)
+        // The check itself: the window still exists, it is Safari's front window, the front window still
+        // shows the page the dialog belongs to (case-sensitively), and Safari is the frontmost application.
+        let handlerStart = try XCTUnwrap(lines.firstIndex(of: "on verifyUploadOwner(expectedID, expectedURL)"))
+        let handlerEnd = try XCTUnwrap(lines.firstIndex(of: "end verifyUploadOwner"))
+        XCTAssertEqual(lines.filter { $0.hasPrefix("on verifyUploadOwner(") }.count, 1)
+        let handler = Array(lines[handlerStart...handlerEnd])
+        func line(_ prefix: String) throws -> Int {
+            try XCTUnwrap(handler.firstIndex { $0.hasPrefix(prefix) }, "the owner check lacks: \(prefix)\n\(handler.joined(separator: "\n"))")
+        }
+        let exists = try line("if not (exists window id expectedID) then error")
+        let front = try line("if id of front window is not expectedID then error")
+        let page = try line("if URL of current tab of front window is not expectedURL then error")
+        let frontmost = try line("if not frontmost then error")
+        XCTAssertTrue(exists < front && front < page && page < frontmost, handler.joined(separator: "\n"))
+        XCTAssertEqual(handler[page - 1], "considering case", "the URL is compared with regard to case")
+        XCTAssertEqual(handler[page + 1], "end considering")
+        XCTAssertTrue(handler[..<frontmost].contains("tell application \"System Events\" to tell process \"Safari\""),
+                      "frontmost is asked of the Safari process:\n\(handler.joined(separator: "\n"))")
+        for message in [exists, front, page, frontmost] {
+            XCTAssertTrue(handler[message].contains("no further keystroke was sent"), handler[message])
+            XCTAssertTrue(handler[message].contains("dismiss it (Esc)"), handler[message])
+        }
+        // The URL it compares with is read in the first Safari block, before the window is raised.
+        let read = try XCTUnwrap(lines.firstIndex(of: "set uploadPageURL to URL of current tab of window id 5822"))
+        let raise = try XCTUnwrap(lines.firstIndex(of: "set index of window id 5822 to 1"))
+        XCTAssertTrue(handlerEnd < read && read < raise)
 
         XCTAssertEqual(lines.filter { $0 == call }.count, 7, "three keystrokes, two waits, the confirmation, and once after the dialog appeared")
 
@@ -312,8 +543,19 @@ final class WindowLevelNativeDialogTests: XCTestCase {
         }
         // The first check comes after the wait for the file dialog and before the first keystroke.
         let dialogWait = try XCTUnwrap(lines.firstIndex(of: "repeat until exists sheet 1 of front window"))
+        let dialogWaitEnd = try XCTUnwrap(lines[dialogWait...].firstIndex(of: "end repeat"))
         let firstCall = try XCTUnwrap(lines.firstIndex(of: call))
-        XCTAssertTrue(dialogWait < firstCall && firstCall < acts[0])
+        XCTAssertTrue(dialogWaitEnd < firstCall && firstCall < acts[0])
+        // One check inside each of the two waits (for the Go to Folder panel to open, and to close).
+        let waits = ["repeat until exists sheet 1 of sheet 1 of front window",
+                     "repeat until not (exists sheet 1 of sheet 1 of front window)"]
+        for wait in waits {
+            let start = try XCTUnwrap(lines.firstIndex(of: wait), "missing wait: \(wait)")
+            let end = try XCTUnwrap(lines[start...].firstIndex(of: "end repeat"))
+            XCTAssertEqual(lines[start...end].filter { $0 == call }.count, 1, "one check inside: \(wait)")
+        }
+        // The wait for the file dialog itself has none: the dialog is not there yet.
+        XCTAssertFalse(lines[dialogWait...dialogWaitEnd].contains(call))
 
         // No targeting flag, and a window named by position: no such call, and the text sent before.
         let positional = UploadCommand.nativeDialogScript(path: uploadPath, window: .position(1))

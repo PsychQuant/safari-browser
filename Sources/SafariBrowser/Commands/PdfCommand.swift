@@ -23,9 +23,9 @@ struct PdfCommand: AsyncParsableCommand {
     /// #26: pdf now accepts the full TargetOptions (`--url`, `--tab`,
     /// `--document`, `--window`). The native-path resolver maps each
     /// targeting flag to a physical window + tab-in-window. When the
-    /// target is a background tab, `performTabSwitchIfNeeded` brings it
-    /// to the front of its window before the PDF export menu/dialog
-    /// keystroke sequence runs.
+    /// target is a background tab, the export script makes it the current
+    /// tab of its window (`SafariBridge.bringTabForwardStatements`) before
+    /// the PDF export menu/dialog keystroke sequence runs.
     @OptionGroup var target: TargetOptions
 
     func run() async throws {
@@ -123,8 +123,22 @@ struct PdfCommand: AsyncParsableCommand {
                 try await SafariBridge.runFileDialogScript(plan.script, timeout: remaining)
             }
         } catch {
-            FileHandle.standardError.write(Data("PDF native export failed; inspect Safari and cancel any remaining save dialog before retrying. If the process was interrupted, the clipboard may need restoration.\n".utf8))
+            if Self.needsRecoveryAdvice(after: error) {
+                FileHandle.standardError.write(Data("PDF native export failed; inspect Safari and cancel any remaining save dialog before retrying. If the process was interrupted, the clipboard may need restoration.\n".utf8))
+            }
             throw error
+        }
+    }
+
+    /// Whether a failed export may have left a save dialog or a changed clipboard behind. An error raised in
+    /// the script's first Safari block (the window or the tab is gone, or the tab failed its URL check) comes
+    /// before any menu action, raise or clipboard write, and says so itself; advice to cancel a save dialog
+    /// after it would contradict it.
+    static func needsRecoveryAdvice(after error: Error) -> Bool {
+        switch error {
+        case SafariBrowserError.documentNotFound: return false
+        case SafariBrowserError.targetChangedBeforeActing(_, .beforeAnyAction): return false
+        default: return true
         }
     }
 

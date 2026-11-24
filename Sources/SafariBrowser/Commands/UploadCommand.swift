@@ -240,16 +240,29 @@ struct UploadCommand: AsyncParsableCommand {
         }
         try await SafariBridge.bringResolvedTabForward(resolved, named: named, profile: profile)
 
-        try await SafariBridge.translatingWindowLevelMarkers(target: missTarget, profile: profile, translateNotFound: true) {
-            _ = try await SafariBridge.getCurrentURL(target: jsTarget)
+        // The read that checks the target exists. Its answer is compared with the flag: a tab found by its
+        // URL that has navigated since the tab script checked it stops the upload here (verify r1).
+        let shown = try await SafariBridge.translatingWindowLevelMarkers(
+            target: missTarget, profile: profile, translateNotFound: true, stage: .afterTabSwitch
+        ) {
+            try await SafariBridge.getCurrentURL(target: jsTarget)
+        }
+        if case .urlMatch(let matcher) = named, !matcher.matches(shown) {
+            throw SafariBrowserError.targetChangedBeforeActing(
+                expected: SafariBridge.targetDescription(missTarget), stage: .afterTabSwitch)
         }
 
+        // The dialog script checks a named tab once more, in its first Safari block, when it acts by id.
+        let dialogTab = window.windowID == nil ? nil : resolved.anchorTabIndex
         return NativeUploadPlan(
             window: window,
             jsTarget: jsTarget,
             missTarget: missTarget,
             profile: profile,
-            effects: UploadCommand.nativeUploadEffects(selector: selector, path: expandedPath, window: window))
+            effects: UploadCommand.nativeUploadEffects(
+                selector: selector, path: expandedPath, window: window, tab: dialogTab,
+                guardClause: dialogTab == nil ? nil
+                    : SafariBridge.tabGuardClause(named: named, matchedURL: resolved.matchedURL)))
     }
 
     private func runNativeWithResolver(expandedPath: String) async throws {
@@ -296,32 +309,46 @@ struct UploadCommand: AsyncParsableCommand {
     /// Click file input to open dialog, then navigate via a single combined osascript.
     /// Merges activate + wait + keystroke navigation into one osascript invocation
     /// to prevent focus-stealing race conditions between separate calls (fixes #15).
-    private func runNativeUpload(_ plan: NativeUploadPlan) async throws {
+    ///
+    /// The three things that reach outside the process are parameters (the System Events probe, the dialog
+    /// script's runner, stderr), so a test runs this function, wiring included, against a fake Safari: which
+    /// document gets the click and how a failed check is translated are decided here (#353 verify r1).
+    func runNativeUpload(
+        _ plan: NativeUploadPlan,
+        ensureLive: () async throws -> Void = { try await SafariBridge.ensureSystemEventsLive() },
+        runDialogScript: (String, TimeInterval) async throws -> Void = { script, timeout in
+            try await SafariBridge.runFileDialogScript(script, timeout: timeout)
+        },
+        warn: (String) -> Void = { FileHandle.standardError.write(Data($0.utf8)) }
+    ) async throws {
         // #20: probe System Events before sending any keystrokes. A silent hang
         // inside the combined osascript is the single worst failure mode of this
         // command, and System Events being down is by far the most common cause.
-        try await SafariBridge.ensureSystemEventsLive()
+        try await ensureLive()
 
-        // Everything below is the injectable interpreter, wired to its real
-        // implementations. The wiring is the only part a test cannot reach.
         let timeout = self.timeout
         try await UploadCommand.runNativeUploadEffects(
             plan.effects,
             jsTarget: plan.jsTarget,
-            warn: { FileHandle.standardError.write(Data($0.utf8)) },
+            warn: warn,
+            // The click. A tab that stopped being current since the read fails its check here; by then the
+            // command may already have made that tab current.
             runJS: { js, target in
                 try await SafariBridge.translatingWindowLevelMarkers(
-                    target: plan.missTarget, profile: plan.profile, translateNotFound: true
+                    target: plan.missTarget, profile: plan.profile, translateNotFound: true, stage: .afterTabSwitch
                 ) {
                     try await SafariBridge.doJavaScript(js, target: target)
                 }
             },
             // Subprocess-level timeout (#19) bounds the whole invocation in case
             // System Events or Safari's Apple Event dispatcher is blocked and
-            // the inner `maxWait to 10` loops never progress.
+            // the inner `maxWait to 10` loops never progress. A check that fails in this
+            // script's first Safari block comes after the click: a file dialog may be open.
             runScript: { script in
-                try await SafariBridge.translatingWindowLevelMarkers(target: plan.missTarget, profile: plan.profile) {
-                    try await SafariBridge.runFileDialogScript(script, timeout: timeout)
+                try await SafariBridge.translatingWindowLevelMarkers(
+                    target: plan.missTarget, profile: plan.profile, stage: .afterFileDialog
+                ) {
+                    try await runDialogScript(script, timeout)
                 }
             })
     }
@@ -335,9 +362,9 @@ struct UploadCommand: AsyncParsableCommand {
     /// three side effects lets a test run *this* function and watch what it
     /// actually does.
     ///
-    /// What remains beyond reach is the wiring in `uploadViaNativeDialog` that
-    /// binds `warn` to stderr and the runners to `SafariBridge` — three closure
-    /// literals with no branching.
+    /// The wiring that binds `warn` to stderr and the runners to `SafariBridge`
+    /// is `runNativeUpload`, whose outside dependencies are parameters, so a
+    /// test runs it too.
     static func runNativeUploadEffects(
         _ effects: [NativeUploadEffect],
         jsTarget: SafariBridge.TargetDocument,
@@ -380,7 +407,8 @@ struct UploadCommand: AsyncParsableCommand {
     }
 
     static func nativeUploadEffects(
-        selector: String, path: String, window: SafariBridge.ActingWindow?
+        selector: String, path: String, window: SafariBridge.ActingWindow?,
+        tab: Int? = nil, guardClause: String? = nil
     ) -> [NativeUploadEffect] {
         [
             .warnOnStderr(keyboardControlWarning),
@@ -388,7 +416,7 @@ struct UploadCommand: AsyncParsableCommand {
                 selector: selector,
                 js: "(function(){ var el = \(selector.resolveRefJS); "
                     + "if (!el) return 'NOT_FOUND'; el.click(); return 'OK'; })()"),
-            .runCombinedScript(nativeDialogScript(path: path, window: window)),
+            .runCombinedScript(nativeDialogScript(path: path, window: window, tab: tab, guardClause: guardClause)),
         ]
     }
 
@@ -400,29 +428,58 @@ struct UploadCommand: AsyncParsableCommand {
     /// window, so an explicit target has to be brought forward before the
     /// activate (#23).
     ///
-    /// #353: by window id the script also checks who it is typing into. A window that is gone ends it with
-    /// `SB_WINDOW_GONE` before anything is raised, and `verifyUploadOwner` stops it when Safari's front window
-    /// is not that window: after the file dialog appeared, before every keystroke, in every wait, and before
-    /// the confirming click. By position, and with no window at all, the script is the one sent before #353.
-    static func nativeDialogScript(path: String, window: SafariBridge.ActingWindow?) -> String {
+    /// #353: by window id the script also checks who it is typing into. Its first Safari block ends the script
+    /// with `SB_WINDOW_GONE` when the window is gone and, when the resolution named a tab (`tab`), with
+    /// `SB_TAB_GONE` when that tab is gone and with `SB_TARGET_CHANGED` when it no longer passes the URL check
+    /// (`guardClause`, for a tab found by its URL) or is no longer the window's current tab; all of that
+    /// before anything is raised. It then reads the URL of the page the file dialog belongs to. Before every
+    /// keystroke, in every wait and before the confirming click `verifyUploadOwner` stops the script unless
+    /// that window is still open and is Safari's front window, the front window still shows that URL, and
+    /// Safari is the frontmost application: System Events types into whichever application is frontmost, and
+    /// Safari's own window order says nothing about that. By position, and with no window at all, the script
+    /// is the one sent before #353.
+    static func nativeDialogScript(
+        path: String, window: SafariBridge.ActingWindow?, tab: Int? = nil, guardClause: String? = nil
+    ) -> String {
         let ownerID = window?.windowID
+        let dismiss = "If a file dialog is still open, dismiss it (Esc) before retrying."
         let ownerHandler = ownerID.map { _ in
             """
-            on verifyUploadOwner(expectedID)
+            on verifyUploadOwner(expectedID, expectedURL)
                 tell application "Safari"
-                    if not (exists window id expectedID) then error "Upload target window is no longer open; no further keystroke was sent. If a file dialog is still open, dismiss it (Esc) before retrying"
-                    if id of front window is not expectedID then error "Upload target window is not Safari's front window; no keystroke was sent to another window. The file dialog is still open: dismiss it (Esc) before retrying"
+                    if not (exists window id expectedID) then error "Upload target window is no longer open; no further keystroke was sent. \(dismiss)"
+                    if id of front window is not expectedID then error "Upload target window is not Safari's front window; no further keystroke was sent. \(dismiss)"
+                    considering case
+                        if URL of current tab of front window is not expectedURL then error "Upload target page changed; no further keystroke was sent. \(dismiss)"
+                    end considering
+                end tell
+                tell application "System Events" to tell process "Safari"
+                    if not frontmost then error "Safari is no longer the frontmost application; no further keystroke was sent. \(dismiss)"
                 end tell
             end verifyUploadOwner
 
 
             """
         } ?? ""
-        let ownerGuard = ownerID.map { "my verifyUploadOwner(\($0))" } ?? ""
+        let ownerGuard = ownerID.map { "my verifyUploadOwner(\($0), uploadPageURL)" } ?? ""
         let raisePrelude: String
         switch window {
         case .id(let id)?:
-            raisePrelude = "tell application \"Safari\"\n\(SafariBridge.windowGoneCheck(windowID: id))\nset index of window id \(id) to 1\nend tell\n"
+            let reference = "window id \(id)"
+            var lines = ["tell application \"Safari\"", SafariBridge.windowGoneCheck(windowID: id)]
+            if let tab {
+                lines.append(SafariBridge.tabGoneCheck(windowReference: reference, tab: tab))
+                lines.append("set _t to tab \(tab) of \(reference)")
+                if let guardClause { lines.append(guardClause) }
+                lines.append(
+                    "if (index of current tab of \(reference)) is not \(tab) then error \"SB_TARGET_CHANGED\" number \(SafariBridge.WindowLevelMarker.targetChanged)")
+            }
+            lines += [
+                "set uploadPageURL to URL of current tab of \(reference)",
+                "set index of \(reference) to 1",
+                "end tell",
+            ]
+            raisePrelude = lines.joined(separator: "\n") + "\n"
         case .position(let index)?:
             raisePrelude = "tell application \"Safari\" to set index of window \(index) to 1\n"
         case nil:

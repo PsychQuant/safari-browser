@@ -36,6 +36,8 @@ extension SafariBridge {
     ///   stays positional for all of its steps, as the note it printed says, even when the resolver's own id
     ///   read answered afterwards.
     /// - No flag and no `--profile` keeps the position, so those scripts are the ones sent before #353.
+    /// - A window id the user typed, or that the pin wrote, is the id: `--window-id` never falls back to a
+    ///   position, whatever the resolution carried.
     static func actingWindow(for resolved: ResolvedWindowTarget, named: TargetDocument, profile: String?) -> ActingWindow {
         let scoped = !(profile ?? "").isEmpty
         switch named {
@@ -43,6 +45,8 @@ extension SafariBridge {
             return .position(resolved.windowIndex)
         case .frontWindow where !scoped:
             return .position(resolved.windowIndex)
+        case .windowID(let id, _, _) where id > 0:
+            return .id(id)
         default:
             if let id = resolved.windowID, id > 0 { return .id(id) }
             return .position(resolved.windowIndex)
@@ -140,35 +144,79 @@ extension SafariBridge {
         ].joined(separator: "\n")
     }
 
-    /// Runs `body`, turning the two markers a window-level script ends with into the errors a caller reads:
-    /// `SB_TARGET_CHANGED` (9001), the URL check failed, and `SB_WINDOW_GONE` (9002), the window a
-    /// file-dialog script was to act on is no longer open. The file-dialog scripts go straight to `osascript`
-    /// and never pass through `runTargetedAppleScript`, which is why they announce a missing window themselves.
+    /// The error numbers a window-level script ends with. `translatingWindowLevelMarkers` reads the number at
+    /// the end of the error text, never the text itself (#218): the scripts it wraps include System Events
+    /// blocks, whose error text can carry a window name, which is a page title.
+    enum WindowLevelMarker {
+        /// `SB_TARGET_CHANGED`: the URL check, or the check that a named tab is still its window's current tab.
+        static let targetChanged = 9001
+        /// `SB_WINDOW_GONE`: the window a script was to act on is no longer open.
+        static let windowGone = 9002
+        /// `SB_TAB_GONE`: the window is open but has no tab at the position the resolution named.
+        static let tabGone = 9003
+    }
+
+    /// Runs `body`, turning the markers a window-level script ends with into the errors a caller reads:
+    /// `SB_TARGET_CHANGED` (9001) becomes `targetChangedBeforeActing`, and `SB_WINDOW_GONE` (9002) and
+    /// `SB_TAB_GONE` (9003) become the miss `notFoundError` words for `target`. The file-dialog scripts go
+    /// straight to `osascript` and never pass through `runTargetedAppleScript`, which is why they announce a
+    /// missing window or tab themselves.
+    ///
+    /// `stage` says what the command had already done when the wrapped step runs; the target-changed error
+    /// repeats it, so its text never claims that nothing was done after a tab was switched or a file dialog
+    /// was opened.
     ///
     /// `translateNotFound` also turns a bare "object not found" (-1719 / -1728) into that miss. It is for the
     /// one Safari script that reaches here untranslated: a read or a click on `.anchoredCurrentTab`, whose
     /// errors `runTargetedAppleScript` passes through as they are. It must stay off for the file-dialog
-    /// scripts, where System Events answers -1728 for a button or a sheet that is not there.
+    /// scripts, where System Events answers -1728 for a button or a sheet that is not there. With it, a miss
+    /// the wrapped call already translated without the profile (a read on `window id W`, which takes no
+    /// profile so that the windows are not enumerated a second time) is worded again with the profile, so one
+    /// command words a closed window one way.
     static func translatingWindowLevelMarkers<T>(
         target: TargetDocument,
         profile: String?,
         translateNotFound: Bool = false,
+        stage: SafariBrowserError.TargetChangeStage = .beforeAnyAction,
         _ body: () async throws -> T
     ) async throws -> T {
         do {
             return try await body()
-        } catch SafariBrowserError.appleScriptFailed(let message) where message.contains("SB_TARGET_CHANGED") {
-            throw SafariBrowserError.targetChangedBeforeActing(expected: targetDescription(target))
-        } catch SafariBrowserError.appleScriptFailed(let message) where message.contains("SB_WINDOW_GONE") {
+        } catch SafariBrowserError.appleScriptFailed(let message) {
+            switch appleScriptErrorCode(in: message) {
+            case WindowLevelMarker.targetChanged?:
+                throw SafariBrowserError.targetChangedBeforeActing(expected: targetDescription(target), stage: stage)
+            case WindowLevelMarker.windowGone?, WindowLevelMarker.tabGone?:
+                throw try await notFoundError(for: target, profile: profile)
+            case let code? where translateNotFound && (code == -1719 || code == -1728):
+                throw try await notFoundError(for: target, profile: profile)
+            default:
+                throw SafariBrowserError.appleScriptFailed(message)
+            }
+        } catch SafariBrowserError.documentNotFound where translateNotFound && rewordsMissUnderProfile(target, profile: profile) {
             throw try await notFoundError(for: target, profile: profile)
-        } catch SafariBrowserError.appleScriptFailed(let message) where translateNotFound && isObjectNotFound(message) {
-            throw try await notFoundError(for: target, profile: profile)
+        }
+    }
+
+    /// Whether a miss on `target` reads differently with the profile: an id-based target under `--profile`.
+    static func rewordsMissUnderProfile(_ target: TargetDocument, profile: String?) -> Bool {
+        guard !(profile ?? "").isEmpty else { return false }
+        switch target {
+        case .windowID, .resolvedTab: return true
+        default: return false
         }
     }
 
     /// The first statement of a script that acts on `window id W` outside `runTargetedAppleScript`.
     static func windowGoneCheck(windowID: Int) -> String {
-        "if not (exists window id \(windowID)) then error \"SB_WINDOW_GONE\" number 9002"
+        "if not (exists window id \(windowID)) then error \"SB_WINDOW_GONE\" number \(WindowLevelMarker.windowGone)"
+    }
+
+    /// Stops a script before it binds `tab <tab>` of a window that has fewer tabs: the tab the resolution
+    /// named is gone. Without it the bind raises -1719, which the file-dialog scripts cannot tell from a
+    /// System Events answer.
+    static func tabGoneCheck(windowReference: String, tab: Int) -> String {
+        "if (count of tabs of \(windowReference)) < \(tab) then error \"SB_TAB_GONE\" number \(WindowLevelMarker.tabGone)"
     }
 
     // MARK: - close
@@ -210,11 +258,14 @@ extension SafariBridge {
 
     // MARK: - Bringing a named tab forward
 
-    /// Statements that bind the tab to `_t`, run the URL check when there is one, and make the tab the
-    /// window's current tab when it is not. A tab that is already current is checked and left alone, so the
+    /// Statements that stop when the window has no such tab (`SB_TAB_GONE`), bind the tab to `_t`, run the URL
+    /// check when there is one, and make the tab the window's current tab when it is not. A tab that is already current is checked and left alone, so the
     /// check runs whether or not the tab was current when it was resolved.
     static func bringTabForwardStatements(windowReference: String, tab: Int, guardClause: String?) -> [String] {
-        var lines = ["set _t to tab \(tab) of \(windowReference)"]
+        var lines = [
+            tabGoneCheck(windowReference: windowReference, tab: tab),
+            "set _t to tab \(tab) of \(windowReference)",
+        ]
         if let guardClause { lines.append(guardClause) }
         lines.append("if (index of current tab of \(windowReference)) is not \(tab) then set current tab of \(windowReference) to _t")
         return lines
@@ -304,10 +355,12 @@ extension SafariBridge {
             ofWindow: { SafariBridge.detectWindowSpace(windowIndex: $0) })
     }
 
-    /// Layers 2 and 3 of the spatial gradient, by window id, in one script: check that the tab still shows
-    /// `url`, make it current when it is not, and for another window raise it and activate Safari.
-    static func focusExistingScript(windowID: Int, tab: Int, url: String, raise: Bool) -> String {
-        let reference = ActingWindow.id(windowID).reference
+    /// Layers 2 and 3 of the spatial gradient in one script: check that the tab still shows `url`, make it
+    /// current when it is not, and for another window raise it and activate Safari. `window` is the id the
+    /// enumeration read, or the position when its record carries none: the same statements either way, the
+    /// raise last, because once a window named by position is raised its position is 1.
+    static func focusExistingScript(window: ActingWindow, tab: Int, url: String, raise: Bool) -> String {
+        let reference = window.reference
         var lines = ["tell application \"Safari\""]
         lines += bringTabForwardStatements(
             windowReference: reference, tab: tab,
@@ -315,5 +368,24 @@ extension SafariBridge {
         if raise { lines += ["set index of \(reference) to 1", "activate"] }
         lines.append("end tell")
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - screenshot: the page steps
+
+    /// The document the page steps of `screenshot --full` / `--element` run in (the size read, the scroll and
+    /// its restore, the element-bounds read), once the window is known by its id.
+    ///
+    /// A target that names a tab was refused unless that tab is its window's current tab, so the steps use
+    /// `.anchoredCurrentTab`: each checks, in its own script, that the tab is still current, and fails when it
+    /// is not, because the pixels would then be another tab's. A target that names only the window reads the
+    /// window's current tab, which is the tab the capture shows. `nil` when the window is named by its
+    /// position: the steps then resolve the options as they did before #353.
+    static func pageTarget(for resolved: ResolvedWindowTarget, named: TargetDocument, profile: String?) -> TargetDocument? {
+        guard case .id(let id) = actingWindow(for: resolved, named: named, profile: profile) else { return nil }
+        if let tab = resolved.anchorTabIndex {
+            return .anchoredCurrentTab(windowID: id, tabInWindow: tab, profile: profile)
+        }
+        if case .windowID(_, nil, _) = named { return named }
+        return .windowID(id)
     }
 }

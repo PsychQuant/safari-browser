@@ -13,8 +13,11 @@ import XCTest
 /// - `set _t to tab T of <window>` binds a tab, or fails as Safari does (-1728 for a window that is gone,
 ///   -1719 for a tab that is not there);
 /// - the URL checks (`if (URL of _t) does not contain / is not equal to / does not end with / does not start
-///   with "…" then error "SB_TARGET_CHANGED" number 9001`) are evaluated, case-sensitively, against the URL
-///   that tab shows now;
+///   with "…" then error "SB_TARGET_CHANGED" number 9001`) are evaluated against the URL that tab shows now:
+///   with regard to case inside `considering case … end considering`, and without it outside, as AppleScript
+///   compares text. A script that loses its `considering case` therefore lets a URL that differs only in
+///   case through, here as in Safari;
+/// - `if (count of tabs of <window>) < T then …` is evaluated against the window's tabs;
 /// - `close _t`, `close current tab of <window>`, `set current tab of <window> to _t`, `set index of <window>
 ///   to 1` and `activate` change the state and are recorded in `actions`;
 /// - `if (index of current tab of <window>) is not T then …` is evaluated against the window's current tab, so a
@@ -204,6 +207,8 @@ final class WindowLevelFakeSafari: @unchecked Sendable {
         /// `set _w to window id W`: the window the bridge's anchored scripts name `_w`.
         var boundWindow: Int?
         var skipping = false
+        /// Inside `considering case … end considering`.
+        var consideringCase = false
         var result = "OK"
 
         /// The window a statement names: `_w` when the script bound one, else the reference in the text.
@@ -222,6 +227,10 @@ final class WindowLevelFakeSafari: @unchecked Sendable {
                 guard let index = try windowIndex(in: text) else { return false }
                 return order[index].tabs.isEmpty
             }
+            if text.hasPrefix("(count of tabs of "), let limit = Self.int(after: ") < ", in: text) {
+                guard let index = try windowIndex(in: String(text[..<text.range(of: ") < ")!.lowerBound])) else { return false }
+                return order[index].tabs.count < limit
+            }
             if text.hasPrefix("not (exists window id ") {
                 guard let id = Self.int(after: "window id ", in: text) else { return false }
                 return !order.contains { $0.id == id }
@@ -230,11 +239,14 @@ final class WindowLevelFakeSafari: @unchecked Sendable {
                 guard let bound, let expected = Self.literal(in: text) else {
                     throw Failure(message: "a URL check on a tab that was never bound:\n\(script)")
                 }
-                let url = order[bound.window].tabs[bound.tab - 1]
-                if text.contains("does not contain") { return !url.contains(expected) }
-                if text.contains("is not equal to") { return url != expected }
-                if text.contains("does not end with") { return !url.hasSuffix(expected) }
-                if text.contains("does not start with") { return !url.hasPrefix(expected) }
+                // AppleScript ignores case unless the comparison sits inside `considering case`.
+                let shown = order[bound.window].tabs[bound.tab - 1]
+                let url = consideringCase ? shown : shown.lowercased()
+                let wanted = consideringCase ? expected : expected.lowercased()
+                if text.contains("does not contain") { return !url.contains(wanted) }
+                if text.contains("is not equal to") { return url != wanted }
+                if text.contains("does not end with") { return !url.hasSuffix(wanted) }
+                if text.contains("does not start with") { return !url.hasPrefix(wanted) }
                 throw Failure(message: "a URL check this fake does not know: \(text)")
             }
             return false
@@ -321,6 +333,8 @@ final class WindowLevelFakeSafari: @unchecked Sendable {
                 if line == "end if" { skipping = false }
                 continue
             }
+            if line == "considering case" { consideringCase = true; continue }
+            if line == "end considering" { consideringCase = false; continue }
             if line.contains("do JavaScript") {
                 // The JavaScript text is not AppleScript: check the reference it runs in, then stop reading.
                 if let range = line.range(of: " in ", options: .backwards), let index = try windowIndex(in: String(line[range.upperBound...])) {

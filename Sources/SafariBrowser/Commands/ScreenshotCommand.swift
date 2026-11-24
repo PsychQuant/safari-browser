@@ -88,6 +88,9 @@ struct ScreenshotCommand: AsyncParsableCommand {
         let window: SafariBridge.ActingWindow
         let missTarget: SafariBridge.TargetDocument
         let profile: String?
+        /// The document the page steps of `--full` / `--element` run in (`SafariBridge.pageTarget`); `nil`
+        /// when the window is named by its position.
+        let pageTarget: SafariBridge.TargetDocument?
     }
 
     /// Resolve an explicit target to the window to capture; `nil` when no targeting flag was given.
@@ -130,7 +133,44 @@ struct ScreenshotCommand: AsyncParsableCommand {
         return CaptureTarget(
             window: SafariBridge.actingWindow(for: resolved, named: named, profile: profile),
             missTarget: SafariBridge.actedTarget(for: resolved, named: named, profile: profile),
-            profile: profile)
+            profile: profile,
+            pageTarget: SafariBridge.pageTarget(for: resolved, named: named, profile: profile))
+    }
+
+    /// Resolve the target and find the window to capture: the resolution, then the capture resolver with the
+    /// window, the miss target and the profile that resolution produced. One function so that a test can run
+    /// the hand-over itself (with `resolve` standing in for Accessibility): which window reaches the capture
+    /// resolver is decided here (#353 verify r1).
+    func captureWindow(
+        session: GUISession = .live,
+        resolve: ((SafariBridge.ActingWindow?) async throws -> (cgID: String, axWindow: AXUIElement?))? = nil
+    ) async throws -> (target: TargetOptions, capture: CaptureTarget?, cgID: String, axWindow: AXUIElement?) {
+        let resolution = try await resolveCapture()
+        let (cgID, axWindow) = try await SafariBridge.resolveWindowForCapture(
+            window: resolution.capture?.window, missTarget: resolution.capture?.missTarget,
+            profile: resolution.capture?.profile, session: session, resolve: resolve)
+        return (resolution.target, resolution.capture, cgID, axWindow)
+    }
+
+    /// The document the page steps run in: the one the resolution fixed when the window is known by its id,
+    /// otherwise the options resolved as before #353 (no targeting flag, or a window named by its position).
+    static func pageTarget(capture: CaptureTarget?, options: TargetOptions) async throws -> SafariBridge.TargetDocument {
+        if let page = capture?.pageTarget { return page }
+        return try await options.resolveProfileScoped()
+    }
+
+    /// Runs one page step. When the step is tied to a tab that had to be its window's current tab and that
+    /// tab closed or stopped being current, the failure names the tab instead of an AppleScript marker.
+    static func pageStep<T>(_ target: SafariBridge.TargetDocument, _ body: () async throws -> T) async throws -> T {
+        do {
+            return try await body()
+        } catch let error as SafariBrowserError {
+            if case .anchoredCurrentTab(let windowID, let tab, _) = target, SafariBridge.isTargetDangleError(error) {
+                throw SafariBrowserError.anchoredTargetChanged(
+                    target: "tab \(tab) of window id \(windowID) (the window's current tab when the screenshot started)")
+            }
+            throw error
+        }
     }
 
     func run() async throws {
@@ -175,15 +215,13 @@ struct ScreenshotCommand: AsyncParsableCommand {
 
         // #354 / #353: `--window N` becomes the window's id once, here, after the checks above (none of which
         // contacts Safari) and before the first Apple event. Everything below reads the pinned copy.
-        let (target, capture) = try await resolveCapture()
+        let (target, capture, windowID, axWindow) = try await captureWindow()
 
         // #23 verify R7: resolve both CG ID AND AX element so --full mode
         // can do bounds operations on the SAME window we're about to
         // capture. This eliminates the R6 F42 cross-API mismatch where
         // CG ID came from AX but bounds resize went through AS `window N`
         // (could be a different window).
-        let (windowID, axWindow) = try await SafariBridge.resolveWindowForCapture(
-            window: capture?.window, missTarget: capture?.missTarget, profile: capture?.profile)
         // Default captures bypass the document resolver to preserve their CG
         // fallback. Probe the exact capture window after that resolution too.
         let probeKey: BlockingDialogGate.WindowKey
@@ -191,14 +229,11 @@ struct ScreenshotCommand: AsyncParsableCommand {
         else { probeKey = .front }
         BlockingDialogGate.shared.check(probeKey)
 
-        // JS target for dimensions / scroll state. Uses the full
-        // TargetOptions resolution so `--full --url plaud` reads
-        // plaud's dimensions via doJavaScript even when plaud is in a
-        // background tab of its owning window.
-        // #51: scope the --full JS dimensions read to --profile too (screenshot
-        // is honored), and drop the previously-unused firstMatch/warnWriter
-        // destructure.
-        let docTarget = try await target.resolveProfileScoped()
+        // JS target for dimensions / scroll state / element bounds (#353): the document the resolution
+        // fixed, by window id, so these steps act on the window being captured and not on whatever a second
+        // resolution of the options would find. With no targeting flag, or by position, the options are
+        // resolved here as before (#51: within --profile).
+        let docTarget = try await Self.pageTarget(capture: capture, options: target)
 
         if !full {
             // Simple path: capture whatever CG ID resolved. Always silent (-x).
@@ -239,10 +274,10 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // legacy default path (no Accessibility + no --window).
 
         // Read page dimensions via JS (same window we're capturing).
-        let dims = try await SafariBridge.doJavaScript(
+        let dims = try await Self.pageStep(docTarget) { try await SafariBridge.doJavaScript(
             "JSON.stringify({sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,cw:document.documentElement.clientWidth,ch:document.documentElement.clientHeight,sx:window.scrollX,sy:window.scrollY})",
             target: docTarget
-        )
+        ) }
 
         var savedRect: CGRect? = nil
         var asBoundsRaw: String? = nil
@@ -284,7 +319,9 @@ struct ScreenshotCommand: AsyncParsableCommand {
         var resizeError: Error?
         if let targetW, let targetH {
             do {
-                _ = try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: docTarget)
+                _ = try await Self.pageStep(docTarget) {
+                    try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: docTarget)
+                }
                 try await Task.sleep(nanoseconds: 300_000_000)
                 if let axWindow {
                     try SafariBridge.setAXWindowBounds(axWindow, x: 0, y: 0, width: Double(targetW), height: Double(targetH))
@@ -591,11 +628,13 @@ struct ScreenshotCommand: AsyncParsableCommand {
             }
             let webAreaScreen = try SafariBridge.getAXWebAreaBounds(axWindow)
 
-            let result = try await SafariBridge.getElementBoundsInViewport(
-                selector: selector,
-                target: docTarget,
-                elementIndex: elementIndex
-            )
+            let result = try await Self.pageStep(docTarget) {
+                try await SafariBridge.getElementBoundsInViewport(
+                    selector: selector,
+                    target: docTarget,
+                    elementIndex: elementIndex
+                )
+            }
 
             // viewport-relative + (webArea.origin − window.origin) = window-relative
             let elementRectInWindow = CGRect(

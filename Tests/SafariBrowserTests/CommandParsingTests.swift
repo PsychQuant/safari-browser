@@ -680,19 +680,29 @@ final class CommandParsingTests: XCTestCase {
         )
     }
 
-    /// #26 regression guard: screenshot source must NOT call
-    /// `performTabSwitchIfNeeded`. Screenshot is non-interfering by
-    /// design — tab-switching a background tab would break that
-    /// contract. This source-level assertion catches any future
-    /// refactor that tries to make screenshot "helpful" by
-    /// auto-switching tabs.
+    /// #26 regression guard: screenshot must not switch tabs or raise a window. It is non-interfering by
+    /// design; making a background tab current would break that contract.
+    ///
+    /// A shape check on the source, naming the things that switch a tab or raise a window today (the function
+    /// this used to name, `performTabSwitchIfNeeded`, was removed in #353, so that check could no longer
+    /// fail). What the command sends is checked against a fake Safari in
+    /// `WindowLevelCaptureAndFocusTests.testScreenshotChangesNothingInSafari`.
     func testScreenshotCommand_sourceDoesNotTabSwitch() throws {
         let sourcePath = "Sources/SafariBrowser/Commands/ScreenshotCommand.swift"
         let src = try String(contentsOfFile: sourcePath, encoding: .utf8)
-        XCTAssertFalse(
-            src.contains("performTabSwitchIfNeeded"),
-            "ScreenshotCommand must NOT tab-switch — breaks non-interference spec #26"
-        )
+        let code = src.components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        for switching in ["bringResolvedTabForward", "bringTabForward", "focusExistingTab", "set current tab",
+                          "set index of", "performTabSwitchIfNeeded"] {
+            XCTAssertFalse(
+                code.contains(switching),
+                "ScreenshotCommand must NOT switch tabs or raise a window (\(switching)) — breaks non-interference spec #26"
+            )
+        }
+        // The check can fail: the functions it names exist where a tab is switched.
+        let upload = try String(contentsOfFile: "Sources/SafariBrowser/Commands/UploadCommand.swift", encoding: .utf8)
+        XCTAssertTrue(upload.contains("bringResolvedTabForward"), "the tab-switch function this guard names no longer exists")
     }
 
     // MARK: - PdfCommand target wiring (#23 → #26)
