@@ -1,11 +1,14 @@
 import Foundation
 
-/// Why `save-pdf` stopped (#338). A closed list; none of these falls back to a request.
+/// Why `save-pdf` stopped (#338). A closed list; none of these falls back to another request.
 enum SavePDFFailure: Equatable, Sendable {
     /// The tab's document is something else, for example an HTML page embedding a PDF.
     case notPDF(contentType: String)
-    /// A service worker controls the tab, and its answer could come from the network.
-    case serviceWorker
+    /// A service worker controls the tab and handled this read, so its answer could have come from the network
+    /// (#390). The bytes were read in the page and not encoded or transferred.
+    case serviceWorkerSaw
+    /// A service worker controls the tab, and no timing entry for this read tells whether it handled it (#390).
+    case serviceWorkerUnconfirmed
     /// The `only-if-cached` fetch rejected. WebKit does not hold the whole document (it was dropped, or the
     /// load stopped) or the page's policy blocked the read; the page cannot tell these apart (all are a
     /// `TypeError`). `detail` is the error's name, never its message.
@@ -35,8 +38,10 @@ enum SavePDFFailure: Equatable, Sendable {
         switch self {
         case .notPDF(let contentType):
             return "The tab's document is '\(t(contentType))', not a PDF. save-pdf reads a tab that displays a PDF itself; a PDF embedded in an HTML page is not covered."
-        case .serviceWorker:
-            return "A service worker controls this tab and its answer could come from the network, so nothing was read. Save this PDF by hand."
+        case .serviceWorkerSaw:
+            return "A service worker handled this read of the PDF, so it could have answered from the network and a request may have gone out; the bytes were read but not saved. To keep a read the service worker handled, run again with --allow-service-worker."
+        case .serviceWorkerUnconfirmed:
+            return "A service worker controls this tab, and whether it handled this read could not be confirmed (there is no timing entry for the read), so the bytes were read but not saved. To keep it anyway, run again with --allow-service-worker."
         case .notHeld(let detail):
             return "Could not read the PDF from the tab (\(t(detail))): WebKit does not hold the whole document (it was dropped, or the load stopped), or the page's policy blocked the read. No request for the document was sent. Display the PDF again, or save it by hand."
         case .badStatus(let code):

@@ -8,8 +8,12 @@ import Foundation
 /// That cache mode cannot reach the network: without a held copy it rejects. This is the only fetch in the
 /// script, and a rejection is a failure: there is no second attempt in any other mode.
 ///
-/// A service worker sees every fetch of the page it controls and can answer from the network, so such a
-/// page is refused rather than read.
+/// A service worker can see the fetches of the page it controls and answer them from the network. A PDF
+/// document fetching its own URL was not handed to one (Safari 27.3 and WebKit, #390), but the page cannot know
+/// beforehand, so on a page a service worker controls the same read is sent and checked afterwards: the read's
+/// `PerformanceResourceTiming` entry has a `workerStart` above 0 when a service worker handled it. A read it
+/// handled, or one with no entry to tell, is refused before its bytes are encoded unless the caller allows it.
+/// A page no service worker controls never calls `performance`.
 ///
 /// The scripts written here contain no address, because a script is an `osascript` argument, part of a timeout
 /// message and a daemon log entry; the page reports back only the protocol, host and path. Finding the tab is
@@ -29,15 +33,34 @@ enum TabPDFReader {
     /// What the start script answers. A tab that runs no scripts answers nothing.
     private static let startedReply = "started"
 
+    /// What the read says about a service worker (#390). The raw values are the status field and the output.
+    enum ServiceWorkerVerdict: String, Equatable, Sendable, CaseIterable {
+        /// No service worker controls the tab.
+        case none
+        /// One controls it, and the read's timing entries all have `workerStart` 0.
+        case notSeen = "not-seen"
+        /// One controls it, and it handled the read.
+        case seen
+        /// One controls it, and no timing entry for the read could be found.
+        case unconfirmed
+    }
+
     struct Read: Equatable {
         let bytes: Data
         let url: String
+        let serviceWorker: ServiceWorkerVerdict
+
+        init(bytes: Data, url: String, serviceWorker: ServiceWorkerVerdict = .none) {
+            self.bytes = bytes
+            self.url = url
+            self.serviceWorker = serviceWorker
+        }
     }
 
     enum Status: Equatable {
         case gone
         case wait
-        case ok(bytes: Int, length: Int)
+        case ok(bytes: Int, length: Int, serviceWorker: ServiceWorkerVerdict)
         case failed(SavePDFFailure)
         case damaged(String)
     }
@@ -48,16 +71,35 @@ enum TabPDFReader {
     /// page's scope. The slot exists before anything can fail, so every outcome is recorded on it, and it exists
     /// only in this document: every later step fails if the tab shows another one by then. Only the error's name
     /// is reported, because WebKit's message text is not ours and can carry the signed URL.
-    static func startScript(slot: ResultSlot, maxBytes: Int = TabPDFReader.maxBytes) -> String {
+    ///
+    /// On a page a service worker controls, the verdict is worked out after the body is read and before its size
+    /// is checked or it is encoded (#390); `allowServiceWorker` is written in as a literal and keeps the bytes for
+    /// every verdict. It changes nothing about the fetch.
+    static func startScript(slot: ResultSlot, maxBytes: Int = TabPDFReader.maxBytes, allowServiceWorker: Bool = false) -> String {
         let ref = "window.\(slot.key)"
         return """
             (\(ResultSlot.sweepExpression), \(ref) = { u: \(ResultSlot.stampExpression) }, (function(s){
               function fail(code, detail) { s.fail = code; s.detail = ('' + detail).slice(0, \(detailLimit)); s.done = true; }
               function named(e) { return e && e.name ? e.name : 'Error'; }
+              function verdict(t0) {
+                try {
+                  if (!(t0 >= 0) || typeof performance !== 'object' || !performance || typeof performance.getEntriesByType !== 'function') { return 'unconfirmed'; }
+                  var want = ('' + location.href).split('#')[0], list = performance.getEntriesByType('resource'), found = false, most = 0;
+                  for (var i = 0; i < list.length; i++) {
+                    var e = list[i];
+                    if (('' + e.name).split('#')[0] !== want || e.initiatorType !== 'fetch' || !(e.startTime >= t0)) { continue; }
+                    found = true;
+                    if (e.workerStart > most) { most = e.workerStart; }
+                  }
+                  return !found ? 'unconfirmed' : (most > 0 ? 'seen' : 'not-seen');
+                } catch (e) { return 'unconfirmed'; }
+              }
               try {
                 var type = document.contentType;
                 if (type !== 'application/pdf' && type !== 'text/pdf') { fail('not-pdf', type); return; }
-                if (navigator.serviceWorker && navigator.serviceWorker.controller) { fail('service-worker', ''); return; }
+                var controlled = !!(navigator.serviceWorker && navigator.serviceWorker.controller), allow = \(allowServiceWorker ? "true" : "false"), t0 = -1;
+                s.sw = 'none';
+                if (controlled) { try { t0 = performance.now(); } catch (e) { t0 = -1; } }
                 s.shown = location.protocol + '//' + location.host + location.pathname;
                 fetch(location.href, { cache: 'only-if-cached', mode: 'same-origin' })
                   .then(function(r){
@@ -65,6 +107,7 @@ enum TabPDFReader {
                     return r.blob();
                   }, function(e){ fail('not-held', named(e)); return null; })
                   .then(function(b){ if (!b) { return null; } s.bytes = b.size;
+                    if (controlled) { s.sw = verdict(t0); if (!allow && s.sw !== 'not-seen') { fail('sw-' + s.sw, ''); return null; } }
                     if (b.size > \(maxBytes)) { fail('too-large', b.size); return null; }
                     return new Promise(function(res, rej){ var f = new FileReader();
                       f.onload = function(){ res(f.result); }; f.onerror = function(){ rej(f.error); }; f.readAsDataURL(b); }); })
@@ -77,7 +120,7 @@ enum TabPDFReader {
 
     /// One of the four closed answers `parseStatus` reads.
     static func statusScript(slot: ResultSlot) -> String {
-        "(function(){ var s = window.\(slot.key); if (!s) { return 'gone'; } \(ResultSlot.touchStatement) if (!s.done) { return 'wait'; } return s.fail ? 'fail:' + s.fail + ':' + s.detail : 'ok:' + s.bytes + ':' + s.len; })()"
+        "(function(){ var s = window.\(slot.key); if (!s) { return 'gone'; } \(ResultSlot.touchStatement) if (!s.done) { return 'wait'; } return s.fail ? 'fail:' + s.fail + ':' + s.detail : 'ok:' + s.bytes + ':' + s.len + ':' + s.sw; })()"
     }
 
     private static func shownScript(slot: ResultSlot) -> String {
@@ -95,8 +138,9 @@ enum TabPDFReader {
         }
         if text.hasPrefix("ok:") {
             let parts = text.dropFirst(3).split(separator: ":", omittingEmptySubsequences: false)
-            if parts.count == 2, let bytes = number(parts[0]), let length = number(parts[1]) {
-                return .ok(bytes: bytes, length: length)
+            if parts.count == 3, let bytes = number(parts[0]), let length = number(parts[1]),
+               let verdict = ServiceWorkerVerdict(rawValue: String(parts[2])) {
+                return .ok(bytes: bytes, length: length, serviceWorker: verdict)
             }
             return .damaged("unexpected status")
         }
@@ -108,7 +152,8 @@ enum TabPDFReader {
             let detail = String(rest[rest.index(after: colon)...])
             switch String(rest[..<colon]) {
             case "not-pdf": return .failed(.notPDF(contentType: detail))
-            case "service-worker": return .failed(.serviceWorker)
+            case "sw-seen" where detail.isEmpty: return .failed(.serviceWorkerSaw)
+            case "sw-unconfirmed" where detail.isEmpty: return .failed(.serviceWorkerUnconfirmed)
             case "not-held": return .failed(.notHeld(detail: detail))
             case "read-failed": return .failed(.readFailed(detail: detail))
             case "status":
@@ -129,7 +174,7 @@ enum TabPDFReader {
     /// stopped answering (`ResultSlot.removalIsWorthTrying`). An abandoned slot is reclaimed later (#193).
     static func read(
         target: SafariBridge.TargetDocument, firstMatch: Bool = false,
-        deadlineSeconds: Double = TabPDFReader.deadlineSeconds
+        deadlineSeconds: Double = TabPDFReader.deadlineSeconds, allowServiceWorker: Bool = false
     ) async throws -> Read {
         func run(_ script: String) async throws -> String {
             try await SafariBridge.doJavaScript(script, target: target, firstMatch: firstMatch)
@@ -137,10 +182,10 @@ enum TabPDFReader {
         let slot = ResultSlot.make()
         let deadline = ContinuousClock.now + .seconds(deadlineSeconds)
         do {
-            guard try await run(startScript(slot: slot)).trimmingCharacters(in: .whitespacesAndNewlines) == startedReply else {
+            guard try await run(startScript(slot: slot, allowServiceWorker: allowServiceWorker)).trimmingCharacters(in: .whitespacesAndNewlines) == startedReply else {
                 throw SafariBrowserError.savePDF(.notScriptable)
             }
-            let (bytes, length) = try await awaitCompletion(
+            let (bytes, length, verdict) = try await awaitCompletion(
                 slot: slot, deadline: deadline, deadlineSeconds: deadlineSeconds, run: run)
             let shown = try await run(shownScript(slot: slot)).trimmingCharacters(in: .whitespacesAndNewlines)
             let text: String
@@ -159,7 +204,7 @@ enum TabPDFReader {
                 throw SafariBrowserError.savePDF(.damagedReply(detail: "\(decoded.count) bytes arrived where \(bytes) were announced"))
             }
             await SafariBridge.removeResultSlot(slot, target: target, firstMatch: firstMatch)
-            return Read(bytes: decoded, url: shown)
+            return Read(bytes: decoded, url: shown, serviceWorker: verdict)
         } catch {
             await SafariBridge.removeResultSlot(slot, target: target, firstMatch: firstMatch, after: error)
             throw error
@@ -171,7 +216,7 @@ enum TabPDFReader {
     private static func awaitCompletion(
         slot: ResultSlot, deadline: ContinuousClock.Instant, deadlineSeconds: Double,
         run: (String) async throws -> String
-    ) async throws -> (bytes: Int, length: Int) {
+    ) async throws -> (bytes: Int, length: Int, verdict: ServiceWorkerVerdict) {
         while true {
             let status = parseStatus(try await run(statusScript(slot: slot)))
             switch status {
@@ -183,11 +228,11 @@ enum TabPDFReader {
             if ContinuousClock.now >= deadline {
                 throw SafariBrowserError.savePDF(.timedOut(seconds: deadlineSeconds))
             }
-            if case .ok(let bytes, let length) = status {
+            if case .ok(let bytes, let length, let verdict) = status {
                 guard bytes <= maxBytes, length == (bytes + 2) / 3 * 4 else {
                     throw SafariBrowserError.savePDF(.damagedReply(detail: "the page announced \(bytes) bytes in \(length) characters"))
                 }
-                return (bytes, length)
+                return (bytes, length, verdict)
             }
             try await Task.sleep(nanoseconds: pollNanoseconds)
         }

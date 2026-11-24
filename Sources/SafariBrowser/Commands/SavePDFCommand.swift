@@ -14,7 +14,9 @@ struct SavePDFCommand: AsyncParsableCommand {
             Name the tab explicitly: --url, --url-exact, --url-endswith, --url-regex, --window [--tab-in-window], \
             --window-id [--tab-in-window], --document or --tab. The tab must display the PDF itself; a PDF embedded in an HTML page is not covered. \
             The read uses fetch with cache 'only-if-cached', which cannot reach the network: when WebKit no longer \
-            holds the document the command fails and the document is not requested. A page controlled by a service worker is refused.
+            holds the document the command fails and the document is not requested. On a tab a service worker controls, the same \
+            read is sent and checked afterwards with the read's resource timing: when the service worker handled it, or that cannot \
+            be confirmed, nothing is saved unless --allow-service-worker is given. The output names the verdict.
             """
     )
 
@@ -26,6 +28,9 @@ struct SavePDFCommand: AsyncParsableCommand {
 
     @Flag(name: .long, help: "Output as JSON object")
     var json = false
+
+    @Flag(name: .long, help: "Keep the PDF when a service worker controls the tab and handled the read, or when that cannot be confirmed")
+    var allowServiceWorker = false
 
     @OptionGroup var target: TargetOptions
 
@@ -47,7 +52,8 @@ struct SavePDFCommand: AsyncParsableCommand {
             warnWriter: TargetOptions.stderrWarnWriter, profile: target.profile)
         let read: TabPDFReader.Read
         do {
-            read = try await TabPDFReader.read(target: anchored, firstMatch: target.firstMatch)
+            read = try await TabPDFReader.read(
+                target: anchored, firstMatch: target.firstMatch, allowServiceWorker: allowServiceWorker)
         } catch let error as SafariBrowserError {
             // A tab that vanished names the target; the untranslated error lists every profile's tabs.
             throw JSCommand.anchoredFailure(error, original: original, anchored: anchored)
@@ -55,9 +61,9 @@ struct SavePDFCommand: AsyncParsableCommand {
         let result = try TabPDFReader.publish(read, to: path, force: force)
         let url = URLText.redactURL(read.url)
         if json {
-            print(String(decoding: try PDFCacheFormat.tabSavedJSON(result, url: url), as: UTF8.self))
+            print(String(decoding: try PDFCacheFormat.tabSavedJSON(result, url: url, serviceWorker: read.serviceWorker), as: UTF8.self))
         } else {
-            print(PDFCacheFormat.tabSavedRow(result, url: url))
+            print(PDFCacheFormat.tabSavedRow(result, url: url, serviceWorker: read.serviceWorker))
         }
     }
 }

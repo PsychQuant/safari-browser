@@ -30,29 +30,47 @@ enum TabPDFFixture {
         return out + Data(table.utf8)
     }
 
-    /// A page displaying `bytes`, with shims around what the script may touch.
+    /// One `PerformanceResourceTiming` entry as the shim's `performance.getEntriesByType('resource')` returns it.
+    /// The shim's `performance.now()` answers `now` (100 by default), so the default `startTime` is after the read's start.
+    struct Entry {
+        var name: String = "https://cdn.example.org/1-s2.0/main.pdf?X-Amz-Signature=SECRET"
+        var initiatorType = "fetch"
+        var startTime: Double = 150
+        var workerStart: Double = 0
+
+        var js: String { "{ name: '\(name)', initiatorType: '\(initiatorType)', startTime: \(startTime), workerStart: \(workerStart) }" }
+    }
+
+    /// A page displaying `bytes`, with shims around what the script may touch. `__timing` counts the calls to
+    /// `performance`; `timingThrows` makes both of its functions throw.
     static func page(
         bytes: Data = pdf(), contentType: String = "application/pdf", status: Int = 200,
         reject: Bool = false, serviceWorker: Bool = false, reportedSize: Int? = nil, neverSettles: Bool = false,
-        url: String = signedURL
+        url: String = signedURL, entries: [Entry] = [], now: Double = 100, timingThrows: Bool = false
     ) -> FakePage {
         let page = FakePage()
         install(on: page, bytes: bytes, contentType: contentType, status: status, reject: reject,
-                serviceWorker: serviceWorker, reportedSize: reportedSize, neverSettles: neverSettles, url: url)
+                serviceWorker: serviceWorker, reportedSize: reportedSize, neverSettles: neverSettles, url: url,
+                entries: entries, now: now, timingThrows: timingThrows)
         return page
     }
 
     static func install(
         on page: FakePage, bytes: Data = pdf(), contentType: String = "application/pdf", status: Int = 200,
         reject: Bool = false, serviceWorker: Bool = false, reportedSize: Int? = nil, neverSettles: Bool = false,
-        url: String = signedURL
+        url: String = signedURL, entries: [Entry] = [], now: Double = 100, timingThrows: Bool = false
     ) {
         let parts = URLComponents(string: url)
+        let thrower = timingThrows ? "throw new Error('timing');" : ""
         _ = page.evaluate("""
-            var __fetches = [], __readers = 0;
+            var __fetches = [], __readers = 0, __timing = 0;
             var document = { contentType: '\(contentType)' };
             var location = { href: '\(url)', protocol: '\(parts?.scheme ?? "https"):', host: '\(parts?.host ?? "")', pathname: '\(parts?.percentEncodedPath ?? "")' };
             var navigator = { serviceWorker: { controller: \(serviceWorker ? "{}" : "null") } };
+            var performance = {
+                now: function () { __timing++; \(thrower) return \(now); },
+                getEntriesByType: function (t) { __timing++; \(thrower) return t === 'resource' ? [\(entries.map(\.js).joined(separator: ", "))] : []; }
+            };
             function FileReader() { __readers++; }
             FileReader.prototype.readAsDataURL = function (b) {
                 var self = this; self.result = 'data:application/pdf;base64,' + b.b64;
@@ -74,9 +92,15 @@ enum TabPDFFixture {
 }
 
 final class TabPDFReaderScriptTests: XCTestCase {
-    private func run(_ page: FakePage, _ slot: ResultSlot = .make()) throws -> String {
-        XCTAssertEqual(page.evaluate(TabPDFReader.startScript(slot: slot)), "started")
+    private func run(_ page: FakePage, _ slot: ResultSlot = .make(), allow: Bool = false) throws -> String {
+        XCTAssertEqual(page.evaluate(TabPDFReader.startScript(slot: slot, allowServiceWorker: allow)), "started")
         return page.evaluate(TabPDFReader.statusScript(slot: slot)) ?? ""
+    }
+
+    /// `ok:<bytes>:<len>` of the default fixture PDF, without the verdict.
+    private var okPrefix: String {
+        let bytes = TabPDFFixture.pdf()
+        return "ok:\(bytes.count):\(bytes.base64EncodedString().count)"
     }
 
     func testThePageParksBase64InTheCallsOwnSlotAndFetchesOnceFromTheCacheOnly() throws {
@@ -84,7 +108,7 @@ final class TabPDFReaderScriptTests: XCTestCase {
         let page = TabPDFFixture.page(bytes: bytes)
         let slot = ResultSlot.make()
         let status = try run(page, slot)
-        XCTAssertEqual(status, "ok:\(bytes.count):\(bytes.base64EncodedString().count)")
+        XCTAssertEqual(status, "ok:\(bytes.count):\(bytes.base64EncodedString().count):none")
         XCTAssertEqual(page.evaluate("window.\(slot.key).text"), bytes.base64EncodedString())
         let fetches = TabPDFFixture.fetches(page)
         XCTAssertEqual(fetches.count, 1)
@@ -103,10 +127,78 @@ final class TabPDFReaderScriptTests: XCTestCase {
         XCTAssertTrue(try run(TabPDFFixture.page(contentType: "text/pdf")).hasPrefix("ok:"))
     }
 
-    func testAPageUnderAServiceWorkerIsNotFetched() throws {
-        let page = TabPDFFixture.page(serviceWorker: true)
-        XCTAssertEqual(try run(page), "fail:service-worker:")
-        XCTAssertEqual(TabPDFFixture.fetches(page), [])
+    /// spec-example: save-pdf / verdicts and the flag
+    func testVerdictsAndTheFlag() throws {
+        let ok = okPrefix
+        let rows: [(label: String, controlled: Bool, workerStarts: [Double], allow: Bool, expected: String)] = [
+            ("not controlled (entries present but not read)", false, [12], false, ok + ":none"),
+            ("controlled, 0", true, [0], false, ok + ":not-seen"),
+            ("controlled, 0 and 12", true, [0, 12], false, "fail:sw-seen:"),
+            ("controlled, 12, flag", true, [12], true, ok + ":seen"),
+            ("controlled, no entry", true, [], false, "fail:sw-unconfirmed:"),
+            ("controlled, no entry, flag", true, [], true, ok + ":unconfirmed"),
+        ]
+        for row in rows {
+            let page = TabPDFFixture.page(serviceWorker: row.controlled,
+                                          entries: row.workerStarts.map { TabPDFFixture.Entry(workerStart: $0) })
+            XCTAssertEqual(try run(page, allow: row.allow), row.expected, row.label)
+            XCTAssertEqual(TabPDFFixture.fetches(page).count, 1, "\(row.label): one fetch, whatever the verdict")
+            if row.expected.hasPrefix("fail:") {
+                XCTAssertEqual(page.evaluate("'' + __readers"), "0", "\(row.label): refused bytes are not encoded")
+            }
+            if !row.controlled {
+                XCTAssertEqual(page.evaluate("'' + __timing"), "0", "\(row.label): performance is not called")
+            }
+        }
+    }
+
+    /// spec-example: save-pdf / which entries count for the read
+    func testWhichEntriesCountForTheRead() throws {
+        let tab = "https://x/doc.pdf#page=2"
+        let rows: [(label: String, entry: TabPDFFixture.Entry, counts: Bool)] = [
+            ("same name without the fragment", .init(name: "https://x/doc.pdf", workerStart: 1), true),
+            ("a navigation entry", .init(name: "https://x/doc.pdf", initiatorType: "navigation", workerStart: 1), false),
+            ("started before the read", .init(name: "https://x/doc.pdf", startTime: 50, workerStart: 1), false),
+            ("another URL", .init(name: "https://x/doc.pdf?v=2", workerStart: 1), false),
+        ]
+        for row in rows {
+            let page = TabPDFFixture.page(serviceWorker: true, url: tab, entries: [row.entry])
+            XCTAssertEqual(try run(page), row.counts ? "fail:sw-seen:" : "fail:sw-unconfirmed:", row.label)
+        }
+    }
+
+    /// spec-example: save-pdf / an uncontrolled tab never reads resource timing
+    func testAnUncontrolledTabNeverReadsResourceTiming() throws {
+        let page = TabPDFFixture.page(entries: [.init(workerStart: 12)], timingThrows: true)
+        XCTAssertEqual(try run(page), okPrefix + ":none")
+        XCTAssertEqual(page.evaluate("'' + __timing"), "0")
+    }
+
+    /// A page that broke `performance` cannot be confirmed: that is a refusal without the flag, not a read failure.
+    func testAControlledTabWhoseTimingThrowsOrIsMissingIsUnconfirmed() throws {
+        let throwing = TabPDFFixture.page(serviceWorker: true, entries: [.init()], timingThrows: true)
+        XCTAssertEqual(try run(throwing), "fail:sw-unconfirmed:")
+        let missing = TabPDFFixture.page(serviceWorker: true, entries: [.init()])
+        _ = missing.evaluate("performance = undefined;")
+        XCTAssertEqual(try run(missing), "fail:sw-unconfirmed:")
+        let noLookup = TabPDFFixture.page(serviceWorker: true, entries: [.init()])
+        _ = noLookup.evaluate("performance = { now: function () { return 100; } };")
+        XCTAssertEqual(try run(noLookup, allow: true), okPrefix + ":unconfirmed")
+    }
+
+    /// The flag is a literal in the script and changes nothing about the one fetch.
+    func testTheFlagDoesNotChangeTheFetch() throws {
+        for allow in [false, true] {
+            let page = TabPDFFixture.page(serviceWorker: true, entries: [.init(workerStart: 12)])
+            _ = try run(page, allow: allow)
+            let fetches = TabPDFFixture.fetches(page)
+            XCTAssertEqual(fetches.count, 1)
+            XCTAssertTrue(fetches[0].contains("\"cache\":\"only-if-cached\""), fetches[0])
+            XCTAssertTrue(fetches[0].contains("\"mode\":\"same-origin\""), fetches[0])
+        }
+        let slot = ResultSlot.make()
+        XCTAssertNotEqual(TabPDFReader.startScript(slot: slot, allowServiceWorker: false),
+                          TabPDFReader.startScript(slot: slot, allowServiceWorker: true))
     }
 
     func testANavigatorWithoutServiceWorkerIsNotAnError() throws {
@@ -165,7 +257,7 @@ final class TabPDFReaderScriptTests: XCTestCase {
     func testADataURLWithNoCommaIsEmptyNotItsOwnPrefix() throws {
         let page = TabPDFFixture.page(bytes: Data())
         _ = page.evaluate("FileReader.prototype.readAsDataURL = function () { var self = this; self.result = 'data:'; Promise.resolve().then(function () { self.onload(); }); };")
-        XCTAssertEqual(try run(page), "ok:0:0")
+        XCTAssertEqual(try run(page), "ok:0:0:none")
     }
 
     func testAResultOverTheLimitIsNotEncoded() throws {
@@ -203,13 +295,36 @@ final class TabPDFReaderStatusTests: XCTestCase {
     func testTheFourAnswers() {
         XCTAssertEqual(TabPDFReader.parseStatus("gone"), .gone)
         XCTAssertEqual(TabPDFReader.parseStatus("wait"), .wait)
-        XCTAssertEqual(TabPDFReader.parseStatus("ok:12:16"), .ok(bytes: 12, length: 16))
+        XCTAssertEqual(TabPDFReader.parseStatus("ok:12:16:none"), .ok(bytes: 12, length: 16, serviceWorker: .none))
         XCTAssertEqual(TabPDFReader.parseStatus("fail:not-held:a:b"), .failed(.notHeld(detail: "a:b")))
         XCTAssertEqual(TabPDFReader.parseStatus("fail:not-pdf:text/html"), .failed(.notPDF(contentType: "text/html")))
-        XCTAssertEqual(TabPDFReader.parseStatus("fail:service-worker:"), .failed(.serviceWorker))
         XCTAssertEqual(TabPDFReader.parseStatus("fail:status:504"), .failed(.badStatus(code: 504)))
         XCTAssertEqual(TabPDFReader.parseStatus("fail:too-large:9"), .failed(.tooLarge(bytes: 9)))
         XCTAssertEqual(TabPDFReader.parseStatus("fail:read-failed:Error"), .failed(.readFailed(detail: "Error")))
+    }
+
+    /// spec-example: save-pdf / the closed status format
+    func testTheClosedStatusFormat() {
+        let rows: [(String, TabPDFReader.Status?)] = [
+            ("ok:3:4:none", .ok(bytes: 3, length: 4, serviceWorker: .none)),
+            ("ok:3:4:not-seen", .ok(bytes: 3, length: 4, serviceWorker: .notSeen)),
+            ("ok:3:4:unconfirmed", .ok(bytes: 3, length: 4, serviceWorker: .unconfirmed)),
+            ("ok:3:4", nil),
+            ("ok:3:4:maybe", nil),
+            ("fail:sw-seen:", .failed(.serviceWorkerSaw)),
+            ("fail:sw-unconfirmed:", .failed(.serviceWorkerUnconfirmed)),
+            ("fail:service-worker:", nil),
+        ]
+        for (raw, expected) in rows {
+            let got = TabPDFReader.parseStatus(raw)
+            if let expected {
+                XCTAssertEqual(got, expected, raw)
+            } else if case .damaged = got {
+            } else {
+                XCTFail("'\(raw)' was read as \(got), not as a damaged reply")
+            }
+        }
+        XCTAssertEqual(TabPDFReader.parseStatus("ok:3:4:seen"), .ok(bytes: 3, length: 4, serviceWorker: .seen))
     }
 
     func testADetailStartingWithACombiningMarkKeepsItsCode() {
@@ -217,7 +332,8 @@ final class TabPDFReaderStatusTests: XCTestCase {
     }
 
     func testAnythingElseIsADamagedReply() {
-        for raw in ["", "missing value", "ok", "ok:1", "ok:a:b", "ok:1:2:3", "ok:-1:2", "fail", "fail:", "fail:unknown:x",
+        for raw in ["", "missing value", "ok", "ok:1", "ok:1:2", "ok:a:b:none", "ok:1:2:3", "ok:-1:2:none", "ok:1:2:none:x",
+                    "ok:1:2:None", "fail", "fail:", "fail:unknown:x",
                     "fail:status:abc", "fail:too-large:x", "waiting"] {
             guard case .damaged = TabPDFReader.parseStatus(raw) else { return XCTFail("'\(raw)' was accepted") }
         }
@@ -227,19 +343,19 @@ final class TabPDFReaderStatusTests: XCTestCase {
 final class TabPDFReaderFlowTests: XCTestCase, @unchecked Sendable {
     private let target = SafariBridge.TargetDocument.resolvedTab(windowID: 7, tabInWindow: 1, rematch: nil, profile: nil)
 
-    private func read(_ page: FakePage, deadline: Double = 5) async throws -> TabPDFReader.Read {
+    private func read(_ page: FakePage, deadline: Double = 5, allow: Bool = false) async throws -> TabPDFReader.Read {
         let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         return try await DaemonRequestContext.$current.withValue(context) {
             try await WindowDialogObservation.$provider.withValue({ WindowDialogObservation.unavailable(reason: "test") }) {
                 try await DaemonRequestContext.$appleScriptRunner.withValue({ try page.respond($0) }) {
-                    try await TabPDFReader.read(target: self.target, deadlineSeconds: deadline)
+                    try await TabPDFReader.read(target: self.target, deadlineSeconds: deadline, allowServiceWorker: allow)
                 }
             }
         }
     }
 
-    private func failure(_ page: FakePage, deadline: Double = 5) async -> SavePDFFailure? {
-        do { _ = try await read(page, deadline: deadline); return nil }
+    private func failure(_ page: FakePage, deadline: Double = 5, allow: Bool = false) async -> SavePDFFailure? {
+        do { _ = try await read(page, deadline: deadline, allow: allow); return nil }
         catch SafariBrowserError.savePDF(let failure) { return failure }
         catch { XCTFail("\(error)"); return nil }
     }
@@ -253,6 +369,24 @@ final class TabPDFReaderFlowTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(page.sent.contains { $0.contains("SECRET") }, "the signed query must not be in any script")
         XCTAssertEqual(page.keys(withPrefix: ResultSlot.keyPrefix), [])
         XCTAssertGreaterThan(page.javaScripts.filter { $0.contains("substring(") }.count, 1)
+    }
+
+    /// Refused bytes never cross: no chunk is read, and the slot is removed. (save-pdf / verdicts and the flag)
+    func testARefusedVerdictTransfersNothingAndTheFlagKeepsTheBytes() async throws {
+        let bytes = TabPDFFixture.pdf(padding: 800_000)
+        for (workerStarts, expected) in [([0.0, 12], SavePDFFailure.serviceWorkerSaw), ([], .serviceWorkerUnconfirmed)] {
+            let page = TabPDFFixture.page(bytes: bytes, serviceWorker: true, entries: workerStarts.map { .init(workerStart: $0) })
+            let got = await failure(page)
+            XCTAssertEqual(got, expected)
+            XCTAssertFalse(page.javaScripts.contains { $0.contains("substring(") }, "\(expected): no chunk was read")
+            XCTAssertEqual(page.keys(withPrefix: ResultSlot.keyPrefix), [])
+        }
+        let kept = TabPDFFixture.page(bytes: bytes, serviceWorker: true, entries: [.init(workerStart: 12)])
+        let result = try await read(kept, allow: true)
+        XCTAssertEqual(result.bytes, bytes)
+        XCTAssertEqual(result.serviceWorker, .seen)
+        let plain = try await read(TabPDFFixture.page(bytes: bytes))
+        XCTAssertEqual(plain.serviceWorker, .none)
     }
 
     func testThePageBeingReplacedBeforeAChunkIsAFailure() async {
@@ -296,8 +430,8 @@ final class TabPDFReaderFlowTests: XCTestCase, @unchecked Sendable {
     }
 
     func testNumbersThePageCouldNotHaveAreADamagedReplyAndNothingIsRead() async {
-        let tooMany = "ok:\(TabPDFReader.maxBytes + 1):\((TabPDFReader.maxBytes + 3) / 3 * 4)"
-        for reply in [tooMany, "ok:3:400000000"] {
+        let tooMany = "ok:\(TabPDFReader.maxBytes + 1):\((TabPDFReader.maxBytes + 3) / 3 * 4):none"
+        for reply in [tooMany, "ok:3:400000000:none"] {
             let page = TabPDFFixture.page()
             page.forced = { $0.contains("'wait'") ? reply : nil }
             guard case .damagedReply? = await failure(page) else { return XCTFail("accepted \(reply)") }
@@ -343,7 +477,6 @@ final class TabPDFReaderFlowTests: XCTestCase, @unchecked Sendable {
 final class SavePDFFailureTests: XCTestCase {
     func testEveryMessageSaysNothingWasRequestedWhereItMatters() {
         XCTAssertTrue(SavePDFFailure.notHeld(detail: "Load failed").message.contains("No request for the document was sent"))
-        XCTAssertTrue(SavePDFFailure.serviceWorker.message.contains("service worker"))
         XCTAssertTrue(SavePDFFailure.notPDF(contentType: "text/html").message.contains("text/html"))
         XCTAssertTrue(SavePDFFailure.tooLarge(bytes: 9).message.contains("\(TabPDFReader.maxBytes)"))
         for failure: SavePDFFailure in [.readFailed(detail: "Error"), .bytesNotPDF, .badStatus(code: 206)] {
@@ -352,9 +485,44 @@ final class SavePDFFailureTests: XCTestCase {
         XCTAssertTrue(SavePDFFailure.notScriptable.message.contains("no request was sent"))
     }
 
+    /// Both say the bytes were read and not kept, name the flag, and do not claim that no request was sent.
+    func testTheServiceWorkerMessagesNameTheFlag() {
+        for failure: SavePDFFailure in [.serviceWorkerSaw, .serviceWorkerUnconfirmed] {
+            let message = failure.message
+            XCTAssertTrue(message.contains("--allow-service-worker"), message)
+            XCTAssertTrue(message.contains("service worker"), message)
+            XCTAssertTrue(message.contains("not saved"), message)
+            XCTAssertFalse(message.lowercased().contains("no request"), message)
+        }
+        XCTAssertTrue(SavePDFFailure.serviceWorkerSaw.message.contains("handled this read"))
+        XCTAssertTrue(SavePDFFailure.serviceWorkerUnconfirmed.message.contains("could not be confirmed"))
+    }
+
     func testAHostileDetailStaysOnOneLine() {
         let message = SavePDFFailure.notHeld(detail: "a\u{1B}[31m\nb").message
         XCTAssertFalse(message.contains("\u{1B}"))
+    }
+}
+
+final class SavePDFOutputTests: XCTestCase {
+    /// spec-example: save-pdf / the verdict in the text and JSON output
+    func testTheVerdictInTheTextAndJSONOutput() throws {
+        let result = PDFCacheOutput.Result(path: "/tmp/out.pdf", size: 9, pages: 1)
+        let rows: [(TabPDFReader.ServiceWorkerVerdict, String, String)] = [
+            (.none, "from tab https://x/doc.pdf", "none"),
+            (.notSeen, "from tab https://x/doc.pdf  service worker: not-seen", "not-seen"),
+            (.seen, "from tab https://x/doc.pdf  service worker: seen", "seen"),
+            (.unconfirmed, "from tab https://x/doc.pdf  service worker: unconfirmed", "unconfirmed"),
+        ]
+        for (verdict, ending, json) in rows {
+            let line = PDFCacheFormat.tabSavedRow(result, url: "https://x/doc.pdf", serviceWorker: verdict)
+            XCTAssertTrue(line.hasSuffix(ending), line)
+            XCTAssertEqual(line.components(separatedBy: "service worker").count - 1, verdict == .none ? 0 : 1, line)
+            let object = try JSONSerialization.jsonObject(
+                with: PDFCacheFormat.tabSavedJSON(result, url: "https://x/doc.pdf", serviceWorker: verdict)) as? [String: Any]
+            XCTAssertEqual(object?["service_worker"] as? String, json)
+            XCTAssertEqual(object?["source"] as? String, "tab")
+        }
     }
 }
 
@@ -578,6 +746,21 @@ final class SavePDFCommandTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), TabPDFFixture.pdf())
     }
 
+    /// Without the flag nothing is written; with it the file is written and the line names the verdict.
+    func testTheFlagDecidesWhetherAnUnconfirmedReadIsSaved() async throws {
+        let path = folder.appendingPathComponent("out.pdf").path
+        let page = TabPDFFixture.page(serviceWorker: true)
+        do {
+            _ = try await run([path] + target, page: page)
+            XCTFail("an unconfirmed read was saved without the flag")
+        } catch SafariBrowserError.savePDF(.serviceWorkerUnconfirmed) {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+        let line = try await run([path, "--allow-service-worker"] + target, page: TabPDFFixture.page(serviceWorker: true))
+        XCTAssertTrue(line.contains("service worker: unconfirmed"), line)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), TabPDFFixture.pdf())
+        XCTAssertFalse(try SavePDFCommand.parse(["out.pdf", "--url", "x"]).allowServiceWorker)
+    }
+
     func testThePathParametersAndCredentialsAreNotPrinted() async throws {
         let path = folder.appendingPathComponent("out.pdf").path
         let page = TabPDFFixture.page(url: "https://cdn.example.org/x;jsessionid=SECRET/main.pdf")
@@ -602,12 +785,13 @@ final class SavePDFCommandTests: XCTestCase, @unchecked Sendable {
         }
     }
 
-    func testJSONHasTheFiveFieldsAndNoQuery() async throws {
+    func testJSONHasTheSixFieldsAndNoQuery() async throws {
         let path = folder.appendingPathComponent("out.pdf").path
         let output = try await run([path, "--json"] + target, page: TabPDFFixture.page())
         XCTAssertFalse(output.contains("SECRET"), output)
         let object = try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any]
-        XCTAssertEqual(Set(object?.keys ?? [:].keys), ["path", "size", "pages", "source", "url"])
+        XCTAssertEqual(Set(object?.keys ?? [:].keys), ["path", "size", "pages", "source", "url", "service_worker"])
+        XCTAssertEqual(object?["service_worker"] as? String, "none")
         XCTAssertEqual(object?["source"] as? String, "tab")
         XCTAssertEqual(object?["pages"] as? Int, 1)
         XCTAssertEqual(object?["size"] as? Int, TabPDFFixture.pdf().count)

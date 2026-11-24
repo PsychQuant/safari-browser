@@ -14,6 +14,10 @@
 # Apple events from a sandboxed process (-10004) even when the sandbox denies nothing, so the command stops
 # long before it writes. `make test-save-pdf-webkit` runs that case against a fake page.
 #
+# The service-worker cases (#390) register two service workers on this test's own origin (127.0.0.1 and
+# the port) in the profile of the new window, and unregister every registration of that origin before the
+# window closes, also when the run stops early.
+#
 # Exit 77 (automake skip) when the guard is not set or Safari is not running.
 
 set -u
@@ -28,6 +32,7 @@ PORT="${E2E_SAVE_PDF_PORT:-38339}"
 WORK="$(mktemp -d)"
 SERVER_PID=""
 WINDOW=""
+WORKERS_REGISTERED=""
 passed=0
 failed=0
 
@@ -47,13 +52,14 @@ fixture_window() {
 
 cleanup() {
     [[ -z "$WINDOW" ]] && WINDOW="$(fixture_window)"
+    [[ -n "$WORKERS_REGISTERED" && -n "$WINDOW" ]] && unregister_workers
     [[ -n "$WINDOW" ]] && osascript -e "tell application \"Safari\" to close window id $WINDOW" >/dev/null 2>&1
     [[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null
     rm -rf "$WORK"
 }
 trap cleanup EXIT
 
-mkdir -p "$WORK/www/ranged" "$WORK/www/slow"
+mkdir -p "$WORK/www/ranged" "$WORK/www/slow" "$WORK/www/sw-pass" "$WORK/www/sw-net"
 python3 -I - "$WORK/www" <<'PY'
 import os, sys
 root = sys.argv[1]
@@ -69,7 +75,8 @@ def pdf(padding):
     return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, x)
 sizes = {"nostore.pdf": 250_000, "background.pdf": 250_000, "notheld.pdf": 250_000, "landed.pdf": 250_000,
          "error404.pdf": 250_000, "csp.pdf": 250_000, "changing-a.pdf": 250_000, "changing-b.pdf": 300_000,
-         "slow/drip.pdf": 2_000_000, "nostore50.pdf": 50 * 1024 * 1024}
+         "slow/drip.pdf": 2_000_000, "nostore50.pdf": 50 * 1024 * 1024,
+         "sw-pass/doc.pdf": 250_000, "sw-net/doc.pdf": 250_000}
 for name, size in sizes.items():
     open(os.path.join(root, name), "wb").write(pdf(size))
 def many_pages(count, each):
@@ -88,6 +95,28 @@ def many_pages(count, each):
     return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, x)
 open(os.path.join(root, "plain-big.pdf"), "wb").write(many_pages(200, 100_000))
 open(os.path.join(root, "plain.html"), "w").write("<!doctype html><title>plain</title><p>not a pdf")
+# #390: each service worker reports every fetch event it receives to /sw-saw, so its seeing a read shows in the log.
+answers = {"pass": "fetch(e.request)", "net": 'fetch(e.request.url, { cache: "no-store" })'}
+for scope, answer in answers.items():
+    open(os.path.join(root, "sw-%s/sw.js" % scope), "w").write(
+        'self.addEventListener("install", function (e) { self.skipWaiting(); });\n'
+        'self.addEventListener("activate", function (e) { e.waitUntil(self.clients.claim()); });\n'
+        'self.addEventListener("fetch", function (e) {\n'
+        '  fetch("/sw-saw?scope=%s&mode=" + e.request.mode + "&u=" + encodeURIComponent(new URL(e.request.url).pathname));\n'
+        '  e.respondWith(%s);\n'
+        '});\n' % (scope, answer))
+    open(os.path.join(root, "sw-%s/index.html" % scope), "w").write(
+        "<!doctype html><title>sw</title><p id=s>registering</p><script>"
+        "navigator.serviceWorker.register('sw.js', { scope: './' })"
+        ".then(function () { return navigator.serviceWorker.ready; })"
+        ".then(function () { document.getElementById('s').textContent = 'ready'; },"
+        " function (e) { document.getElementById('s').textContent = 'failed ' + e; });</script>")
+open(os.path.join(root, "sw-cleanup.html"), "w").write(
+    "<!doctype html><title>clean</title><p id=s>cleaning</p><script>"
+    "navigator.serviceWorker.getRegistrations()"
+    ".then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); })"
+    ".then(function () { return navigator.serviceWorker.getRegistrations(); })"
+    ".then(function (rs) { document.getElementById('s').textContent = 'left:' + rs.length; });</script>")
 PY
 # WebKit asks for byte ranges only for a linearized PDF, so the ranged case needs one.
 if command -v qpdf >/dev/null; then
@@ -116,6 +145,8 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length", 0)))
         self.send_response(204); self.end_headers()
     def do_GET(self):
+        if self.path.startswith("/sw-saw"):
+            self.send_response(204); self.send_header("Content-Length", "0"); self.end_headers(); return
         if self.path == "/redirect.pdf":
             self.send_response(302); self.send_header("Location", "/landed.pdf"); self.end_headers(); return
         if self.path == "/error404.pdf":
@@ -178,6 +209,18 @@ shows() { # shows <path> <content type>: wait until the tab's document has that 
     fail "$1 never showed as $2"; return 1
 }
 no_new_request() { [[ "$(requests)" == "$1" ]] && pass "no request reached the server" || fail "the server got $(( $(requests) - $1 )) request(s)" "$(tail -3 "$LOG")"; }
+# Unregisters every service worker of this origin, from a page of the origin outside both workers' scopes.
+unregister_workers() {
+    local i state=""
+    open_tab sw-cleanup.html
+    for i in $(seq 1 40); do
+        state=$("$SB" js "document.getElementById('s') ? document.getElementById('s').textContent : ''" --url "127.0.0.1:$PORT/sw-cleanup.html" 2>/dev/null)
+        [[ "$state" == left:* ]] && break
+        sleep 0.5
+    done
+    if [[ "$state" == "left:0" ]]; then WORKERS_REGISTERED=""; echo "  - service workers of 127.0.0.1:$PORT unregistered"
+    else echo "  ! could not confirm the service workers of 127.0.0.1:$PORT were unregistered ($state); remove them in Safari's settings"; fi
+}
 
 echo "Safari has $(osascript -e 'tell application "Safari" to count windows' 2>/dev/null) window(s) open; this test adds one."
 
@@ -347,6 +390,34 @@ if [[ -e "$WORK/www/ranged/big.pdf" ]]; then
 else
     note "qpdf is not installed, so there is no linearized fixture; byte ranges not measured"
 fi
+
+echo "=== PDF tabs a service worker controls (#390) ==="
+# The read the service worker could see but did not: a PDF document fetching its own URL. Each worker reports
+# every fetch event to /sw-saw, and requests() counts those reports, so a worker that saw the read fails the
+# "no request" line. The navigation report is the positive control: it shows this worker sees what it handles.
+for scope in pass net; do
+    WORKERS_REGISTERED=1
+    open_tab "sw-$scope/index.html"
+    state=""
+    for i in $(seq 1 40); do
+        state=$("$SB" js "(document.getElementById('s') ? document.getElementById('s').textContent : '') + '|' + !!(navigator.serviceWorker && navigator.serviceWorker.controller)" --url "127.0.0.1:$PORT/sw-$scope/index.html" 2>/dev/null)
+        [[ "$state" == "ready|true" ]] && break
+        sleep 0.5
+    done
+    [[ "$state" == "ready|true" ]] || { fail "$scope: the service worker never took control of its page ($state)"; continue; }
+    "$SB" js "location.href = '/sw-$scope/doc.pdf'; 1" --url "127.0.0.1:$PORT/sw-$scope/index.html" >/dev/null 2>&1
+    shows "sw-$scope/doc.pdf" application/pdf || continue
+    controlled=$("$SB" js 'String(!!(navigator.serviceWorker && navigator.serviceWorker.controller))' --url "127.0.0.1:$PORT/sw-$scope/doc.pdf" 2>/dev/null)
+    [[ "$controlled" == "true" ]] || { fail "$scope: the PDF tab is not controlled, so this case means nothing"; continue; }
+    grep -q "^GET /sw-saw?scope=$scope&mode=navigate" "$LOG" && pass "$scope: the service worker reported the navigation it handled" \
+        || { fail "$scope: no report of the navigation, so the reports below mean nothing" "$(grep sw- "$LOG" | tail -3)"; continue; }
+    before=$(settled_requests)
+    json=$("$SB" save-pdf "$OUT/sw-$scope.pdf" --url "127.0.0.1:$PORT/sw-$scope/doc.pdf" --json 2>&1); rc=$?
+    [[ $rc -eq 0 ]] && cmp -s "$OUT/sw-$scope.pdf" "$WORK/www/sw-$scope/doc.pdf" && pass "$scope: saved exactly" || fail "$scope: rc=$rc" "$json"
+    echo "$json" | grep -q '"service_worker" : "not-seen"' && pass "$scope: the verdict is not-seen" || fail "$scope: verdict: $json"
+    no_new_request "$before"
+done
+[[ -n "$WORKERS_REGISTERED" ]] && unregister_workers
 
 echo ""
 echo "passed: $passed  failed: $failed"

@@ -105,12 +105,15 @@ enum PDFCacheFormat {
     // MARK: - save-pdf (#338)
 
     /// `url` is already redacted.
-    static func tabSavedRow(_ result: PDFCacheOutput.Result, url: String) -> String {
-        "\(field(result.path))  \(result.size) B  \(result.pages) page(s)  from tab \(field(url))"
+    /// The verdict is added only when a service worker controls the tab, so the line is unchanged otherwise (#390).
+    static func tabSavedRow(_ result: PDFCacheOutput.Result, url: String, serviceWorker: TabPDFReader.ServiceWorkerVerdict) -> String {
+        let row = "\(field(result.path))  \(result.size) B  \(result.pages) page(s)  from tab \(field(url))"
+        return serviceWorker == .none ? row : row + "  service worker: \(serviceWorker.rawValue)"
     }
 
-    static func tabSavedJSON(_ result: PDFCacheOutput.Result, url: String) throws -> Data {
-        try encode(["path": result.path, "size": result.size, "pages": result.pages, "source": "tab", "url": url] as [String: Any])
+    static func tabSavedJSON(_ result: PDFCacheOutput.Result, url: String, serviceWorker: TabPDFReader.ServiceWorkerVerdict) throws -> Data {
+        try encode(["path": result.path, "size": result.size, "pages": result.pages, "source": "tab", "url": url,
+                    "service_worker": serviceWorker.rawValue] as [String: Any])
     }
 
     static func retrievedJSON(_ retrieved: PDFCacheService.Retrieved) throws -> Data {

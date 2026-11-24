@@ -49,6 +49,11 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
                 changing[0] += 1
                 return self.send("a.pdf" if changing[0] == 1 else "b.pdf")
             if path == "/plain.html": return self.send("plain.html", ctype="text/html")
+            if path == "/sw/index.html": return self.send("sw/index.html", ctype="text/html")
+            if path == "/sw/sw.js": return self.send("sw/sw.js", ctype="application/javascript")
+            if path == "/sw/doc.pdf": return self.send("plain.pdf")
+            if path == "/sw-saw":
+                self.send_response(204); self.send_header("Content-Length", "0"); self.end_headers(); return
             if path == "/text.pdf": return self.send("plain.pdf", ctype="text/pdf")
             if path == "/csp.pdf": return self.send("plain.pdf", extra=[("Content-Security-Policy", "connect-src 'none'; report-uri /report")])
             if path == "/short.pdf":
@@ -94,15 +99,48 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
     s.serve_forever()
     """#
 
+    /// A service worker that answers every fetch from the network and reports each fetch event to the server,
+    /// so its having seen a read shows in the request log (#390).
+    private static let serviceWorkerSource = #"""
+    self.addEventListener("install", function (e) { self.skipWaiting(); });
+    self.addEventListener("activate", function (e) { e.waitUntil(self.clients.claim()); });
+    self.addEventListener("fetch", function (e) {
+      var u = new URL(e.request.url);
+      fetch("/sw-saw?mode=" + e.request.mode + "&cache=" + e.request.cache + "&u=" + encodeURIComponent(u.pathname));
+      e.respondWith(fetch(e.request.url, { cache: "no-store" }));
+    });
+    """#
+
+    private static let registrationPage = """
+    <!doctype html><title>sw</title><p id=s>registering</p><script>navigator.serviceWorker.register('sw.js', { scope: './' })\
+    .then(function () { return navigator.serviceWorker.ready; })\
+    .then(function () { document.getElementById('s').textContent = 'ready'; }, function (e) { document.getElementById('s').textContent = 'failed ' + e; });</script>
+    """
+
     /// One off-screen view. `evaluate` is called from a worker thread and blocks it; the view lives on the main thread.
     final class Tab: @unchecked Sendable {
         let page = FakePage()
         private var view: WKWebView?
 
-        @MainActor func load(_ url: String) {
-            let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        /// `isolated` gives the view a data store of its own that is not kept, so a service worker registered in
+        /// it does not outlive the test.
+        @MainActor func load(_ url: String, isolated: Bool = false) {
+            let frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+            let webView: WKWebView
+            if isolated {
+                let configuration = WKWebViewConfiguration()
+                configuration.websiteDataStore = .nonPersistent()
+                webView = WKWebView(frame: frame, configuration: configuration)
+            } else {
+                webView = WKWebView(frame: frame)
+            }
             view = webView
             webView.load(URLRequest(url: URL(string: url)!))
+        }
+
+        /// The same view goes to another address, keeping its data store and service worker.
+        @MainActor func navigate(_ url: String) {
+            view?.load(URLRequest(url: URL(string: url)!))
         }
 
         @MainActor func close() {
@@ -148,6 +186,10 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         try TabPDFFixture.pdf(padding: 300_002).write(to: root.appendingPathComponent("b.pdf"))
         try TabPDFFixture.pdf(padding: 2_000_000).write(to: root.appendingPathComponent("drip.pdf"))
         try Data("<!doctype html><title>plain</title><p>not a pdf".utf8).write(to: root.appendingPathComponent("plain.html"))
+        let workerFolder = root.appendingPathComponent("sw")
+        try FileManager.default.createDirectory(at: workerFolder, withIntermediateDirectories: true)
+        try Data(Self.registrationPage.utf8).write(to: workerFolder.appendingPathComponent("index.html"))
+        try Data(Self.serviceWorkerSource.utf8).write(to: workerFolder.appendingPathComponent("sw.js"))
         let source = root.appendingPathComponent("server.py")
         try Data(Self.serverSource.utf8).write(to: source)
         let process = Process()
@@ -193,26 +235,63 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         return tab
     }
 
-    private func read(_ tab: Tab) async throws -> TabPDFReader.Read {
+    /// Requests the service worker could cause: the document itself, and its report of a fetch event.
+    private var serviceWorkerActivity: [String] {
+        log.filter { $0.hasPrefix("GET /sw/doc.pdf") || $0.hasPrefix("GET /sw-saw") }
+    }
+
+    /// A PDF tab a service worker controls, in an isolated data store. The service worker's report of the
+    /// navigation is the positive control: it shows this worker does see what it handles.
+    private func openControlled() async throws -> Tab {
+        let tab = Tab()
+        tab.page.forced = { [tab] js in tab.evaluate(js) }
+        tabs.append(tab)
+        let registration = base + "/sw/index.html"
+        await MainActor.run { tab.load(registration, isolated: true) }
+        var state = ""
+        for _ in 0..<120 {
+            state = tab.evaluate("(document.getElementById('s') ? document.getElementById('s').textContent : '') + '|' + String(!!(navigator.serviceWorker && navigator.serviceWorker.controller))")
+            if state == "ready|true" { break }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertEqual(state, "ready|true", "the service worker never took control of its page")
+        let document = base + "/sw/doc.pdf"
+        await MainActor.run { tab.navigate(document) }
+        for _ in 0..<120 {
+            if tab.evaluate("document.contentType") == "application/pdf", tab.evaluate("location.pathname") == "/sw/doc.pdf" { break }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertEqual(tab.evaluate("String(!!(navigator.serviceWorker && navigator.serviceWorker.controller))"), "true",
+                       "the PDF tab is not controlled, so nothing below means anything")
+        for _ in 0..<20 where !log.contains(where: { $0.hasPrefix("GET /sw-saw") && $0.contains("mode=navigate") }) {
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTAssertTrue(log.contains { $0.hasPrefix("GET /sw-saw") && $0.contains("mode=navigate") },
+                      "the service worker did not report the navigation it handled: \(log)")
+        return tab
+    }
+
+    private func read(_ tab: Tab, allow: Bool = false) async throws -> TabPDFReader.Read {
         let target = SafariBridge.TargetDocument.resolvedTab(windowID: 7, tabInWindow: 1, rematch: nil, profile: nil)
         let context = DaemonRequestContext(probe: { _ in .clear }, environment: [:])
         return try await DaemonRequestContext.$current.withValue(context) {
             try await WindowDialogObservation.$provider.withValue({ WindowDialogObservation.unavailable(reason: "test") }) {
                 try await DaemonRequestContext.$appleScriptRunner.withValue({ try tab.page.respond($0) }) {
-                    try await TabPDFReader.read(target: target)
+                    try await TabPDFReader.read(target: target, allowServiceWorker: allow)
                 }
             }
         }
     }
 
-    private func failure(_ tab: Tab) async -> SavePDFFailure? {
-        do { _ = try await read(tab); return nil }
+    private func failure(_ tab: Tab, allow: Bool = false) async -> SavePDFFailure? {
+        do { _ = try await read(tab, allow: allow); return nil }
         catch SafariBrowserError.savePDF(let failure) { return failure }
         catch { XCTFail("\(error)"); return nil }
     }
 
     private func data(_ name: String) throws -> Data { try Data(contentsOf: root.appendingPathComponent(name)) }
 
+    /// spec-example: save-pdf / a no-store PDF in a tab no service worker controls
     func testANoStorePDFComesBackExactlyWithNoRequestAndTheQueryStaysInThePage() async throws {
         let tab = try await open("/plain.pdf?X-Amz-Signature=SECRET#page=2")
         let before = documentRequests
@@ -220,8 +299,36 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         let result = try await read(tab)
         XCTAssertEqual(result.bytes, try data("plain.pdf"))
         XCTAssertEqual(result.url, base + "/plain.pdf")
+        XCTAssertEqual(result.serviceWorker, .none)
         XCTAssertEqual(documentRequests, before)
         XCTAssertFalse(tab.page.sent.contains { $0.contains("SECRET") })
+    }
+
+    /// The read the service worker could see but did not: a PDF document fetching its own URL (#390, measured
+    /// on Safari 27.3 and here).
+    /// spec-example: save-pdf / a controlled PDF tab whose read the service worker did not handle
+    /// spec-example: non-interference / a controlled PDF tab read with no request
+    func testAControlledPDFTabWhoseReadTheServiceWorkerDidNotHandleIsSaved() async throws {
+        let tab = try await openControlled()
+        let before = serviceWorkerActivity
+        let result = try await read(tab)
+        XCTAssertEqual(result.bytes, try data("plain.pdf"))
+        XCTAssertEqual(result.serviceWorker, .notSeen)
+        XCTAssertEqual(serviceWorkerActivity, before, "no request for the document and no fetch event during the read: \(log)")
+    }
+
+    /// With no entry for the read, it cannot be confirmed: refused without the flag, kept with it.
+    /// spec-example: save-pdf / a full resource timing buffer
+    func testAFullResourceTimingBufferIsUnconfirmed() async throws {
+        let tab = try await openControlled()
+        let empty = "performance.setResourceTimingBufferSize(0); performance.clearResourceTimings(); 1"
+        _ = tab.evaluate(empty)
+        let got = await failure(tab)
+        XCTAssertEqual(got, .serviceWorkerUnconfirmed)
+        _ = tab.evaluate(empty)
+        let result = try await read(tab, allow: true)
+        XCTAssertEqual(result.bytes, try data("plain.pdf"))
+        XCTAssertEqual(result.serviceWorker, .unconfirmed)
     }
 
     func testAPDFSentWith404IsSavedLikeAnyOther() async throws {
