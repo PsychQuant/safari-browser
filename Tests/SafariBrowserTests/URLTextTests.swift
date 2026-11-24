@@ -625,7 +625,10 @@ final class URLTextTests: XCTestCase {
         // listing both show tab URLs in a `documentNotFound`; both redact.
         // 14 (#354 verify round 1): `pinnedWindowMiss` lists the tabs of a pinned window, or of the profile, after a
         // miss; it redacts.
-        let counts = [("SafariBridge.swift", 14), ("Commands/JSCommand.swift", 1), ("Commands/UploadCommand.swift", 2), ("Utilities/Errors.swift", 1)]
+        // 15 (#353 verify round 1): `windowIDMiss` lists the tabs of a window named by its id, under `--profile`, when
+        // the window is still open and the tab the target named is gone; it redacts. (`windowIDCandidateEntries` is
+        // `checkWindowID`'s listing moved into a function both share: the same site, counted once.)
+        let counts = [("SafariBridge.swift", 15), ("Commands/JSCommand.swift", 1), ("Commands/UploadCommand.swift", 2), ("Utilities/Errors.swift", 1)]
         for (file, expected) in counts {
             let found = try source(file).components(separatedBy: "URLText.redactURL(").count - 1
             XCTAssertEqual(found, expected, "\(file): a redaction site was added or removed — decide it, then update this count")

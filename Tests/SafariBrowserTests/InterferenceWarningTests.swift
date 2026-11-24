@@ -31,6 +31,10 @@ import XCTest
 /// > call these functions, not what they pass, not what they bind the closures
 /// > to, not what they do with the results.
 ///
+/// (Since #353 `uploadViaNativeDialog` is `runNativeUpload`, with its outside
+/// dependencies as parameters, and `WindowLevelNativeDialogTests` runs it against
+/// a fake Safari. `UploadCommand.run()` itself is still not run by any test.)
+///
 /// Concretely, that means the production path could still filter `.warnOnStderr`
 /// out of the plan before handing it over, bind `warn` to stdout, build the plan
 /// from the wrong selector, pass an eagerly-evaluated `{ granted }` instead of

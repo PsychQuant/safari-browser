@@ -195,6 +195,22 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
             XCTAssertFalse(switched.scripts.contains { $0.contains("window id 6933") && $0.contains("do JavaScript") }, switched.transcript)
         }
 
+        // --first-match with a URL several tabs match: the window is resolved once, with the flag, and the page
+        // steps run in that tab without resolving the URL again (a second resolution without the flag would
+        // fail as ambiguous after the capture, #233 item 1).
+        let ambiguousFake = Fake()
+        let ambiguous = try await captureWindow(["--url", "work.example", "--first-match"], fake: ambiguousFake)
+        XCTAssertEqual(ambiguous.received, [.id(5822)])
+        let ambiguousPage = try await ambiguousFake.drive {
+            try await ScreenshotCommand.pageTarget(capture: ambiguous.capture, options: ambiguous.options)
+        }
+        XCTAssertEqual(ambiguousPage, .anchoredCurrentTab(windowID: 5822, tabInWindow: 1, profile: nil))
+        let enumerations = ambiguousFake.scripts.filter(Fake.isEnumeration).count
+        _ = try await ambiguousFake.drive {
+            try await ScreenshotCommand.pageStep(ambiguousPage) { try await SafariBridge.doJavaScript("1", target: ambiguousPage) }
+        }
+        XCTAssertEqual(ambiguousFake.scripts.filter(Fake.isEnumeration).count, enumerations, "no second resolution")
+
         // The window closes: a miss on what was typed.
         let closing = Fake()
         let closingCapture = try await captureWindow(["--window", "2"], fake: closing)

@@ -4701,7 +4701,7 @@ enum SafariBridge {
     /// as something this type executes.
     ///
     /// #105. This body used to exist twice — here and inlined inside
-    /// `UploadCommand.uploadViaNativeDialog`. The duplication was deliberate:
+    /// `UploadCommand.uploadViaNativeDialog` (since #353: `runNativeUpload`). The duplication was deliberate:
     /// #15 found that splitting the flow across two `osascript` invocations left
     /// a window in which another application could steal focus between them, and
     /// closed it by merging activate + wait + paste + click into one script,
@@ -4862,7 +4862,7 @@ enum SafariBridge {
         runner: ((String, [String]) async throws -> Void)? = nil
     ) async throws {
         // #20: probe/restart System Events before touching the keyboard. Same
-        // rationale as `UploadCommand.uploadViaNativeDialog`.
+        // rationale as `UploadCommand.runNativeUpload`.
         if runner == nil {
             try await ensureSystemEventsLive()
         }

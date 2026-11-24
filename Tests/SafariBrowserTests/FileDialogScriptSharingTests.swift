@@ -3,7 +3,7 @@ import XCTest
 
 /// #105 — the Go-to-Folder navigation sequence existed twice: once in
 /// `SafariBridge.navigateFileDialog` (which `pdf` calls) and once inlined in
-/// `UploadCommand.uploadViaNativeDialog`.
+/// `UploadCommand.uploadViaNativeDialog` (since #353: `runNativeUpload`).
 ///
 /// The duplication was deliberate, not an oversight. #15 found that splitting
 /// the flow across two `osascript` invocations left a window where another app
@@ -167,9 +167,11 @@ final class FileDialogScriptSharingTests: XCTestCase {
     }
 
     // Boundary of what the tests above can see: they reach `navigateFileDialog`
-    // and upload's effect plan. They do not reach `uploadViaNativeDialog` —
-    // whether it builds the plan at all, and what it does with it, is untested
-    // here (stated the same way in `InterferenceWarningTests`). And no
+    // and upload's effect plan. They do not reach `UploadCommand.runNativeUpload`
+    // (`uploadViaNativeDialog` until #353) — whether it builds the plan at all,
+    // and what it does with it, is untested here (stated the same way in
+    // `InterferenceWarningTests`); since #353 `WindowLevelNativeDialogTests` runs
+    // that function against a fake Safari, with the dialog script captured. And no
     // output-string test can prove text *came from* the generator rather than
     // being a verbatim copy of it; that needs a source or architecture check.
 

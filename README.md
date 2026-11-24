@@ -1212,8 +1212,12 @@ Once these commands have resolved their target they name the window by
 its stable id (`window id W`) in every step, not by its position (#353):
 a window raised between two steps no longer redirects the later ones, and
 a window that closed fails the command with `No Safari document matches`
-before anything is closed, typed or captured. With no targeting flag they
-act on the front window as before.
+before anything is closed, typed or captured, and so does a window that
+is still open but no longer has the tab the target named. With no
+targeting flag they act on the front window as before. One limit: once
+`pdf`'s save sheet or `upload`'s file dialog is on screen, a window that
+disappears stops the script with its own message ("no further keystroke
+was sent"), not with `No Safari document matches`.
 
 `pdf` and `upload --native` briefly **raise the resolved window to the
 front** before their System Events keystrokes. Keystrokes inherently
@@ -1221,23 +1225,35 @@ target the front window, so the raise is part of the operation, not just
 identification. When the target is a background tab within that window,
 they also switch to that tab first (`set current tab of window id W`) —
 a passively interfering side effect transitively authorized by
-`--native` / `--allow-hid` in the non-interference spec. A native upload
-checks that the resolved window is Safari's front window before every
-keystroke and stops, sending nothing, when it is not.
+`--native` / `--allow-hid` in the non-interference spec. Before every
+keystroke a native upload checks that the resolved window is still open
+and is Safari's front window, that it still shows the page the file
+dialog belongs to, and that Safari is the frontmost application; when
+any of these fails it stops and sends nothing further.
 
 `close` raises nothing and switches no tab: it closes the tab it
 resolved, in one step, and a background tab closes without changing the
 tab you are looking at (#348). A tab found by `--url` (or the other URL
-flags) is checked again in the step that acts on it; if another tab has
-taken its position, the command fails with "Target tab changed before
-the command acted" and nothing is closed or typed.
+flags) is checked again in the step that acts on it: when the tab in
+that position no longer satisfies the flag (for `--url-regex`: no longer
+shows the URL that was matched), the command fails with a "Target tab
+changed" error and does not look for the tab again. The error says what
+had been done by then: nothing, for `close`, `pdf` and `open`; for a
+native upload, whether the tab had already been made current or the file
+input had already been clicked. A tab that still satisfies `--url`,
+`--url-exact` or `--url-endswith` passes, even when it is another tab
+that took the position.
 
 `screenshot` deliberately does **not** tab-switch — it observes without
 interfering. A `--url` that resolves to a background tab is refused,
 because a window screenshot shows only the tab that is visible. Switch
 to the tab first, or use document-scoped commands (`snapshot --url`,
 `get text --url`, `get source --url`) that read via JavaScript without
-touching window focus.
+touching window focus. With `--full` or `--element` the page is read and
+scrolled in the window that was resolved (for a tab target, only while
+that tab is still the window's current tab). Known gap: `screenshot`
+does not treat `--profile` alone, `--url-exact`, `--url-endswith` or
+`--url-regex` as a target and captures the front window (#233).
 
 `screenshot` (R7) uses the **AXUIElement private SPI**
 (`_AXUIElementGetWindow`) to map AppleScript window indices to CG
