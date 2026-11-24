@@ -39,9 +39,9 @@ enum SavePDFFailure: Equatable, Sendable {
         case .notPDF(let contentType):
             return "The tab's document is '\(t(contentType))', not a PDF. save-pdf reads a tab that displays a PDF itself; a PDF embedded in an HTML page is not covered."
         case .serviceWorkerSaw:
-            return "A service worker handled this read of the PDF, so it could have answered from the network and a request may have gone out; the bytes were read but not saved. To keep a read the service worker handled, run again with --allow-service-worker."
+            return "A service worker handled this read of the PDF, so it could have answered from the network and a request may have gone out; the bytes were read but not saved (verdict: seen). To keep a read the service worker handled, run again with --allow-service-worker."
         case .serviceWorkerUnconfirmed:
-            return "A service worker controls this tab, and whether it handled this read could not be confirmed (there is no timing entry for the read), so the bytes were read but not saved. To keep it anyway, run again with --allow-service-worker."
+            return "A service worker controls this tab, and whether it handled this read could not be confirmed (there is no timing entry for the read), so the bytes were read but not saved (verdict: unconfirmed). To keep it anyway, run again with --allow-service-worker."
         case .notHeld(let detail):
             return "Could not read the PDF from the tab (\(t(detail))): WebKit does not hold the whole document (it was dropped, or the load stopped), or the page's policy blocked the read. No request for the document was sent. Display the PDF again, or save it by hand."
         case .badStatus(let code):

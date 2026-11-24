@@ -41,7 +41,7 @@ fetch 之前記下 `controlled = !!(navigator.serviceWorker && navigator.service
 | 條件 | 判定 |
 |---|---|
 | 不受控 | `none`（不讀 resource timing） |
-| 受控，`performance.now` 或 `getEntriesByType` 不是函式或丟出例外，或沒有符合的 entry | `unconfirmed` |
+| 受控，`performance.now` 或 `getEntriesByType` 不是函式或丟出例外，沒有符合的 entry，或符合的 entry 的 `workerStart` 不是 0 以上的數字 | `unconfirmed` |
 | 受控，符合的 entry 中最大的 `workerStart` 大於 0 | `seen` |
 | 受控，符合的 entry 全部 `workerStart` 是 0 | `not-seen` |
 

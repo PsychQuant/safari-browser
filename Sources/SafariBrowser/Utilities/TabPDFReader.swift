@@ -88,6 +88,7 @@ enum TabPDFReader {
                   for (var i = 0; i < list.length; i++) {
                     var e = list[i];
                     if (('' + e.name).split('#')[0] !== want || e.initiatorType !== 'fetch' || !(e.startTime >= t0)) { continue; }
+                    if (typeof e.workerStart !== 'number' || !(e.workerStart >= 0)) { return 'unconfirmed'; }
                     found = true;
                     if (e.workerStart > most) { most = e.workerStart; }
                   }

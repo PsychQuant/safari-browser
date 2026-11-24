@@ -186,6 +186,17 @@ final class TabPDFReaderScriptTests: XCTestCase {
         XCTAssertEqual(try run(noLookup, allow: true), okPrefix + ":unconfirmed")
     }
 
+    /// An entry for the read whose `workerStart` is missing or not a number tells nothing, so the check leans
+    /// towards refusing, as everywhere else (#390 spectra-verify suggestion 1).
+    func testAnEntryWithoutANumericWorkerStartIsUnconfirmed() throws {
+        let name = TabPDFFixture.Entry().name
+        for workerStart in ["", ", workerStart: undefined", ", workerStart: NaN", ", workerStart: '0'"] {
+            let page = TabPDFFixture.page(serviceWorker: true)
+            _ = page.evaluate("performance.getEntriesByType = function () { return [{ name: '\(name)', initiatorType: 'fetch', startTime: 150\(workerStart) }]; };")
+            XCTAssertEqual(try run(page), "fail:sw-unconfirmed:", "workerStart: '\(workerStart)'")
+        }
+    }
+
     /// The flag is a literal in the script and changes nothing about the one fetch.
     func testTheFlagDoesNotChangeTheFetch() throws {
         for allow in [false, true] {
@@ -496,6 +507,8 @@ final class SavePDFFailureTests: XCTestCase {
         }
         XCTAssertTrue(SavePDFFailure.serviceWorkerSaw.message.contains("handled this read"))
         XCTAssertTrue(SavePDFFailure.serviceWorkerUnconfirmed.message.contains("could not be confirmed"))
+        XCTAssertTrue(SavePDFFailure.serviceWorkerSaw.message.contains("(verdict: seen)"))
+        XCTAssertTrue(SavePDFFailure.serviceWorkerUnconfirmed.message.contains("(verdict: unconfirmed)"))
     }
 
     func testAHostileDetailStaysOnOneLine() {

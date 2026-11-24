@@ -43,7 +43,7 @@ The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that write
 
 The page script SHALL fail with a not-a-PDF error, naming the content type, when `document.contentType` is neither `application/pdf` nor `text/pdf`, the two types WebKit displays as a PDF, and SHALL NOT call `fetch` in that case.
 
-Before the fetch the page script SHALL record whether `navigator.serviceWorker.controller` is set. When no service worker controls the tab, the verdict SHALL be `none` and the script SHALL NOT call `performance` at all. When one does, the script SHALL take `performance.now()` as the read's start before the fetch, SHALL send the same fetch and, after the body has been read and before its size is checked or it is encoded, SHALL look up the `PerformanceResourceTiming` entries whose `name` without its fragment equals `location.href` without its fragment, whose `initiatorType` is `fetch`, and whose `startTime` is not earlier than the read's start. The verdict SHALL be `seen` when the largest `workerStart` among those entries is greater than 0, `not-seen` when there is at least one entry and every `workerStart` is 0, and `unconfirmed` when there is no such entry, or when `performance.now` or `performance.getEntriesByType` is not a function or throws.
+Before the fetch the page script SHALL record whether `navigator.serviceWorker.controller` is set. When no service worker controls the tab, the verdict SHALL be `none` and the script SHALL NOT call `performance` at all. When one does, the script SHALL take `performance.now()` as the read's start before the fetch, SHALL send the same fetch and, after the body has been read and before its size is checked or it is encoded, SHALL look up the `PerformanceResourceTiming` entries whose `name` without its fragment equals `location.href` without its fragment, whose `initiatorType` is `fetch`, and whose `startTime` is not earlier than the read's start. The verdict SHALL be `seen` when the largest `workerStart` among those entries is greater than 0, `not-seen` when there is at least one entry and every `workerStart` is 0, and `unconfirmed` when there is no such entry, when an entry's `workerStart` is not a number of at least 0, or when `performance.now` or `performance.getEntriesByType` is not a function or throws.
 
 Without `--allow-service-worker`, the verdicts `seen` and `unconfirmed` SHALL fail the command with a service-worker error that names the verdict and the flag and does not say that no request was sent; the bytes SHALL NOT be encoded or transferred, and no file SHALL be written. With `--allow-service-worker` the bytes SHALL be kept for every verdict. The flag SHALL NOT change the fetch, its cache mode, or the path for a tab no service worker controls.
 
@@ -91,7 +91,7 @@ Without `--allow-service-worker`, the verdicts `seen` and `unconfirmed` SHALL fa
 
 ##### Example: a full resource timing buffer
 
-- **GIVEN** a service worker controls a PDF tab whose page set `performance.setResourceTimingBufferSize(0)` before the read
+- **GIVEN** a service worker controls a PDF tab whose page called `performance.setResourceTimingBufferSize(0)` and `performance.clearResourceTimings()` before the read
 - **WHEN** `save-pdf` reads it without `--allow-service-worker`, and again with it
 - **THEN** the first run exits 1 with the `unconfirmed` error and writes no file, and the second saves the PDF and reports the verdict `unconfirmed`
 
