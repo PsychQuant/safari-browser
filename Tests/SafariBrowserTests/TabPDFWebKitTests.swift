@@ -337,6 +337,22 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(got?.message.contains("unless a service worker controls this tab") ?? false, got?.message ?? "nil")
     }
 
+    /// The same tab when the service worker's answer is a PDF: only `workerStart` stands between that answer and a
+    /// saved file, so it must read `seen` (#390 fix0 spectra-verify warning 4).
+    /// spec-example: save-pdf / a controlled PDF tab whose document is not held and the service worker answers it
+    func testAControlledTabWhoseDocumentIsNotHeldAndIsAnsweredIsSeen() async throws {
+        let tab = try await openControlled()
+        _ = tab.evaluate("history.replaceState(null, '', '/sw/doc.pdf?v=2'); 1")
+        let before = log.count
+        let got = await failure(tab)
+        let added = Array(log.dropFirst(before))
+        XCTAssertEqual(got, .serviceWorkerSaw, "\(added)")
+        XCTAssertTrue(added.contains { $0.hasPrefix("GET /sw/doc.pdf?v=2") }, "the read did not reach the server: \(added)")
+        let kept = try await read(tab, allow: true)
+        XCTAssertEqual(kept.serviceWorker, .seen)
+        XCTAssertEqual(kept.bytes, try data("plain.pdf"))
+    }
+
     /// With no entry for the read, it cannot be confirmed: refused without the flag, kept with it.
     /// spec-example: save-pdf / a full resource timing buffer
     func testAFullResourceTimingBufferIsUnconfirmed() async throws {

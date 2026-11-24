@@ -7,6 +7,7 @@ The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that write
 #### Scenario: a no-store PDF is saved with no new request
 
 - **WHEN** a tab displays a PDF served with `Cache-Control: no-store`
+- **AND** no service worker controls the tab, or WebKit holds the document
 - **AND** the user runs `safari-browser save-pdf out.pdf --url "example.org/paper.pdf"`
 - **THEN** `out.pdf` holds the same bytes the server sent
 - **AND** the server receives no request for the document during the read
@@ -33,6 +34,12 @@ The `safari-browser` CLI SHALL provide a `save-pdf <path>` subcommand that write
 - **GIVEN** a local server that logs requests, and a service worker that answers every fetch from the network and reports each fetch event to that server, controlling a PDF tab whose address was changed with `history.replaceState` to a URL in its scope that was never loaded (the server answers 404 for it)
 - **WHEN** `save-pdf` reads the tab without `--allow-service-worker`
 - **THEN** the server log gains the service worker's report and a request for that URL, the command fails with the HTTP 404 error, whose message says a service worker that controls the tab can answer from the network, and no file is written
+
+##### Example: a controlled PDF tab whose document is not held and the service worker answers it
+
+- **GIVEN** the same service worker, controlling a PDF tab whose address was changed with `history.replaceState` to `doc.pdf?v=2`, which WebKit never loaded and which the server answers with the PDF
+- **WHEN** `save-pdf` reads the tab without `--allow-service-worker`, and again with it
+- **THEN** the server log gains a request for that URL, the first run fails with the `seen` error and writes no file, and the second saves the PDF the server sent and reports the verdict `seen`
 
 #### Scenario: an answer that is not 200
 

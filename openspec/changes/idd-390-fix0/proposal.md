@@ -30,6 +30,6 @@
 
 - Affected specs: `save-pdf`、`non-interference`
 - Affected code:
-  - Modified: `Sources/SafariBrowser/Utilities/TabPDFReader.swift`、`Sources/SafariBrowser/Utilities/SavePDFFailure.swift`、`Tests/SafariBrowserTests/TabPDFReaderTests.swift`、`Tests/SafariBrowserTests/TabPDFWebKitTests.swift`、`README.md`、`CLAUDE.md`、`CHANGELOG.md`
+  - Modified: `Sources/SafariBrowser/Utilities/TabPDFReader.swift`、`Sources/SafariBrowser/Utilities/SavePDFFailure.swift`、`Sources/SafariBrowser/Commands/SavePDFCommand.swift`、`Sources/SafariBrowser/Utilities/PDFCacheFailure.swift`、`Tests/SafariBrowserTests/TabPDFReaderTests.swift`、`Tests/SafariBrowserTests/TabPDFWebKitTests.swift`、`README.md`、`CLAUDE.md`、`CHANGELOG.md`
   - New: (none)
   - Removed: (none)

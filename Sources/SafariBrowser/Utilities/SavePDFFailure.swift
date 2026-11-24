@@ -42,19 +42,19 @@ enum SavePDFFailure: Equatable, Sendable {
         case .serviceWorkerSaw:
             return "A service worker handled this read of the PDF, so it could have answered from the network and a request may have gone out; the bytes were read but not saved (verdict: seen). To keep a read the service worker handled, run again with --allow-service-worker."
         case .serviceWorkerUnconfirmed:
-            return "A service worker controls this tab, and whether it handled this read could not be confirmed (there is no timing entry for the read), so the bytes were read but not saved (verdict: unconfirmed). To keep it anyway, run again with --allow-service-worker."
+            return "A service worker controls this tab, and whether it handled this read could not be confirmed (no timing entry for the read tells whether it did), so the bytes were read but not saved (verdict: unconfirmed). To keep it anyway, run again with --allow-service-worker."
         case .notHeld(let detail):
-            return "Could not read the PDF from the tab (\(t(detail))): WebKit does not hold the whole document (it was dropped, or the load stopped), or the page's policy blocked the read. No request for the document was sent, unless a service worker controls this tab: then the read went to the service worker, which can answer from the network. Display the PDF again, or save it by hand."
+            return "Could not read the PDF from the tab (\(t(detail))): WebKit does not hold the whole document (it was dropped, or the load stopped), or the page's policy blocked the read. No request for the document was sent, unless a service worker controls this tab: then the read may have gone to the service worker, which can answer from the network. Display the PDF again, or save it by hand."
         case .badStatus(let code):
-            return "The tab answered with HTTP \(code), so nothing was saved. No request was sent, unless a service worker controls this tab: then the read went to the service worker, which can answer from the network."
+            return "The tab answered with HTTP \(code), so nothing was saved. No request was sent, unless a service worker controls this tab: then the read may have gone to the service worker, which can answer from the network."
         case .readFailed(let detail):
-            return "WebKit answered, but the tab could not prepare the document (\(t(detail))), so nothing was saved. No request was sent, unless a service worker controls this tab: then the read went to the service worker, which can answer from the network."
+            return "WebKit answered, but the tab could not prepare the document (\(t(detail))), so nothing was saved. No request was sent, unless a service worker controls this tab: then the read may have gone to the service worker, which can answer from the network."
         case .tooLarge(let bytes):
             return "The PDF is \(bytes) bytes, over the \(TabPDFReader.maxBytes) byte limit of save-pdf. Nothing was written."
         case .notScriptable:
             return "The tab is not running scripts: it is still loading, or its policy forbids them. Nothing was read and no request was sent. Run this again when it has loaded, or save the PDF by hand."
         case .bytesNotPDF:
-            return "What the tab holds does not start with %PDF-, so nothing was saved. No request was sent, unless a service worker controls this tab: then the read went to the service worker, which can answer from the network."
+            return "What the tab holds does not start with %PDF-, so nothing was saved. No request was sent, unless a service worker controls this tab: then the read may have gone to the service worker, which can answer from the network."
         case .pageReplaced:
             return "The tab's page was replaced during the read, so nothing was saved."
         case .timedOut(let seconds):

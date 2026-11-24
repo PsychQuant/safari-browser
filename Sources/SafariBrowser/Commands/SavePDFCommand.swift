@@ -4,17 +4,19 @@ import Foundation
 /// `save-pdf <path>` (#338): the PDF a tab displays, from the bytes WebKit already holds.
 ///
 /// Non-interfering: it evaluates JavaScript in the targeted tab and writes the file it was told to, with no
-/// request, no input events, no tab switch. It is separate from `pdf-cache` on purpose: that command's contract
+/// request of its own (a service worker that controls the tab can answer the read from the network), no input
+/// events, no tab switch. It is separate from `pdf-cache` on purpose: that command's contract
 /// is that it never touches Safari, and this one has to read from inside the tab.
 struct SavePDFCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "save-pdf",
-        abstract: "Save the PDF a tab displays, from the bytes WebKit already holds, without requesting it",
+        abstract: "Save the PDF a tab displays, from the bytes WebKit already holds; no request unless a service worker answers the read",
         discussion: """
             Name the tab explicitly: --url, --url-exact, --url-endswith, --url-regex, --window [--tab-in-window], \
             --window-id [--tab-in-window], --document or --tab. The tab must display the PDF itself; a PDF embedded in an HTML page is not covered. \
-            The read uses fetch with cache 'only-if-cached', which cannot reach the network: when WebKit no longer \
-            holds the document the command fails and the document is not requested. On a tab a service worker controls, the same \
+            The read uses fetch with cache 'only-if-cached', which cannot reach the network by itself: when WebKit no longer \
+            holds the document the command fails and the document is not requested, unless a service worker controls the tab, \
+            which then receives the read and can answer it from the network. On a tab a service worker controls, the same \
             read is sent and checked afterwards with the read's resource timing: when the service worker handled it, or that cannot \
             be confirmed, nothing is saved unless --allow-service-worker is given. The output names the verdict.
             """

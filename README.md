@@ -891,7 +891,7 @@ safari-browser save-pdf paper.pdf --url 'example.org/main.pdf'
 safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, size, pages, source, url, service_worker
 ```
 
-- **No request for the document.** The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
+- **No request for the document, unless a service worker answers the read** (see below). The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
   answers from what Safari holds or fails; there is no second attempt. Measured on Safari 27.2 against a local
   server that logs requests (`make test-save-pdf`, which opens a window).
   One thing is out of its hands: a response whose Content-Security-Policy blocks `connect-src` and names a
@@ -923,7 +923,8 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
 - **Name the tab.** There is no default front tab. The tab must display the PDF itself: a PDF embedded in an HTML
   page (`<embed>`, `<iframe>`, PDF.js) is refused with the document's content type.
 - **When it fails**, WebKit no longer holds the document or the page's policy blocked the read; the page cannot
-  tell which. No request for the document was sent. Display the PDF again, or save it by hand. A tab still
+  tell which. No request for the document was sent, unless a service worker controls the tab: then the read may
+  have gone to the service worker, which can answer from the network. Display the PDF again, or save it by hand. A tab still
   loading runs no scripts, and the command says that instead. How long WebKit keeps the
   document is not known: a ScienceDirect tab still answered after 8 minutes, longer was not measured.
 - Up to 256 MiB; 50 MB took about 30 s on Safari, moved in chunks. The file goes through the same checks as `pdf-cache get` (`%PDF-`, readable pages, an existing

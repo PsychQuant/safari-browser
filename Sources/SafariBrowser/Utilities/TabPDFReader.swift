@@ -5,7 +5,7 @@ import Foundation
 ///
 /// A response marked `no-store` never reaches the disk cache `pdf-cache` reads, but WebKit keeps the
 /// displayed document in memory, and `fetch(location.href, {cache: 'only-if-cached'})` answers from there.
-/// That cache mode cannot reach the network: without a held copy it rejects. This is the only fetch in the
+/// That cache mode cannot reach the network by itself (a service worker that controls the page can, see below): without a held copy it rejects. This is the only fetch in the
 /// script, and a rejection is a failure: there is no second attempt in any other mode.
 ///
 /// A service worker can see the fetches of the page it controls and answer them from the network. A PDF
@@ -41,7 +41,7 @@ enum TabPDFReader {
         case notSeen = "not-seen"
         /// One controls it, and it handled the read.
         case seen
-        /// One controls it, and no timing entry for the read could be found.
+        /// One controls it, and no timing entry for the read tells whether it handled it.
         case unconfirmed
     }
 
