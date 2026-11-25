@@ -227,6 +227,28 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
             XCTAssertEqual(pattern, "window 2 (window id 5822 at command start)")
         }
 
+        // The same under --profile: the miss lists that profile's tabs with their window ids, as the command's
+        // other steps do, not the one note a step without the profile gives.
+        let scopedClosing = Fake()
+        let scopedCapture = try await captureWindow(["--window", "1", "--profile", "Work"], fake: scopedClosing)
+        XCTAssertEqual(scopedCapture.received, [.id(5822)])
+        let scopedPage = try await scopedClosing.drive {
+            try await ScreenshotCommand.pageTarget(capture: scopedCapture.capture, options: scopedCapture.options)
+        }
+        try await change(scopedClosing) { $0.removeAll { $0.id == 5822 } }
+        do {
+            _ = try await scopedClosing.drive {
+                try await ScreenshotCommand.pageStep(scopedPage, capture: scopedCapture.capture) {
+                    try await SafariBridge.doJavaScript("1", target: scopedPage)
+                }
+            }
+            XCTFail("the window is gone")
+        } catch SafariBrowserError.documentNotFound(let pattern, let entries) {
+            XCTAssertEqual(pattern, "window 1 (window id 5822 at command start)")
+            XCTAssertEqual(entries.count, 1, "\(entries)")
+            XCTAssertTrue(entries.first?.hasSuffix("(window id 6933): https://work.example/b1") == true, "\(entries)")
+        }
+
         // A tab target whose window closes: the same document-not-found error, worded for the target that
         // was resolved, not "the tab is no longer current".
         let urlClosing = Fake()

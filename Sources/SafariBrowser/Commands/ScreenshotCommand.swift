@@ -171,6 +171,10 @@ struct ScreenshotCommand: AsyncParsableCommand {
     /// ways, told apart by the number the AppleScript error ends with, never by its text: the tab is no longer
     /// current (9001) is an error that names the tab; the window, or the tab, is gone (-1728, -1719) is the
     /// document-not-found error the rest of the command gives for `capture`'s target.
+    ///
+    /// A step on a window target takes no profile (so that the windows are not enumerated to check it again),
+    /// and its miss comes back worded without one. Under `--profile` that miss is worded again with the
+    /// profile, as the command's other steps word it: one command, one wording for a window that closed.
     static func pageStep<T>(
         _ target: SafariBridge.TargetDocument, capture: CaptureTarget?, _ body: () async throws -> T
     ) async throws -> T {
@@ -189,6 +193,9 @@ struct ScreenshotCommand: AsyncParsableCommand {
             default:
                 throw SafariBrowserError.appleScriptFailed(message)
             }
+        } catch SafariBrowserError.documentNotFound
+            where capture.map({ SafariBridge.rewordsMissUnderProfile($0.missTarget, profile: $0.profile) }) == true {
+            throw try await SafariBridge.notFoundError(for: capture?.missTarget ?? target, profile: capture?.profile)
         }
     }
 
