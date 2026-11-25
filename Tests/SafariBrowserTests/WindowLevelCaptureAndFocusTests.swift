@@ -151,7 +151,7 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         XCTAssertEqual(pinnedFake.windows.map(\.id), [6933, 4711, 5822], "window id 5822 is window 3 by then")
         let sent = pinnedFake.scripts.count
         _ = try await pinnedFake.drive {
-            try await ScreenshotCommand.pageStep(pinnedPage) { try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: pinnedPage) }
+            try await ScreenshotCommand.pageStep(pinnedPage, capture: pinned.capture) { try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: pinnedPage) }
         }
         let steps = Array(pinnedFake.scripts[sent...])
         XCTAssertFalse(steps.isEmpty)
@@ -166,7 +166,7 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         XCTAssertEqual(page, .anchoredCurrentTab(windowID: 5822, tabInWindow: 1, profile: nil))
         let before = byURLFake.scripts.count
         _ = try await byURLFake.drive {
-            try await ScreenshotCommand.pageStep(page) { try await SafariBridge.doJavaScript("1", target: page) }
+            try await ScreenshotCommand.pageStep(page, capture: byURL.capture) { try await SafariBridge.doJavaScript("1", target: page) }
         }
         let anchored = Array(byURLFake.scripts[before...])
         XCTAssertEqual(anchored.count, 1, anchored.joined(separator: "\n---\n"))
@@ -187,7 +187,7 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         }
         do {
             _ = try await switched.drive {
-                try await ScreenshotCommand.pageStep(switchedPage) { try await SafariBridge.doJavaScript("1", target: switchedPage) }
+                try await ScreenshotCommand.pageStep(switchedPage, capture: switchedCapture.capture) { try await SafariBridge.doJavaScript("1", target: switchedPage) }
             }
             XCTFail("tab 1 of window id 5822 is no longer current")
         } catch SafariBrowserError.anchoredTargetChanged(let target) {
@@ -207,7 +207,7 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         XCTAssertEqual(ambiguousPage, .anchoredCurrentTab(windowID: 5822, tabInWindow: 1, profile: nil))
         let enumerations = ambiguousFake.scripts.filter(Fake.isEnumeration).count
         _ = try await ambiguousFake.drive {
-            try await ScreenshotCommand.pageStep(ambiguousPage) { try await SafariBridge.doJavaScript("1", target: ambiguousPage) }
+            try await ScreenshotCommand.pageStep(ambiguousPage, capture: ambiguous.capture) { try await SafariBridge.doJavaScript("1", target: ambiguousPage) }
         }
         XCTAssertEqual(ambiguousFake.scripts.filter(Fake.isEnumeration).count, enumerations, "no second resolution")
 
@@ -220,11 +220,65 @@ final class WindowLevelCaptureAndFocusTests: XCTestCase {
         try await change(closing) { $0.removeAll { $0.id == 5822 } }
         do {
             _ = try await closing.drive {
-                try await ScreenshotCommand.pageStep(closingPage) { try await SafariBridge.doJavaScript("1", target: closingPage) }
+                try await ScreenshotCommand.pageStep(closingPage, capture: closingCapture.capture) { try await SafariBridge.doJavaScript("1", target: closingPage) }
             }
             XCTFail("the window is gone")
         } catch SafariBrowserError.documentNotFound(let pattern, _) {
             XCTAssertEqual(pattern, "window 2 (window id 5822 at command start)")
+        }
+
+        // A tab target whose window closes: the same document-not-found error, worded for the target that
+        // was resolved, not "the tab is no longer current".
+        let urlClosing = Fake()
+        let urlClosingCapture = try await captureWindow(["--url", "work.example/a1"], fake: urlClosing)
+        let urlClosingPage = try await urlClosing.drive {
+            try await ScreenshotCommand.pageTarget(capture: urlClosingCapture.capture, options: urlClosingCapture.options)
+        }
+        try await change(urlClosing) { $0.removeAll { $0.id == 5822 } }
+        do {
+            _ = try await urlClosing.drive {
+                try await ScreenshotCommand.pageStep(urlClosingPage, capture: urlClosingCapture.capture) {
+                    try await SafariBridge.doJavaScript("1", target: urlClosingPage)
+                }
+            }
+            XCTFail("the window is gone")
+        } catch SafariBrowserError.documentNotFound(let pattern, let entries) {
+            XCTAssertTrue(pattern.hasPrefix("window id 5822 tab 1 (matched: "), pattern)
+            XCTAssertFalse(pattern.contains("current tab"), "a closed window is not \"no longer the current tab\": \(pattern)")
+            XCTAssertFalse(entries.contains { $0.contains("work.example/a1") }, "\(entries)")
+        }
+        // …and whose tab is gone from a window that is still open.
+        let tabClosing = Fake()
+        let tabClosingCapture = try await captureWindow(["--url", "work.example/b1"], fake: tabClosing)
+        let tabClosingPage = try await tabClosing.drive {
+            try await ScreenshotCommand.pageTarget(capture: tabClosingCapture.capture, options: tabClosingCapture.options)
+        }
+        XCTAssertEqual(tabClosingPage, .anchoredCurrentTab(windowID: 6933, tabInWindow: 1, profile: nil))
+        try await change(tabClosing) { $0[2].tabs = [] }
+        do {
+            _ = try await tabClosing.drive {
+                try await ScreenshotCommand.pageStep(tabClosingPage, capture: tabClosingCapture.capture) {
+                    try await SafariBridge.doJavaScript("1", target: tabClosingPage)
+                }
+            }
+            XCTFail("the tab is gone")
+        } catch SafariBrowserError.documentNotFound(let pattern, _) {
+            XCTAssertTrue(pattern.hasPrefix("window id 6933 tab 1"), pattern)
+        }
+
+        // No target was resolved: flags this command does not count (#233). The capture is Safari's front
+        // window, and the page steps read and scroll that same window; the flags are not resolved for them.
+        for flags in [["--profile", "Work"], ["--url-exact", "https://work.example/a2"],
+                      ["--url-endswith", "/a2"], ["--url-regex", "a2$"]] {
+            let fake = Fake()
+            let uncounted = try await captureWindow(flags, fake: fake)
+            XCTAssertNil(uncounted.capture, "\(flags)")
+            XCTAssertEqual(uncounted.received, [nil], "\(flags)")
+            let frontPage = try await fake.drive {
+                try await ScreenshotCommand.pageTarget(capture: uncounted.capture, options: uncounted.options)
+            }
+            XCTAssertEqual(frontPage, .frontWindow, "\(flags): the page steps follow the capture to the front window")
+            XCTAssertEqual(fake.scripts, [], "\(flags): nothing is resolved")
         }
 
         // By position (no flag, or a window number whose id could not be read): the options, as before.

@@ -152,24 +152,43 @@ struct ScreenshotCommand: AsyncParsableCommand {
         return (resolution.target, resolution.capture, cgID, axWindow)
     }
 
-    /// The document the page steps run in: the one the resolution fixed when the window is known by its id,
-    /// otherwise the options resolved as before #353 (no targeting flag, or a window named by its position).
+    /// The document the page steps run in.
+    ///
+    /// - A window known by its id: the document the resolution fixed.
+    /// - No target was resolved (no flag, or only flags this command does not count as a target: `--profile`
+    ///   alone, `--url-exact`, `--url-endswith`, `--url-regex`, #233): the capture is Safari's front window, so
+    ///   the page steps read and scroll that same window. Resolving those flags here would run the steps in
+    ///   one window and capture another.
+    /// - A window named by its position (`--window N` whose id could not be read): the options, resolved again,
+    ///   as before #353.
     static func pageTarget(capture: CaptureTarget?, options: TargetOptions) async throws -> SafariBridge.TargetDocument {
-        if let page = capture?.pageTarget { return page }
+        guard let capture else { return .frontWindow }
+        if let page = capture.pageTarget { return page }
         return try await options.resolveProfileScoped()
     }
 
-    /// Runs one page step. When the step is tied to a tab that had to be its window's current tab and that
-    /// tab closed or stopped being current, the failure names the tab instead of an AppleScript marker.
-    static func pageStep<T>(_ target: SafariBridge.TargetDocument, _ body: () async throws -> T) async throws -> T {
+    /// Runs one page step. A step tied to a tab that had to be its window's current tab fails in one of two
+    /// ways, told apart by the number the AppleScript error ends with, never by its text: the tab is no longer
+    /// current (9001) is an error that names the tab; the window, or the tab, is gone (-1728, -1719) is the
+    /// document-not-found error the rest of the command gives for `capture`'s target.
+    static func pageStep<T>(
+        _ target: SafariBridge.TargetDocument, capture: CaptureTarget?, _ body: () async throws -> T
+    ) async throws -> T {
         do {
             return try await body()
-        } catch let error as SafariBrowserError {
-            if case .anchoredCurrentTab(let windowID, let tab, _) = target, SafariBridge.isTargetDangleError(error) {
+        } catch SafariBrowserError.appleScriptFailed(let message) {
+            guard case .anchoredCurrentTab(let windowID, let tab, _) = target, !message.contains("JavaScript error:") else {
+                throw SafariBrowserError.appleScriptFailed(message)
+            }
+            switch SafariBridge.appleScriptErrorCode(in: message) {
+            case SafariBridge.WindowLevelMarker.targetChanged?:
                 throw SafariBrowserError.anchoredTargetChanged(
                     target: "tab \(tab) of window id \(windowID) (the window's current tab when the screenshot started)")
+            case let code? where code == -1719 || code == -1728:
+                throw try await SafariBridge.notFoundError(for: capture?.missTarget ?? target, profile: capture?.profile)
+            default:
+                throw SafariBrowserError.appleScriptFailed(message)
             }
-            throw error
         }
     }
 
@@ -255,7 +274,8 @@ struct ScreenshotCommand: AsyncParsableCommand {
                     elementIndex: elementIndex,
                     axWindow: axWindow,
                     path: path,
-                    docTarget: docTarget
+                    docTarget: docTarget,
+                    capture: capture
                 )
             } else if contentOnly {
                 guard let axWindow else {
@@ -274,7 +294,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
         // legacy default path (no Accessibility + no --window).
 
         // Read page dimensions via JS (same window we're capturing).
-        let dims = try await Self.pageStep(docTarget) { try await SafariBridge.doJavaScript(
+        let dims = try await Self.pageStep(docTarget, capture: capture) { try await SafariBridge.doJavaScript(
             "JSON.stringify({sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight,cw:document.documentElement.clientWidth,ch:document.documentElement.clientHeight,sx:window.scrollX,sy:window.scrollY})",
             target: docTarget
         ) }
@@ -319,7 +339,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
         var resizeError: Error?
         if let targetW, let targetH {
             do {
-                _ = try await Self.pageStep(docTarget) {
+                _ = try await Self.pageStep(docTarget, capture: capture) {
                     try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: docTarget)
                 }
                 try await Task.sleep(nanoseconds: 300_000_000)
@@ -379,6 +399,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
                         axWindow: axWindow,
                         path: path,
                         docTarget: docTarget,
+                        capture: capture,
                         preMeasuredWindowBounds: postResizeBounds
                     )
                 } catch {
@@ -617,6 +638,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
         axWindow: AXUIElement,
         path: String,
         docTarget: SafariBridge.TargetDocument,
+        capture: CaptureTarget?,
         preMeasuredWindowBounds: CGRect? = nil
     ) async throws {
         do {
@@ -628,7 +650,7 @@ struct ScreenshotCommand: AsyncParsableCommand {
             }
             let webAreaScreen = try SafariBridge.getAXWebAreaBounds(axWindow)
 
-            let result = try await Self.pageStep(docTarget) {
+            let result = try await Self.pageStep(docTarget, capture: capture) {
                 try await SafariBridge.getElementBoundsInViewport(
                     selector: selector,
                     target: docTarget,

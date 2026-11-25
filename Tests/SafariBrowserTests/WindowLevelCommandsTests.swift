@@ -62,7 +62,7 @@ final class WindowLevelCommandsTests: XCTestCase {
         // …then one page step of --full, in the document the resolution fixed.
         let page = try await fake.drive { try await ScreenshotCommand.pageTarget(capture: capture, options: result.target) }
         _ = try await fake.drive {
-            try await ScreenshotCommand.pageStep(page) { try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: page) }
+            try await ScreenshotCommand.pageStep(page, capture: capture) { try await SafariBridge.doJavaScript("window.scrollTo(0,0)", target: page) }
         }
         return Trace(later: fake.scripts(afterFirst: Fake.isAnchor), fake: fake)
     }

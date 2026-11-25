@@ -337,7 +337,8 @@ final class WindowLevelFakeSafari: @unchecked Sendable {
             if line == "end considering" { consideringCase = false; continue }
             if line.contains("do JavaScript") {
                 // The JavaScript text is not AppleScript: check the reference it runs in, then stop reading.
-                if let range = line.range(of: " in ", options: .backwards), let index = try windowIndex(in: String(line[range.upperBound...])) {
+                // `_w` is the window the script bound (`set _w to window id W`).
+                if let range = line.range(of: " in ", options: .backwards), let index = try window(in: String(line[range.upperBound...])) {
                     if let tab = Self.int(after: "tab ", in: String(line[range.upperBound...])), tab > order[index].tabs.count {
                         throw Self.invalidIndex("tab \(tab)")
                     }

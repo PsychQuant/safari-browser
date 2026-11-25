@@ -434,6 +434,29 @@ final class WindowLevelTargetTests: XCTestCase {
         XCTAssertEqual(pattern, "window id 5822 (profile: \"Work\")")
         XCTAssertEqual(entries, ["window id 6933: https://work.example/b1"])
         XCTAssertEqual(closing.closed, [])
+
+        // close --profile Work: the profile's first window, by its id. The same miss.
+        let scopedClosing = Fake()
+        scopedClosing.after(script: 1) { $0.removeAll { $0.id == 5822 } }
+        let scopedError = await scopedClosing.run(CloseCommand.self, ["--profile", "Work"])
+        guard case SafariBrowserError.documentNotFound(let scopedPattern, let scopedEntries)? = scopedError else {
+            return XCTFail("expected documentNotFound, got \(String(describing: scopedError))\n\(scopedClosing.transcript)")
+        }
+        XCTAssertEqual(scopedPattern, "window id 5822 (profile: \"Work\")")
+        XCTAssertEqual(scopedEntries, ["window id 6933: https://work.example/b1"])
+        XCTAssertEqual(scopedClosing.closed, [])
+
+        // close --document 2 --profile Work: a resolved tab that carries the profile. No suffix, and the
+        // profile's tabs with their window ids.
+        let tabClosing = Fake()
+        tabClosing.after(script: 1) { $0.removeAll { $0.id == 5822 } }
+        let tabError = await tabClosing.run(CloseCommand.self, ["--document", "2", "--profile", "Work"])
+        guard case SafariBrowserError.documentNotFound(let tabPattern, let tabEntries)? = tabError else {
+            return XCTFail("expected documentNotFound, got \(String(describing: tabError))\n\(tabClosing.transcript)")
+        }
+        XCTAssertEqual(tabPattern, "window id 5822 tab 2")
+        XCTAssertEqual(tabEntries, ["window 2 tab 1 (window id 6933): https://work.example/b1"])
+        XCTAssertEqual(tabClosing.closed, [])
     }
 
     /// The `--url-regex` check carries the URL the resolution read inside the script: it has to be escaped as

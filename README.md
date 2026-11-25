@@ -1253,7 +1253,9 @@ touching window focus. With `--full` or `--element` the page is read and
 scrolled in the window that was resolved (for a tab target, only while
 that tab is still the window's current tab). Known gap: `screenshot`
 does not treat `--profile` alone, `--url-exact`, `--url-endswith` or
-`--url-regex` as a target and captures the front window (#233).
+`--url-regex` as a target and captures the front window (#233); with
+`--full` or `--element` the page is then read and scrolled in that
+front window too.
 
 `screenshot` (R7) uses the **AXUIElement private SPI**
 (`_AXUIElementGetWindow`) to map AppleScript window indices to CG
