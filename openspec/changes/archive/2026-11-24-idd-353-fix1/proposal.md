@@ -36,7 +36,7 @@
 ## Non-Goals
 
 - `screenshot` 在 Accessibility／CoreGraphics 那一側以邊界與標題找視窗、`open` 的 Space 檢查以位置找視窗：留給 #391（要先在真的 Safari 上確認 AppleScript 的視窗 id 等於 CGWindowID）。
-- `screenshot` 不把 `--profile`（單獨）、`--url-exact`、`--url-endswith`、`--url-regex` 當成目標：#233，這裡只把它寫進封閉清單。
+- `screenshot` 不把 `--profile`（單獨）、`--url-exact`、`--url-endswith`、`--url-regex` 當成目標：#233，這裡只把它寫進封閉清單；唯一的行為變更是這四個旗標之下，`--full`／`--element` 的頁面步驟改為在擷取的那個視窗（最前面的視窗）上執行，不再另外解析旗標。
 - 以位置指稱視窗的 native `upload`（視窗 id 讀不到時）不加「仍是目前分頁」的檢查，對話框腳本維持原樣：位置本身就不是身分，加了檢查也只是檢查另一個位置。
 - 對話框或儲存面板出現之後視窗消失：維持腳本自己的錯誤（不再送出按鍵），不改成 document-not-found；規格照實寫。
 - 網址檢查比 Swift 的比對寬鬆的情形（看不見的字元）、「Go to Folder」裡的相對路徑、`verifyPDFOwner` 的大小寫：另開 follow-up。

@@ -35,7 +35,7 @@
 
 - [x] 4.1 測試：Example「page steps by window id」（screenshot，requirement「Screenshot command accepts full TargetOptions」）。測試執行 `ScreenshotCommand.captureWindow(session:resolve:)`、`pageTarget(capture:options:)` 與 `pageStep`。標記 `spec-example: screenshot / page steps by window id`。驗證：`WindowLevelCaptureAndFocusTests.testPageStepsByWindowID`。
 - [x] 4.2 交給擷取解析器的是解析出來的視窗；`screenshot` 不切分頁、不拉視窗。驗證：`WindowLevelCaptureAndFocusTests.testTheCaptureResolverIsHandedTheResolvedWindow`、`testScreenshotChangesNothingInSafari`、`testRunStartsFromTheResolvedCapture`（原始碼形狀）、`CommandParsingTests.testScreenshotCommand_sourceDoesNotTabSwitch`（改為檢查現存的函式名稱）。
-- [x] 4.3 實作：`SafariBridge.pageTarget(for:named:profile:)`、`ScreenshotCommand.CaptureTarget.pageTarget`、`captureWindow(session:resolve:)`、`pageTarget(capture:options:)`、`pageStep(_:_:)`。
+- [x] 4.3 實作：`SafariBridge.pageTarget(for:named:profile:)`、`ScreenshotCommand.CaptureTarget.pageTarget`、`captureWindow(session:resolve:)`、`pageTarget(capture:options:)`、`pageStep(_:capture:_:)`。封存之後的 commit `ac5fc67`：沒有解析出目標時（`screenshot` 不算目標的四個旗標）頁面步驟在最前面的視窗上執行；視窗或分頁不在時 `pageStep` 回報 document-not-found，只有分頁還在而不再是目前分頁時才是 `anchoredTargetChanged`。
 
 ## 5. open：顯示既有分頁
 
@@ -47,6 +47,6 @@
 
 - [x] 6.1 `close --help` 的摘要改為「Close a tab: the tab a targeting flag names, or the current tab」。
 - [x] 6.2 window-enumeration 的 Example「rejected shapes」：帶標記的測試也斷言第 4、5 列的建議文字。驗證：`WindowEnumerationDecoderTests.testRejectedShapes`。
-- [x] 6.3 變異檢查：這一輪的 31 個行為各退回一次，每一個都有具名的測試失敗（紀錄在 issue 的 Implementation Complete）。
+- [x] 6.3 變異檢查：這一輪的 34 個行為各退回一次（封存時 31 個；封存之後的 commit `ac5fc67` 為 `screenshot` 的頁面步驟再加 3 個），每一個都有具名的測試失敗（紀錄在 issue 的 Implementation Complete）。
 - [x] 6.4 `README.md`、`CHANGELOG.md`、`CLAUDE.md` 與程式註解對齊現在的行為（驗證報告第 15、17、20 列）。
 - [x] 6.5 在 mini 上跑完整的 `swift test`（2638 個測試；第一次有一個失敗：`URLTextTests.testTheNumberOfRedactionSitesIsWhatWasReviewed`，因為這一輪新增了一處脫敏後的清單，已把處數改為 15 並寫明原因）。
