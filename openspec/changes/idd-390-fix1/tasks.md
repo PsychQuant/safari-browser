@@ -15,7 +15,7 @@
 
 ## 3. e2e
 
-- [x] 3.1 `Tests/e2e-save-pdf.sh`：`pass`、`net` 兩個 scope 先不帶旗標（rc=1、訊息以「A service worker controls this tab」開頭、讀取期間沒有請求），再帶旗標（位元組相同、`"service_worker" : "not-seen"`、沒有請求）；另加一格帶旗標、`replaceState` 到 `doc.pdf?v=2` → `"service_worker" : "seen"`、內容是伺服器送的 PDF、伺服器收到那個網址的請求；檢查「沒有請求」之前先等 service worker 的回報落定；新視窗的 profile 不是 `E2E_SAVE_PDF_PROFILE`（預設「個人」）就在註冊 service worker 之前中止；清理重試前先關掉上一個清理分頁，不讓 `--url` 對到兩個分頁。對應 requirement「save-pdf saves the displayed PDF without a request of its own」。驗證：`bash -n Tests/e2e-save-pdf.sh` 通過，沒有 `E2E_SAVE_PDF_OK=1` 時照舊跳過；Safari 上的實跑由 Claude 在使用者準備好視窗後執行，結果記到 #390。
+- [x] 3.1 `Tests/e2e-save-pdf.sh`：`pass`、`net` 兩個 scope 先不帶旗標（rc=1、訊息以「A service worker controls this tab」開頭、讀取期間沒有請求），再帶旗標（位元組相同、`"service_worker" : "not-seen"`、沒有請求）；另加一格帶旗標、`replaceState` 到 `doc.pdf?v=2` → `"service_worker" : "seen"`、內容是伺服器送的 PDF、伺服器收到那個網址的請求；檢查「沒有請求」之前先等 service worker 的回報落定；新視窗的 profile 不是 `E2E_SAVE_PDF_PROFILE`（預設「個人」）就在註冊 service worker 之前中止；清理分頁每一次用自己的網址（`sw-cleanup.html?run=<n>-<pid>`），重試時 `--url` 不會對到兩個分頁。對應 requirement「save-pdf saves the displayed PDF without a request of its own」。驗證：`bash -n Tests/e2e-save-pdf.sh` 通過，沒有 `E2E_SAVE_PDF_OK=1` 時照舊跳過；Safari 上的實跑由 Claude 在使用者準備好視窗後執行，結果記到 #390。
 
 ## 4. 文件
 

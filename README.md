@@ -911,7 +911,8 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
   `seen` or `unconfirmed`), the text line only when a service worker controls the tab. The verdict comes from the
   tab's own JavaScript: a service worker cannot change it, a script of the same origin that tampers with the tab
   can. A tab no service worker controls is read exactly as before, with or without the flag. The MCP tool
-  `safari.save-pdf` has the same `allow-service-worker` option.
+  `safari.save-pdf` has the same `allow-service-worker` option; whether MCP clients should have it is still to be
+  decided (#390).
 - **What it saves is what the fetch answers**, and that answer is made for the displayed PDF. Measured on Safari: a PDF
   served with a 404 is saved like any other, a tab reached through a redirect saves, and two tabs on one URL with different
   content each gave their own. In an off-screen WebKit view (`make test-save-pdf-webkit`, no Safari involved) the status reads 200 whatever the server sent. So it saves what

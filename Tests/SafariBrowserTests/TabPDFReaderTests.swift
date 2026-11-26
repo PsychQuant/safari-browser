@@ -205,6 +205,9 @@ final class TabPDFReaderScriptTests: XCTestCase {
             let page = TabPDFFixture.page(serviceWorker: true)
             _ = page.evaluate("performance.getEntriesByType = function () { return [{ name: '\(name)', initiatorType: 'fetch', startTime: 150\(workerStart) }]; };")
             XCTAssertEqual(try run(page, allow: true), okPrefix + ":unconfirmed", "workerStart: '\(workerStart)'")
+            let refused = TabPDFFixture.page(serviceWorker: true)
+            _ = refused.evaluate("performance.getEntriesByType = function () { return [{ name: '\(name)', initiatorType: 'fetch', startTime: 150\(workerStart) }]; };")
+            XCTAssertEqual(try run(refused), "fail:service-worker:", "without the flag, workerStart: '\(workerStart)'")
         }
     }
 
