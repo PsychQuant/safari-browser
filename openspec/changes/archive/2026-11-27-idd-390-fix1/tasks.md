@@ -20,4 +20,4 @@
 ## 4. 文件
 
 - [x] 4.1 `README.md` 的 save-pdf 一節、`CLAUDE.md`〈Tab PDFs〉、`CHANGELOG.md`：沒帶旗標時受控分頁在讀之前拒絕、沒有讀取；帶旗標才讀，判定寫進輸出、每一種都存；WebKit 沒持有文件時帶旗標的讀取會交給 service worker；判定來自頁面自己的 JavaScript 環境（service worker 改不了，同源的腳本改得了）；MCP 的 `safari.save-pdf` 也帶這個旗標（要不要曝露等維護者回答）。驗證：內容審查，三處不再寫「沒帶旗標也照常讀」。
-- [ ] 4.2 規格 `save-pdf` 的 Purpose 在封存後同一個 commit 改成「沒帶旗標時只用 WebKit 持有的位元組」的寫法（delta 改不到 Purpose）。驗證：`spec-change.py links` 與 `archived` 照常通過。
+- [x] 4.2 規格 `save-pdf` 的 Purpose 在封存後同一個 commit 改成「沒帶旗標時只用 WebKit 持有的位元組」的寫法（delta 改不到 Purpose）。驗證：`spec-change.py links` 與 `archived` 照常通過。
