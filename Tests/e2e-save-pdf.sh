@@ -16,7 +16,8 @@
 #
 # The service-worker cases (#390) register two service workers on this test's own origin (127.0.0.1 and
 # the port) in the profile of the new window, and unregister every registration of that origin before the
-# window closes, also when the run stops early.
+# window closes, also when the run stops early. The new window opens in the profile of the window in front
+# (#383), so the run stops before anything else when that window is not in E2E_SAVE_PDF_PROFILE (default 個人).
 #
 # Exit 77 (automake skip) when the guard is not set or Safari is not running.
 
@@ -28,6 +29,7 @@ fi
 pgrep -x Safari >/dev/null || { echo "Safari is not running; skipping"; exit 77; }
 
 SB="${SAFARI_BROWSER_BIN:-.build/debug/safari-browser}"
+WANT_PROFILE="${E2E_SAVE_PDF_PROFILE:-個人}"
 PORT="${E2E_SAVE_PDF_PORT:-38339}"
 WORK="$(mktemp -d)"
 SERVER_PID=""
@@ -210,16 +212,39 @@ shows() { # shows <path> <content type>: wait until the tab's document has that 
 }
 no_new_request() { [[ "$(requests)" == "$1" ]] && pass "no request reached the server" || fail "the server got $(( $(requests) - $1 )) request(s)" "$(tail -3 "$LOG")"; }
 # Unregisters every service worker of this origin, from a page of the origin outside both workers' scopes.
+# Each call opens its own address, so a second call (from the EXIT trap) never matches the first call's tab.
+CLEANUPS=0
 unregister_workers() {
-    local i state=""
-    open_tab sw-cleanup.html
+    local i state="" page
+    CLEANUPS=$((CLEANUPS + 1)); page="sw-cleanup.html?run=$CLEANUPS-$$"
+    open_tab "$page"
     for i in $(seq 1 40); do
-        state=$("$SB" js "document.getElementById('s') ? document.getElementById('s').textContent : ''" --url "127.0.0.1:$PORT/sw-cleanup.html" 2>/dev/null)
+        state=$("$SB" js "document.getElementById('s') ? document.getElementById('s').textContent : ''" --url "127.0.0.1:$PORT/$page" 2>/dev/null)
         [[ "$state" == left:* ]] && break
         sleep 0.5
     done
     if [[ "$state" == "left:0" ]]; then WORKERS_REGISTERED=""; echo "  - service workers of 127.0.0.1:$PORT unregistered"
     else echo "  ! could not confirm the service workers of 127.0.0.1:$PORT were unregistered ($state); remove them in Safari's settings"; fi
+}
+
+# An absence in the log means nothing until something that would come after it has come. The tab fetches a
+# sentinel the service worker reports; once its report and its request are in the log, a report of the read
+# sent before it would be there too. The sentinel is a .txt, so requests() does not count it.
+SENTINELS=0
+flush_through_worker() { # flush_through_worker <scope> <tab path>
+    local i name
+    SENTINELS=$((SENTINELS + 1)); name="sentinel-$SENTINELS.txt"
+    "$SB" js "fetch('/sw-$1/$name').then(function () {}, function () {}); 1" --url "127.0.0.1:$PORT/$2" >/dev/null 2>&1
+    for i in $(seq 1 40); do
+        grep -q "u=%2Fsw-$1%2F$name" "$LOG" && grep -q "^GET /sw-$1/$name" "$LOG" && return 0
+        sleep 0.25
+    done
+    fail "$1: the service worker never reported $name, so the count below says nothing"; return 1
+}
+# The fixture window is in the wanted profile when its tabs are among that profile's documents.
+window_in_profile() {
+    "$SB" documents --json --profile "$WANT_PROFILE" 2>/dev/null \
+        | python3 -I -c 'import json, sys; print(any(str(d.get("window_id")) == sys.argv[1] for d in json.load(sys.stdin)))' "$WINDOW" 2>/dev/null
 }
 
 echo "Safari has $(osascript -e 'tell application "Safari" to count windows' 2>/dev/null) window(s) open; this test adds one."
@@ -229,6 +254,9 @@ echo "=== a no-store PDF ==="
 sleep 1
 WINDOW="$(fixture_window)"
 [[ -n "$WINDOW" ]] || { fail "the fixture window did not open"; exit 1; }
+# #383: the window opens in the front window's profile, and the service workers below are registered there.
+[[ "$(window_in_profile)" == "True" ]] && pass "the fixture window is in the profile $WANT_PROFILE" \
+    || { fail "the fixture window is not in the profile $WANT_PROFILE; bring a window of that profile to the front and run again"; exit 1; }
 shows nostore.pdf application/pdf
 # Without this every "no request" below passes on a log that records nothing.
 grep -q '^GET /nostore.pdf' "$LOG" && pass "the server logged the request that displayed the PDF" \
@@ -392,9 +420,11 @@ else
 fi
 
 echo "=== PDF tabs a service worker controls (#390) ==="
-# The read the service worker could see but did not: a PDF document fetching its own URL. Each worker reports
-# every fetch event to /sw-saw, and requests() counts those reports, so a worker that saw the read fails the
-# "no request" line. The navigation report is the positive control: it shows this worker sees what it handles.
+# Without --allow-service-worker a controlled tab is refused before the fetch. With it, the read the service
+# worker could see but did not: a PDF document fetching its own URL. Each worker reports every fetch event to
+# /sw-saw, and requests() counts the reports of PDF fetches, so a worker that saw a read fails the "no request"
+# line. The navigation report is the positive control for that; the replaced address below is the positive
+# control for the verdict.
 for scope in pass net; do
     WORKERS_REGISTERED=1
     open_tab "sw-$scope/index.html"
@@ -412,10 +442,27 @@ for scope in pass net; do
     grep -q "^GET /sw-saw?scope=$scope&mode=navigate" "$LOG" && pass "$scope: the service worker reported the navigation it handled" \
         || { fail "$scope: no report of the navigation, so the reports below mean nothing" "$(grep sw- "$LOG" | tail -3)"; continue; }
     before=$(settled_requests)
-    json=$("$SB" save-pdf "$OUT/sw-$scope.pdf" --url "127.0.0.1:$PORT/sw-$scope/doc.pdf" --json 2>&1); rc=$?
-    [[ $rc -eq 0 ]] && cmp -s "$OUT/sw-$scope.pdf" "$WORK/www/sw-$scope/doc.pdf" && pass "$scope: saved exactly" || fail "$scope: rc=$rc" "$json"
+    msg=$("$SB" save-pdf "$OUT/sw-$scope-refused.pdf" --url "127.0.0.1:$PORT/sw-$scope/doc.pdf" 2>&1); rc=$?
+    [[ $rc -eq 1 && "$msg" == *"A service worker controls this tab"* && ! -e "$OUT/sw-$scope-refused.pdf" ]] \
+        && pass "$scope: without the flag it is refused and writes nothing" || fail "$scope: rc=$rc" "$msg"
+    flush_through_worker "$scope" "sw-$scope/doc.pdf" && no_new_request "$before"
+    json=$("$SB" save-pdf "$OUT/sw-$scope.pdf" --allow-service-worker --url "127.0.0.1:$PORT/sw-$scope/doc.pdf" --json 2>&1); rc=$?
+    [[ $rc -eq 0 ]] && cmp -s "$OUT/sw-$scope.pdf" "$WORK/www/sw-$scope/doc.pdf" && pass "$scope: with the flag, saved exactly" || fail "$scope: rc=$rc" "$json"
     echo "$json" | grep -q '"service_worker" : "not-seen"' && pass "$scope: the verdict is not-seen" || fail "$scope: verdict: $json"
-    no_new_request "$before"
+    flush_through_worker "$scope" "sw-$scope/doc.pdf" && no_new_request "$before"
+    # Only the network worker can answer an address WebKit never loaded: the pass worker forwards only-if-cached.
+    [[ "$scope" == net ]] || continue
+    "$SB" js "history.replaceState(null, '', '/sw-net/doc.pdf?v=2'); 1" --url "127.0.0.1:$PORT/sw-net/doc.pdf" >/dev/null 2>&1
+    before=$(settled_requests)
+    msg=$("$SB" save-pdf "$OUT/sw-seen-refused.pdf" --url "127.0.0.1:$PORT/sw-net/doc.pdf?v=2" 2>&1); rc=$?
+    [[ $rc -eq 1 && "$msg" == *"A service worker controls this tab"* && ! -e "$OUT/sw-seen-refused.pdf" ]] \
+        && pass "net, address never loaded: without the flag it is refused" || fail "net, address never loaded: rc=$rc" "$msg"
+    flush_through_worker net "sw-net/doc.pdf?v=2" && { grep -q '^GET /sw-net/doc.pdf?v=2' "$LOG" \
+        && fail "net, address never loaded: the server got the read without the flag" || pass "net, address never loaded: no request without the flag"; }
+    json=$("$SB" save-pdf "$OUT/sw-seen.pdf" --allow-service-worker --url "127.0.0.1:$PORT/sw-net/doc.pdf?v=2" --json 2>&1); rc=$?
+    [[ $rc -eq 0 ]] && cmp -s "$OUT/sw-seen.pdf" "$WORK/www/sw-net/doc.pdf" && pass "net, address never loaded: with the flag, saved what the server sent" || fail "net, address never loaded: rc=$rc" "$json"
+    echo "$json" | grep -q '"service_worker" : "seen"' && pass "net, address never loaded: the verdict is seen" || fail "net, address never loaded: verdict: $json"
+    grep -q '^GET /sw-net/doc.pdf?v=2' "$LOG" && pass "net, address never loaded: the service worker asked the server" || fail "net, address never loaded: no request reached the server"
 done
 [[ -n "$WORKERS_REGISTERED" ]] && unregister_workers
 

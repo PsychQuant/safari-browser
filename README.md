@@ -891,26 +891,27 @@ safari-browser save-pdf paper.pdf --url 'example.org/main.pdf'
 safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, size, pages, source, url, service_worker
 ```
 
-- **No request for the document, unless a service worker answers the read** (see below). The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
+- **No request for the document of its own** (a service worker can answer the read only when you pass `--allow-service-worker`, see below). The only network API it uses is `fetch(location.href, {cache: 'only-if-cached'})`, which
   answers from what Safari holds or fails; there is no second attempt. Measured on Safari 27.2 against a local
   server that logs requests (`make test-save-pdf`, which opens a window).
   One thing is out of its hands: a response whose Content-Security-Policy blocks `connect-src` and names a
   report endpoint makes the browser post a violation report, with the full address, when the fetch is blocked.
   The page cannot see that policy beforehand.
-- **A tab a service worker controls is read the same way and checked afterwards** (#390). A service worker can see
-  the fetches of the page it controls and answer them from the network, but a PDF document fetching its own URL was
-  not handed to one: on Safari 27.3 against a local server and three service workers, and in an off-screen WebKit
-  view, the bytes matched what the server sent and neither the server nor the service worker saw the read. The page
-  cannot know that beforehand, so the check comes after the read, from the read's resource timing entry, whose
-  `workerStart` is above 0 when a service worker handled it. A read the service worker handled (`seen`), or one with
-  no entry to tell (`unconfirmed`), is not saved unless you pass `--allow-service-worker`; the flag keeps the bytes
-  and changes nothing about the read, and with it a service worker may have answered from the network. The output
-  names the verdict: `--json` always has `service_worker` (`none`, `not-seen`, `seen` or `unconfirmed`), the text
-  line only when a service worker controls the tab. A tab no service worker controls is read exactly as before.
-  This holds only while WebKit holds the document. When it no longer does (it was dropped, or the page changed its
-  address), the read of a tab a service worker controls goes to the service worker like any fetch, before the
-  check and also without the flag, and the service worker can answer it from the network: the site may see that
-  read, and nothing is saved unless the check allows it. How long WebKit keeps a displayed PDF has not been measured.
+- **A tab a service worker controls is read only with `--allow-service-worker`** (#390). A service worker can see
+  the fetches of the page it controls and answer them from the network, so without the flag such a tab is refused
+  before the fetch: nothing is read and neither the site nor the service worker sees anything. With the flag the
+  same read is sent and checked afterwards, from the read's resource timing entry, whose `workerStart` is above 0
+  when a service worker handled it, and the PDF is saved whatever the verdict. While WebKit holds the document a PDF
+  document fetching its own URL is not handed to the service worker: on Safari 27.3 against a local server and
+  three service workers, and in an off-screen WebKit view, the bytes matched what the server sent and neither the
+  server nor the service worker saw the read (`not-seen`). When WebKit no longer holds it (it was dropped, or the
+  page changed its address), the read goes to the service worker like any fetch, and the service worker can answer
+  it from the network: the site may see that read, and the verdict is `seen`. How long WebKit keeps a displayed PDF
+  has not been measured. The output names the verdict: `--json` always has `service_worker` (`none`, `not-seen`,
+  `seen` or `unconfirmed`), the text line only when a service worker controls the tab. The verdict comes from the
+  tab's own JavaScript: a service worker cannot change it, a script of the same origin that tampers with the tab
+  can. A tab no service worker controls is read exactly as before, with or without the flag. The MCP tool
+  `safari.save-pdf` has the same `allow-service-worker` option.
 - **What it saves is what the fetch answers**, and that answer is made for the displayed PDF. Measured on Safari: a PDF
   served with a 404 is saved like any other, a tab reached through a redirect saves, and two tabs on one URL with different
   content each gave their own. In an off-screen WebKit view (`make test-save-pdf-webkit`, no Safari involved) the status reads 200 whatever the server sent. So it saves what
@@ -923,8 +924,9 @@ safari-browser save-pdf paper.pdf --window 2 --tab-in-window 3 --json   # path, 
 - **Name the tab.** There is no default front tab. The tab must display the PDF itself: a PDF embedded in an HTML
   page (`<embed>`, `<iframe>`, PDF.js) is refused with the document's content type.
 - **When it fails**, WebKit no longer holds the document or the page's policy blocked the read; the page cannot
-  tell which. No request for the document was sent, unless a service worker controls the tab: then the read may
-  have gone to the service worker, which can answer from the network. Display the PDF again, or save it by hand. A tab still
+  tell which. No request for the document was sent, unless you passed `--allow-service-worker` and a service worker
+  controls the tab: then the read may have gone to the service worker, which can answer from the network. Display
+  the PDF again, or save it by hand. A tab still
   loading runs no scripts, and the command says that instead. How long WebKit keeps the
   document is not known: a ScienceDirect tab still answered after 8 minutes, longer was not measured.
 - Up to 256 MiB; 50 MB took about 30 s on Safari, moved in chunks. The file goes through the same checks as `pdf-cache get` (`%PDF-`, readable pages, an existing

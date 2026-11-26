@@ -8,12 +8,13 @@ import Foundation
 /// That cache mode cannot reach the network by itself (a service worker that controls the page can, see below): without a held copy it rejects. This is the only fetch in the
 /// script, and a rejection is a failure: there is no second attempt in any other mode.
 ///
-/// A service worker can see the fetches of the page it controls and answer them from the network. A PDF
-/// document fetching its own URL was not handed to one (Safari 27.3 and WebKit, #390), but the page cannot know
-/// beforehand, so on a page a service worker controls the same read is sent and checked afterwards: the read's
-/// `PerformanceResourceTiming` entry has a `workerStart` above 0 when a service worker handled it. A read it
-/// handled, or one with no entry to tell, is refused before its bytes are encoded unless the caller allows it.
-/// A page no service worker controls never calls `performance`.
+/// A service worker can see the fetches of the page it controls and answer them from the network. So a page a
+/// service worker controls is refused before the fetch unless the caller passes `--allow-service-worker`
+/// (#390, comment 7201248012). With the flag the same read is sent and checked afterwards: the read's
+/// `PerformanceResourceTiming` entry has a `workerStart` above 0 when a service worker handled it, which it does
+/// when WebKit no longer holds the document (a PDF document fetching its own URL it holds was not handed to one,
+/// Safari 27.3 and WebKit). The verdict is reported and the bytes are kept for every verdict. A page no service
+/// worker controls never calls `performance`.
 ///
 /// The scripts written here contain no address, because a script is an `osascript` argument, part of a timeout
 /// message and a daemon log entry; the page reports back only the protocol, host and path. Finding the tab is
@@ -72,19 +73,20 @@ enum TabPDFReader {
     /// only in this document: every later step fails if the tab shows another one by then. Only the error's name
     /// is reported, because WebKit's message text is not ours and can carry the signed URL.
     ///
-    /// On a page a service worker controls, the verdict is worked out after the body is read and before its size
-    /// is checked or it is encoded (#390); `allowServiceWorker` is written in as a literal and keeps the bytes for
-    /// every verdict. It changes nothing about the fetch.
+    /// `allowServiceWorker` is written in as a literal. Without it a page a service worker controls is refused
+    /// before the fetch (#390). With it the page is read, and the verdict is worked out after the body is read and
+    /// before its size is checked or it is encoded, against the address the read fetched. It changes nothing about
+    /// the fetch itself.
     static func startScript(slot: ResultSlot, maxBytes: Int = TabPDFReader.maxBytes, allowServiceWorker: Bool = false) -> String {
         let ref = "window.\(slot.key)"
         return """
             (\(ResultSlot.sweepExpression), \(ref) = { u: \(ResultSlot.stampExpression) }, (function(s){
               function fail(code, detail) { s.fail = code; s.detail = ('' + detail).slice(0, \(detailLimit)); s.done = true; }
               function named(e) { return e && e.name ? e.name : 'Error'; }
-              function verdict(t0) {
+              function verdict(t0, href) {
                 try {
                   if (!(t0 >= 0) || typeof performance !== 'object' || !performance || typeof performance.getEntriesByType !== 'function') { return 'unconfirmed'; }
-                  var want = ('' + location.href).split('#')[0], list = performance.getEntriesByType('resource'), found = false, unknown = false, most = 0;
+                  var want = href.split('#')[0], list = performance.getEntriesByType('resource'), found = false, unknown = false, most = 0;
                   for (var i = 0; i < list.length; i++) {
                     var e = list[i];
                     if (('' + e.name).split('#')[0] !== want || e.initiatorType !== 'fetch' || !(e.startTime >= t0)) { continue; }
@@ -99,16 +101,18 @@ enum TabPDFReader {
                 var type = document.contentType;
                 if (type !== 'application/pdf' && type !== 'text/pdf') { fail('not-pdf', type); return; }
                 var controlled = !!(navigator.serviceWorker && navigator.serviceWorker.controller), allow = \(allowServiceWorker ? "true" : "false"), t0 = -1;
+                if (controlled && !allow) { fail('service-worker', ''); return; }
                 s.sw = 'none';
+                var href = '' + location.href;
                 if (controlled) { try { t0 = performance.now(); } catch (e) { t0 = -1; } }
                 s.shown = location.protocol + '//' + location.host + location.pathname;
-                fetch(location.href, { cache: 'only-if-cached', mode: 'same-origin' })
+                fetch(href, { cache: 'only-if-cached', mode: 'same-origin' })
                   .then(function(r){
                     if (r.status !== 200) { fail('status', r.status); return null; }
                     return r.blob();
                   }, function(e){ fail('not-held', named(e)); return null; })
                   .then(function(b){ if (!b) { return null; } s.bytes = b.size;
-                    if (controlled) { s.sw = verdict(t0); if (!allow && s.sw !== 'not-seen') { fail('sw-' + s.sw, ''); return null; } }
+                    if (controlled) { s.sw = verdict(t0, href); }
                     if (b.size > \(maxBytes)) { fail('too-large', b.size); return null; }
                     return new Promise(function(res, rej){ var f = new FileReader();
                       f.onload = function(){ res(f.result); }; f.onerror = function(){ rej(f.error); }; f.readAsDataURL(b); }); })
@@ -153,8 +157,7 @@ enum TabPDFReader {
             let detail = String(rest[rest.index(after: colon)...])
             switch String(rest[..<colon]) {
             case "not-pdf": return .failed(.notPDF(contentType: detail))
-            case "sw-seen" where detail.isEmpty: return .failed(.serviceWorkerSaw)
-            case "sw-unconfirmed" where detail.isEmpty: return .failed(.serviceWorkerUnconfirmed)
+            case "service-worker" where detail.isEmpty: return .failed(.serviceWorker)
             case "not-held": return .failed(.notHeld(detail: detail))
             case "read-failed": return .failed(.readFailed(detail: detail))
             case "status":
@@ -187,7 +190,8 @@ enum TabPDFReader {
                 throw SafariBrowserError.savePDF(.notScriptable)
             }
             let (bytes, length, verdict) = try await awaitCompletion(
-                slot: slot, deadline: deadline, deadlineSeconds: deadlineSeconds, run: run)
+                slot: slot, deadline: deadline, deadlineSeconds: deadlineSeconds,
+                allowServiceWorker: allowServiceWorker, run: run)
             let shown = try await run(shownScript(slot: slot)).trimmingCharacters(in: .whitespacesAndNewlines)
             let text: String
             do {
@@ -213,9 +217,11 @@ enum TabPDFReader {
     }
 
     /// The numbers are the page's word, so they are checked before they size anything on this side: the page
-    /// script enforces the limit only for a page that did not replace it.
+    /// script enforces the limit only for a page that did not replace it. The same holds for the verdict: without
+    /// the flag the page answers success only for a tab no service worker controls, so any other verdict is a reply
+    /// this call could not produce, and nothing is transferred.
     private static func awaitCompletion(
-        slot: ResultSlot, deadline: ContinuousClock.Instant, deadlineSeconds: Double,
+        slot: ResultSlot, deadline: ContinuousClock.Instant, deadlineSeconds: Double, allowServiceWorker: Bool,
         run: (String) async throws -> String
     ) async throws -> (bytes: Int, length: Int, verdict: ServiceWorkerVerdict) {
         while true {
@@ -232,6 +238,9 @@ enum TabPDFReader {
             if case .ok(let bytes, let length, let verdict) = status {
                 guard bytes <= maxBytes, length == (bytes + 2) / 3 * 4 else {
                     throw SafariBrowserError.savePDF(.damagedReply(detail: "the page announced \(bytes) bytes in \(length) characters"))
+                }
+                guard allowServiceWorker || verdict == .none else {
+                    throw SafariBrowserError.savePDF(.damagedReply(detail: "the verdict \(verdict.rawValue) for a read made without --allow-service-worker"))
                 }
                 return (bytes, length, verdict)
             }

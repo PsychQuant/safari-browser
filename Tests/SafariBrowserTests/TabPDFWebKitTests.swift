@@ -235,9 +235,24 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         return tab
     }
 
-    /// Requests the service worker could cause: the document itself, and its report of a fetch event.
-    private var serviceWorkerActivity: [String] {
-        log.filter { $0.hasPrefix("GET /sw/doc.pdf") || $0.hasPrefix("GET /sw-saw") }
+    private var sentinels = 0
+
+    /// An absence in the log means nothing until something that would have arrived after it has arrived. The
+    /// page fetches a sentinel the service worker reports; once both its report and its request are in the log,
+    /// a read that had reached the service worker earlier would be there too. Returns what the log gained since
+    /// `before`, the sentinel's lines included.
+    private func flushThroughServiceWorker(_ tab: Tab, since before: Int) async throws -> [String] {
+        sentinels += 1
+        let name = "sentinel-\(sentinels)"
+        _ = tab.evaluate("fetch('/sw/\(name)').then(function () {}, function () {}); 1")
+        for _ in 0..<40 {
+            let added = Array(log.dropFirst(before))
+            if added.contains(where: { $0.hasPrefix("GET /sw-saw") && $0.contains(name) }),
+               added.contains(where: { $0.hasPrefix("GET /sw/\(name)") }) { return added }
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        XCTFail("the service worker never reported \(name), so the log says nothing: \(Array(log.dropFirst(before)))")
+        return Array(log.dropFirst(before))
     }
 
     /// A PDF tab a service worker controls, in an isolated data store. The service worker's report of the
@@ -291,6 +306,23 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
 
     private func data(_ name: String) throws -> Data { try Data(contentsOf: root.appendingPathComponent(name)) }
 
+    /// The command's path after the target is resolved: the read, then the verified publish.
+    private func save(_ tab: Tab, allow: Bool = false, as name: String) async throws -> (read: TabPDFReader.Read, path: String) {
+        let read = try await read(tab, allow: allow)
+        let path = root.appendingPathComponent(name).path
+        _ = try TabPDFReader.publish(read, to: path, force: false, stagingRoot: root)
+        return (read, path)
+    }
+
+    /// A save that has to fail, and the file it must not leave.
+    private func saveFailure(_ tab: Tab, allow: Bool = false, as name: String) async -> SavePDFFailure? {
+        let path = root.appendingPathComponent(name).path
+        defer { XCTAssertFalse(FileManager.default.fileExists(atPath: path), "\(name): a failed save left a file") }
+        do { _ = try await save(tab, allow: allow, as: name); return nil }
+        catch SafariBrowserError.savePDF(let failure) { return failure }
+        catch { XCTFail("\(error)"); return nil }
+    }
+
     /// spec-example: save-pdf / a no-store PDF in a tab no service worker controls
     func testANoStorePDFComesBackExactlyWithNoRequestAndTheQueryStaysInThePage() async throws {
         let tab = try await open("/plain.pdf?X-Amz-Signature=SECRET#page=2")
@@ -304,67 +336,91 @@ final class TabPDFWebKitTests: XCTestCase, @unchecked Sendable {
         XCTAssertFalse(tab.page.sent.contains { $0.contains("SECRET") })
     }
 
+    /// Without the flag a controlled tab is refused before the fetch, so neither the site nor its service worker
+    /// sees a read, whether or not WebKit holds the document (#390 comment 7201248012).
+    /// spec-example: save-pdf / a controlled PDF tab without the flag
+    /// spec-example: non-interference / a controlled PDF tab refused with no request
+    func testAControlledPDFTabWithoutTheFlagIsRefusedAndNothingReachesTheServiceWorker() async throws {
+        let tab = try await openControlled()
+        let states = [("as loaded", ""), ("at an address never loaded", "history.replaceState(null, '', '/sw/never-loaded.pdf'); 1")]
+        for (i, (state, script)) in states.enumerated() {
+            if !script.isEmpty { _ = tab.evaluate(script) }
+            let before = log.count
+            let got = await saveFailure(tab, as: "refused-\(i).pdf")
+            XCTAssertEqual(got, .serviceWorker, state)
+            let added = try await flushThroughServiceWorker(tab, since: before)
+            XCTAssertTrue(added.allSatisfy { $0.contains("sentinel-") }, "\(state): the log gained more than the sentinel: \(added)")
+        }
+    }
+
     /// The read the service worker could see but did not: a PDF document fetching its own URL (#390, measured
-    /// on Safari 27.3 and here).
+    /// on Safari 27.3 and here). With the flag it is read and saved.
     /// spec-example: save-pdf / a controlled PDF tab whose read the service worker did not handle
     /// spec-example: non-interference / a controlled PDF tab read with no request
     func testAControlledPDFTabWhoseReadTheServiceWorkerDidNotHandleIsSaved() async throws {
         let tab = try await openControlled()
-        let before = serviceWorkerActivity
-        let result = try await read(tab)
-        XCTAssertEqual(result.bytes, try data("plain.pdf"))
-        XCTAssertEqual(result.serviceWorker, .notSeen)
-        XCTAssertEqual(serviceWorkerActivity, before, "no request for the document and no fetch event during the read: \(log)")
+        let before = log.count
+        let saved = try await save(tab, allow: true, as: "not-seen.pdf")
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: saved.path)), try data("plain.pdf"))
+        XCTAssertEqual(saved.read.serviceWorker, .notSeen)
+        let added = try await flushThroughServiceWorker(tab, since: before)
+        XCTAssertTrue(added.allSatisfy { $0.contains("sentinel-") }, "no request for the document and no fetch event during the read: \(added)")
     }
 
-    /// When WebKit does not hold the document at the tab's address, the read goes to the service worker like any
-    /// fetch of the page, before any check and without the flag (#390 comment 7142919264). Nothing is saved, and the
-    /// message does not claim that no request was sent.
+    /// When WebKit does not hold the document at the tab's address, a read made with the flag goes to the service
+    /// worker like any fetch of the page (#390 comment 7142919264); without the flag nothing is read.
     /// spec-example: save-pdf / a controlled PDF tab whose address was never loaded
     /// spec-example: non-interference / a controlled PDF tab whose document is not held
     func testAControlledTabWhoseDocumentIsNotHeldReachesTheServiceWorker() async throws {
         let tab = try await openControlled()
         _ = tab.evaluate("history.replaceState(null, '', '/sw/never-loaded.pdf'); 1")
         let before = log.count
-        let got = await failure(tab)
-        for _ in 0..<20 where !log.dropFirst(before).contains(where: { $0.hasPrefix("GET /sw/never-loaded.pdf") }) {
+        let refused = await saveFailure(tab, as: "never-loaded-refused.pdf")
+        XCTAssertEqual(refused, .serviceWorker)
+        let quiet = try await flushThroughServiceWorker(tab, since: before)
+        XCTAssertFalse(quiet.contains { $0.contains("never-loaded.pdf") }, "without the flag: \(quiet)")
+        let start = log.count
+        let got = await saveFailure(tab, allow: true, as: "never-loaded.pdf")
+        for _ in 0..<20 {
+            let added = log.dropFirst(start)
+            if added.contains(where: { $0.hasPrefix("GET /sw/never-loaded.pdf") }),
+               added.contains(where: { $0.hasPrefix("GET /sw-saw") && $0.contains("never-loaded.pdf") }) { break }
             try await Task.sleep(nanoseconds: 250_000_000)
         }
-        let added = Array(log.dropFirst(before))
+        let added = Array(log.dropFirst(start))
         XCTAssertEqual(got, .badStatus(code: 404))
         XCTAssertTrue(added.contains { $0.hasPrefix("GET /sw-saw") && $0.contains("never-loaded.pdf") }, "\(added)")
         XCTAssertTrue(added.contains { $0.hasPrefix("GET /sw/never-loaded.pdf") }, "\(added)")
-        XCTAssertTrue(got?.message.contains("unless a service worker controls this tab") ?? false, got?.message ?? "nil")
+        XCTAssertTrue(got?.message.contains("unless --allow-service-worker was given and a service worker controls this tab") ?? false,
+                      got?.message ?? "nil")
     }
 
-    /// The same tab when the service worker's answer is a PDF: only `workerStart` stands between that answer and a
-    /// saved file, so it must read `seen` (#390 fix0 spectra-verify warning 4).
+    /// The same tab when the service worker's answer is a PDF: with the flag it is saved and the verdict says the
+    /// service worker handled it (#390 fix0 spectra-verify warning 4); without the flag nothing is read.
     /// spec-example: save-pdf / a controlled PDF tab whose document is not held and the service worker answers it
     func testAControlledTabWhoseDocumentIsNotHeldAndIsAnsweredIsSeen() async throws {
         let tab = try await openControlled()
         _ = tab.evaluate("history.replaceState(null, '', '/sw/doc.pdf?v=2'); 1")
         let before = log.count
-        let got = await failure(tab)
-        let added = Array(log.dropFirst(before))
-        XCTAssertEqual(got, .serviceWorkerSaw, "\(added)")
-        XCTAssertTrue(added.contains { $0.hasPrefix("GET /sw/doc.pdf?v=2") }, "the read did not reach the server: \(added)")
-        let kept = try await read(tab, allow: true)
-        XCTAssertEqual(kept.serviceWorker, .seen)
-        XCTAssertEqual(kept.bytes, try data("plain.pdf"))
+        let refused = await saveFailure(tab, as: "answered-refused.pdf")
+        XCTAssertEqual(refused, .serviceWorker)
+        let quiet = try await flushThroughServiceWorker(tab, since: before)
+        XCTAssertFalse(quiet.contains { $0.hasPrefix("GET /sw/doc.pdf?v=2") }, "without the flag: \(quiet)")
+        let start = log.count
+        let saved = try await save(tab, allow: true, as: "answered.pdf")
+        XCTAssertEqual(saved.read.serviceWorker, .seen)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: saved.path)), try data("plain.pdf"))
+        XCTAssertTrue(log.dropFirst(start).contains { $0.hasPrefix("GET /sw/doc.pdf?v=2") }, "the read did not reach the server: \(Array(log.dropFirst(start)))")
     }
 
-    /// With no entry for the read, it cannot be confirmed: refused without the flag, kept with it.
+    /// With no entry for the read, the verdict cannot be confirmed; with the flag the PDF is saved and says so.
     /// spec-example: save-pdf / a full resource timing buffer
     func testAFullResourceTimingBufferIsUnconfirmed() async throws {
         let tab = try await openControlled()
-        let empty = "performance.setResourceTimingBufferSize(0); performance.clearResourceTimings(); 1"
-        _ = tab.evaluate(empty)
-        let got = await failure(tab)
-        XCTAssertEqual(got, .serviceWorkerUnconfirmed)
-        _ = tab.evaluate(empty)
-        let result = try await read(tab, allow: true)
-        XCTAssertEqual(result.bytes, try data("plain.pdf"))
-        XCTAssertEqual(result.serviceWorker, .unconfirmed)
+        _ = tab.evaluate("performance.setResourceTimingBufferSize(0); performance.clearResourceTimings(); 1")
+        let saved = try await save(tab, allow: true, as: "unconfirmed.pdf")
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: saved.path)), try data("plain.pdf"))
+        XCTAssertEqual(saved.read.serviceWorker, .unconfirmed)
     }
 
     func testAPDFSentWith404IsSavedLikeAnyOther() async throws {
